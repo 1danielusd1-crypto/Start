@@ -1447,6 +1447,138 @@ def on_callback(call):
 # SECTION 17 — TEXT HANDLER (финансы + пересылка + удаление)
 # ==========================================================
 #🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔵
+# ==========================================================
+# SECTION 17 — TEXT HANDLER (финансы + пересылка + удаление)
+# ==========================================================
+
+@bot.message_handler(content_types=["text"])
+def handle_text(msg):
+
+    chat_id = msg.chat.id
+    text = (msg.text or "").strip()
+    store = get_chat_store(chat_id)
+
+    try:
+        # ==========================
+        # 1) Пересылка текстов (анонимно)
+        # ==========================
+        if str(chat_id) != str(OWNER_ID):
+            targets = resolve_forward_targets(chat_id)
+            if targets:
+                for dst in targets:
+                    try:
+                        bot.copy_message(dst, chat_id, msg.message_id)
+                    except Exception:
+                        pass
+
+        # ==========================================================
+        # 2) edit_wait — добавление, редактирование, удаление
+        # ==========================================================
+        wait = store.get("edit_wait")
+
+        if wait:
+
+            # ----- УДАЛЕНИЕ -----
+            if wait.get("type") == "del_confirm":
+                rid = wait.get("rid")
+                day_key = wait.get("day_key")
+
+                if text.upper() == "ДА":
+                    delete_record_in_chat(chat_id, rid)
+                    store["edit_wait"] = None
+                    save_data(data)
+
+                    txt = render_day_window(chat_id, day_key)
+                    kb = build_main_keyboard(day_key, chat_id)
+                    bot.send_message(chat_id, "🗑 Запись удалена.")
+                    bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                else:
+                    bot.send_message(chat_id, "❌ Удаление отменено.")
+                    store["edit_wait"] = None
+                return
+
+            # ----- ДОБАВЛЕНИЕ -----
+            if wait.get("type") == "add":
+                day_key = wait.get("day_key")
+
+                try:
+                    parts = text.split(" ", 1)
+                    amount = parse_amount(parts[0])
+                    note = parts[1] if len(parts) > 1 else ""
+                except Exception:
+                    bot.send_message(chat_id, "❌ Формат неверный. Пример: +500 Обед")
+                    return
+
+                add_record_to_chat(chat_id, amount, note, owner=msg.from_user.id, day_key=day_key)
+                store["edit_wait"] = None
+                save_data(data)
+
+                txt = render_day_window(chat_id, day_key)
+                kb = build_main_keyboard(day_key, chat_id)
+                bot.send_message(chat_id, "Запись добавлена.")
+                bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                return
+
+            # ----- РЕДАКТИРОВАНИЕ -----
+            if wait.get("type") == "edit":
+                rid = wait.get("rid")
+                day_key = wait.get("day_key")
+
+                try:
+                    parts = text.split(" ", 1)
+                    amount = parse_amount(parts[0])
+                    note = parts[1] if len(parts) > 1 else ""
+                except Exception:
+                    bot.send_message(chat_id, "❌ Неверный формат. Пример: +500 Такси")
+                    return
+
+                update_record_in_chat(chat_id, rid, amount, note, user=msg.from_user.id)
+                store["edit_wait"] = None
+                save_data(data)
+
+                txt = render_day_window(chat_id, day_key)
+                kb = build_main_keyboard(day_key, chat_id)
+                bot.send_message(chat_id, "Запись обновлена.")
+                bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                return
+
+        # ==========================================================
+        # 3) Обнуление чата — подтверждение «ДА»
+        # ==========================================================
+        if text.upper() == "ДА" and store.get("pending_reset"):
+            store["pending_reset"] = False
+
+            try:
+                reset_chat_data(chat_id)
+            except Exception as e:
+                log_error(f"reset_chat_data error: {e}")
+
+                # fallback если функции нет:
+                data["chats"][str(chat_id)] = default_chat_store()
+
+            save_data(data)
+            bot.send_message(chat_id, "♻️ Данные этого чата обнулены.")
+
+            day_key = today_key()
+            txt = render_day_window(chat_id, day_key)
+            kb = build_main_keyboard(day_key, chat_id)
+            bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+            return
+
+        # ==========================================================
+        # 4) Команда /обнулить
+        # ==========================================================
+        if text.lower() == "обнулить":
+            store["pending_reset"] = True
+            save_data(data)
+            bot.send_message(
+                chat_id,
+                "Вы уверены, что хотите обнулить данные этого чата?\nНапишите ДА для подтверждения."
+            )
+            return
+
+    except Exception as e:
+        log_error(f"handle_text error: {e}")
 
 # ==========================================================
 # SECTION 18 — MEDIA HANDLER (пересылка всех вложений)
