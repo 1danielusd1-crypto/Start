@@ -1380,115 +1380,181 @@ def forward_message_anonymous(msg: types.Message):
 
 
 # ==========================================================
-# ========== ОТСЕК 21 — Меню пересылки (/forward) ==========
+# ========== ОТСЕК 21 — Меню пересылки (вариант A) ==========
 # ==========================================================
 
-            # ---------- МЕНЮ ПЕРЕСЫЛКИ (НОВАЯ ВЕРСИЯ, ВАРИАНТ A) ----------
+def open_forward_menu(chat_id: int):
+    """
+    Главное окно пересылки.
+    Показывает ВСЕ известные чаты и кнопки:
+    ➡️ (src -> dst)
+    ↔️ (двусторонняя)
+    ⬅️ (dst -> src)
+    🚫 (выключить)
+    """
+    if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+        return
 
-            if cmd == "forward_menu":
-                if chat_id != OWNER_ID:
-                    bot.send_message(chat_id, "Меню пересылки доступно только владельцу.")
-                    return
+    kc = data.get("known_chats", {})
+    fr = data.get("forward_rules", {})
 
-                chats = data.get("chats", {})
-                kb = types.InlineKeyboardMarkup(row_width=4)
+    if not kc:
+        bot.send_message(chat_id, "Нет данных о чатах.")
+        return
 
-                for cid, store_c in chats.items():
-                    icid = int(cid)
-                    if icid == OWNER_ID:
-                        continue
+    kb = types.InlineKeyboardMarkup(row_width=4)
+    lines = ["<b>🔁 Настройка пересылки между чатами</b>\n"]
 
-                    info = store_c.get("info", {})
-                    title = info.get("title") or info.get("username") or f"Чат {cid}"
+    # перебираем все чаты
+    for cid, info in kc.items():
+        if str(cid) == str(OWNER_ID):
+            continue
 
-                    mode = get_forward_mode(icid)
+        title = info.get("title") or info.get("username") or f"Чат {cid}"
 
-                    kb.row(types.InlineKeyboardButton(f"Чат: {title}", callback_data="noop"))
+        # режимы
+        src_rules = fr.get(str(cid), {})
+        # forward: cid -> ? (oneway or twoway)
+        # reverse: ? -> cid
 
-                    kb.row(
-                        types.InlineKeyboardButton(
-                            "➡️" + ("✅" if mode == FORWARD_OWNER_TO_CHAT else ""),
-                            callback_data=f"d:{day_key}:fw_set_o2c_{icid}"
-                        ),
-                        types.InlineKeyboardButton(
-                            "↔️" + ("✅" if mode == FORWARD_BOTH else ""),
-                            callback_data=f"d:{day_key}:fw_set_both_{icid}"
-                        ),
-                        types.InlineKeyboardButton(
-                            "⬅️" + ("✅" if mode == FORWARD_CHAT_TO_OWNER else ""),
-                            callback_data=f"d:{day_key}:fw_set_c2o_{icid}"
-                        ),
-                        types.InlineKeyboardButton(
-                            "🚫" if mode != FORWARD_NONE else "🚫✅",
-                            callback_data=f"d:{day_key}:fw_set_none_{icid}"
-                        ),
-                    )
+        # Но т.к. в варианте A мы не выбираем SRC вручную,
+        # каждая строчка — это чат, который МОЖЕТ получать или отправлять.
 
-                kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
-                bot.send_message(chat_id, "Настройка пересылки:", reply_markup=kb)
-                return
+        # Проверяем 3 режима
+        mode_forward = "oneway" if src_rules else None
 
-            if cmd.startswith("fw_set_"):
-                if chat_id != OWNER_ID:
-                    return
+        # двусторонняя?
+        is_tw = False
+        for other, mode in src_rules.items():
+            if mode == "twoway":
+                is_tw = True
+                break
 
-                parts = cmd.split("_")
-                mode_key = parts[2]
-                icid = int(parts[3])
+        kb.row(
+            types.InlineKeyboardButton(f"Чат: {title}", callback_data="fw_nop")
+        )
 
-                if mode_key == "none":
-                    set_forward_mode(icid, FORWARD_NONE)
-                    bot.send_message(chat_id, f"Пересылка с чатом {icid} выключена.")
-                elif mode_key == "o2c":
-                    set_forward_mode(icid, FORWARD_OWNER_TO_CHAT)
-                    bot.send_message(chat_id, f"Режим для {icid}: ➡️ (владелец → чат)")
-                elif mode_key == "c2o":
-                    set_forward_mode(icid, FORWARD_CHAT_TO_OWNER)
-                    bot.send_message(chat_id, f"Режим для {icid}: ⬅️ (чат → владелец)")
-                elif mode_key == "both":
-                    set_forward_mode(icid, FORWARD_BOTH)
-                    bot.send_message(chat_id, f"Режим для {icid}: ↔️ двухсторонний")
+        # Рисуем кнопки
+        kb.row(
+            types.InlineKeyboardButton(
+                "➡️",
+                callback_data=f"fw_set_o2c:{cid}"
+            ),
+            types.InlineKeyboardButton(
+                "↔️",
+                callback_data=f"fw_set_both:{cid}"
+            ),
+            types.InlineKeyboardButton(
+                "⬅️",
+                callback_data=f"fw_set_c2o:{cid}"
+            ),
+            types.InlineKeyboardButton(
+                "🚫",
+                callback_data=f"fw_set_none:{cid}"
+            ),
+        )
 
-                # автообновление меню
-                bot.send_message(chat_id, "Обновлено. Открываю меню пересылки...")
-                # возвращаемся в меню
-                chats = data.get("chats", {})
-                kb = types.InlineKeyboardMarkup(row_width=4)
+    # Назад / закрыть
+    kb.row(
+        types.InlineKeyboardButton("🔙 Закрыть", callback_data="fw_close")
+    )
 
-                for cid, store_c in chats.items():
-                    icid2 = int(cid)
-                    if icid2 == OWNER_ID:
-                        continue
+    bot.send_message(chat_id, "Выберите режим пересылки для каждого чата:", reply_markup=kb, parse_mode="HTML")
 
-                    info = store_c.get("info", {})
-                    title = info.get("title") or info.get("username") or f"Чат {cid}"
 
-                    mode = get_forward_mode(icid2)
+@bot.message_handler(commands=["forward"])
+def cmd_forward(msg: types.Message):
+    """
+    Открывает меню пересылки (вариант A).
+    Только для OWNER.
+    """
+    if str(msg.chat.id) != str(OWNER_ID):
+        return bot.send_message(msg.chat.id, "Недоступно.")
+    open_forward_menu(msg.chat.id)
 
-                    kb.row(types.InlineKeyboardButton(f"Чат: {title}", callback_data="noop"))
 
-                    kb.row(
-                        types.InlineKeyboardButton(
-                            "➡️" + ("✅" if mode == FORWARD_OWNER_TO_CHAT else ""),
-                            callback_data=f"d:{day_key}:fw_set_o2c_{icid2}"
-                        ),
-                        types.InlineKeyboardButton(
-                            "↔️" + ("✅" if mode == FORWARD_BOTH else ""),
-                            callback_data=f"d:{day_key}:fw_set_both_{icid2}"
-                        ),
-                        types.InlineKeyboardButton(
-                            "⬅️" + ("✅" if mode == FORWARD_CHAT_TO_OWNER else ""),
-                            callback_data=f"d:{day_key}:fw_set_c2o_{icid2}"
-                        ),
-                        types.InlineKeyboardButton(
-                            "🚫" if mode != FORWARD_NONE else "🚫✅",
-                            callback_data=f"d:{day_key}:fw_set_none_{icid2}"
-                        ),
-                    )
+# ----------------------------------------------------------
+# HANDLERS КНОПОК РЕЖИМОВ
+# ----------------------------------------------------------
 
-                kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
-                bot.send_message(chat_id, "Настройка пересылки:", reply_markup=kb)
-                return
+def set_forward_rule(src: str, mode: str):
+    """
+    Устанавливает forward_rules для чата src.
+    Варианты:
+        "o2c"  – OWNER → чат
+        "c2o"  – чат → OWNER
+        "both" – двусторонняя
+        "none" – выключить
+    """
+    fr = data.setdefault("forward_rules", {})
+
+    # чистим старые настройки
+    fr[src] = fr.get(src, {})
+    fr[src].clear()
+
+    if mode == "none":
+        save_data()
+        return
+
+    if mode == "o2c":
+        # owner -> src (src получает от owner)
+        fr.setdefault(str(OWNER_ID), {})
+        fr[str(OWNER_ID)][src] = "oneway"
+
+    elif mode == "c2o":
+        # src -> owner
+        fr.setdefault(src, {})
+        fr[src][str(OWNER_ID)] = "oneway"
+
+    elif mode == "both":
+        fr.setdefault(src, {})
+        fr.setdefault(str(OWNER_ID), {})
+
+        fr[src][str(OWNER_ID)] = "twoway"
+        fr[str(OWNER_ID)][src] = "twoway"
+
+    save_data()
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("fw_set_o2c"))
+def cb_fw_set_o2c(c: types.CallbackQuery):
+    cid = c.data.split(":")[1]
+    set_forward_rule(cid, "o2c")
+    bot.answer_callback_query(c.id, "➡️ Владелец → чат")
+    open_forward_menu(c.message.chat.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("fw_set_c2o"))
+def cb_fw_set_c2o(c: types.CallbackQuery):
+    cid = c.data.split(":")[1]
+    set_forward_rule(cid, "c2o")
+    bot.answer_callback_query(c.id, "⬅️ Чат → владелец")
+    open_forward_menu(c.message.chat.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("fw_set_both"))
+def cb_fw_set_both(c: types.CallbackQuery):
+    cid = c.data.split(":")[1]
+    set_forward_rule(cid, "both")
+    bot.answer_callback_query(c.id, "↔️ Двусторонняя пересылка")
+    open_forward_menu(c.message.chat.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("fw_set_none"))
+def cb_fw_set_none(c: types.CallbackQuery):
+    cid = c.data.split(":")[1]
+    set_forward_rule(cid, "none")
+    bot.answer_callback_query(c.id, "🚫 Выключено")
+    open_forward_menu(c.message.chat.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "fw_close")
+def cb_fw_close(c: types.CallbackQuery):
+    try:
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+    except:
+        pass
+    bot.answer_callback_query(c.id, "Закрыто")
 
 # ==========================================================
 # ========== ОТСЕК 22 — CSV / JSON экспорт ==========
