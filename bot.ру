@@ -1466,6 +1466,12 @@ def handle_text(msg):
                     except Exception:
                         pass
 
+        # === здесь продолжение твоей логики (финансы, edit_wait и т.д.)
+        # ...
+
+    except Exception as e:
+        log_error(f"handle_text error: {e}")
+
         # ==========================
         # 2) Обработка удаления / редактирования (edit_wait)
         # ==========================
