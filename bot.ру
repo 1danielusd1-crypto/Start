@@ -1436,17 +1436,20 @@ def on_callback(call):
                     id=call.id,
                     from_user=call.from_user,
                     chat_instance="",
+                    chat_instance="",
                     data=f"d:{day_key}:fw_cfg_{target}",
                     message=None
                 )
             )
             return
 
+    except Exception as e:
+        log_error(f"on_callback error: {e}")
+
 #7️⃣🔟
 # ==========================================================
 # SECTION 17 — TEXT HANDLER (финансы + пересылка + удаление)
 # ==========================================================
-
 @bot.message_handler(content_types=["text"])
 def handle_text(msg):
 
