@@ -2029,12 +2029,10 @@ def root():
 def final_run():
     log_info("🚀 Запуск Code_022.1 FINAL 1...")
 
-    # 1) Загружаем данные
     global data
     restored = restore_from_gdrive_if_needed()
     data = load_data()
 
-    # 2) Если восстановлены данные — уведомляем владельца
     if restored and OWNER_ID:
         try:
             bot.send_message(int(OWNER_ID),
@@ -2042,16 +2040,17 @@ def final_run():
         except Exception:
             pass
 
-    # 3) Запуск keep-alive
     start_keep_alive_thread()
 
     # 4) Настраиваем webhook
     if APP_URL:
-        wh_url = f"{APP_URL}/{BOT_TOKEN}"
+        wh_url = APP_URL  # ← ПРАВИЛЬНО, БЕЗ ТОКЕНА
+
         try:
             bot.remove_webhook()
         except:
             pass
+
         time.sleep(1)
 
         try:
@@ -2061,10 +2060,8 @@ def final_run():
             log_error(f"Ошибка установки webhook: {e}")
 
     else:
-        # fallback polling
         log_info("APP_URL не указан — запуск polling()")
         bot.infinity_polling(timeout=60, long_polling_timeout=60)
-
 
 # ==========================================================
 # SECTION 26 — Main
