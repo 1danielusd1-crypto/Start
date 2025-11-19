@@ -1,4 +1,4 @@
-# Code_022.1-FINAL (1780)
+# Code_022.1-FINAL (2182)
 #  • Full finance UI: day window, edit menu, /prev /next /view, 31-day calendar, reports
 #  • Per-chat storage: data_<chat_id>.json, data_<chat_id>.csv, csv_meta_<chat_id>.json
 #  • Backup & restore via Google Drive + backup Telegram channel
@@ -60,7 +60,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_022.1"
+VERSION = "Code_022.2 final"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -1418,6 +1418,40 @@ def on_callback(call):
                 f"• По всем чатам: <b>{fmt_num(overall)}</b>",
                 parse_mode="HTML"
             )
+            return
+
+        # -------------------------------------------------------
+        # ℹ️  Инфо
+        # -------------------------------------------------------
+        if cmd == "info":
+
+            # подтвердить клик (важно для Telegram)
+            try:
+                bot.answer_callback_query(call.id)
+            except:
+                pass
+
+            info_text = (
+                f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
+                "Команды:\n"
+                "/поехали — включить финансовый режим в чате\n"
+                "/start — открыть окно дня\n"
+                "/view YYYY-MM-DD — открыть день\n"
+                "/prev /next — навигация\n"
+                "/balance — баланс\n"
+                "/report — отчёт\n"
+                "/csv — экспорт CSV (Drive+канал)\n"
+                "/json — выгрузка JSON\n"
+                "/reset — обнулить данные\n"
+                "/ping — проверка\n"
+                "/help — помощь\n"
+                "/backup_gdrive_on / off — включить/выключить GDrive\n"
+                "/backup_channel_on / off — включить/выключить бэкап в канал\n"
+                "/stopforward — отключить пересылку\n"
+            )
+
+            # главное: не редактировать окно, а послать новое сообщение
+            bot.send_message(chat_id, info_text)
             return
 
         # -------------------------------------------------------
