@@ -362,6 +362,11 @@ def parse_amount(text: str) -> int:
     negative = s.startswith("-") or s.startswith("–")
     s = s.lstrip("+-–").strip()
 
+		# ТВОЁ ПРАВИЛО:
+		# сумма без знака тоже считается расходом
+		if not text.strip().startswith(("+", "-", "–")):
+		    negative = True
+
     # Убираем пробелы/мусор
     s = s.replace(" ", "").replace("'", "").replace("_", "")
 
@@ -2012,37 +2017,47 @@ def handle_text(msg):
         wait = store.get("edit_wait")
 
         # Добавление записи
-        if wait and wait.get("type") == "add":
-            try:
-                parts = text.split(" ", 1)
-                amount = parse_amount(parts[0])
-                note = parts[1] if len(parts) > 1 else ""
-            except Exception:
-                bot.send_message(chat_id, "❌ Ошибка формата. Пример: +500 Обед")
-                return
+				if wait and wait.get("type") == "add":
 
-            add_record_to_chat(chat_id, amount, note, msg.from_user.id)
+				    lines = text.split("\n")  # каждая строка — отдельная транзакция
 
-            store["edit_wait"] = None
-            save_data(data)
+				    for line in lines:
+				        line = line.strip()
+				        if not line:
+				            continue
 
-            day_key = wait.get("day_key")
-            txt, _ = render_day_window(chat_id, day_key)
-            kb = build_main_keyboard(day_key, chat_id)
-            bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-            return
+				        parts = line.split(" ", 1)
+
+				        try:
+				            amount = parse_amount(parts[0])
+				        except Exception:
+				            bot.send_message(chat_id, f"❌ Ошибка суммы: {parts[0]}")
+				            continue
+
+				        note = parts[1] if len(parts) > 1 else ""
+				        add_record_to_chat(chat_id, amount, note, msg.from_user.id)
+
+				    store["edit_wait"] = None
+				    save_data(data)
+
+				    day_key = wait.get("day_key")
+				    txt, _ = render_day_window(chat_id, day_key)
+				    kb = build_main_keyboard(day_key, chat_id)
+				    bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+				    return
 
         # Редактирование записи
         if wait and wait.get("type") == "edit":
             rid = wait.get("rid")
+						parts = text.split(" ", 1)
+
             try:
-                parts = text.split(" ", 1)
-                amount = parse_amount(parts[0])
-                note = parts[1] if len(parts) > 1 else ""
+                amount = parse_amount(parts[0])                     
             except Exception:
                 bot.send_message(chat_id, "❌ Ошибка формата. Пример: -1200 Такси")
                 return
 
+						note = parts[1] if len(parts) > 1 else ""
             update_record_in_chat(chat_id, rid, amount, note)
 
             store["edit_wait"] = None
