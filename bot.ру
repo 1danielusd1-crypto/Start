@@ -1952,79 +1952,71 @@ def update_chat_info_from_message(msg):
 
 @bot.message_handler(content_types=["text"])
 def handle_text(msg):
-    """
-    Обработка текстовых сообщений:
-        1) update_chat_info — обязательно
-        2) Анонимная пересылка между чатами
-        3) Добавление финансовых записей
-        4) Редактирование финансовых записей
-        5) Reset: подтверждение "ДА"
-    """
     try:
         chat_id = msg.chat.id
         text = (msg.text or "").strip()
 
-        # --------------------------
-        # 1) Обновляем данные о чате
-        # --------------------------
+        # 1) Обновляем known_chats
         update_chat_info_from_message(msg)
 
         store = get_chat_store(chat_id)
 
-        # --------------------------
-        # 2) Пересылка текста (анонимная)
-        # --------------------------
+        # 2) Пересылка текста
         targets = resolve_forward_targets(chat_id)
         if targets:
             forward_text_anon(chat_id, msg, targets)
 
-        # --------------------------
-        # 3) Финансовые операции
-        # --------------------------
+        # 3) Финансы
         wait = store.get("edit_wait")
 
-        # Добавление записи
-				if wait and wait.get("type") == "add":
+        # ---------------------------------------------------
+        # Добавление записей (многострочный ввод)
+        # ---------------------------------------------------
+        if wait and wait.get("type") == "add":
 
-				    lines = text.split("\n")  # каждая строка — отдельная транзакция
+            lines = text.split("\n")  # каждая строка — транзакция
 
-				    for line in lines:
-				        line = line.strip()
-				        if not line:
-				            continue
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
 
-				        parts = line.split(" ", 1)
+                parts = line.split(" ", 1)
 
-				        try:
-				            amount = parse_amount(parts[0])
-				        except Exception:
-				            bot.send_message(chat_id, f"❌ Ошибка суммы: {parts[0]}")
-				            continue
+                try:
+                    amount = parse_amount(parts[0])
+                except Exception:
+                    bot.send_message(chat_id, f"❌ Ошибка суммы: {parts[0]}")
+                    continue
 
-				        note = parts[1] if len(parts) > 1 else ""
-				        add_record_to_chat(chat_id, amount, note, msg.from_user.id)
+                note = parts[1] if len(parts) > 1 else ""
+                add_record_to_chat(chat_id, amount, note, msg.from_user.id)
 
-				    store["edit_wait"] = None
-				    save_data(data)
+            store["edit_wait"] = None
+            save_data(data)
 
-				    day_key = wait.get("day_key")
-				    txt, _ = render_day_window(chat_id, day_key)
-				    kb = build_main_keyboard(day_key, chat_id)
-				    bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-				    return
+            day_key = wait.get("day_key")
+            txt, _ = render_day_window(chat_id, day_key)
+            kb = build_main_keyboard(day_key, chat_id)
+            bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+            return
 
+        # ---------------------------------------------------
         # Редактирование записи
+        # ---------------------------------------------------
         if wait and wait.get("type") == "edit":
             rid = wait.get("rid")
-						parts = text.split(" ", 1)
+
+            parts = text.split(" ", 1)
 
             try:
-                amount = parse_amount(parts[0])                     
+                amount = parse_amount(parts[0])
             except Exception:
-                bot.send_message(chat_id, "❌ Ошибка формата. Пример: -1200 Такси")
+                bot.send_message(chat_id, f"❌ Ошибка суммы: {parts[0]}")
                 return
 
-						note = parts[1] if len(parts) > 1 else ""
+            note = parts[1] if len(parts) > 1 else ""
+
             update_record_in_chat(chat_id, rid, amount, note)
 
             store["edit_wait"] = None
@@ -2036,9 +2028,9 @@ def handle_text(msg):
             bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
             return
 
-        # --------------------------
-        # 4) Подтверждение /reset
-        # --------------------------
+        # ---------------------------------------------------
+        # Reset: подтверждение ДА
+        # ---------------------------------------------------
         if text.upper() == "ДА":
             reset_chat_data(chat_id)
             bot.send_message(chat_id, "🔄 Данные чата обнулены.")
@@ -2046,6 +2038,7 @@ def handle_text(msg):
 
     except Exception as e:
         log_error(f"handle_text: {e}")
+
 #🟣🟣🟣🟣🟣🟣
 # ==========================================================
 # SECTION 18.2 — Media forwarding (анонимно + media_group)
