@@ -313,47 +313,27 @@ def save_chat_json(chat_id: int):
 # ==========================================================
 
 def fmt_num(x: int) -> str:
-    """
-    Форматирует число через пробелы: 1 200 500
-    """
     return f"{x:,}".replace(",", " ")
 
 
-# Регулярка ловит числа со знаками, разделителями, пробелами
-num_re = re.compile(r'(?<!\d)([+\-–]?\s*\d[\d\s.,_\'"]*)')
+num_re = re.compile(r'[+\-]?\s*\d(?:[\d\s\._\'",]*\d)?')
 
 
 def parse_amount(text: str) -> int:
     """
-    Универсальный парсер суммы + твои правила:
-    • +100 → доход
-    • -100 → расход
-    • 100  → РАСХОД (твоё требование)
-    • первая цифра = сумма; остальное = описание
+    Parse a messy human-entered amount into int.
+    Supports + / -, spaces, dots, commas as thousand/decimal separators.
     """
-
     s = text.strip()
-
-    # Ищем первое число
     m = num_re.search(s)
     if not m:
         raise ValueError("no number found")
 
     s = m.group(0).strip()
+    negative = s.startswith("-")
+    s = s.lstrip("+-").strip()
 
-    # Знак
-    negative = s.startswith("-") or s.startswith("–")
-
-    # ТВОЁ ПРАВИЛО: если знака нет → значит расход
-    if not text.strip().startswith(("+", "-", "–")):
-        negative = True
-
-    s = s.lstrip("+-–").strip()
-
-    # Убираем лишнее
     s = s.replace(" ", "").replace("'", "").replace("_", "")
-
-    # Определение десятичного разделителя
     if "," in s and "." in s:
         if s.rfind(",") > s.rfind("."):
             s = s.replace(".", "").replace(",", ".")
@@ -362,13 +342,12 @@ def parse_amount(text: str) -> int:
     elif "," in s and "." not in s:
         s = s.replace(".", "").replace(",", ".")
     else:
-        s = s.replace(",", "").replace(".", "")
+        s = s.replace(",", "")
 
-    # Преобразуем
     value = float(s)
     if negative:
         value = -value
-    return int(value)
+    return int(round(value))
 
 # ==========================================================
 # SECTION 7 — Google Drive helpers
