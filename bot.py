@@ -2368,20 +2368,6 @@ def handle_restore_files(msg):
 
     bot.send_message(chat_id, f"⚠️ Файл получен, но формат не поддерживается: {fname}")
         
-
-    # -------------------------------
-    # ВОССТАНОВЛЕНИЕ per-chat CSV
-    # -------------------------------
-    if fname.startswith("data_") and fname.endswith(".csv"):
-        try:
-            os.replace(tmp_path, fname)
-            bot.send_message(chat_id, f"🟢 CSV чата восстановлен: {fname}")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка: {e}")
-        return
-
-    bot.send_message(chat_id, f"⚠️ Файл получен, но формат не поддерживается: {fname}")
-    
 # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
