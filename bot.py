@@ -1,10 +1,5 @@
 # Code_022.3-FINAL (?)
-#  • Full finance UI: day window, edit menu, /prev /next /view, 31-day calendar, reports
-#  • Per-chat storage: data_<chat_id>.json, data_<chat_id>.csv, csv_meta_<chat_id>.json
-#  • Backup & restore via Google Drive + backup Telegram channel
-#  • Anonymous message forwarding between chats (forward_rules, owner-configurable)
-#  • Finance mode must be enabled per chat via /поехали
-#  • Keep-alive, webhook/Flask, daily window scheduler, auto backups
+#  •вывод значений расширенный
 # ==========================================================
 
 # 🧭 Description: Code_022.1
@@ -2169,7 +2164,16 @@ def handle_media_forward(msg):
 
         # 2) Владелец не должен пересылать свои медиа автоматически
         #    (чтобы не было циклов и спама)
-        if OWNER_ID and str(chat_id) == str(OWNER_ID):
+        #if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            #return
+            # 2) Защита от циклов:
+    # Если сообщение отправлено ботом (copy_message), его пересылать нельзя.
+        try:
+            BOT_ID = bot.get_me().id
+        except:
+            BOT_ID = None
+
+        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
             return
 
         # 3) Получаем список направлений из ОТСЕКА 10
@@ -2278,7 +2282,7 @@ def main():
         try:
             bot.send_message(
                 int(OWNER_ID),
-                f"🟢 Бот запущен (версия {VERSION}).\n"
+                f"✅ Бот запущен (версия {VERSION}).\n"
                 f"Восстановление: {'OK' if restored else 'пропущено'}"
             )
         except Exception:
