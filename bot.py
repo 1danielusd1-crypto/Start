@@ -340,7 +340,8 @@ def fmt_num(x):
     else:
         s = int_part
 
-    return f"-{s}" if negative else s
+    #return f"-{s}" if negative else s
+    return s
 
 
 # регулярка на первое число даже внутри слов
