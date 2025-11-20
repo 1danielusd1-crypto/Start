@@ -309,31 +309,32 @@ def save_chat_json(chat_id: int):
         log_error(f"save_chat_json({chat_id}): {e}")
 #🟣🟣🟣🟣🟣🟣🟣🟣🟣
 # ==========================================================
-# SECTION 6 — Number formatting & parsing (EU decimal format)
+# SECTION 6 — Number formatting & parsing (EU format, decimals)
 # ==========================================================
 
 def fmt_num(x):
     """
-    Форматирует число по европейскому формату:
-        1234.56  → "1.234,56"
-        12       → "12"
-        -10896   → "-10.896"
-        -1.23    → "-1,23"
+    Европейский формат вывода:
+        1234.56  → 1.234,56
+        1234     → 1.234
+        1.2      → 1,2
     """
+
     negative = x < 0
     x = abs(x)
 
-    # разделяем целую и дробную часть
+    # Приводим к нормальному строковому виду:
     s = f"{x:.12f}".rstrip("0").rstrip(".")
+
     if "." in s:
         int_part, dec_part = s.split(".")
     else:
         int_part, dec_part = s, ""
 
-    # форматируем тысячные разделители
+    # Формируем тысячные (точка)
     int_part = f"{int(int_part):,}".replace(",", ".")
 
-    # склеиваем обратно
+    # Склеиваем
     if dec_part:
         s = f"{int_part},{dec_part}"
     else:
@@ -342,60 +343,105 @@ def fmt_num(x):
     return f"-{s}" if negative else s
 
 
-# регулярка на первое число
+# регулярка на первое число даже внутри слов
 num_re = re.compile(r"[+\-–]?\s*\d[\d\s.,_'’]*")
 
 
 def parse_amount(raw: str) -> float:
     """
-    Универсальный парсер по твоим правилам:
+    Универсальный парсер:
+    - понимает любые разделители
+    - смешанные форматы (1.234,56 / 1,234.56)
+    - определяет десятичную часть по самому правому разделителю
     - число без знака = расход
-    - поддерживает любые разделители
-    - определяет десятичный знак автоматически
     """
 
     s = raw.strip()
 
-    # знак
+    # Определяем знак
     is_negative = s.startswith("-") or s.startswith("–")
     is_positive = s.startswith("+")
 
-    # убираем знак для анализа
+    # Убираем знак для разбора числа
     s_clean = s.lstrip("+-–").strip()
 
-    # убрать мусор
-    s_clean = s_clean.replace(" ", "").replace("_", "").replace("’", "").replace("'", "")
+    # Удаляем мусор
+    s_clean = (
+        s_clean.replace(" ", "")
+        .replace("_", "")
+        .replace("’", "")
+        .replace("'", "")
+    )
 
-    # оба разделителя → определяем десятичный по позиции
+    # Нет разделителей — просто число
+    if "," not in s_clean and "." not in s_clean:
+        value = float(s_clean)
+        if not is_positive and not is_negative:
+            is_negative = True
+        return -value if is_negative else value
+
+    # Оба разделителя: "." и ","
     if "." in s_clean and "," in s_clean:
+        # самый правый — десятичный знак
         if s_clean.rfind(",") > s_clean.rfind("."):
-            # 1.234,56 → запятая = десятичная
+            # 1.234,56 → запятая = десятичный
             s_clean = s_clean.replace(".", "")
             s_clean = s_clean.replace(",", ".")
         else:
-            # 1,234.56 → точка = десятичная
+            # 1,234.56 → точка = десятичный
             s_clean = s_clean.replace(",", "")
     else:
-        # только запятая
-        if "," in s_clean and "." not in s_clean:
-            s_clean = s_clean.replace(".", "")
-            s_clean = s_clean.replace(",", ".")
-        else:
-            # только точки
-            if "." in s_clean and "," not in s_clean:
-                s_clean = s_clean.replace(",", "")
-                # точка = десятичная
+        # Один разделитель:
+        # если справа 1 или 2 цифры → десятичный
+        if "," in s_clean:
+            pos = s_clean.rfind(",")
+            if len(s_clean) - pos - 1 in (1, 2):
+                s_clean = s_clean.replace(".", "")
+                s_clean = s_clean.replace(",", ".")
             else:
-                # вообще нет разделителей → целое
-                pass
+                s_clean = s_clean.replace(",", "")
+        elif "." in s_clean:
+            pos = s_clean.rfind(".")
+            if len(s_clean) - pos - 1 in (1, 2):
+                s_clean = s_clean.replace(",", "")
+            else:
+                s_clean = s_clean.replace(".", "")
 
     value = float(s_clean)
 
-    # правило "без знака → расход"
-    if not is_negative and not is_positive:
+    # число без знака → расход
+    if not is_positive and not is_negative:
         is_negative = True
 
     return -value if is_negative else value
+
+
+def split_amount_and_note(text: str):
+    """
+    Возвращает:
+        amount (float)
+        note (str)
+
+    Понимает:
+        "Обед200вчера"        → -200, "обед вчера"
+        "Нашёл +1 780,678 бонус" → +1780.678, "нашёл бонус"
+        "Хлеб 456"            → -456, "хлеб"
+        "1.5 сон"             → -1.5, "сон"
+    """
+
+    m = num_re.search(text)
+    if not m:
+        raise ValueError("no number found")
+
+    raw_number = m.group(0)
+
+    amount = parse_amount(raw_number)
+
+    # Описание = весь текст без числа
+    note = text.replace(raw_number, " ").strip()
+    note = re.sub(r"\s+", " ", note).lower()
+
+    return amount, note
 
 # ==========================================================
 # SECTION 7 — Google Drive helpers
@@ -2035,42 +2081,47 @@ def handle_text(msg):
         # ADD
         # ------------------------------
         if wait and wait.get("type") == "add":
-            try:
-                parts = text.split(" ", 1)
-                amount = parse_amount(parts[0])
-                note = parts[1] if len(parts) > 1 else ""
-            except:
-                bot.send_message(chat_id, "❌ Ошибка формата. Пример: +500 Обед")
-                return
-
-            add_record_to_chat(chat_id, amount, note, msg.from_user.id)
+            lines = text.split("\n")
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    amount, note = split_amount_and_note(line)
+                except Exception:
+                   bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
+                    continue
+                add_record_to_chat(chat_id, amount, note, msg.from_user.id)
             store["edit_wait"] = None
             save_data(data)
-
-            day_key = wait["day_key"]
+            day_key = wait.get("day_key")
             txt, _ = render_day_window(chat_id, day_key)
             kb = build_main_keyboard(day_key, chat_id)
             bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
             return
-
+    
         # ------------------------------
         # EDIT
         # ------------------------------
+        # ---------------------------------------------------
+        # Редактирование записи
+        # ---------------------------------------------------
         if wait and wait.get("type") == "edit":
-            rid = wait["rid"]
+
+            rid = wait.get("rid")
+
             try:
-                parts = text.split(" ", 1)
-                amount = parse_amount(parts[0])
-                note = parts[1] if len(parts) > 1 else ""
-            except:
-                bot.send_message(chat_id, "❌ Ошибка формата. Пример: -1200 Такси")
+                amount, note = split_amount_and_note(text)
+            except Exception:
+                bot.send_message(chat_id, f"❌ Ошибка суммы: {text}")
                 return
 
             update_record_in_chat(chat_id, rid, amount, note)
+
             store["edit_wait"] = None
             save_data(data)
 
-            day_key = wait["day_key"]
+            day_key = wait.get("day_key")
             txt, _ = render_day_window(chat_id, day_key)
             kb = build_main_keyboard(day_key, chat_id)
             bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
