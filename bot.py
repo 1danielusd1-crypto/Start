@@ -2090,7 +2090,7 @@ def handle_text(msg):
                     amount, note = split_amount_and_note(line)
                 except Exception:
                    bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
-                    continue
+                   continue
                 add_record_to_chat(chat_id, amount, note, msg.from_user.id)
             store["edit_wait"] = None
             save_data(data)
