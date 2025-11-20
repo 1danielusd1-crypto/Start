@@ -320,8 +320,15 @@ def fmt_num(x: int) -> str:
 
 
 # Регулярка ловит числа со знаками, разделителями, пробелами
-num_re = re.compile(r'[+\-]?\s*\d(?:[\d\s\._\'",]*\d)?')
-
+num_re = re.compile(
+    r"""
+    [+\-–]?              # знак
+    \s*                  # пробелы
+    \d                   # старт цифры
+    (?:[\d\s\.,_'’]*\d)? # тело числа
+    """,
+    re.VERBOSE
+)
 
 def parse_amount(text: str) -> int:
     """
