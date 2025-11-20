@@ -1,4 +1,4 @@
-# Code_022.2-FINAL (2182)
+# Code_022.3-FINAL (?)
 #  • Full finance UI: day window, edit menu, /prev /next /view, 31-day calendar, reports
 #  • Per-chat storage: data_<chat_id>.json, data_<chat_id>.csv, csv_meta_<chat_id>.json
 #  • Backup & restore via Google Drive + backup Telegram channel
@@ -60,7 +60,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_022.2 final"
+VERSION = "Code_022.3 final"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -309,7 +309,7 @@ def save_chat_json(chat_id: int):
         log_error(f"save_chat_json({chat_id}): {e}")
 #🟣🟣🟣🟣🟣🟣🟣🟣🟣
 # ==========================================================
-# SECTION 6 — Number formatting & parsing
+# SECTION 6 — Number formatting & parsing (версия из код-010)
 # ==========================================================
 
 def fmt_num(x: int) -> str:
@@ -319,91 +319,80 @@ def fmt_num(x: int) -> str:
     return f"{x:,}".replace(",", " ")
 
 
-# Регулярка ловит числа со знаками, разделителями, пробелами
-num_re = re.compile(
-    r"""
-    [+\-–]?              # знак
-    \s*                  # пробелы
-    \d                   # старт цифры
-    (?:[\d\s\.,_'’]*\d)? # тело числа
-    """,
-    re.VERBOSE
-)
+# Регулярка для нахождения числа, даже если оно внутри текста:
+#   "тебе500", "500тебе", "кушали+1200мясо"
+num_re = re.compile(r"[+\-–]?\s*\d(?:[\d\s\.,_'’]*\d)?")
 
 def parse_amount(text: str) -> int:
     """
     Универсальный парсер суммы.
-    
+
     Поддерживает:
         1.200
         1,200
         1 200
         1.200,50
         1,200.50
-        1200.75
-        1200
         +200
         -200
         –200
-    
-    Принцип:
-        - выделяем число
-        - убираем разделители тысяч
-        - определяем где дробная часть
-        - дробную часть отбрасываем
-        - возвращаем int
-    
-    Гарантия:
-        Всегда возвращает целое число С УЧЁТОМ ЗНАКА.
-    """
-    s = text.strip()
+        1200abc
+        abc1200
+        abc1200def
 
-    # Ищем первое число в строке
+    Принцип:
+        • ищем первое число — даже внутри слова
+        • убираем разделители тысяч
+        • определяем десятичный разделитель
+        • приводим к float
+        • отбрасываем дробную часть
+        • сохраняем знак
+    """
+
+    s = (text or "").strip()
+
     m = num_re.search(s)
     if not m:
         raise ValueError("no number found")
 
-    s = m.group(0).strip()
+    num = m.group(0).strip()
 
-    # Знак
-    negative = s.startswith("-") or s.startswith("–")
-    s = s.lstrip("+-–").strip()
+    # определяем знак
+    negative = num.startswith("-") or num.startswith("–")
+    num = num.lstrip("+-–").strip()
 
-    # Убираем пробелы/мусор
-    s = s.replace(" ", "").replace("'", "").replace("_", "")
+    # убираем мусор
+    num = num.replace(" ", "").replace("_", "").replace("’", "").replace("'", "")
 
-    # Дальше логика определения десятичной части
-    if "," in s and "." in s:
-        # если запятая правее точки → запятая = десятичный разделитель
-        if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "")
-            s = s.replace(",", ".")
+    # смешанные форматы
+    # если есть и точка и запятая
+    if "." in num and "," in num:
+        if num.rfind(",") > num.rfind("."):
+            # 1.234,50 → десятичная = запятая
+            num = num.replace(".", "")
+            num = num.replace(",", ".")
         else:
-            # точка = десятичный разделитель, запятые = тысячные
-            s = s.replace(",", "")
-    elif "," in s and "." not in s:
-        # Один разделитель → считаем запятую десятичной
-        s = s.replace(".", "")
-        s = s.replace(",", ".")
+            # 1,234.50 → десятичная = точка
+            num = num.replace(",", "")
     else:
-        # Только точки — они могут быть и тысячными, и десятичной
-        # По умолчанию делаем: все точки убираем (работаем в int-режиме)
-        s = s.replace(",", "")
-        # Если точка одна и только одна — можно по желанию:
-        # но для твоего ТЗ дробные не нужны, поэтому:
-        # убираем точки полностью
-        s = s.replace(".", "")
+        # только запятая
+        if "," in num and "." not in num:
+            num = num.replace(".", "")
+            num = num.replace(",", ".")
+        else:
+            # только точки — считаем разделителями тысяч
+            num = num.replace(",", "")
+            num = num.replace(".", "")
 
-    # Превращаем в float -> int (отбрасываем дробную часть)
     try:
-        value = float(s)
-    except Exception:
+        val = float(num)
+    except:
         raise ValueError("bad number format")
 
     if negative:
-        value = -value
+        val = -val
 
-    return int(value)
+    return int(val)
 
 # ==========================================================
 # SECTION 7 — Google Drive helpers
@@ -898,28 +887,51 @@ def forward_media_group_anon(source_chat_id: int, messages: list, targets: list[
             log_error(f"forward_media_group_anon to {dst}: {e}")
 
 # ==========================================================
-# SECTION 11 — Базовые функции работы с окном дня (render)
+# SECTION 11 — Day window renderer (версия код-010)
 # ==========================================================
 
 def render_day_window(chat_id: int, day_key: str):
-    """Формирует текст окна дня и сумму за день."""
+    """
+    Рендер окна дня:
+        • заголовок
+        • каждая запись с short_id
+        • сортировка по time
+        • итог за день
+    """
     store = get_chat_store(chat_id)
-    day_recs = store.get("daily_records", {}).get(day_key, [])
+    recs = store.get("daily_records", {}).get(day_key, [])
+    lines = []
 
-    lines = [f"📅 <b>{day_key}</b>"]
+    lines.append(f"📅 <b>{day_key}</b>")
+    lines.append("")
+
     total = 0
 
-    for r in day_recs:
+    # сортируем по timestamp
+    recs_sorted = sorted(recs, key=lambda x: x.get("timestamp"))
+
+    for r in recs_sorted:
         amt = r["amount"]
         total += amt
         sign = "➕" if amt >= 0 else "➖"
-        lines.append(f"{sign} {fmt_num(amt)} — {html.escape(r.get('note', ''))}")
+
+        note = html.escape(r.get("note", ""))
+        sid = r.get("short_id", f"R{r['id']}")
+
+        ts = r.get("timestamp", "")
+        ts_show = ts[11:16] if ts else ""
+
+        lines.append(f"{sid} — {sign} {fmt_num(amt)}  ({ts_show})")
+        if note:
+            lines.append(f"      <i>{note}</i>")
+
+    if not recs_sorted:
+        lines.append("Нет записей за этот день.")
 
     lines.append("")
-    lines.append(f"💰 Итого за день: {fmt_num(total)}")
+    lines.append(f"💰 <b>Итого: {fmt_num(total)}</b>")
 
-    text = "\n".join(lines)
-    return text, total
+    return "\n".join(lines), total
 
 #💠💠💠💠💠💠💠💠
 # ==========================================================
@@ -1113,16 +1125,12 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
 
     return kb
 
+
 # ==========================================================
-# SECTION 13 — Добавление, изменение, удаление записей
+# SECTION 13 — Add / Update / Delete (версия код-010)
 # ==========================================================
 
 def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
-    """
-    Добавляет финансовую запись в чат:
-    обновляет records, daily_records, CSV, JSON, баланс,
-    делает бэкап (Drive+канал).
-    """
     store = get_chat_store(chat_id)
 
     rid = store.get("next_id", 1)
@@ -1135,15 +1143,15 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
         "owner": owner,
     }
 
-    # глобальный список (для общего CSV)
+    # глобальное хранилище
     data.setdefault("records", []).append(rec)
 
     # per-chat
     store.setdefault("records", []).append(rec)
     store.setdefault("daily_records", {}).setdefault(today_key(), []).append(rec)
 
-    store["balance"] = store.get("balance", 0) + amount
-    data["overall_balance"] = data.get("overall_balance", 0) + amount
+    store["balance"] = sum(x["amount"] for x in store["records"])
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
     store["next_id"] = rid + 1
 
     save_data(data)
@@ -1153,13 +1161,11 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
     send_backup_to_channel(chat_id)
 
 
-def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str, user=None):
-    """
-    Обновляет существующую запись, пересчитывает баланс, CSV и бэкап.
-    """
+def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str):
     store = get_chat_store(chat_id)
     found = None
 
+    # обновляем в store.records
     for r in store.get("records", []):
         if r["id"] == rid:
             r["amount"] = new_amount
@@ -1170,82 +1176,53 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     if not found:
         return
 
-    # обновляем внутри daily_records
-    for day_recs in store.get("daily_records", {}).values():
-        for r in day_recs:
+    # обновляем в daily_records
+    for day, arr in store.get("daily_records", {}).items():
+        for r in arr:
             if r["id"] == rid:
                 r.update(found)
 
-    store["balance"] = sum(x["amount"] for x in store.get("records", []))
+    # обновляем баланс чата
+    store["balance"] = sum(x["amount"] for x in store["records"])
 
-    # глобальный список
-    data["records"] = [
-        x if x["id"] != rid else found
-        for x in data.get("records", [])
-    ]
-    data["overall_balance"] = sum(x["amount"] for x in data.get("records", []))
+    # обновляем глобальный список
+    data["records"] = [x if x["id"] != rid else found for x in data["records"]]
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
-
     send_backup_to_channel(chat_id)
 
 
-def delete_record_in_chat(chat_id: int, rid: int, user=None):
-    """
-    Удаляет запись и пересчитывает баланс и CSV.
-    """
+def delete_record_in_chat(chat_id: int, rid: int):
     store = get_chat_store(chat_id)
 
-    before = len(store.get("records", []))
-    store["records"] = [r for r in store.get("records", []) if r["id"] != rid]
+    # удаляем из records
+    store["records"] = [x for x in store["records"] if x["id"] != rid]
 
-    # чистим daily_records
-    for dk, arr in list(store.get("daily_records", {}).items()):
-        new_arr = [r for r in arr if r["id"] != rid]
-        if new_arr:
-            store["daily_records"][dk] = new_arr
+    # удаляем из daily_records
+    for day, arr in list(store.get("daily_records", {}).items()):
+        arr2 = [x for x in arr if x["id"] != rid]
+        if arr2:
+            store["daily_records"][day] = arr2
         else:
-            del store["daily_records"][dk]
+            del store["daily_records"][day]
 
-    after = len(store.get("records", []))
-    if before == after:
-        return
+    # обновляем баланс
+    store["balance"] = sum(x["amount"] for x in store["records"])
 
-    store["balance"] = sum(x["amount"] for x in store.get("records", []))
-
-    data["records"] = [x for x in data.get("records", []) if x["id"] != rid]
-    data["overall_balance"] = sum(x["amount"] for x in data.get("records", []))
+    # глобально
+    data["records"] = [x for x in data["records"] if x["id"] != rid]
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
-
     send_backup_to_channel(chat_id)
-
-
-def reset_chat_data(chat_id: int):
-    """
-    Полное обнуление данных одного чата (JSON/CSV).
-    """
-    chats = data.setdefault("chats", {})
-    if str(chat_id) in chats:
-        del chats[str(chat_id)]
-
-    for p in (chat_json_file(chat_id), chat_csv_file(chat_id), chat_meta_file(chat_id)):
-        try:
-            os.remove(p)
-        except FileNotFoundError:
-            pass
-
-    save_data(data)
-    export_global_csv(data)
-    send_backup_to_channel(chat_id)
-
 
 # ==========================================================
-# SECTION 14 — Активное окно (active window tracking)
+# SECTION 14 — Active window system (версия код-010)
 # ==========================================================
 
 def get_or_create_active_windows(chat_id: int) -> dict:
@@ -1253,14 +1230,56 @@ def get_or_create_active_windows(chat_id: int) -> dict:
 
 
 def set_active_window_id(chat_id: int, day_key: str, message_id: int):
-    active = get_or_create_active_windows(chat_id)
-    active[day_key] = message_id
+    aw = get_or_create_active_windows(chat_id)
+    aw[day_key] = message_id
     save_data(data)
 
 
 def get_active_window_id(chat_id: int, day_key: str):
-    return get_or_create_active_windows(chat_id).get(day_key)
+    aw = get_or_create_active_windows(chat_id)
+    return aw.get(day_key)
 
+
+def delete_active_window_if_exists(chat_id: int, day_key: str):
+    mid = get_active_window_id(chat_id, day_key)
+    if not mid:
+        return
+    try:
+        bot.delete_message(chat_id, mid)
+    except:
+        pass
+
+    aw = get_or_create_active_windows(chat_id)
+    if day_key in aw:
+        del aw[day_key]
+    save_data(data)
+
+
+def update_or_send_day_window(chat_id: int, day_key: str):
+    """
+    Если окно дня существует — обновляем через edit.
+    Если нет — создаём.
+    """
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+
+    mid = get_active_window_id(chat_id, day_key)
+    if mid:
+        try:
+            bot.edit_message_text(
+                txt,
+                chat_id=chat_id,
+                message_id=mid,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            return
+        except:
+            # сообщение удалено → создаём новое
+            pass
+
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
 
 # ==========================================================
 # SECTION 15 — Управление финансовым режимом
@@ -1428,6 +1447,40 @@ def on_callback(call):
             return
 
         # -------------------------------------------------------
+        # ℹ️  Инфо
+        # -------------------------------------------------------
+        if cmd == "info":
+
+            # подтвердить клик (важно для Telegram)
+            try:
+                bot.answer_callback_query(call.id)
+            except:
+                pass
+
+            info_text = (
+                f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
+                "Команды:\n"
+                "/поехали — включить финансовый режим в чате\n"
+                "/start — открыть окно дня\n"
+                "/view YYYY-MM-DD — открыть день\n"
+                "/prev /next — навигация\n"
+                "/balance — баланс\n"
+                "/report — отчёт\n"
+                "/csv — экспорт CSV (Drive+канал)\n"
+                "/json — выгрузка JSON\n"
+                "/reset — обнулить данные\n"
+                "/ping — проверка\n"
+                "/help — помощь\n"
+                "/backup_gdrive_on / off — включить/выключить GDrive\n"
+                "/backup_channel_on / off — включить/выключить бэкап в канал\n"
+                "/stopforward — отключить пересылку\n"
+            )
+
+            # главное: не редактировать окно, а послать новое сообщение
+            bot.send_message(chat_id, info_text)
+            return
+
+        # -------------------------------------------------------
         # 6) Меню редактирования
         # -------------------------------------------------------
         if cmd == "edit_menu":
@@ -1470,7 +1523,15 @@ def on_callback(call):
             save_data(data)
             bot.send_message(chat_id, "Введите сумму и комментарий: +500 Пример")
             return
-
+        txt, _ = render_day_window(chat_id, day_key)
+        kb = build_main_keyboard(day_key, chat_id)
+        bot.edit_message_text(
+            txt,
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
         # -------------------------------------------------------
         # 9) Список записей
         # -------------------------------------------------------
@@ -1950,96 +2011,71 @@ def update_chat_info_from_message(msg):
 
     save_chat_json(chat_id)
 
-
 @bot.message_handler(content_types=["text"])
 def handle_text(msg):
-    """
-    Обработка текстовых сообщений:
-        1) update_chat_info — обязательно
-        2) Анонимная пересылка между чатами
-        3) Добавление финансовых записей
-        4) Редактирование финансовых записей
-        5) Reset: подтверждение "ДА"
-    """
     try:
         chat_id = msg.chat.id
         text = (msg.text or "").strip()
 
-        # --------------------------
-        # 1) Обновляем данные о чате
-        # --------------------------
+        # 1) обновляем info и known_chats
         update_chat_info_from_message(msg)
 
-        store = get_chat_store(chat_id)
-
-        # --------------------------
-        # 2) Пересылка текста (анонимная)
-        # --------------------------
+        # 2) пересылка
         targets = resolve_forward_targets(chat_id)
         if targets:
             forward_text_anon(chat_id, msg, targets)
 
-        # --------------------------
-        # 3) Финансовые операции
-        # --------------------------
+        store = get_chat_store(chat_id)
         wait = store.get("edit_wait")
-        nums = num_re.findall(text)
-#📟📟📟📟📟📟
-        if len(nums) > 1:
-           # несколько чисел → создаём несколько записей
-           for token in nums:
-               amount = parse_amount(token)
-               add_record_to_chat(chat_id, amount, "", msg.from_user.id)
 
-           update_or_send_day_window(chat_id, today_key())
-           return
-#📟📟📟📟📟📟📟
-        # Добавление записи
+        # ------------------------------
+        # ADD
+        # ------------------------------
         if wait and wait.get("type") == "add":
             try:
                 parts = text.split(" ", 1)
                 amount = parse_amount(parts[0])
                 note = parts[1] if len(parts) > 1 else ""
-            except Exception:
+            except:
                 bot.send_message(chat_id, "❌ Ошибка формата. Пример: +500 Обед")
                 return
 
             add_record_to_chat(chat_id, amount, note, msg.from_user.id)
-
             store["edit_wait"] = None
             save_data(data)
 
-            day_key = wait.get("day_key")
+            day_key = wait["day_key"]
             txt, _ = render_day_window(chat_id, day_key)
             kb = build_main_keyboard(day_key, chat_id)
             bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
             return
 
-        # Редактирование записи
+        # ------------------------------
+        # EDIT
+        # ------------------------------
         if wait and wait.get("type") == "edit":
-            rid = wait.get("rid")
+            rid = wait["rid"]
             try:
                 parts = text.split(" ", 1)
                 amount = parse_amount(parts[0])
                 note = parts[1] if len(parts) > 1 else ""
-            except Exception:
+            except:
                 bot.send_message(chat_id, "❌ Ошибка формата. Пример: -1200 Такси")
                 return
 
             update_record_in_chat(chat_id, rid, amount, note)
-
             store["edit_wait"] = None
             save_data(data)
 
-            day_key = wait.get("day_key")
+            day_key = wait["day_key"]
             txt, _ = render_day_window(chat_id, day_key)
             kb = build_main_keyboard(day_key, chat_id)
             bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
             return
 
-        # --------------------------
-        # 4) Подтверждение /reset
-        # --------------------------
+        # ------------------------------
+        # RESET CONFIRMATION
+        # ------------------------------
         if text.upper() == "ДА":
             reset_chat_data(chat_id)
             bot.send_message(chat_id, "🔄 Данные чата обнулены.")
@@ -2047,10 +2083,13 @@ def handle_text(msg):
 
     except Exception as e:
         log_error(f"handle_text: {e}")
+
+
 #🟣🟣🟣🟣🟣🟣
 # ==========================================================
 # SECTION 18.2 — Media forwarding (анонимно + media_group)
 # ==========================================================
+
 @bot.message_handler(
     content_types=[
         "photo", "audio", "document", "video", "voice",
@@ -2066,6 +2105,7 @@ def handle_media_forward(msg):
         • пересылка по новым правилам ➡️ ↔️ ⬅️
         • обновление known_chats
     """
+
     try:
         chat_id = msg.chat.id
 
