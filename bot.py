@@ -969,10 +969,10 @@ def render_day_window(chat_id: int, day_key: str):
 
         ts = r.get("timestamp", "")
         ts_show = ts[11:16] if ts else ""
-
-        lines.append(f"{sid} — {sign} {fmt_num(amt)}  ({ts_show})")
-        if note:
-            lines.append(f"      <i>{note}</i>")
+        lines.append(f"{sid} {sign}{fmt_num(amt)} <i>{note}</i>")
+        #lines.append(f"{sid} — {sign} {fmt_num(amt)}  ({ts_show})")
+        #if note:
+            #lines.append(f"      <i>{note}</i>")
 
     if not recs_sorted:
         lines.append("Нет записей за этот день.")
