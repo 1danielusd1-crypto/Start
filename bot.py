@@ -1983,7 +1983,17 @@ def handle_text(msg):
         # 3) Финансовые операции
         # --------------------------
         wait = store.get("edit_wait")
+        nums = num_re.findall(text)
+#📟📟📟📟📟📟
+        if len(nums) > 1:
+           # несколько чисел → создаём несколько записей
+           for token in nums:
+               amount = parse_amount(token)
+               add_record_to_chat(chat_id, amount, "", msg.from_user.id)
 
+           update_or_send_day_window(chat_id, today_key())
+           return
+#📟📟📟📟📟📟📟
         # Добавление записи
         if wait and wait.get("type") == "add":
             try:
@@ -2041,7 +2051,6 @@ def handle_text(msg):
 # ==========================================================
 # SECTION 18.2 — Media forwarding (анонимно + media_group)
 # ==========================================================
-
 @bot.message_handler(
     content_types=[
         "photo", "audio", "document", "video", "voice",
@@ -2057,7 +2066,6 @@ def handle_media_forward(msg):
         • пересылка по новым правилам ➡️ ↔️ ⬅️
         • обновление known_chats
     """
-
     try:
         chat_id = msg.chat.id
 
