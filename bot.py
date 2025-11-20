@@ -1,4 +1,5 @@
-# Code_022.3-FINAL (?)
+# Code_022.4-FINAL
+# •пересылка всех типов сообщений
 #  •вывод значений расширенный
 # ==========================================================
 
@@ -55,7 +56,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_022.3 final"
+VERSION = "Code_022.4 final"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -2203,7 +2204,55 @@ def handle_media_forward(msg):
 
     except Exception as e:
         log_error(f"handle_media_forward error: {e}")
+#🔄🔄🔄🔄🔄🔄🔄🔄
+# ==========================================================
+# SECTION 18.3 — Forwarding of location / contact / poll / venue
+# ==========================================================
 
+@bot.message_handler(
+    content_types=["location", "contact", "poll", "venue"]
+)
+def handle_special_forward(msg):
+    """
+    Обработка специальных типов сообщений:
+        • Локация
+        • Контакт
+        • Опросы (Poll)
+        • Места (Venue)
+    Пересылка анонимная, через copy_message.
+    С тонкой защитой от петель (бот не пересылает свои же копии).
+    """
+
+    try:
+        chat_id = msg.chat.id
+
+        # 1) Обновляем сведения о чате (important для меню пересылки)
+        update_chat_info_from_message(msg)
+
+        # 2) Защита от петель: не пересылаем сообщения, созданные ботом
+        try:
+            BOT_ID = bot.get_me().id
+        except:
+            BOT_ID = None
+
+        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
+            return
+
+        # 3) Получаем направления пересылки
+        targets = resolve_forward_targets(chat_id)
+        if not targets:
+            return
+
+        # 4) Пересылаем анонимно через copy_message
+        for dst, mode in targets:
+            try:
+                bot.copy_message(dst, chat_id, msg.message_id)
+            except Exception as e:
+                log_error(f"handle_special_forward to {dst}: {e}")
+
+    except Exception as e:
+        log_error(f"handle_special_forward error: {e}")
+        
 # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
