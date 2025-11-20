@@ -2259,75 +2259,114 @@ def handle_special_forward(msg):
         log_error(f"handle_special_forward error: {e}")
         
 # ==========================================================
-# SECTION 18.4 — Restore from uploaded JSON/CSV
+# SECTION 18.4 — Restore from uploaded JSON/CSV (FULL WORKING VERSION)
 # ==========================================================
 
 @bot.message_handler(content_types=["document"])
 def handle_restore_files(msg):
-    """
-    Пользователь может прислать:
-        • data.json
-        • data_<chat>.json
-        • data_<chat>.csv
-        • csv_meta.json
-
-    И бот автоматически восстановит данные.
-    """
-
     chat_id = msg.chat.id
     file = msg.document
-
     fname = file.file_name.lower()
 
     # принимаем только JSON/CSV
     if not (fname.endswith(".json") or fname.endswith(".csv")):
         return
 
-    # загружаем файл во временный путь
+    # скачать файл
     file_info = bot.get_file(file.file_id)
-    downloaded = bot.download_file(file_info.file_path)
+    raw = bot.download_file(file_info.file_path)
     tmp_path = f"restore_{chat_id}_{fname}"
 
     with open(tmp_path, "wb") as f:
-        f.write(downloaded)
+        f.write(raw)
 
-    # определяем тип файла
+    # -------------------------------
+    # ВОССТАНОВЛЕНИЕ ГЛОБАЛЬНОГО data.json
+    # -------------------------------
     if fname == "data.json":
-        # глобальный JSON
         try:
             os.replace(tmp_path, "data.json")
             global data
             data = load_data()
-            bot.send_message(chat_id, "🟢 data.json восстановлен.")
+            bot.send_message(chat_id, "🟢 data.json восстановлен и загружен.")
         except Exception as e:
             bot.send_message(chat_id, f"❌ Ошибка восстановления data.json: {e}")
+        return
 
-    elif fname.startswith("data_") and fname.endswith(".json"):
-        # пер-чатовый JSON
-        try:
-            os.replace(tmp_path, fname)
-            bot.send_message(chat_id, f"🟢 JSON чата восстановлен: {fname}")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка восстановления: {e}")
-
-    elif fname.startswith("data_") and fname.endswith(".csv"):
-        # пер-чатовый CSV
-        try:
-            os.replace(tmp_path, fname)
-            bot.send_message(chat_id, f"🟢 CSV чата восстановлен: {fname}")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка восстановления: {e}")
-
-    elif fname == "csv_meta.json":
+    # -------------------------------
+    # ВОССТАНОВЛЕНИЕ csv_meta.json
+    # -------------------------------
+    if fname == "csv_meta.json":
         try:
             os.replace(tmp_path, "csv_meta.json")
             bot.send_message(chat_id, "🟢 csv_meta.json восстановлен.")
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка восстановления csv_meta.json: {e}")
+            bot.send_message(chat_id, f"❌ Ошибка: {e}")
+        return
 
-    else:
-        bot.send_message(chat_id, f"⚠️ Файл сохранён, но я не знаю, как его применить: {fname}")
-        
+    # -------------------------------
+    # ВОССТАНОВЛЕНИЕ per-chat JSON
+    # data_<chat_id>.json
+    # -------------------------------
+    if fname.startswith("data_") and fname.endswith(".json"):
+
+        try:
+            target_chat_id = int(fname.replace("data_", "").replace(".json", ""))
+        except:
+            bot.send_message(chat_id, "❌ Не могу определить chat_id из имени файла.")
+            return
+
+        try:
+            # заменяем файл
+            os.replace(tmp_path, fname)
+
+            # загружаем новый store
+            store = _load_json(fname, {})
+            if not store:
+                bot.send_message(chat_id, "❌ Файл пустой или повреждён.")
+                return
+
+            # пересчёт баланса
+            recs = store.get("records", [])
+            store["balance"] = sum(r.get("amount", 0) for r in recs)
+
+            # записываем в глобальную структуру
+            data.setdefault("chats", {})[str(target_chat_id)] = store
+
+            # включаем финансовый режим
+            finance_active_chats.add(target_chat_id)
+
+            # сохраняем все файлы
+            save_data(data)
+            save_chat_json(target_chat_id)
+
+            # обновляем окно этого чата
+            update_or_send_day_window(target_chat_id, today_key())
+
+            bot.send_message(
+                chat_id,
+                f"🟢 Чат {target_chat_id} полностью восстановлен.\n"
+                f"Записей: {len(recs)}\n"
+                f"Баланс: {store['balance']}"
+            )
+
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка восстановления: {e}")
+
+        return
+
+    # -------------------------------
+    # ВОССТАНОВЛЕНИЕ per-chat CSV
+    # -------------------------------
+    if fname.startswith("data_") and fname.endswith(".csv"):
+        try:
+            os.replace(tmp_path, fname)
+            bot.send_message(chat_id, f"🟢 CSV чата восстановлен: {fname}")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка: {e}")
+        return
+
+    bot.send_message(chat_id, f"⚠️ Файл получен, но формат не поддерживается: {fname}")
 # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
