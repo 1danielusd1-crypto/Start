@@ -2148,7 +2148,7 @@ def handle_text(msg):
 
 @bot.message_handler(
     content_types=[
-        "photo", "audio", "document", "video", "voice",
+        "photo", "audio", "video", "voice",
         "video_note", "sticker", "animation"
     ]
 )
