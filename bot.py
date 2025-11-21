@@ -2213,7 +2213,7 @@ def handle_media_forward(msg):
         #if OWNER_ID and str(chat_id) == str(OWNER_ID):
             #return
             # 2) Защита от циклов:
-    # Если сообщение отправлено ботом (copy_message), его пересылать нельзя.
+        # анти-петля — не пересылаем сообщения, которые бот сам скопировал
         try:
             BOT_ID = bot.get_me().id
         except:
@@ -2222,6 +2222,8 @@ def handle_media_forward(msg):
         if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
             return
 
+# Владелец МОЖЕТ пересылать медиа, НЕ блокируем
+# (никакого return здесь не должно быть)
         # 3) Получаем список направлений из ОТСЕКА 10
         targets = resolve_forward_targets(chat_id)
         if not targets:
