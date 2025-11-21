@@ -2280,25 +2280,33 @@ def handle_text(msg):
 )
 def handle_media_forward(msg):
     """
-    Пересылка ВСЕХ медиа:
-        • фото, видео, документы, GIF, аудио, голосовые
-        • альбомы (media_group)
-    НИКАКИХ конфликтов с restore — restore ловит ТОЛЬКО data.json/csv.
+    Пересылка ВСЕХ медиа и документов,
+    кроме restore-файлов (data.json / csv / per-chat data)
     """
 
     try:
         chat_id = msg.chat.id
 
+        # --- RESTORE-FILTER ---
+        if msg.content_type == "document":
+            fname = msg.document.file_name.lower()
+
+            is_restore_file = (
+                fname == "data.json"
+                or fname == "csv_meta.json"
+                or (fname.startswith("data_") and fname.endswith(".json"))
+                or (fname.startswith("data_") and fname.endswith(".csv"))
+            )
+
+            if is_restore_file:
+                return  # пропускаем для handle_restore_files
+
         # 1) Обновляем known_chats
         update_chat_info_from_message(msg)
 
-        # 2) Антипетля — не пересылаем сообщения, созданные ботом
-        try:
-            BOT_ID = bot.get_me().id
-        except:
-            BOT_ID = None
-
-        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
+        # 2) Антипетля
+        BOT_ID = bot.get_me().id
+        if msg.from_user and msg.from_user.id == BOT_ID:
             return
 
         # 3) Цели пересылки
@@ -2306,7 +2314,7 @@ def handle_media_forward(msg):
         if not targets:
             return
 
-        # 4) Альбомы (media_group)
+        # 4) Альбомы
         group_msgs = collect_media_group(chat_id, msg)
         if not group_msgs:
             return
@@ -2324,7 +2332,7 @@ def handle_media_forward(msg):
 
     except Exception as e:
         log_error(f"handle_media_forward error: {e}")
-        
+                
 #🔄🔄🔄🔄🔄🔄🔄🔄
 # ==========================================================
 # SECTION 18.3 — Forwarding of location / contact / poll / venue
