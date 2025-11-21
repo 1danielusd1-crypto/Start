@@ -71,6 +71,13 @@ backup_flags = {
     "drive": True,
     "channel": True,
 }
+# ==========================================================
+# RESTORE MODE FLAG
+# ==========================================================
+
+# В этом режиме пересылка документов полностью отключается,
+# и бот ждёт файл data.json или data_<chat>.json для восстановления.
+restore_mode = False
 
 # logging
 logging.basicConfig(
@@ -1770,7 +1777,32 @@ def cmd_help(msg):
     )
     send_info(chat_id, help_text)
 
+# ==========================================================
+# RESTORE MODE COMMANDS
+# ==========================================================
 
+@bot.message_handler(commands=["restore"])
+def cmd_restore(msg):
+    global restore_mode
+    restore_mode = True
+    bot.send_message(
+        msg.chat.id,
+        "📥 Режим восстановления включён.\n"
+        "Теперь отправьте файл:\n"
+        "• data.json\n"
+        "• data_<chat_id>.json\n"
+        "• csv_meta.json\n"
+        "• data_<chat>.csv\n\n"
+        "Пересылка документов временно отключена."
+    )
+
+
+@bot.message_handler(commands=["restore_off"])
+def cmd_restore_off(msg):
+    global restore_mode
+    restore_mode = False
+    bot.send_message(msg.chat.id, "🔒 Режим восстановления выключен.")
+    
 # -------------------- /ping --------------------
 @bot.message_handler(commands=["ping"])
 def cmd_ping(msg):
@@ -2145,6 +2177,9 @@ def handle_text(msg):
 # ==========================================================
 # SECTION 18.2 — Media forwarding (анонимно + media_group)
 # ==========================================================
+# ==========================================================
+# PATCH — restore_mode hook for media/document forwarding
+# ==========================================================
 
 @bot.message_handler(
     content_types=[
@@ -2153,88 +2188,18 @@ def handle_text(msg):
     ]
 )
 def handle_media_forward(msg):
-    """
-    Обработка любых медиа.
-    Поддержка:
-        • анонимная пересылка (через copy_message)
-        • альбомы (media_group) — собираем и отправляем единой группой
-        • пересылка по новым правилам ➡️ ↔️ ⬅️
-        • обновление known_chats
-    """
-
     try:
+        global restore_mode
         chat_id = msg.chat.id
 
-        # 1) Заполняем known_chats (важно для меню пересылки)
+        # 0) Если режим восстановления включён → НИЧЕГО НЕ ПЕРЕСЫЛАТЬ
+        if restore_mode and msg.content_type == "document":
+            return
+
+        # 1) Обновляем информацию о чате
         update_chat_info_from_message(msg)
 
-        # 2) Владелец не должен пересылать свои медиа автоматически
-        #    (чтобы не было циклов и спама)
-        #if OWNER_ID and str(chat_id) == str(OWNER_ID):
-            #return
-            # 2) Защита от циклов:
-    # Если сообщение отправлено ботом (copy_message), его пересылать нельзя.
-        try:
-            BOT_ID = bot.get_me().id
-        except:
-            BOT_ID = None
-
-        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
-            return
-
-        # 3) Получаем список направлений из ОТСЕКА 10
-        targets = resolve_forward_targets(chat_id)
-        if not targets:
-            return
-
-        # 4) Если это альбом — собираем все сообщения
-        group_msgs = collect_media_group(chat_id, msg)
-
-        # Если collect_media_group() вернул None — ждём пакет
-        if not group_msgs:
-            return
-
-        # 5) Если альбом состоит из более чем одного сообщения → отправляем как группу
-        if len(group_msgs) > 1:
-            forward_media_group_anon(chat_id, group_msgs, targets)
-            return
-
-        # 6) Обычное одиночное медиа
-        #    copy_message сохраняет file_id, убирает имя отправителя
-        for dst, mode in targets:
-            try:
-                bot.copy_message(dst, chat_id, msg.message_id)
-            except Exception as e:
-                log_error(f"handle_media_forward to {dst}: {e}")
-
-    except Exception as e:
-        log_error(f"handle_media_forward error: {e}")
-#🔄🔄🔄🔄🔄🔄🔄🔄
-# ==========================================================
-# SECTION 18.3 — Forwarding of location / contact / poll / venue
-# ==========================================================
-
-@bot.message_handler(
-    content_types=["location", "contact", "poll", "venue"]
-)
-def handle_special_forward(msg):
-    """
-    Обработка специальных типов сообщений:
-        • Локация
-        • Контакт
-        • Опросы (Poll)
-        • Места (Venue)
-    Пересылка анонимная, через copy_message.
-    С тонкой защитой от петель (бот не пересылает свои же копии).
-    """
-
-    try:
-        chat_id = msg.chat.id
-
-        # 1) Обновляем сведения о чате (important для меню пересылки)
-        update_chat_info_from_message(msg)
-
-        # 2) Защита от петель: не пересылаем сообщения, созданные ботом
+        # 2) Защита от циклов (бот не пересылает собственные сообщения)
         try:
             BOT_ID = bot.get_me().id
         except:
@@ -2248,7 +2213,61 @@ def handle_special_forward(msg):
         if not targets:
             return
 
-        # 4) Пересылаем анонимно через copy_message
+        # 4) Если это media_group (альбом) — собираем
+        group_msgs = collect_media_group(chat_id, msg)
+        if not group_msgs:
+            return
+
+        # 5) Если альбом
+        if len(group_msgs) > 1:
+            forward_media_group_anon(chat_id, group_msgs, targets)
+            return
+
+        # 6) Одиночное медиа
+        for dst, mode in targets:
+            try:
+                bot.copy_message(dst, chat_id, msg.message_id)
+            except Exception as e:
+                log_error(f"handle_media_forward to {dst}: {e}")
+
+    except Exception as e:
+        log_error(f"handle_media_forward error: {e}")
+
+        
+        
+        #🔄🔄🔄🔄🔄🔄🔄🔄
+# ==========================================================
+# SECTION 18.3 — Forwarding of location / contact / poll / venue
+# ==========================================================
+
+# ==========================================================
+# PATCH — block special-forward during restore_mode
+# ==========================================================
+
+@bot.message_handler(content_types=["location", "contact", "poll", "venue"])
+def handle_special_forward(msg):
+    global restore_mode
+
+    # Если режим восстановления включён → НИЧЕГО НЕ ДЕЛАТЬ
+    if restore_mode:
+        return
+
+    try:
+        chat_id = msg.chat.id
+        update_chat_info_from_message(msg)
+
+        try:
+            BOT_ID = bot.get_me().id
+        except:
+            BOT_ID = None
+
+        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
+            return
+
+        targets = resolve_forward_targets(chat_id)
+        if not targets:
+            return
+
         for dst, mode in targets:
             try:
                 bot.copy_message(dst, chat_id, msg.message_id)
@@ -2259,129 +2278,121 @@ def handle_special_forward(msg):
         log_error(f"handle_special_forward error: {e}")
         
 # ==========================================================
-# SECTION 18.4 — Restore from uploaded JSON/CSV (FULL WORKING VERSION)
+# SECTION 18.4 — RESTORE HANDLER (NEW, FULL)
 # ==========================================================
 
 @bot.message_handler(content_types=["document"])
 def handle_restore_files(msg):
+    global restore_mode
     chat_id = msg.chat.id
+
+    # Если режим восстановления не включён — ничего не делаем (чтобы не ломать пересылку)
+    if not restore_mode:
+        return
+
     file = msg.document
-    fname = file.file_name.lower()
+    fname = (file.file_name or "").lower()
 
     # принимаем только JSON/CSV
     if not (fname.endswith(".json") or fname.endswith(".csv")):
+        bot.send_message(chat_id, f"⚠️ Файл '{fname}' не является JSON/CSV.")
         return
 
-    # скачать файл
-    file_info = bot.get_file(file.file_id)
-    raw = bot.download_file(file_info.file_path)
+    # Скачать файл
+    try:
+        file_info = bot.get_file(file.file_id)
+        raw = bot.download_file(file_info.file_path)
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка скачивания файла: {e}")
+        return
+
     tmp_path = f"restore_{chat_id}_{fname}"
 
     with open(tmp_path, "wb") as f:
         f.write(raw)
 
-    # -------------------------------
-    # ВОССТАНОВЛЕНИЕ ГЛОБАЛЬНОГО data.json
-    # -------------------------------
+    # ---------------------------------------------
+    # 1) ГЛОБАЛЬНЫЙ data.json
+    # ---------------------------------------------
     if fname == "data.json":
         try:
             os.replace(tmp_path, "data.json")
             global data
             data = load_data()
-            bot.send_message(chat_id, "🟢 data.json восстановлен и загружен.")
+            restore_mode = False
+            bot.send_message(chat_id, "🟢 Глобальный data.json восстановлен!")
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка восстановления data.json: {e}")
+            bot.send_message(chat_id, f"❌ Ошибка: {e}")
         return
 
-    # -------------------------------
-    # ВОССТАНОВЛЕНИЕ csv_meta.json
-    # -------------------------------
+    # ---------------------------------------------
+    # 2) csv_meta.json
+    # ---------------------------------------------
     if fname == "csv_meta.json":
         try:
             os.replace(tmp_path, "csv_meta.json")
-            bot.send_message(chat_id, "🟢 csv_meta.json восстановлен.")
+            restore_mode = False
+            bot.send_message(chat_id, "🟢 csv_meta.json восстановлен!")
         except Exception as e:
             bot.send_message(chat_id, f"❌ Ошибка: {e}")
         return
 
-    # -------------------------------
-    # ВОССТАНОВЛЕНИЕ per-chat JSON
-    # data_<chat_id>.json
-    # -------------------------------
+    # ---------------------------------------------
+    # 3) per-chat JSON  data_<chat>.json
+    # ---------------------------------------------
     if fname.startswith("data_") and fname.endswith(".json"):
-
         try:
-            target_chat_id = int(fname.replace("data_", "").replace(".json", ""))
+            target = int(fname.replace("data_", "").replace(".json", ""))
         except:
-            bot.send_message(chat_id, "❌ Не могу определить chat_id из имени файла.")
+            bot.send_message(chat_id, "❌ Невозможно определить chat_id из имени файла.")
             return
 
         try:
-            # заменяем файл
             os.replace(tmp_path, fname)
-
-            # загружаем новый store
             store = _load_json(fname, {})
             if not store:
-                bot.send_message(chat_id, "❌ Файл пустой или повреждён.")
+                bot.send_message(chat_id, "❌ Файл повреждён или пуст.")
                 return
 
             # пересчёт баланса
-            recs = store.get("records", [])
-            store["balance"] = sum(r.get("amount", 0) for r in recs)
+            store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
 
             # записываем в глобальную структуру
-            data.setdefault("chats", {})[str(target_chat_id)] = store
+            data.setdefault("chats", {})[str(target)] = store
 
-            # включаем финансовый режим
-            finance_active_chats.add(target_chat_id)
+            finance_active_chats.add(target)
 
-            # сохраняем все файлы
             save_data(data)
-            save_chat_json(target_chat_id)
+            save_chat_json(target)
 
-            # обновляем окно этого чата
-            update_or_send_day_window(target_chat_id, today_key())
+            update_or_send_day_window(target, today_key())
+
+            restore_mode = False
 
             bot.send_message(
                 chat_id,
-                f"🟢 Чат {target_chat_id} полностью восстановлен.\n"
-                f"Записей: {len(recs)}\n"
+                f"🟢 Чат {target} восстановлен.\n"
+                f"Записей: {len(store.get('records', []))}\n"
                 f"Баланс: {store['balance']}"
             )
-
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка восстановления: {e}")
-
-        return
-
-    # -------------------------------
-    # ВОССТАНОВЛЕНИЕ per-chat CSV
-    # -------------------------------
-    if fname.startswith("data_") and fname.endswith(".csv"):
-        try:
-            os.replace(tmp_path, fname)
-            bot.send_message(chat_id, f"🟢 CSV чата восстановлен: {fname}")
         except Exception as e:
             bot.send_message(chat_id, f"❌ Ошибка: {e}")
         return
 
-    bot.send_message(chat_id, f"⚠️ Файл получен, но формат не поддерживается: {fname}")
+    # ---------------------------------------------
+    # 4) per-chat CSV
+    # ---------------------------------------------
+    if fname.startswith("data_") and fname.endswith(".csv"):
+        try:
+            os.replace(tmp_path, fname)
+            restore_mode = False
+            bot.send_message(chat_id, f"🟢 CSV восстановлен: {fname}")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка: {e}")
+        return
+
+    bot.send_message(chat_id, f"⚠️ Формат не поддерживается: {fname}")
         
-
-    # -------------------------------
-    # ВОССТАНОВЛЕНИЕ per-chat CSV
-    # -------------------------------
-    if fname.startswith("data_") and fname.endswith(".csv"):
-        try:
-            os.replace(tmp_path, fname)
-            bot.send_message(chat_id, f"🟢 CSV чата восстановлен: {fname}")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка: {e}")
-        return
-
-    bot.send_message(chat_id, f"⚠️ Файл получен, но формат не поддерживается: {fname}")
-    
 # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
