@@ -734,27 +734,11 @@ def persist_forward_rules_to_owner():
 # SECTION 10 — Работа с forward_rules (логика пересылки)
 # ==========================================================
 
+# ==========================================================
+# SECTION 10 — Работа с forward_rules (логика пересылки)
+# ==========================================================
+
 def resolve_forward_targets(source_chat_id: int) -> list[tuple[int, str]]:
-    """
-    Возвращает список кортежей:
-        (целевой_чат_id, режим)
-
-    forward_rules имеет структуру:
-    {
-        "123": {
-            "555": "oneway_to",
-            "777": "oneway_from",
-            "999": "twoway"
-        }
-    }
-
-    Логика:
-        • "oneway_to"  означает: source → target
-        • "oneway_from" означает: target → source
-        • "twoway"      означает: source → target И target → source
-        
-    Возвращаем только направления "из source".
-    """
     fr = data.get("forward_rules", {}) or {}
     out = []
 
@@ -768,18 +752,11 @@ def resolve_forward_targets(source_chat_id: int) -> list[tuple[int, str]]:
         except:
             continue
 
-        # Отфильтровываем по режиму:
         if mode == "oneway_to":
-            # всегда разрешено: source → dst
             out.append((dst_id, "oneway_to"))
-
         elif mode == "oneway_from":
-            # source является получателем → для исходящего это НЕ подходит
-            # то есть source не должен отправлять в dst
             continue
-
         elif mode == "twoway":
-            # двусторонняя пересылка — всегда разрешено
             out.append((dst_id, "twoway"))
 
     return out
@@ -2271,6 +2248,9 @@ def handle_text(msg):
 # ==========================================================
 # SECTION 18.2 — Media forwarding (анонимно + media_group)
 # ==========================================================
+# ==========================================================
+# SECTION 18.2 — Media forwarding (анонимно + media_group)
+# ==========================================================
 
 @bot.message_handler(
     content_types=[
@@ -2280,35 +2260,44 @@ def handle_text(msg):
 )
 def handle_media_forward(msg):
     """
-    Пересылка ВСЕХ медиа и документов,
-    кроме restore-файлов (data.json / csv / per-chat data)
+    Пересылка ВСЕХ медиа и документов, кроме restore-файлов:
+        • фото, видео, документы, GIF, аудио, голосовые, стикеры
+        • альбомы (media_group)
+        • НО: data.json / data_XXX.json / CSV → НЕ пересылаются,
+          а передаются в handle_restore_files.
     """
 
     try:
         chat_id = msg.chat.id
 
-        # --- RESTORE FILTER: не пересылать restore-файлы ---
+        # --- RESTORE-FILTER: не трогаем restore-файлы ---
         if msg.content_type == "document":
             fname = msg.document.file_name.lower()
-            if fname == "data.json" or fname == "csv_meta.json" or \
-                (fname.startswith("data_") and fname.endswith(".json")) or \
-                (fname.startswith("data_") and fname.endswith(".csv")):
-                return   # пусть поймает restore-хендлер
-                
-        # 1) Обновляем known_chats
+
+            is_restore = (
+                fname == "data.json"
+                or fname == "csv_meta.json"
+                or (fname.startswith("data_") and fname.endswith(".json"))
+                or (fname.startswith("data_") and fname.endswith(".csv"))
+            )
+
+            if is_restore:
+                return  # передаём файл в SECTION 18.4
+
+        # 1) Обновляем info / known_chats
         update_chat_info_from_message(msg)
 
-        # 2) Антипетля
+        # 2) Антипетля (бот не пересылает свои же сообщения)
         BOT_ID = bot.get_me().id
         if msg.from_user and msg.from_user.id == BOT_ID:
             return
 
-        # 3) Цели пересылки
+        # 3) Определяем направления
         targets = resolve_forward_targets(chat_id)
         if not targets:
             return
 
-        # 4) Альбомы
+        # 4) Поддержка альбомов
         group_msgs = collect_media_group(chat_id, msg)
         if not group_msgs:
             return
@@ -2317,7 +2306,7 @@ def handle_media_forward(msg):
             forward_media_group_anon(chat_id, group_msgs, targets)
             return
 
-        # 5) Одиночное медиа
+        # 5) Одиночное медиа/документ → copy_message
         for dst, mode in targets:
             try:
                 bot.copy_message(dst, chat_id, msg.message_id)
@@ -2326,8 +2315,12 @@ def handle_media_forward(msg):
 
     except Exception as e:
         log_error(f"handle_media_forward error: {e}")
+        
                 
 #🔄🔄🔄🔄🔄🔄🔄🔄
+# ==========================================================
+# SECTION 18.3 — Forwarding of location / contact / poll / venue
+# ==========================================================
 # ==========================================================
 # SECTION 18.3 — Forwarding of location / contact / poll / venue
 # ==========================================================
@@ -2337,34 +2330,28 @@ def handle_media_forward(msg):
 )
 def handle_special_forward(msg):
     """
-    Пересылка специальных сообщений:
+    Пересылка:
         • Локация
         • Контакт
-        • Опросы (Poll)
-        • Места (Venue)
+        • Опрос
+        • Venue
     """
 
     try:
         chat_id = msg.chat.id
 
-        # 1) Обновляем known_chats
+        # --- обновляем инфу о чате
         update_chat_info_from_message(msg)
 
-        # 2) Антипетля
-        try:
-            BOT_ID = bot.get_me().id
-        except:
-            BOT_ID = None
-
-        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
+        # антипетля
+        BOT_ID = bot.get_me().id
+        if msg.from_user and msg.from_user.id == BOT_ID:
             return
 
-        # 3) Направления пересылки
         targets = resolve_forward_targets(chat_id)
         if not targets:
             return
 
-        # 4) Пересылка
         for dst, mode in targets:
             try:
                 bot.copy_message(dst, chat_id, msg.message_id)
@@ -2377,6 +2364,9 @@ def handle_special_forward(msg):
 # ==========================================================
 # SECTION 18.4 — Restore from uploaded JSON/CSV (SAFE VERSION)
 # ==========================================================
+# ==========================================================
+# SECTION 18.4 — Restore from uploaded JSON/CSV (SAFE VERSION)
+# ==========================================================
 
 @bot.message_handler(content_types=["document"])
 def handle_restore_files(msg):
@@ -2384,9 +2374,7 @@ def handle_restore_files(msg):
     file = msg.document
     fname = file.file_name.lower()
 
-    # ============================
-    # 1) Супер-безопасный фильтр
-    # ============================
+    # 1) Фильтр допустимых восстанавливаемых файлов
     restore_file = (
         fname == "data.json"
         or fname == "csv_meta.json"
@@ -2394,24 +2382,25 @@ def handle_restore_files(msg):
         or (fname.startswith("data_") and fname.endswith(".csv"))
     )
 
-    # ❗ НЕ файл восстановления → отправляем в пересылку
+    # ❗ обычные документы → пересылка через 18.2
     if not restore_file:
         return
 
-    # ============================
-    # 2) Подтверждение восстановления
-    # ============================
-    bot.reply_to(msg,
+    # 2) Запрос подтверждения восстановления
+    bot.reply_to(
+        msg,
         f"⚠️ Вы уверены, что хотите восстановить файл {fname}?\n"
         f"Напишите: ВОССТАНОВИТЬ {fname}"
     )
 
-    # Сохраняем ожидание подтверждения
     store = get_chat_store(chat_id)
-    store["edit_wait"] = {"type": "restore_confirm", "fname": fname, "file_id": file.file_id}
+    store["edit_wait"] = {
+        "type": "restore_confirm",
+        "fname": fname,
+        "file_id": file.file_id
+    }
     save_data(data)
     
-
 # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
