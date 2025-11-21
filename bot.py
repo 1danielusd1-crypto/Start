@@ -2195,8 +2195,8 @@ def handle_text(msg):
             # ВОССТАНОВЛЕНИЕ data.json
             # -------------------------------
             if fname == "data.json":
-                os.replace(tmp_path, "data.json")
                 global data
+                os.replace(tmp_path, "data.json")
                 data = load_data()
 
                 # восстановление finance_active_chats
@@ -2227,11 +2227,12 @@ def handle_text(msg):
             # ВОССТАНОВЛЕНИЕ per-chat JSON
             # -------------------------------
             if fname.startswith("data_") and fname.endswith(".json"):
+                global data
                 tgt = int(fname.replace("data_", "").replace(".json", ""))
 
                 os.replace(tmp_path, fname)
                 store2 = _load_json(fname, {})
-                global data
+                #global data
                 data.setdefault("chats", {})[str(tgt)] = store2
 
                 finance_active_chats.add(tgt)
@@ -2248,8 +2249,9 @@ def handle_text(msg):
             # ВОССТАНОВЛЕНИЕ per-chat CSV
             # -------------------------------
             if fname.startswith("data_") and fname.endswith(".csv"):
-                os.replace(tmp_path, fname)
                 global data
+                os.replace(tmp_path, fname)
+                #global data
                 bot.send_message(chat_id, f"🟢 CSV {fname} восстановлен.")
                 store["edit_wait"] = None
                 save_data(data)
