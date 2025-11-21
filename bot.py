@@ -2287,20 +2287,14 @@ def handle_media_forward(msg):
     try:
         chat_id = msg.chat.id
 
-        # --- RESTORE-FILTER ---
+        # --- RESTORE FILTER: не пересылать restore-файлы ---
         if msg.content_type == "document":
             fname = msg.document.file_name.lower()
-
-            is_restore_file = (
-                fname == "data.json"
-                or fname == "csv_meta.json"
-                or (fname.startswith("data_") and fname.endswith(".json"))
-                or (fname.startswith("data_") and fname.endswith(".csv"))
-            )
-
-            if is_restore_file:
-                return  # пропускаем для handle_restore_files
-
+            if fname == "data.json" or fname == "csv_meta.json" or \
+                (fname.startswith("data_") and fname.endswith(".json")) or \
+                (fname.startswith("data_") and fname.endswith(".csv")):
+                return   # пусть поймает restore-хендлер
+                
         # 1) Обновляем known_chats
         update_chat_info_from_message(msg)
 
