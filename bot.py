@@ -2305,18 +2305,27 @@ def handle_special_forward(msg):
 # ==========================================================
 
 @bot.message_handler(content_types=["document"])
-@bot.message_handler(content_types=["document"])
 def handle_restore_files(msg):
-    fname = msg.document.file_name.lower()
+    chat_id = msg.chat.id
+    file = msg.document
+    fname = file.file_name.lower()
 
-    # принимаем только data.json, csv_meta.json и data_<chat>.json/csv
-    if not (
-        fname == "data.json" or
-        fname == "csv_meta.json" or
-        (fname.startswith("data_") and (fname.endswith(".json") or fname.endswith(".csv")))
-    ):
-        # ❗ Если документ не подходит — НЕ трогаем его
-        return  # он пойдёт в forward
+    # ⚠️ Принимаем ТОЛЬКО ПОЛЬЗОВАТЕЛЬСКИЕ ФАЙЛЫ ВОССТАНОВЛЕНИЯ
+    valid = False
+
+    if fname == "data.json":
+        valid = True
+    elif fname == "csv_meta.json":
+        valid = True
+    elif (fname.startswith("data_") and fname.endswith(".json")):
+        valid = True
+    elif (fname.startswith("data_") and fname.endswith(".csv")):
+        valid = True
+
+    # ⚠️ Если файл НЕ предназначен для восстановления — НЕ трогаем.
+    # Он пойдёт в пересылку через handle_media_forward()
+    if not valid:
+        return
         
     # скачать файл
     file_info = bot.get_file(file.file_id)
