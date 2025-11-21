@@ -2199,13 +2199,13 @@ def handle_text(msg):
                 os.replace(tmp_path, "data.json")
                 data = load_data()
 
-                # восстановление finance_active_chats
-                finance_active_chats.clear()
-                for cid, enabled in data.get("finance_active_chats", {}).items():
+    # восстановление finance_active_chats
+               finance_active_chats.clear()
+               for cid, enabled in data.get("finance_active_chats", {}).items():
                     if enabled:
                         try:
                             finance_active_chats.add(int(cid))
-                        except:
+                         except:
                             pass
 
                 bot.send_message(chat_id, "🟢 data.json восстановлен.")
@@ -2229,12 +2229,9 @@ def handle_text(msg):
             if fname.startswith("data_") and fname.endswith(".json"):
                 global data
                 tgt = int(fname.replace("data_", "").replace(".json", ""))
-
                 os.replace(tmp_path, fname)
                 store2 = _load_json(fname, {})
-                #global data
                 data.setdefault("chats", {})[str(tgt)] = store2
-
                 finance_active_chats.add(tgt)
                 save_data(data)
                 save_chat_json(tgt)
