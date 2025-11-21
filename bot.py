@@ -2064,6 +2064,7 @@ def update_chat_info_from_message(msg):
 
 @bot.message_handler(content_types=["text"])
 def handle_text(msg):
+    global data
     try:
         chat_id = msg.chat.id
         text = (msg.text or "").strip()
@@ -2195,7 +2196,7 @@ def handle_text(msg):
             # -------------------------------
             if fname == "data.json":
                 os.replace(tmp_path, "data.json")
-                global data
+               # global data
                 data = load_data()
                 bot.send_message(chat_id, "🟢 data.json восстановлен.")
                 store["edit_wait"] = None
