@@ -2035,33 +2035,6 @@ def cmd_off_channel(msg):
 # ==========================================================
 # SECTION 18 — Text handler (финансы + пересылка + chat_info)
 # ==========================================================
-
-def update_chat_info_from_message(msg):
-    """
-    Обновляет информацию о чате при каждом сообщении.
-    Хранится в: store["info"] и store["known_chats"] (для OWNER).
-    """
-    chat_id = msg.chat.id
-    store = get_chat_store(chat_id)
-
-    info = store.setdefault("info", {})
-    info["title"] = msg.chat.title or info.get("title") or f"Чат {chat_id}"
-    info["username"] = msg.chat.username or info.get("username")
-    info["type"] = msg.chat.type
-
-    # Владелец видит все известные чаты → сохраняем их в его store
-    if OWNER_ID and str(chat_id) != str(OWNER_ID):
-        owner_store = get_chat_store(int(OWNER_ID))
-        kc = owner_store.setdefault("known_chats", {})
-        kc[str(chat_id)] = {
-            "title": info["title"],
-            "username": info["username"],
-            "type": info["type"],
-        }
-        save_chat_json(int(OWNER_ID))
-
-    save_chat_json(chat_id)
-
 @bot.message_handler(content_types=["text"])
 def handle_text(msg):
     try:
@@ -2080,7 +2053,7 @@ def handle_text(msg):
         wait = store.get("edit_wait")
 
         # ------------------------------
-        # ADD
+        # ADD (многократные строки)
         # ------------------------------
         if wait and wait.get("type") == "add":
 
@@ -2089,39 +2062,39 @@ def handle_text(msg):
             lines = text.split("\n")
             added_any = False
             for line in lines:
-                  line = line.strip()
-                  if not line:
-                        continue
+                line = line.strip()
+                if not line:
+                    continue
 
-                  try:
-                        amount, note = split_amount_and_note(line)
-                  except Exception:
-                        bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
-                        continue
+                try:
+                    amount, note = split_amount_and_note(line)
+                except Exception:
+                    bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
+                    continue
 
-                  # 1) добавляем запись (без сохранений и без бэкапов)
-                  store = get_chat_store(chat_id)
-                  rid = store.get("next_id", 1)
+                # 1) добавляем запись (без сохранений и без бэкапов)
+                store = get_chat_store(chat_id)
+                rid = store.get("next_id", 1)
 
-                  rec = {
-                        "id": rid,
-                        "short_id": f"R{rid}",
-                        "timestamp": now_local().isoformat(timespec="seconds"),
-                        "amount": amount,
-                        "note": note,
-                        "owner": msg.from_user.id,
-                  }
+                rec = {
+                    "id": rid,
+                    "short_id": f"R{rid}",
+                    "timestamp": now_local().isoformat(timespec="seconds"),
+                    "amount": amount,
+                    "note": note,
+                    "owner": msg.from_user.id,
+                }
 
-                  store.setdefault("records", []).append(rec)
-                  store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
-                  store["next_id"] = rid + 1
-                  added_any = True
+                store.setdefault("records", []).append(rec)
+                store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
+                store["next_id"] = rid + 1
+                added_any = True
 
             # 2) СНАЧАЛА обновляем окно дня
             if added_any:
-                  txt, _ = render_day_window(chat_id, day_key)
-                  kb = build_main_keyboard(day_key, chat_id)
-                  bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                txt, _ = render_day_window(chat_id, day_key)
+                kb = build_main_keyboard(day_key, chat_id)
+                bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
 
             # 3) ПОТОМ выполняем сохранение и бэкап
             store["balance"] = sum(x["amount"] for x in store["records"])
@@ -2129,7 +2102,7 @@ def handle_text(msg):
             # Полный пересчёт глобального списка
             data["records"] = []
             for cid, st in data.get("chats", {}).items():
-                  data["records"].extend(st.get("records", []))
+                data["records"].extend(st.get("records", []))
 
             data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
@@ -2141,13 +2114,10 @@ def handle_text(msg):
             store["edit_wait"] = None
             save_data(data)
             return
-                
+
         # ------------------------------
         # EDIT
         # ------------------------------
-        # ---------------------------------------------------
-        # Редактирование записи
-        # ---------------------------------------------------
         if wait and wait.get("type") == "edit":
 
             rid = wait.get("rid")
@@ -2170,16 +2140,46 @@ def handle_text(msg):
             return
 
         # ------------------------------
-        # RESET CONFIRMATION
+        # RESTORE CONFIRMATION (для документов)
+        # ------------------------------
+        if wait and wait.get("type") == "restore_confirm" and text.upper() == "ДА":
+            fname = wait.get("fname")
+            file_id = wait.get("file_id")
+
+            # скачиваем файл
+            try:
+                file_info = bot.get_file(file_id)
+                raw = bot.download_file(file_info.file_path)
+            except Exception as e:
+                bot.send_message(chat_id, f"❌ Ошибка чтения файла: {e}")
+                store["edit_wait"] = None
+                save_data(data)
+                return
+
+            tmp_path = f"restore_{chat_id}_{fname}"
+            with open(tmp_path, "wb") as f:
+                f.write(raw)
+
+            # реальное восстановление
+            result_text = restore_file_switch(chat_id, fname, tmp_path)
+
+            store["edit_wait"] = None
+            save_data(data)
+
+            bot.send_message(chat_id, result_text)
+            return
+
+        # ------------------------------
+        # RESET CONFIRMATION (обнуление чата)
         # ------------------------------
         if text.upper() == "ДА":
+            # если нет restore_confirm — считаем, что это подтверждение reset
             reset_chat_data(chat_id)
             bot.send_message(chat_id, "🔄 Данные чата обнулены.")
             return
 
     except Exception as e:
         log_error(f"handle_text: {e}")
-
 
 #🟣🟣🟣🟣🟣🟣
 # ==========================================================
@@ -2299,77 +2299,44 @@ def handle_special_forward(msg):
 
     except Exception as e:
         log_error(f"handle_special_forward error: {e}")
-        
-# ==========================================================
-# SECTION 18.4 — Restore from uploaded JSON/CSV (FULL WORKING VERSION)
-# ==========================================================
-
-@bot.message_handler(content_types=["document"])
-def handle_restore_files(msg):
-    chat_id = msg.chat.id
-    file = msg.document
-    fname = file.file_name.lower()
-
-    # ⚠️ Принимаем ТОЛЬКО ПОЛЬЗОВАТЕЛЬСКИЕ ФАЙЛЫ ВОССТАНОВЛЕНИЯ
-    valid = False
-
-    if fname == "data.json":
-        valid = True
-    elif fname == "csv_meta.json":
-        valid = True
-    elif (fname.startswith("data_") and fname.endswith(".json")):
-        valid = True
-    elif (fname.startswith("data_") and fname.endswith(".csv")):
-        valid = True
-
-    # ⚠️ Если файл НЕ предназначен для восстановления — НЕ трогаем.
-    # Он пойдёт в пересылку через handle_media_forward()
-    if not valid:
-        return
-        
-    # скачать файл
-    file_info = bot.get_file(file.file_id)
-    raw = bot.download_file(file_info.file_path)
-    tmp_path = f"restore_{chat_id}_{fname}"
-
-    with open(tmp_path, "wb") as f:
-        f.write(raw)
+#перед 18.4
+def restore_file_switch(chat_id: int, fname: str, tmp_path: str) -> str:
+    """
+    Универсальный обработчик восстановления.
+    Возвращает текст результата, который потом отправляется в чат.
+    """
 
     # -------------------------------
-    # ВОССТАНОВЛЕНИЕ ГЛОБАЛЬНОГО data.json
+    # ГЛОБАЛЬНЫЙ data.json
     # -------------------------------
     if fname == "data.json":
         try:
             os.replace(tmp_path, "data.json")
             global data
             data = load_data()
-            bot.send_message(chat_id, "🟢 data.json восстановлен и загружен.")
+            return "🟢 data.json восстановлен и загружен."
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка восстановления data.json: {e}")
-        return
+            return f"❌ Ошибка восстановления data.json: {e}"
 
     # -------------------------------
-    # ВОССТАНОВЛЕНИЕ csv_meta.json
+    # csv_meta.json
     # -------------------------------
     if fname == "csv_meta.json":
         try:
             os.replace(tmp_path, "csv_meta.json")
-            bot.send_message(chat_id, "🟢 csv_meta.json восстановлен.")
+            return "🟢 csv_meta.json восстановлен."
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка: {e}")
-        return
+            return f"❌ Ошибка восстановления csv_meta.json: {e}"
 
     # -------------------------------
-    # ВОССТАНОВЛЕНИЕ per-chat JSON
-    # data_<chat_id>.json
+    # per-chat JSON: data_<chat_id>.json
     # -------------------------------
     if fname.startswith("data_") and fname.endswith(".json"):
 
         try:
             target_chat_id = int(fname.replace("data_", "").replace(".json", ""))
-        except:
-            bot.send_message(chat_id, "❌ Не могу определить chat_id из имени файла.")
-            return
+        except Exception:
+            return "❌ Не могу определить chat_id из имени файла."
 
         try:
             # заменяем файл
@@ -2378,8 +2345,7 @@ def handle_restore_files(msg):
             # загружаем новый store
             store = _load_json(fname, {})
             if not store:
-                bot.send_message(chat_id, "❌ Файл пустой или повреждён.")
-                return
+                return "❌ Файл пустой или повреждён."
 
             # пересчёт баланса
             recs = store.get("records", [])
@@ -2398,30 +2364,105 @@ def handle_restore_files(msg):
             # обновляем окно этого чата
             update_or_send_day_window(target_chat_id, today_key())
 
-            bot.send_message(
-                chat_id,
+            return (
                 f"🟢 Чат {target_chat_id} полностью восстановлен.\n"
                 f"Записей: {len(recs)}\n"
                 f"Баланс: {store['balance']}"
             )
 
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка восстановления: {e}")
-
-        return
+            return f"❌ Ошибка восстановления чата: {e}"
 
     # -------------------------------
-    # ВОССТАНОВЛЕНИЕ per-chat CSV
+    # per-chat CSV: data_<chat_id>.csv
     # -------------------------------
     if fname.startswith("data_") and fname.endswith(".csv"):
         try:
             os.replace(tmp_path, fname)
-            bot.send_message(chat_id, f"🟢 CSV чата восстановлен: {fname}")
+            return f"🟢 CSV чата восстановлен: {fname}"
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка: {e}")
+            return f"❌ Ошибка восстановления CSV: {e}"
+
+    return f"⚠️ Формат не поддерживается для восстановления: {fname}"
+
+# ==========================================================
+# SECTION 18.4 — Restore from uploaded JSON/CSV (FULL WORKING VERSION)
+# ==========================================================
+
+# ==========================================================
+# SECTION 18.4 — Documents: forwarding + restore-confirm
+# ==========================================================
+
+@bot.message_handler(content_types=["document"])
+def handle_document(msg):
+    """
+    Логика обработки документов:
+    1) ВСЕ документы сначала:
+        • обновляют info/known_chats
+        • проходят через систему пересылки (анонимно)
+    2) Если имя файла похоже на файл восстановления:
+        • data.json
+        • csv_meta.json
+        • data_<chat_id>.json
+        • data_<chat_id>.csv
+       → бот спрашивает подтверждение "ДА" через edit_wait.type = restore_confirm
+    3) При ответе "ДА" в handle_text() вызывается restore_file_switch()
+    """
+
+    chat_id = msg.chat.id
+    file = msg.document
+    fname = (file.file_name or "").lower()
+
+    # 1) обновляем информацию о чате
+    update_chat_info_from_message(msg)
+
+    # 2) Пересылка документа по правилам пересылки
+    try:
+        targets = resolve_forward_targets(chat_id)
+        if targets:
+            for dst, mode in targets:
+                try:
+                    bot.copy_message(dst, chat_id, msg.message_id)
+                except Exception as e:
+                    log_error(f"forward document to {dst}: {e}")
+    except Exception as e:
+        log_error(f"handle_document forward error: {e}")
+
+    # 3) Определяем, является ли файл кандидатом для восстановления
+    valid_restore = False
+
+    if fname == "data.json":
+        valid_restore = True
+    elif fname == "csv_meta.json":
+        valid_restore = True
+    elif fname.startswith("data_") and fname.endswith(".json"):
+        valid_restore = True
+    elif fname.startswith("data_") and fname.endswith(".csv"):
+        valid_restore = True
+
+    # Если это обычный документ (не восстановление) — просто выходим
+    if not valid_restore:
         return
 
-    bot.send_message(chat_id, f"⚠️ Файл получен, но формат не поддерживается: {fname}")
+    # 4) Сохраняем ожидание подтверждения
+    store = get_chat_store(chat_id)
+    store["edit_wait"] = {
+        "type": "restore_confirm",
+        "file_id": file.file_id,
+        "fname": fname,
+    }
+    save_data(data)
+
+    # 5) Спрашиваем пользователя
+    bot.send_message(
+        chat_id,
+        f"📁 Получен файл <b>{fname}</b>.\n"
+        "Сначала он уже переслан по правилам пересылки.\n\n"
+        "Хотите выполнить восстановление данных из этого файла?\n"
+        "Напишите <b>ДА</b> для подтверждения.",
+        parse_mode="HTML"
+    )
+    
         
 # ==========================================================
 # SECTION 19 — Keep-alive
