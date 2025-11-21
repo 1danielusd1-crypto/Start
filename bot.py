@@ -1,4 +1,4 @@
-# Code_022.5-FINAL.2
+# Code_022.5-FINAL.1
 # • ручное востановление
 # •пересылка всех типов сообщений
 #  •вывод значений расширенный
@@ -734,11 +734,27 @@ def persist_forward_rules_to_owner():
 # SECTION 10 — Работа с forward_rules (логика пересылки)
 # ==========================================================
 
-# ==========================================================
-# SECTION 10 — Работа с forward_rules (логика пересылки)
-# ==========================================================
-
 def resolve_forward_targets(source_chat_id: int) -> list[tuple[int, str]]:
+    """
+    Возвращает список кортежей:
+        (целевой_чат_id, режим)
+
+    forward_rules имеет структуру:
+    {
+        "123": {
+            "555": "oneway_to",
+            "777": "oneway_from",
+            "999": "twoway"
+        }
+    }
+
+    Логика:
+        • "oneway_to"  означает: source → target
+        • "oneway_from" означает: target → source
+        • "twoway"      означает: source → target И target → source
+        
+    Возвращаем только направления "из source".
+    """
     fr = data.get("forward_rules", {}) or {}
     out = []
 
@@ -752,11 +768,18 @@ def resolve_forward_targets(source_chat_id: int) -> list[tuple[int, str]]:
         except:
             continue
 
+        # Отфильтровываем по режиму:
         if mode == "oneway_to":
+            # всегда разрешено: source → dst
             out.append((dst_id, "oneway_to"))
+
         elif mode == "oneway_from":
+            # source является получателем → для исходящего это НЕ подходит
+            # то есть source не должен отправлять в dst
             continue
+
         elif mode == "twoway":
+            # двусторонняя пересылка — всегда разрешено
             out.append((dst_id, "twoway"))
 
     return out
@@ -2041,7 +2064,6 @@ def update_chat_info_from_message(msg):
 
 @bot.message_handler(content_types=["text"])
 def handle_text(msg):
-    global data
     try:
         chat_id = msg.chat.id
         text = (msg.text or "").strip()
@@ -2146,92 +2168,7 @@ def handle_text(msg):
             kb = build_main_keyboard(day_key, chat_id)
             bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
             return
-            
-        # ------------------------------
-        # RESTORE CONFIRMATION (FIXED)
-        # ------------------------------
-        if wait and wait.get("type") == "restore_confirm":
 
-            expected = f"ВОССТАНОВИТЬ {wait['fname']}"
-            if msg.text.strip().upper() != expected.upper():
-                bot.send_message(chat_id, "❌ Подтверждение неверное. Восстановление отменено.")
-                store["edit_wait"] = None
-                save_data(data)
-                return
-
-            # СКАЧИВАЕМ ФАЙЛ
-            file_info = bot.get_file(wait["file_id"])
-            raw = bot.download_file(file_info.file_path)
-            tmp_path = f"restore_{chat_id}_{wait['fname']}"
-
-            with open(tmp_path, "wb") as f:
-                f.write(raw)
-
-            fname = wait["fname"]
-
-            # -------------------------------
-            # ВОССТАНОВЛЕНИЕ data.json
-            # -------------------------------
-            if fname == "data.json":
-                #global data
-                os.replace(tmp_path, "data.json")
-                data = load_data()
-
-                # восстановление finance_active_chats
-                finance_active_chats.clear()
-                for cid, enabled in data.get("finance_active_chats", {}).items():
-                    if enabled:
-                        try:
-                            finance_active_chats.add(int(cid))
-                        except:
-                            pass
-
-                bot.send_message(chat_id, "🟢 data.json восстановлен.")
-                store["edit_wait"] = None
-                save_data(data)
-                return
-
-            # -------------------------------
-            # ВОССТАНОВЛЕНИЕ csv_meta.json
-            # -------------------------------
-            if fname == "csv_meta.json":
-                os.replace(tmp_path, "csv_meta.json")
-                bot.send_message(chat_id, "🟢 csv_meta.json восстановлен.")
-                store["edit_wait"] = None
-                save_data(data)
-                return
-
-            # -------------------------------
-            # ВОССТАНОВЛЕНИЕ per-chat JSON
-            # -------------------------------
-            if fname.startswith("data_") and fname.endswith(".json"):
-                #global data
-                tgt = int(fname.replace("data_", "").replace(".json", ""))
-                os.replace(tmp_path, fname)
-                store2 = _load_json(fname, {})
-                data.setdefault("chats", {})[str(tgt)] = store2
-
-                finance_active_chats.add(tgt)
-                save_data(data)
-                save_chat_json(tgt)
-                update_or_send_day_window(tgt, today_key())
-
-                bot.send_message(chat_id, f"🟢 Чат {tgt} восстановлен.")
-                store["edit_wait"] = None
-                save_data(data)
-                return
-
-            # -------------------------------
-            # ВОССТАНОВЛЕНИЕ per-chat CSV
-            # -------------------------------
-            if fname.startswith("data_") and fname.endswith(".csv"):
-                #global data
-                os.replace(tmp_path, fname)
-                bot.send_message(chat_id, f"🟢 CSV {fname} восстановлен.")
-                store["edit_wait"] = None
-                save_data(data)
-                return
-                
         # ------------------------------
         # RESET CONFIRMATION
         # ------------------------------
@@ -2248,65 +2185,64 @@ def handle_text(msg):
 # ==========================================================
 # SECTION 18.2 — Media forwarding (анонимно + media_group)
 # ==========================================================
-# ==========================================================
-# SECTION 18.2 — Media forwarding (анонимно + media_group)
-# ==========================================================
 
 @bot.message_handler(
     content_types=[
         "photo", "audio", "video", "voice",
-        "video_note", "sticker", "animation", "document"
+        "video_note", "sticker", "animation"
     ]
 )
 def handle_media_forward(msg):
     """
-    Пересылка ВСЕХ медиа и документов, кроме restore-файлов:
-        • фото, видео, документы, GIF, аудио, голосовые, стикеры
-        • альбомы (media_group)
-        • НО: data.json / data_XXX.json / CSV → НЕ пересылаются,
-          а передаются в handle_restore_files.
+    Обработка любых медиа.
+    Поддержка:
+        • анонимная пересылка (через copy_message)
+        • альбомы (media_group) — собираем и отправляем единой группой
+        • пересылка по новым правилам ➡️ ↔️ ⬅️
+        • обновление known_chats
     """
 
     try:
         chat_id = msg.chat.id
 
-        # --- RESTORE-FILTER: не трогаем restore-файлы ---
-        if msg.content_type == "document":
-            fname = msg.document.file_name.lower()
-
-            is_restore = (
-                fname == "data.json"
-                or fname == "csv_meta.json"
-                or (fname.startswith("data_") and fname.endswith(".json"))
-                or (fname.startswith("data_") and fname.endswith(".csv"))
-            )
-
-            if is_restore:
-                return  # передаём файл в SECTION 18.4
-
-        # 1) Обновляем info / known_chats
+        # 1) Заполняем known_chats (важно для меню пересылки)
         update_chat_info_from_message(msg)
 
-        # 2) Антипетля (бот не пересылает свои же сообщения)
-        BOT_ID = bot.get_me().id
-        if msg.from_user and msg.from_user.id == BOT_ID:
+        # 2) Владелец не должен пересылать свои медиа автоматически
+        #    (чтобы не было циклов и спама)
+        #if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            #return
+            # 2) Защита от циклов:
+        # анти-петля — не пересылаем сообщения, которые бот сам скопировал
+        try:
+            BOT_ID = bot.get_me().id
+        except:
+            BOT_ID = None
+
+        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
             return
 
-        # 3) Определяем направления
+# Владелец МОЖЕТ пересылать медиа, НЕ блокируем
+# (никакого return здесь не должно быть)
+        # 3) Получаем список направлений из ОТСЕКА 10
         targets = resolve_forward_targets(chat_id)
         if not targets:
             return
 
-        # 4) Поддержка альбомов
+        # 4) Если это альбом — собираем все сообщения
         group_msgs = collect_media_group(chat_id, msg)
+
+        # Если collect_media_group() вернул None — ждём пакет
         if not group_msgs:
             return
 
+        # 5) Если альбом состоит из более чем одного сообщения → отправляем как группу
         if len(group_msgs) > 1:
             forward_media_group_anon(chat_id, group_msgs, targets)
             return
 
-        # 5) Одиночное медиа/документ → copy_message
+        # 6) Обычное одиночное медиа
+        #    copy_message сохраняет file_id, убирает имя отправителя
         for dst, mode in targets:
             try:
                 bot.copy_message(dst, chat_id, msg.message_id)
@@ -2315,12 +2251,7 @@ def handle_media_forward(msg):
 
     except Exception as e:
         log_error(f"handle_media_forward error: {e}")
-        
-                
 #🔄🔄🔄🔄🔄🔄🔄🔄
-# ==========================================================
-# SECTION 18.3 — Forwarding of location / contact / poll / venue
-# ==========================================================
 # ==========================================================
 # SECTION 18.3 — Forwarding of location / contact / poll / venue
 # ==========================================================
@@ -2330,28 +2261,36 @@ def handle_media_forward(msg):
 )
 def handle_special_forward(msg):
     """
-    Пересылка:
+    Обработка специальных типов сообщений:
         • Локация
         • Контакт
-        • Опрос
-        • Venue
+        • Опросы (Poll)
+        • Места (Venue)
+    Пересылка анонимная, через copy_message.
+    С тонкой защитой от петель (бот не пересылает свои же копии).
     """
 
     try:
         chat_id = msg.chat.id
 
-        # --- обновляем инфу о чате
+        # 1) Обновляем сведения о чате (important для меню пересылки)
         update_chat_info_from_message(msg)
 
-        # антипетля
-        BOT_ID = bot.get_me().id
-        if msg.from_user and msg.from_user.id == BOT_ID:
+        # 2) Защита от петель: не пересылаем сообщения, созданные ботом
+        try:
+            BOT_ID = bot.get_me().id
+        except:
+            BOT_ID = None
+
+        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
             return
 
+        # 3) Получаем направления пересылки
         targets = resolve_forward_targets(chat_id)
         if not targets:
             return
 
+        # 4) Пересылаем анонимно через copy_message
         for dst, mode in targets:
             try:
                 bot.copy_message(dst, chat_id, msg.message_id)
@@ -2362,10 +2301,7 @@ def handle_special_forward(msg):
         log_error(f"handle_special_forward error: {e}")
         
 # ==========================================================
-# SECTION 18.4 — Restore from uploaded JSON/CSV (SAFE VERSION)
-# ==========================================================
-# ==========================================================
-# SECTION 18.4 — Restore from uploaded JSON/CSV (SAFE VERSION)
+# SECTION 18.4 — Restore from uploaded JSON/CSV (FULL WORKING VERSION)
 # ==========================================================
 
 @bot.message_handler(content_types=["document"])
@@ -2374,33 +2310,119 @@ def handle_restore_files(msg):
     file = msg.document
     fname = file.file_name.lower()
 
-    # 1) Фильтр допустимых восстанавливаемых файлов
-    restore_file = (
-        fname == "data.json"
-        or fname == "csv_meta.json"
-        or (fname.startswith("data_") and fname.endswith(".json"))
-        or (fname.startswith("data_") and fname.endswith(".csv"))
-    )
+    # ⚠️ Принимаем ТОЛЬКО ПОЛЬЗОВАТЕЛЬСКИЕ ФАЙЛЫ ВОССТАНОВЛЕНИЯ
+    valid = False
 
-    # ❗ обычные документы → пересылка через 18.2
-    if not restore_file:
+    if fname == "data.json":
+        valid = True
+    elif fname == "csv_meta.json":
+        valid = True
+    elif (fname.startswith("data_") and fname.endswith(".json")):
+        valid = True
+    elif (fname.startswith("data_") and fname.endswith(".csv")):
+        valid = True
+
+    # ⚠️ Если файл НЕ предназначен для восстановления — НЕ трогаем.
+    # Он пойдёт в пересылку через handle_media_forward()
+    if not valid:
+        return
+        
+    # скачать файл
+    file_info = bot.get_file(file.file_id)
+    raw = bot.download_file(file_info.file_path)
+    tmp_path = f"restore_{chat_id}_{fname}"
+
+    with open(tmp_path, "wb") as f:
+        f.write(raw)
+
+    # -------------------------------
+    # ВОССТАНОВЛЕНИЕ ГЛОБАЛЬНОГО data.json
+    # -------------------------------
+    if fname == "data.json":
+        try:
+            os.replace(tmp_path, "data.json")
+            global data
+            data = load_data()
+            bot.send_message(chat_id, "🟢 data.json восстановлен и загружен.")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка восстановления data.json: {e}")
         return
 
-    # 2) Запрос подтверждения восстановления
-    bot.reply_to(
-        msg,
-        f"⚠️ Вы уверены, что хотите восстановить файл {fname}?\n"
-        f"Напишите: ВОССТАНОВИТЬ {fname}"
-    )
+    # -------------------------------
+    # ВОССТАНОВЛЕНИЕ csv_meta.json
+    # -------------------------------
+    if fname == "csv_meta.json":
+        try:
+            os.replace(tmp_path, "csv_meta.json")
+            bot.send_message(chat_id, "🟢 csv_meta.json восстановлен.")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка: {e}")
+        return
 
-    store = get_chat_store(chat_id)
-    store["edit_wait"] = {
-        "type": "restore_confirm",
-        "fname": fname,
-        "file_id": file.file_id
-    }
-    save_data(data)
-    
+    # -------------------------------
+    # ВОССТАНОВЛЕНИЕ per-chat JSON
+    # data_<chat_id>.json
+    # -------------------------------
+    if fname.startswith("data_") and fname.endswith(".json"):
+
+        try:
+            target_chat_id = int(fname.replace("data_", "").replace(".json", ""))
+        except:
+            bot.send_message(chat_id, "❌ Не могу определить chat_id из имени файла.")
+            return
+
+        try:
+            # заменяем файл
+            os.replace(tmp_path, fname)
+
+            # загружаем новый store
+            store = _load_json(fname, {})
+            if not store:
+                bot.send_message(chat_id, "❌ Файл пустой или повреждён.")
+                return
+
+            # пересчёт баланса
+            recs = store.get("records", [])
+            store["balance"] = sum(r.get("amount", 0) for r in recs)
+
+            # записываем в глобальную структуру
+            data.setdefault("chats", {})[str(target_chat_id)] = store
+
+            # включаем финансовый режим
+            finance_active_chats.add(target_chat_id)
+
+            # сохраняем все файлы
+            save_data(data)
+            save_chat_json(target_chat_id)
+
+            # обновляем окно этого чата
+            update_or_send_day_window(target_chat_id, today_key())
+
+            bot.send_message(
+                chat_id,
+                f"🟢 Чат {target_chat_id} полностью восстановлен.\n"
+                f"Записей: {len(recs)}\n"
+                f"Баланс: {store['balance']}"
+            )
+
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка восстановления: {e}")
+
+        return
+
+    # -------------------------------
+    # ВОССТАНОВЛЕНИЕ per-chat CSV
+    # -------------------------------
+    if fname.startswith("data_") and fname.endswith(".csv"):
+        try:
+            os.replace(tmp_path, fname)
+            bot.send_message(chat_id, f"🟢 CSV чата восстановлен: {fname}")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Ошибка: {e}")
+        return
+
+    bot.send_message(chat_id, f"⚠️ Файл получен, но формат не поддерживается: {fname}")
+        
 # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
