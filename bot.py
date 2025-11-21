@@ -2169,7 +2169,8 @@ def handle_text(msg):
             kb = build_main_keyboard(day_key, chat_id)
             bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
             return
-                # ------------------------------
+            
+        # ------------------------------
         # RESTORE CONFIRMATION (FIXED)
         # ------------------------------
         if wait and wait.get("type") == "restore_confirm":
@@ -2205,7 +2206,7 @@ def handle_text(msg):
                     if enabled:
                         try:
                             finance_active_chats.add(int(cid))
-                         except:
+                        except:
                             pass
 
                 bot.send_message(chat_id, "🟢 data.json восстановлен.")
@@ -2232,6 +2233,7 @@ def handle_text(msg):
                 os.replace(tmp_path, fname)
                 store2 = _load_json(fname, {})
                 data.setdefault("chats", {})[str(tgt)] = store2
+
                 finance_active_chats.add(tgt)
                 save_data(data)
                 save_chat_json(tgt)
@@ -2248,7 +2250,6 @@ def handle_text(msg):
             if fname.startswith("data_") and fname.endswith(".csv"):
                 global data
                 os.replace(tmp_path, fname)
-                #global data
                 bot.send_message(chat_id, f"🟢 CSV {fname} восстановлен.")
                 store["edit_wait"] = None
                 save_data(data)
