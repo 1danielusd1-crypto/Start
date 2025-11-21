@@ -1,4 +1,4 @@
-# Code_022.5-FINAL.1
+# Code_022.5-FINAL.2
 # • ручное востановление
 # •пересылка всех типов сообщений
 #  •вывод значений расширенный
@@ -2169,8 +2169,8 @@ def handle_text(msg):
             kb = build_main_keyboard(day_key, chat_id)
             bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
             return
-        # ------------------------------
-        # RESTORE CONFIRMATION
+                # ------------------------------
+        # RESTORE CONFIRMATION (FIXED)
         # ------------------------------
         if wait and wait.get("type") == "restore_confirm":
 
@@ -2196,8 +2196,18 @@ def handle_text(msg):
             # -------------------------------
             if fname == "data.json":
                 os.replace(tmp_path, "data.json")
-               # global data
+                global data
                 data = load_data()
+
+                # восстановление finance_active_chats
+                finance_active_chats.clear()
+                for cid, enabled in data.get("finance_active_chats", {}).items():
+                    if enabled:
+                        try:
+                            finance_active_chats.add(int(cid))
+                        except:
+                            pass
+
                 bot.send_message(chat_id, "🟢 data.json восстановлен.")
                 store["edit_wait"] = None
                 save_data(data)
@@ -2221,6 +2231,7 @@ def handle_text(msg):
 
                 os.replace(tmp_path, fname)
                 store2 = _load_json(fname, {})
+                global data
                 data.setdefault("chats", {})[str(tgt)] = store2
 
                 finance_active_chats.add(tgt)
@@ -2238,6 +2249,7 @@ def handle_text(msg):
             # -------------------------------
             if fname.startswith("data_") and fname.endswith(".csv"):
                 os.replace(tmp_path, fname)
+                global data
                 bot.send_message(chat_id, f"🟢 CSV {fname} восстановлен.")
                 store["edit_wait"] = None
                 save_data(data)
