@@ -1131,7 +1131,7 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
     store["next_id"] = rid + 1
 
-    update_or_send_day_window(chat_id, today_key())
+    update_or_send_day_window(chat_id)
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
@@ -1163,7 +1163,7 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     data["records"] = [x if x["id"] != rid else found for x in data["records"]]
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
     
-    update_or_send_day_window(chat_id, today_key())
+    update_or_send_day_window(chat_id)
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
@@ -1187,7 +1187,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     data["records"] = [x for x in data["records"] if x["id"] != rid]
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
-    update_or_send_day_window(chat_id, today_key())
+    update_or_send_day_window(chat_id)
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
