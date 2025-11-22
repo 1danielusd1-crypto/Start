@@ -911,7 +911,8 @@ def render_day_window(chat_id: int, day_key: str):
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
 
-        lines.append(f"{sid} {sign}{fmt_num(amt)} <i>{note}</i>")
+        lines.append(f"{sid} #{sign}
+            {fmt_num(amt)} <i>{note}</i>")
 
     if not recs_sorted:
         lines.append("Нет записей за этот день.")
