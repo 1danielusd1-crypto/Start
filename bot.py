@@ -911,7 +911,7 @@ def render_day_window(chat_id: int, day_key: str):
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
 
-        lines.append(f"{sid} {fmt_num(amt)} <i>{note}</i>")
+        lines.append(f"{sid} {sign}{fmt_num(amt)} <i>{note}</i>")
         #{sign}
           
 
@@ -919,7 +919,7 @@ def render_day_window(chat_id: int, day_key: str):
         lines.append("Нет записей за этот день.")
 
     lines.append("")
-    lines.append(f"💰 <b>Итого: {fmt_num(total)}</b>")
+    lines.append(f"💰 <b>Итого:{sign}{fmt_num(total)}</b>")
 
     return "\n".join(lines), total
 
@@ -1131,6 +1131,7 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
     store["next_id"] = rid + 1
 
+    update_or_send_day_window(chat_id, today_key())
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
@@ -1161,7 +1162,8 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
 
     data["records"] = [x if x["id"] != rid else found for x in data["records"]]
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
-
+    
+    update_or_send_day_window(chat_id, today_key())
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
@@ -1185,6 +1187,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     data["records"] = [x for x in data["records"] if x["id"] != rid]
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
+    update_or_send_day_window(chat_id, today_key())
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
@@ -1376,8 +1379,8 @@ def on_callback(call):
             bot.send_message(
                 chat_id,
                 f"💰 <b>Общий итог</b>\n\n"
-                f"• По этому чату: <b>{fmt_num(chat_bal)}</b>\n"
-                f"• По всем чатам: <b>{fmt_num(overall)}</b>",
+                f"• По этому чату: {sign}<b>{fmt_num(chat_bal)}</b>\n"
+                f"• По всем чатам: {sign}<b>{fmt_num(overall)}</b>",
                 parse_mode="HTML"
             )
             return
@@ -1710,7 +1713,7 @@ def cmd_report(msg):
     lines = ["📊 Отчёт:"]
     for dk, recs in sorted(store.get("daily_records", {}).items()):
         day_sum = sum(r["amount"] for r in recs)
-        lines.append(f"{dk}: {fmt_num(day_sum)}")
+        lines.append(f"{dk}: {sign}{fmt_num(day_sum)}")
 
     send_info(chat_id, "\n".join(lines))
 
