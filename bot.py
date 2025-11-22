@@ -906,7 +906,7 @@ def render_day_window(chat_id: int, day_key: str):
     for r in recs_sorted:
         amt = r["amount"]
         total += amt
-        sign = "➕" if amt >= 0 else "➖"
+        sign = "+" if amt >= 0 else "-"
 
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
@@ -1379,8 +1379,8 @@ def on_callback(call):
             bot.send_message(
                 chat_id,
                 f"💰 <b>Общий итог</b>\n\n"
-                f"• По этому чату: {sign}<b>{fmt_num(chat_bal)}</b>\n"
-                f"• По всем чатам: {sign}<b>{fmt_num(overall)}</b>",
+                f"• По этому чату: <b>{fmt_num(chat_bal)}</b>\n"
+                f"• По всем чатам: <b>{fmt_num(overall)}</b>",
                 parse_mode="HTML"
             )
             return
@@ -1713,7 +1713,7 @@ def cmd_report(msg):
     lines = ["📊 Отчёт:"]
     for dk, recs in sorted(store.get("daily_records", {}).items()):
         day_sum = sum(r["amount"] for r in recs)
-        lines.append(f"{dk}: {sign}{fmt_num(day_sum)}")
+        lines.append(f"{dk}: {fmt_num(day_sum)}")
 
     send_info(chat_id, "\n".join(lines))
 
