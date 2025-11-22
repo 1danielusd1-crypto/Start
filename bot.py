@@ -906,20 +906,18 @@ def render_day_window(chat_id: int, day_key: str):
     for r in recs_sorted:
         amt = r["amount"]
         total += amt
-        sign = "➕" if amt >= 0 else "➖"
+        sign = "+" if amt >= 0 else "-"
 
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
 
-        lines.append(f"{sid} {fmt_num(amt)} <i>{note}</i>")
-        #{sign}
-          
-
+        lines.append(f"{sid} {sign}{fmt_num(amt)} <i>{note}</i>")
+    
     if not recs_sorted:
         lines.append("Нет записей за этот день.")
 
     lines.append("")
-    lines.append(f"💰 <b>Итого: {fmt_num(total)}</b>")
+    lines.append(f"💰 <b>Итого: {sign}{fmt_num(total)}</b>")
 
     return "\n".join(lines), total
 
