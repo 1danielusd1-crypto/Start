@@ -316,19 +316,18 @@ def save_chat_json(chat_id: int):
 # ==========================================================
 # SECTION 6 — Number formatting & parsing (EU format, decimals)
 # ==========================================================
-
 def fmt_num(x):
     """
-    Европейский формат вывода:
-        1234.56  → 1.234,56
-        1234     → 1.234
-        1.2      → 1,2
+    Европейский формат вывода с обязательным знаком.
+    Примеры:
+        +1234.56 → ➕ 1.234,56
+        -800     → ➖ 800
+        0        → ➕ 0
     """
 
-    negative = x < 0
+    sign = "+" if x >= 0 else "-"
     x = abs(x)
 
-    # Приводим к нормальному строковому виду:
     s = f"{x:.12f}".rstrip("0").rstrip(".")
 
     if "." in s:
@@ -336,17 +335,16 @@ def fmt_num(x):
     else:
         int_part, dec_part = s, ""
 
-    # Формируем тысячные (точка)
     int_part = f"{int(int_part):,}".replace(",", ".")
 
-    # Склеиваем
     if dec_part:
         s = f"{int_part},{dec_part}"
     else:
         s = int_part
 
-    return s
+    return f"{sign} {s}"
 
+    
 
 # регулярка на первое число даже внутри слов
 num_re = re.compile(r"[+\-–]?\s*\d[\d\s.,_'’]*")
@@ -906,15 +904,13 @@ def render_day_window(chat_id: int, day_key: str):
     for r in recs_sorted:
         amt = r["amount"]
         total += amt
-        sign = "+" if amt >= 0 else "-"
+        #sign = "+" if amt >= 0 else "-"
 
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
 
-        lines.append(f"{sid} {sign}{fmt_num(amt)} <i>{note}</i>")
-        #{sign}
-          
-
+        lines.append(f"{sid} {fmt_num(amt)} <i>{note}</i>")
+        
     if not recs_sorted:
         lines.append("Нет записей за этот день.")
 
