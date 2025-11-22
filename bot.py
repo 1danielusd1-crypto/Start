@@ -919,7 +919,7 @@ def render_day_window(chat_id: int, day_key: str):
         lines.append("Нет записей за этот день.")
 
     lines.append("")
-    lines.append(f"💰 <b>Итого:{sign}{fmt_num(total)}</b>")
+    lines.append(f"💰 <b>Итого:{fmt_num(total)}</b>")
 
     return "\n".join(lines), total
 
