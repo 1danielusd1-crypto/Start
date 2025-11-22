@@ -906,7 +906,7 @@ def render_day_window(chat_id: int, day_key: str):
     for r in recs_sorted:
         amt = r["amount"]
         total += amt
-        sign = "+" if amt >= 0 else "-"
+        sign = "🔵" if amt >= 0 else "🔴"
 
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
@@ -1128,7 +1128,8 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
     store["balance"] = sum(x["amount"] for x in store["records"])
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
     store["next_id"] = rid + 1
-
+    
+    update_or_send_day_window(chat_id, today_key())
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
@@ -1160,6 +1161,7 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     data["records"] = [x if x["id"] != rid else found for x in data["records"]]
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
+    update_or_send_day_window(chat_id, today_key())
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
@@ -1183,6 +1185,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     data["records"] = [x for x in data["records"] if x["id"] != rid]
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
+    update_or_send_day_window(chat_id, today_key())
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
@@ -1933,7 +1936,8 @@ def handle_text(msg):
             day_key = wait.get("day_key")
             txt, _ = render_day_window(chat_id, day_key)
             kb = build_main_keyboard(day_key, chat_id)
-            bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+            #bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+            update_or_send_day_window(chat_id, day_key)
             return
 
         if wait and wait.get("type") == "edit":
@@ -1959,6 +1963,7 @@ def handle_text(msg):
         if text.upper() == "ДА":
             reset_chat_data(chat_id)
             bot.send_message(chat_id, "🔄 Данные чата обнулены.")
+            #
             return
 
     except Exception as e:
