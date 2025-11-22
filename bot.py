@@ -342,7 +342,7 @@ def fmt_num(x):
     else:
         s = int_part
 
-    return f"{sign} {s}"
+    return f"{sign}{s}"
 
     
 
@@ -1010,25 +1010,29 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
 
     return kb
 
-
 def build_forward_chat_list(day_key: str, chat_id: int):
     """
     Меню выбора чата для пересылки.
+    Теперь список берём из known_chats владельца (все чаты, где был бот).
     """
     kb = types.InlineKeyboardMarkup()
 
-    chats = data.get("chats", {})
+    if not OWNER_ID:
+        return kb
+
+    # берем ВСЕ чаты, где бот видел сообщения
+    owner_store = get_chat_store(int(OWNER_ID))
+    known = owner_store.get("known_chats", {})
+
     rules = data.get("forward_rules", {})
 
-    for cid, store in chats.items():
+    for cid, info in known.items():
         try:
             int_cid = int(cid)
         except:
             continue
 
-        info = store.get("info", {})
         title = info.get("title") or f"Чат {cid}"
-
         cur_mode = rules.get(str(chat_id), {}).get(cid)
 
         if cur_mode == "oneway_to":
@@ -1051,7 +1055,6 @@ def build_forward_chat_list(day_key: str, chat_id: int):
         types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
     )
     return kb
-
 
 def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int):
     """
