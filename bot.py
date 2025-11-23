@@ -1,4 +1,5 @@
-# Code_022.5-FINAL-FIX
+# Code_022.6 доп. пересылка а🔁B
+# • доп. пересылка а🔁B
 # • ручное востановление
 # • пересылка всех типов сообщений
 # • вывод значений расширенный
@@ -57,7 +58,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_022.5final-fix"
+VERSION = "Code_022.6 доп. пересылка а🔁B"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -723,66 +724,41 @@ def persist_forward_rules_to_owner():
 # ==========================================================
 # SECTION 10 — Работа с forward_rules (логика пересылки)
 # ==========================================================
+# ==========================================================
+# SECTION 10 — Общая логика forward_rules (для обеих систем)
+# ==========================================================
 
-def resolve_forward_targets(source_chat_id: int) -> list[tuple[int, str]]:
-    """
-    Возвращает список кортежей:
-        (целевой_чат_id, режим)
-    """
-    fr = data.get("forward_rules", {}) or {}
-    out = []
-
+def resolve_forward_targets(source_chat_id: int):
+    fr = data.get("forward_rules", {})
     src = str(source_chat_id)
     if src not in fr:
-        return out
-
+        return []
+    out = []
     for dst, mode in fr[src].items():
         try:
-            dst_id = int(dst)
+            out.append((int(dst), mode))
         except:
             continue
-
-        if mode == "oneway_to":
-            out.append((dst_id, "oneway_to"))
-        elif mode == "oneway_from":
-            continue
-        elif mode == "twoway":
-            out.append((dst_id, "twoway"))
-
     return out
 
 
-def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str = "oneway_to"):
-    """
-    Добавляет пересылку:
-        mode ∈ {"oneway_to", "oneway_from", "twoway"}
-    """
+def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     fr = data.setdefault("forward_rules", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
-
-    node = fr.setdefault(src, {})
-    node[dst] = mode
-
-    persist_forward_rules_to_owner()
+    fr.setdefault(src, {})[dst] = mode
     save_data(data)
 
 
 def remove_forward_link(src_chat_id: int, dst_chat_id: int):
-    """Удаляет конкретную связь src→dst (любой режим)."""
-    fr = data.get("forward_rules", {}) or {}
+    fr = data.get("forward_rules", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
-
     if src in fr and dst in fr[src]:
         del fr[src][dst]
-
     if src in fr and not fr[src]:
         del fr[src]
-
-    persist_forward_rules_to_owner()
     save_data(data)
-
 
 def clear_forward_all():
     """Полностью отключает всю пересылку."""
@@ -997,7 +973,9 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         kb.row(
             types.InlineKeyboardButton("🔁 Пересылка ↔️", callback_data=f"d:{day_key}:forward_menu")
         )
-
+    kb.row(
+        types.InlineKeyboardButton("🔀 Пересылка A ↔ B", callback_data="fw_open")
+    )
     kb.row(
         types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open"),
         types.InlineKeyboardButton("📆 Выбрать день", callback_data=f"d:{day_key}:pick_date")
@@ -1103,7 +1081,124 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
     )
 
     return kb
+# ==========================================================
+# SECTION 12.1 — NEW FORWARD SYSTEM (Chat A ↔ B)
+# ==========================================================
 
+def build_forward_source_menu():
+    kb = types.InlineKeyboardMarkup()
+    owner_store = get_chat_store(int(OWNER_ID))
+    known = owner_store.get("known_chats", {})
+    for cid, ch in known.items():
+        title = ch.get("title") or f"Чат {cid}"
+        kb.row(types.InlineKeyboardButton(title, callback_data=f"fw_src:{cid}"))
+    return kb
+
+
+def build_forward_target_menu(src_id: int):
+    kb = types.InlineKeyboardMarkup()
+    owner_store = get_chat_store(int(OWNER_ID))
+    known = owner_store.get("known_chats", {})
+
+    for cid, ch in known.items():
+        if int(cid) == src_id:
+            continue
+        title = ch.get("title") or f"Чат {cid}"
+        kb.row(types.InlineKeyboardButton(title, callback_data=f"fw_tgt:{src_id}:{cid}"))
+
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src"))
+    return kb
+
+
+def build_forward_mode_menu(A: int, B: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton(f"➡️ {A} → {B}", callback_data=f"fw_mode:{A}:{B}:to"))
+    kb.row(types.InlineKeyboardButton(f"⬅️ {B} → {A}", callback_data=f"fw_mode:{A}:{B}:from"))
+    kb.row(types.InlineKeyboardButton(f"↔️ {A} ⇄ {B}", callback_data=f"fw_mode:{A}:{B}:two"))
+    kb.row(types.InlineKeyboardButton(f"❌ Удалить связь A-B", callback_data=f"fw_mode:{A}:{B}:del"))
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fw_back_tgt:{A}"))
+    return kb
+
+
+def apply_forward_mode(A: int, B: int, mode: str):
+    if mode == "to":
+        add_forward_link(A, B, "oneway_to")
+    elif mode == "from":
+        add_forward_link(B, A, "oneway_to")
+    elif mode == "two":
+        add_forward_link(A, B, "twoway")
+        add_forward_link(B, A, "twoway")
+    elif mode == "del":
+        remove_forward_link(A, B)
+        remove_forward_link(B, A)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("fw_"))
+def on_forward_callback(call):
+    data = call.data
+    chat_id = call.message.chat.id
+
+    # Выбор чата A
+    if data.startswith("fw_src:"):
+        A = int(data.split(":")[1])
+        kb = build_forward_target_menu(A)
+        bot.edit_message_text(
+            f"Источник пересылки: {A}\nВыберите чат B:",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+
+    # Выбор чата B
+    if data.startswith("fw_tgt:"):
+        _, A, B = data.split(":")
+        A, B = int(A), int(B)
+        kb = build_forward_mode_menu(A, B)
+        bot.edit_message_text(
+            f"Настройка пересылки: {A} ↔ {B}",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+
+    # Выбор режима
+    if data.startswith("fw_mode:"):
+        _, A, B, mode = data.split(":")
+        A, B = int(A), int(B)
+        apply_forward_mode(A, B, mode)
+        kb = build_forward_source_menu()
+        bot.edit_message_text(
+            "Маршрут обновлён.\nВыберите чат A:",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+
+    # Назад к выбору A
+    if data == "fw_back_src":
+        kb = build_forward_source_menu()
+        bot.edit_message_text(
+            "Выберите чат A:",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+
+    # Назад к выбору B
+    if data.startswith("fw_back_tgt:"):
+        A = int(data.split(":")[1])
+        kb = build_forward_target_menu(A)
+        bot.edit_message_text(
+            "Выберите чат B:",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
 # ==========================================================
 # SECTION 13 — Add / Update / Delete (версия код-010)
 # ==========================================================
@@ -1287,6 +1382,16 @@ def on_callback(call):
     Универсальный обработчик всех callback_data.
     """
     try:
+                # NEW FORWARD SYSTEM — open source chat selection
+        if call.data == "fw_open":
+            kb = build_forward_source_menu()
+            bot.edit_message_text(
+                "Выберите чат A:",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
+            return
         data_str = call.data or ""
         chat_id = call.message.chat.id
 
