@@ -2173,7 +2173,58 @@ def cmd_off_channel(msg):
     save_data(data)
     send_info(msg.chat.id, "📡 Бэкап в канал выключен")
     
-    
+ # ==========================================================
+# SECTION 17 — BACKUP (GDRIVE + CHANNEL)
+# ==========================================================
+
+...код...
+
+# ==========================================================
+# SECTION 17.5 — ChatID Discovery (my_chat_member handler)
+# ==========================================================
+
+@bot.my_chat_member_handler()
+def handle_my_chat_member(event):
+    """
+    Детектор всех чатов, где находится бот.
+    Работает даже если никто не писал сообщения.
+    """
+    try:
+        chat = event.chat
+        chat_id = chat.id
+        chat_title = chat.title or f"Чат {chat_id}"
+        chat_type = chat.type
+
+        log_info(f"CHAT_DISCOVERY: бот замечен в чате {chat_id} ({chat_title}), type={chat_type}")
+
+        # --- 1. Обновляем info чата ---
+        store = get_chat_store(chat_id)
+        info = store.setdefault("info", {})
+        info["title"] = chat_title
+        info["type"] = chat_type
+        info["username"] = getattr(chat, "username", None)
+        save_chat_json(chat_id)
+
+        # --- 2. Добавляем в known_chats владельца ---
+        if OWNER_ID and str(chat_id) != str(OWNER_ID):
+            owner_store = get_chat_store(int(OWNER_ID))
+            kc = owner_store.setdefault("known_chats", {})
+            kc[str(chat_id)] = {
+                "title": chat_title,
+                "username": getattr(chat, "username", None),
+                "type": chat_type,
+            }
+            save_chat_json(int(OWNER_ID))
+
+            log_info(f"CHAT_DISCOVERY: добавлен в known_chats владельца {OWNER_ID}")
+
+    except Exception as e:
+        log_error(f"handle_my_chat_member error: {e}")
+
+
+# ==========================================================
+# SECTION 18 — Text handler
+# ==========================================================
     
     #🔵🔵🔵🔵🔵🔵🔵
 # ==========================================================
