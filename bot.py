@@ -1086,52 +1086,145 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
 # ==========================================================
 
 def build_forward_source_menu():
+    """
+    Меню выбора чата A (источник пересылки).
+    Использует known_chats владельца.
+    """
     kb = types.InlineKeyboardMarkup()
+
+    if not OWNER_ID:
+        return kb
+
     owner_store = get_chat_store(int(OWNER_ID))
     known = owner_store.get("known_chats", {})
+
     for cid, ch in known.items():
         title = ch.get("title") or f"Чат {cid}"
-        kb.row(types.InlineKeyboardButton(title, callback_data=f"fw_src:{cid}"))
+        kb.row(
+            types.InlineKeyboardButton(
+                title,
+                callback_data=f"fw_src:{cid}"
+            )
+        )
+
+    # Назад → возврат в меню редактирования
+    kb.row(
+        types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root")
+    )
+
     return kb
 
 
 def build_forward_target_menu(src_id: int):
+    """
+    Меню выбора чата B (получатель пересылки) для уже выбранного A.
+    """
     kb = types.InlineKeyboardMarkup()
+
+    if not OWNER_ID:
+        return kb
+
     owner_store = get_chat_store(int(OWNER_ID))
     known = owner_store.get("known_chats", {})
 
     for cid, ch in known.items():
-        if int(cid) == src_id:
+        try:
+            int_cid = int(cid)
+        except Exception:
             continue
-        title = ch.get("title") or f"Чат {cid}"
-        kb.row(types.InlineKeyboardButton(title, callback_data=f"fw_tgt:{src_id}:{cid}"))
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src"))
+        if int_cid == src_id:
+            continue
+
+        title = ch.get("title") or f"Чат {cid}"
+        kb.row(
+            types.InlineKeyboardButton(
+                title,
+                callback_data=f"fw_tgt:{src_id}:{cid}"
+            )
+        )
+
+    # Назад → обратно к выбору A
+    kb.row(
+        types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src")
+    )
+
     return kb
 
 
 def build_forward_mode_menu(A: int, B: int):
+    """
+    Меню выбора режима пересылки между чатами A и B:
+        ➡️ A → B
+        ⬅️ B → A
+        ↔️ двусторонняя
+        ❌ удалить связь
+        🔙 назад (к выбору B)
+    """
     kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton(f"➡️ {A} → {B}", callback_data=f"fw_mode:{A}:{B}:to"))
-    kb.row(types.InlineKeyboardButton(f"⬅️ {B} → {A}", callback_data=f"fw_mode:{A}:{B}:from"))
-    kb.row(types.InlineKeyboardButton(f"↔️ {A} ⇄ {B}", callback_data=f"fw_mode:{A}:{B}:two"))
-    kb.row(types.InlineKeyboardButton(f"❌ Удалить связь A-B", callback_data=f"fw_mode:{A}:{B}:del"))
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fw_back_tgt:{A}"))
+
+    kb.row(
+        types.InlineKeyboardButton(
+            f"➡️ {A} → {B}",
+            callback_data=f"fw_mode:{A}:{B}:to"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            f"⬅️ {B} → {A}",
+            callback_data=f"fw_mode:{A}:{B}:from"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            f"↔️ {A} ⇄ {B}",
+            callback_data=f"fw_mode:{A}:{B}:two"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            "❌ Удалить связь A-B",
+            callback_data=f"fw_mode:{A}:{B}:del"
+        )
+    )
+
+    # Назад → обратно к выбору B для A
+    kb.row(
+        types.InlineKeyboardButton(
+            "🔙 Назад",
+            callback_data=f"fw_back_tgt:{A}"
+        )
+    )
+
     return kb
 
 
 def apply_forward_mode(A: int, B: int, mode: str):
+    """
+    Применяет выбранный режим пересылки между чатами A и B.
+    Использует общие функции add_forward_link / remove_forward_link.
+    """
     if mode == "to":
+        # только A → B
         add_forward_link(A, B, "oneway_to")
-    elif mode == "from":
-        add_forward_link(B, A, "oneway_to")
-    elif mode == "two":
-        add_forward_link(A, B, "twoway")
-        add_forward_link(B, A, "twoway")
-    elif mode == "del":
-        remove_forward_link(A, B)
         remove_forward_link(B, A)
 
+    elif mode == "from":
+        # только B → A
+        add_forward_link(B, A, "oneway_to")
+        remove_forward_link(A, B)
+
+    elif mode == "two":
+        # двусторонняя пересылка
+        add_forward_link(A, B, "twoway")
+        add_forward_link(B, A, "twoway")
+
+    elif mode == "del":
+        # полностью удалить связь (в обе стороны)
+        remove_forward_link(A, B)
+        remove_forward_link(B, A)
+        
+#🟠🟠🟠🟠🟠🟠🟠🟠🟠
 #🟠🟠🟠🟠🟠🟠🟠🟠🟠
 # ==========================================================
 # SECTION 16 — Callback handler
@@ -1139,25 +1232,154 @@ def apply_forward_mode(A: int, B: int, mode: str):
 
 @bot.callback_query_handler(func=lambda c: True)
 def on_callback(call):
+    """
+    Универсальный обработчик всех callback_data:
+      • fw_*  — новое меню пересылки A ↔ B (только для владельца)
+      • c:*   — календарь
+      • d:*   — команды окна дня, редактирование, старое меню пересылки
+    """
     try:
-        # сначала обрабатываем кнопку "Пересылка A ↔ B"
-        if call.data == "fw_open":
-            kb = build_forward_source_menu()
-            bot.edit_message_text(
-                "Выберите чат A:",
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=kb
-            )
-            return
-
-        # если это другая команда fw_, передаём её on_forward_callback
-        if call.data.startswith("fw_"):
-            return
-            
         data_str = call.data or ""
         chat_id = call.message.chat.id
 
+        # --------------------------------------------------
+        # 1) NEW FORWARD SYSTEM — все callback-и fw_*
+        # --------------------------------------------------
+        if data_str.startswith("fw_"):
+            # меню пересылки доступно только владельцу
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                try:
+                    bot.answer_callback_query(
+                        call.id,
+                        "Меню пересылки доступно только владельцу.",
+                        show_alert=True
+                    )
+                except Exception:
+                    pass
+                return
+
+            # открыть выбор чата A
+            if data_str == "fw_open":
+                kb = build_forward_source_menu()
+                bot.edit_message_text(
+                    "Выберите чат A:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # назад из выбора A → обратно в меню редактирования
+            if data_str == "fw_back_root":
+                owner_store = get_chat_store(int(OWNER_ID))
+                day_key = owner_store.get("current_view_day", today_key())
+
+                kb = build_edit_menu_keyboard(day_key, chat_id)
+                try:
+                    bot.edit_message_text(
+                        f"Меню редактирования для {day_key}:",
+                        chat_id=chat_id,
+                        message_id=call.message.message_id,
+                        reply_markup=kb
+                    )
+                except Exception:
+                    bot.send_message(
+                        chat_id,
+                        f"Меню редактирования для {day_key}:",
+                        reply_markup=kb
+                    )
+                return
+
+            # назад из выбора B → снова выбор A
+            if data_str == "fw_back_src":
+                kb = build_forward_source_menu()
+                bot.edit_message_text(
+                    "Выберите чат A:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # назад из выбора режима → снова выбор B для A
+            if data_str.startswith("fw_back_tgt:"):
+                try:
+                    A = int(data_str.split(":", 1)[1])
+                except Exception:
+                    return
+                kb = build_forward_target_menu(A)
+                bot.edit_message_text(
+                    f"Источник пересылки: {A}\nВыберите чат B:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # выбор чата A
+            if data_str.startswith("fw_src:"):
+                try:
+                    A = int(data_str.split(":", 1)[1])
+                except Exception:
+                    return
+                kb = build_forward_target_menu(A)
+                bot.edit_message_text(
+                    f"Источник пересылки: {A}\nВыберите чат B:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # выбор чата B для A
+            if data_str.startswith("fw_tgt:"):
+                parts = data_str.split(":")
+                if len(parts) != 3:
+                    return
+                _, A_str, B_str = parts
+                try:
+                    A = int(A_str)
+                    B = int(B_str)
+                except Exception:
+                    return
+
+                kb = build_forward_mode_menu(A, B)
+                bot.edit_message_text(
+                    f"Настройка пересылки: {A} ⇄ {B}",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # выбор режима пересылки между A и B
+            if data_str.startswith("fw_mode:"):
+                parts = data_str.split(":")
+                if len(parts) != 4:
+                    return
+                _, A_str, B_str, mode = parts
+                try:
+                    A = int(A_str)
+                    B = int(B_str)
+                except Exception:
+                    return
+
+                apply_forward_mode(A, B, mode)
+                kb = build_forward_source_menu()
+                bot.edit_message_text(
+                    "Маршрут обновлён.\nВыберите чат A:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # на всякий случай
+            return
+
+        # --------------------------------------------------
+        # 2) КАЛЕНДАРЬ (c:YYYY-MM-DD)
+        # --------------------------------------------------
         if data_str.startswith("c:"):
             center = data_str[2:]
             try:
@@ -1166,26 +1388,31 @@ def on_callback(call):
                 return
 
             kb = build_calendar_keyboard(center_dt)
-
             try:
                 bot.edit_message_reply_markup(
                     chat_id=chat_id,
                     message_id=call.message.message_id,
                     reply_markup=kb
                 )
-            except:
+            except Exception:
                 pass
             return
 
+        # --------------------------------------------------
+        # 3) ОКНО ДНЯ / РЕДАКТИРОВАНИЕ / СТАРОЕ МЕНЮ ПЕРЕСЫЛКИ
+        # --------------------------------------------------
         if not data_str.startswith("d:"):
             return
 
         _, day_key, cmd = data_str.split(":", 2)
         store = get_chat_store(chat_id)
 
+        # открытие конкретного дня
         if cmd == "open":
             txt, _ = render_day_window(chat_id, day_key)
             kb = build_main_keyboard(day_key, chat_id)
+
+            store["current_view_day"] = day_key
 
             bot.edit_message_text(
                 txt,
@@ -1197,34 +1424,52 @@ def on_callback(call):
             set_active_window_id(chat_id, day_key, call.message.message_id)
             return
 
+        # предыдущий день
         if cmd == "prev":
             d = datetime.strptime(day_key, "%Y-%m-%d") - timedelta(days=1)
             nd = d.strftime("%Y-%m-%d")
             txt, _ = render_day_window(chat_id, nd)
             kb = build_main_keyboard(nd, chat_id)
-            bot.edit_message_text(txt, chat_id, call.message.message_id,
-                                  reply_markup=kb, parse_mode="HTML")
+
+            store["current_view_day"] = nd
+
+            bot.edit_message_text(
+                txt,
+                chat_id,
+                call.message.message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
             set_active_window_id(chat_id, nd, call.message.message_id)
             return
 
+        # следующий день
         if cmd == "next":
             d = datetime.strptime(day_key, "%Y-%m-%d") + timedelta(days=1)
             nd = d.strftime("%Y-%m-%d")
             txt, _ = render_day_window(chat_id, nd)
             kb = build_main_keyboard(nd, chat_id)
-            bot.edit_message_text(txt, chat_id, call.message.message_id,
-                                  reply_markup=kb, parse_mode="HTML")
+
+            store["current_view_day"] = nd
+
+            bot.edit_message_text(
+                txt,
+                chat_id,
+                call.message.message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
             set_active_window_id(chat_id, nd, call.message.message_id)
             return
 
+        # показать календарь
         if cmd == "calendar":
             try:
                 cdt = datetime.strptime(day_key, "%Y-%m-%d")
-            except:
+            except Exception:
                 cdt = now_local()
 
             kb = build_calendar_keyboard(cdt)
-
             bot.edit_message_reply_markup(
                 chat_id=chat_id,
                 message_id=call.message.message_id,
@@ -1232,6 +1477,7 @@ def on_callback(call):
             )
             return
 
+        # отчёт по дням
         if cmd == "report":
             lines = ["📊 Отчёт:"]
             for dk, recs in sorted(store.get("daily_records", {}).items()):
@@ -1240,6 +1486,7 @@ def on_callback(call):
             bot.send_message(chat_id, "\n".join(lines))
             return
 
+        # общий итог
         if cmd == "total":
             chat_bal = store.get("balance", 0)
             overall = data.get("overall_balance", 0)
@@ -1252,10 +1499,11 @@ def on_callback(call):
             )
             return
 
+        # справка
         if cmd == "info":
             try:
                 bot.answer_callback_query(call.id)
-            except:
+            except Exception:
                 pass
 
             info_text = (
@@ -1271,7 +1519,6 @@ def on_callback(call):
                 "/json — выгрузка JSON\n"
                 "/reset — обнулить данные\n"
                 "/ping — проверка\n"
-                "/help — помощь\n"
                 "/backup_gdrive_on / off — включить/выключить GDrive\n"
                 "/backup_channel_on / off — включить/выключить бэкап в канал\n"
                 "/stopforward — отключить пересылку\n"
@@ -1280,7 +1527,9 @@ def on_callback(call):
             bot.send_message(chat_id, info_text)
             return
 
+        # меню редактирования
         if cmd == "edit_menu":
+            store["current_view_day"] = day_key
             kb = build_edit_menu_keyboard(day_key, chat_id)
             bot.edit_message_reply_markup(
                 chat_id=chat_id,
@@ -1289,7 +1538,9 @@ def on_callback(call):
             )
             return
 
+        # назад к основному окну дня
         if cmd == "back_main":
+            store["current_view_day"] = day_key
             txt, _ = render_day_window(chat_id, day_key)
             kb = build_main_keyboard(day_key, chat_id)
             bot.edit_message_text(
@@ -1301,20 +1552,24 @@ def on_callback(call):
             )
             return
 
+        # общий CSV
         if cmd == "csv_all":
             cmd_csv_all(chat_id)
             return
 
+        # CSV за день
         if cmd == "csv_day":
             cmd_csv_day(chat_id, day_key)
             return
 
+        # добавление записи
         if cmd == "add":
             store["edit_wait"] = {"type": "add", "day_key": day_key}
             save_data(data)
             bot.send_message(chat_id, "Введите сумму и комментарий: +500 Пример")
             return
 
+        # список записей для редактирования
         if cmd == "edit_list":
             day_recs = store.get("daily_records", {}).get(day_key, [])
             if not day_recs:
@@ -1338,6 +1593,7 @@ def on_callback(call):
             bot.send_message(chat_id, "Выберите запись:", reply_markup=kb2)
             return
 
+        # выбор конкретной записи для редактирования
         if cmd.startswith("edit_rec_"):
             rid = int(cmd.split("_")[-1])
             store["edit_wait"] = {"type": "edit", "day_key": day_key, "rid": rid}
@@ -1345,6 +1601,7 @@ def on_callback(call):
             bot.send_message(chat_id, f"Введите новую сумму и текст для записи R{rid}:")
             return
 
+        # СТАРОЕ МЕНЮ ПЕРЕСЫЛКИ (на базе day_key)
         if cmd == "forward_menu":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 bot.send_message(chat_id, "Меню доступно только владельцу.")
@@ -1361,9 +1618,7 @@ def on_callback(call):
 
         if cmd.startswith("fw_cfg_"):
             tgt = int(cmd.split("_")[-1])
-
             kb = build_forward_direction_menu(day_key, chat_id, tgt)
-
             bot.edit_message_text(
                 f"Настройка пересылки для чата {tgt}:",
                 chat_id=chat_id,
@@ -1399,6 +1654,7 @@ def on_callback(call):
             bot.send_message(chat_id, f"Все связи с {tgt} удалены.")
             return
 
+        # выбор даты вручную
         if cmd == "pick_date":
             bot.send_message(chat_id, "Введите дату:\n/view YYYY-MM-DD")
             return
@@ -1406,72 +1662,7 @@ def on_callback(call):
     except Exception as e:
         log_error(f"on_callback error: {e}")
         
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fw_"))
-def on_forward_callback(call):
-    data = call.data
-    chat_id = call.message.chat.id
 
-    # Выбор чата A
-    if data.startswith("fw_src:"):
-        A = int(data.split(":")[1])
-        kb = build_forward_target_menu(A)
-        bot.edit_message_text(
-            f"Источник пересылки: {A}\nВыберите чат B:",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    # Выбор чата B
-    if data.startswith("fw_tgt:"):
-        _, A, B = data.split(":")
-        A, B = int(A), int(B)
-        kb = build_forward_mode_menu(A, B)
-        bot.edit_message_text(
-            f"Настройка пересылки: {A} ↔ {B}",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    # Выбор режима
-    if data.startswith("fw_mode:"):
-        _, A, B, mode = data.split(":")
-        A, B = int(A), int(B)
-        apply_forward_mode(A, B, mode)
-        kb = build_forward_source_menu()
-        bot.edit_message_text(
-            "Маршрут обновлён.\nВыберите чат A:",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    # Назад к выбору A
-    if data == "fw_back_src":
-        kb = build_forward_source_menu()
-        bot.edit_message_text(
-            "Выберите чат A:",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    # Назад к выбору B
-    if data.startswith("fw_back_tgt:"):
-        A = int(data.split(":")[1])
-        kb = build_forward_target_menu(A)
-        bot.edit_message_text(
-            "Выберите чат B:",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
 # ==========================================================
 # SECTION 13 — Add / Update / Delete (версия код-010)
 # ==========================================================
