@@ -2557,7 +2557,8 @@ def handle_edited_text(msg):
     update_or_send_day_window(chat_id, day_key)
     
 #9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣
-# ==========================================================
+    #9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣
+    # ==========================================================
 # SECTION 19 — WEBHOOK, KEEP-ALIVE, FLASK SERVER
 # ==========================================================
 
@@ -2588,7 +2589,7 @@ def set_webhook():
         log_info("APP_URL пуст — запускаем polling.")
         return False
 
-    wh_url = f"{APP_URL.rstrip('/')}/{BOT_TOKEN}"
+    wh_url = f"{APP_URL}/{BOT_TOKEN}"
     try:
         bot.remove_webhook()
         time.sleep(1)
@@ -2658,6 +2659,15 @@ def startup():
         log_info("Polling без webhook.")
         bot.infinity_polling(skip_pending=True)
         
-  
+    # 6) Уведомление владельца о запуске
+    if OWNER_ID:
+        try:
+            bot.send_message(
+                int(OWNER_ID),
+                f"🤖 Бот запущен!\nВерсия: {VERSION}\nВремя: {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        except Exception as e:
+            log_error(f"Cannot notify owner on startup: {e}")
+
 if __name__ == "__main__":
     startup()
