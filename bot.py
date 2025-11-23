@@ -2260,16 +2260,16 @@ def handle_text(msg):
                         added_any = True
 
                 # 2) СНАЧАЛА обновляем окно дня
+                # 2) Создаём новое окно и сохраняем как активное
                 if added_any:
-                    #update_or_send_day_window(chat_id, day_key)
                         txt, _ = render_day_window(chat_id, day_key)
                         kb = build_main_keyboard(day_key, chat_id)
-                        bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-                        # <<< ВОТ ЭТО КРИТИЧЕСКОЕ ДОБАВЛЕНИЕ >>>
-                        store = get_chat_store(chat_id)
-                        store.setdefault("active_messages", {})[day_key] = msg2.message_id
-                        save_chat_json(chat_id)
 
+                        sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+
+                        # Запоминаем msg_id нового окна
+                        set_active_window_id(chat_id, day_key, sent.message_id)
+                        
                 # 3) ПОТОМ выполняем сохранение и бэкап
                 store["balance"] = sum(x["amount"] for x in store["records"])
 
