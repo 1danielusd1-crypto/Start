@@ -891,7 +891,7 @@ def render_day_window(chat_id: int, day_key: str):
         lines.append("Нет записей за этот день.")
 
     lines.append("")
-    lines.append(f"💰 <b>Итого:{fmt_num(total)}</b>")
+    lines.append(f"💰 <b>остаток:{fmt_num(total)}</b>")
 
     return "\n".join(lines), total
 
@@ -1482,7 +1482,7 @@ def on_callback(call):
             lines = ["📊 Отчёт:"]
             for dk, recs in sorted(store.get("daily_records", {}).items()):
                 s = sum(r["amount"] for r in recs)
-                lines.append(f"{dk}: {fmt_num(s)}")
+                lines.append(f"{dk}: ост:{fmt_num(s)}")
             bot.send_message(chat_id, "\n".join(lines))
             return
 
@@ -1493,8 +1493,8 @@ def on_callback(call):
             bot.send_message(
                 chat_id,
                 f"💰 <b>Общий итог</b>\n\n"
-                f"• По этому чату: <b>{fmt_num(chat_bal)}</b>\n"
-                f"• По всем чатам: <b>{fmt_num(overall)}</b>",
+                f"• По этому чату ОСТ: <b>{fmt_num(chat_bal)}</b>\n"
+                f"• По всем чатам ОСТ: <b>{fmt_num(overall)}</b>",
                 parse_mode="HTML"
             )
             return
@@ -1853,7 +1853,7 @@ def send_info(chat_id: int, text: str):
         log_error(f"send_info: {e}")
 
 
-@bot.message_handler(commands=["поехали"])
+@bot.message_handler(commands=["ok"])
 def cmd_enable_finance(msg):
     chat_id = msg.chat.id
     set_finance_mode(chat_id, True)
@@ -2176,8 +2176,6 @@ def cmd_off_channel(msg):
  # ==========================================================
 # SECTION 17 — BACKUP (GDRIVE + CHANNEL)
 # ==========================================================
-
-...код...
 
 # ==========================================================
 # SECTION 17.5 — ChatID Discovery (my_chat_member handler)
