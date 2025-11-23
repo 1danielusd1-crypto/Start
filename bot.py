@@ -2261,10 +2261,10 @@ def handle_text(msg):
 
                 # 2) СНАЧАЛА обновляем окно дня
                 if added_any:
-                    update_or_send_day_window(chat_id, day_key)
-                        #txt, _ = render_day_window(chat_id, day_key)
-                        #kb = build_main_keyboard(day_key, chat_id)
-                        #bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                    #update_or_send_day_window(chat_id, day_key)
+                        txt, _ = render_day_window(chat_id, day_key)
+                        kb = build_main_keyboard(day_key, chat_id)
+                        bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
 
                 # 3) ПОТОМ выполняем сохранение и бэкап
                 store["balance"] = sum(x["amount"] for x in store["records"])
