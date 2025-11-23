@@ -1382,7 +1382,7 @@ def on_callback(call):
     Универсальный обработчик всех callback_data.
     """
     try:
-                # NEW FORWARD SYSTEM — open source chat selection
+        # NEW FORWARD SYSTEM — open source chat selection
         if call.data == "fw_open":
             kb = build_forward_source_menu()
             bot.edit_message_text(
@@ -1391,6 +1391,10 @@ def on_callback(call):
                 message_id=call.message.message_id,
                 reply_markup=kb
             )
+            return
+                # Если это fw_ — НЕ обрабатываем здесь,
+        # отдаём управление второму обработчику (on_forward_callback)
+        if call.data.startswith("fw_"):
             return
         data_str = call.data or ""
         chat_id = call.message.chat.id
