@@ -2502,53 +2502,6 @@ def handle_document(msg):
 # SECTION 18.3 — EDITED MESSAGE HANDLER (изменение исходных сообщений)
 # ==========================================================
 
-@bot.edited_message_handler(content_types=["text"])
-def handle_edited_text(msg):
-    """
-    Позволяет исправлять финансовую запись просто изменив своё сообщение в чате.
-    Поиск записи ведётся по message_id.
-    """
-    chat_id = msg.chat.id
-    message_id = msg.message_id
-    new_text = msg.text.strip()
-
-    update_chat_info_from_message(msg)
-
-    # restore-mode → правки запрещены
-    if restore_mode:
-        return
-
-    # финансовый режим выключен → игнорировать
-    if not is_finance_mode(chat_id):
-        return
-
-    store = get_chat_store(chat_id)
-    day_key = today_key()
-
-    # ищем запись в daily_records
-    day_recs = store.get("daily_records", {}).get(day_key, [])
-    target = None
-    for r in day_recs:
-        if r.get("msg_id") == message_id:
-            target = r
-            break
-
-    if not target:
-        return  # сообщение не является финансовой записью
-
-    # парсим новое сообщение
-    try:
-        amount, note = split_amount_and_note(new_text)
-    except Exception:
-        bot.send_message(chat_id, "Ошибка при обновлении. Введите сумму и текст.")
-        return
-
-    # обновляем запись
-    rid = target["id"]
-    update_record_in_chat(chat_id, rid, amount, note)
-
-    # обновляем окно
-    update_or_send_day_window(chat_id, day_key)
     
     #9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣9️⃣
     # ==========================================================
