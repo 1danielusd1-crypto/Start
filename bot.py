@@ -1132,245 +1132,6 @@ def apply_forward_mode(A: int, B: int, mode: str):
         remove_forward_link(A, B)
         remove_forward_link(B, A)
 
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fw_"))
-def on_forward_callback(call):
-    data = call.data
-    chat_id = call.message.chat.id
-
-    # Выбор чата A
-    if data.startswith("fw_src:"):
-        A = int(data.split(":")[1])
-        kb = build_forward_target_menu(A)
-        bot.edit_message_text(
-            f"Источник пересылки: {A}\nВыберите чат B:",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    # Выбор чата B
-    if data.startswith("fw_tgt:"):
-        _, A, B = data.split(":")
-        A, B = int(A), int(B)
-        kb = build_forward_mode_menu(A, B)
-        bot.edit_message_text(
-            f"Настройка пересылки: {A} ↔ {B}",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    # Выбор режима
-    if data.startswith("fw_mode:"):
-        _, A, B, mode = data.split(":")
-        A, B = int(A), int(B)
-        apply_forward_mode(A, B, mode)
-        kb = build_forward_source_menu()
-        bot.edit_message_text(
-            "Маршрут обновлён.\nВыберите чат A:",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    # Назад к выбору A
-    if data == "fw_back_src":
-        kb = build_forward_source_menu()
-        bot.edit_message_text(
-            "Выберите чат A:",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-
-    # Назад к выбору B
-    if data.startswith("fw_back_tgt:"):
-        A = int(data.split(":")[1])
-        kb = build_forward_target_menu(A)
-        bot.edit_message_text(
-            "Выберите чат B:",
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-        return
-# ==========================================================
-# SECTION 13 — Add / Update / Delete (версия код-010)
-# ==========================================================
-
-def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
-    store = get_chat_store(chat_id)
-
-    rid = store.get("next_id", 1)
-    rec = {
-        "id": rid,
-        "short_id": f"R{rid}",
-        "timestamp": now_local().isoformat(timespec="seconds"),
-        "amount": amount,
-        "note": note,
-        "owner": owner,
-    }
-
-    data.setdefault("records", []).append(rec)
-
-    store.setdefault("records", []).append(rec)
-    store.setdefault("daily_records", {}).setdefault(today_key(), []).append(rec)
-
-    store["balance"] = sum(x["amount"] for x in store["records"])
-    data["overall_balance"] = sum(x["amount"] for x in data["records"])
-    store["next_id"] = rid + 1
-
-    #update_or_send_day_window(chat_id)
-    save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
-
-    send_backup_to_channel(chat_id)
-
-
-def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str):
-    store = get_chat_store(chat_id)
-    found = None
-
-    for r in store.get("records", []):
-        if r["id"] == rid:
-            r["amount"] = new_amount
-            r["note"] = new_note
-            found = r
-            break
-
-    if not found:
-        return
-
-    for day, arr in store.get("daily_records", {}).items():
-        for r in arr:
-            if r["id"] == rid:
-                r.update(found)
-
-    store["balance"] = sum(x["amount"] for x in store["records"])
-
-    data["records"] = [x if x["id"] != rid else found for x in data["records"]]
-    data["overall_balance"] = sum(x["amount"] for x in data["records"])
-    
-    #update_or_send_day_window(chat_id)
-    save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
-    send_backup_to_channel(chat_id)
-
-
-def delete_record_in_chat(chat_id: int, rid: int):
-    store = get_chat_store(chat_id)
-
-    store["records"] = [x for x in store["records"] if x["id"] != rid]
-
-    for day, arr in list(store.get("daily_records", {}).items()):
-        arr2 = [x for x in arr if x["id"] != rid]
-        if arr2:
-            store["daily_records"][day] = arr2
-        else:
-            del store["daily_records"][day]
-
-    store["balance"] = sum(x["amount"] for x in store["records"])
-
-    data["records"] = [x for x in data["records"] if x["id"] != rid]
-    data["overall_balance"] = sum(x["amount"] for x in data["records"])
-
-    #update_or_send_day_window(chat_id)
-    save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
-    send_backup_to_channel(chat_id)
-
-# ==========================================================
-# SECTION 14 — Active window system (версия код-010)
-# ==========================================================
-
-def get_or_create_active_windows(chat_id: int) -> dict:
-    return data.setdefault("active_messages", {}).setdefault(str(chat_id), {})
-
-
-def set_active_window_id(chat_id: int, day_key: str, message_id: int):
-    aw = get_or_create_active_windows(chat_id)
-    aw[day_key] = message_id
-    save_data(data)
-
-
-def get_active_window_id(chat_id: int, day_key: str):
-    aw = get_or_create_active_windows(chat_id)
-    return aw.get(day_key)
-
-
-def delete_active_window_if_exists(chat_id: int, day_key: str):
-    mid = get_active_window_id(chat_id, day_key)
-    if not mid:
-        return
-    try:
-        bot.delete_message(chat_id, mid)
-    except:
-        pass
-
-    aw = get_or_create_active_windows(chat_id)
-    if day_key in aw:
-        del aw[day_key]
-    save_data(data)
-
-
-def update_or_send_day_window(chat_id: int, day_key: str):
-    """
-    Если окно дня существует — обновляем через edit.
-    Если нет — создаём.
-    """
-    txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
-
-    mid = get_active_window_id(chat_id, day_key)
-    if mid:
-        try:
-            bot.edit_message_text(
-                txt,
-                chat_id=chat_id,
-                message_id=mid,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-            return
-        except:
-            pass
-
-    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-    set_active_window_id(chat_id, day_key, sent.message_id)
-
-# ==========================================================
-# SECTION 15 — Управление финансовым режимом
-# ==========================================================
-
-def is_finance_mode(chat_id: int) -> bool:
-    return chat_id in finance_active_chats
-
-
-def set_finance_mode(chat_id: int, enabled: bool):
-    if enabled:
-        finance_active_chats.add(chat_id)
-    else:
-        finance_active_chats.discard(chat_id)
-
-
-def require_finance(chat_id: int) -> bool:
-    """
-    Проверка: включён ли финансовый режим.
-    Если нет — показываем подсказку /поехали.
-    """
-    if not is_finance_mode(chat_id):
-        send_info(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
-        return False
-    return True
-
 #🟠🟠🟠🟠🟠🟠🟠🟠🟠
 # ==========================================================
 # SECTION 16 — Callback handler
@@ -1644,6 +1405,246 @@ def on_callback(call):
 
     except Exception as e:
         log_error(f"on_callback error: {e}")
+        
+@bot.callback_query_handler(func=lambda c: c.data.startswith("fw_"))
+def on_forward_callback(call):
+    data = call.data
+    chat_id = call.message.chat.id
+
+    # Выбор чата A
+    if data.startswith("fw_src:"):
+        A = int(data.split(":")[1])
+        kb = build_forward_target_menu(A)
+        bot.edit_message_text(
+            f"Источник пересылки: {A}\nВыберите чат B:",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+
+    # Выбор чата B
+    if data.startswith("fw_tgt:"):
+        _, A, B = data.split(":")
+        A, B = int(A), int(B)
+        kb = build_forward_mode_menu(A, B)
+        bot.edit_message_text(
+            f"Настройка пересылки: {A} ↔ {B}",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+
+    # Выбор режима
+    if data.startswith("fw_mode:"):
+        _, A, B, mode = data.split(":")
+        A, B = int(A), int(B)
+        apply_forward_mode(A, B, mode)
+        kb = build_forward_source_menu()
+        bot.edit_message_text(
+            "Маршрут обновлён.\nВыберите чат A:",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+
+    # Назад к выбору A
+    if data == "fw_back_src":
+        kb = build_forward_source_menu()
+        bot.edit_message_text(
+            "Выберите чат A:",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+
+    # Назад к выбору B
+    if data.startswith("fw_back_tgt:"):
+        A = int(data.split(":")[1])
+        kb = build_forward_target_menu(A)
+        bot.edit_message_text(
+            "Выберите чат B:",
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            reply_markup=kb
+        )
+        return
+# ==========================================================
+# SECTION 13 — Add / Update / Delete (версия код-010)
+# ==========================================================
+
+def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
+    store = get_chat_store(chat_id)
+
+    rid = store.get("next_id", 1)
+    rec = {
+        "id": rid,
+        "short_id": f"R{rid}",
+        "timestamp": now_local().isoformat(timespec="seconds"),
+        "amount": amount,
+        "note": note,
+        "owner": owner,
+    }
+
+    data.setdefault("records", []).append(rec)
+
+    store.setdefault("records", []).append(rec)
+    store.setdefault("daily_records", {}).setdefault(today_key(), []).append(rec)
+
+    store["balance"] = sum(x["amount"] for x in store["records"])
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
+    store["next_id"] = rid + 1
+
+    #update_or_send_day_window(chat_id)
+    save_data(data)
+    save_chat_json(chat_id)
+    export_global_csv(data)
+
+    send_backup_to_channel(chat_id)
+
+
+def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str):
+    store = get_chat_store(chat_id)
+    found = None
+
+    for r in store.get("records", []):
+        if r["id"] == rid:
+            r["amount"] = new_amount
+            r["note"] = new_note
+            found = r
+            break
+
+    if not found:
+        return
+
+    for day, arr in store.get("daily_records", {}).items():
+        for r in arr:
+            if r["id"] == rid:
+                r.update(found)
+
+    store["balance"] = sum(x["amount"] for x in store["records"])
+
+    data["records"] = [x if x["id"] != rid else found for x in data["records"]]
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
+    
+    #update_or_send_day_window(chat_id)
+    save_data(data)
+    save_chat_json(chat_id)
+    export_global_csv(data)
+    send_backup_to_channel(chat_id)
+
+
+def delete_record_in_chat(chat_id: int, rid: int):
+    store = get_chat_store(chat_id)
+
+    store["records"] = [x for x in store["records"] if x["id"] != rid]
+
+    for day, arr in list(store.get("daily_records", {}).items()):
+        arr2 = [x for x in arr if x["id"] != rid]
+        if arr2:
+            store["daily_records"][day] = arr2
+        else:
+            del store["daily_records"][day]
+
+    store["balance"] = sum(x["amount"] for x in store["records"])
+
+    data["records"] = [x for x in data["records"] if x["id"] != rid]
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
+
+    #update_or_send_day_window(chat_id)
+    save_data(data)
+    save_chat_json(chat_id)
+    export_global_csv(data)
+    send_backup_to_channel(chat_id)
+
+# ==========================================================
+# SECTION 14 — Active window system (версия код-010)
+# ==========================================================
+
+def get_or_create_active_windows(chat_id: int) -> dict:
+    return data.setdefault("active_messages", {}).setdefault(str(chat_id), {})
+
+
+def set_active_window_id(chat_id: int, day_key: str, message_id: int):
+    aw = get_or_create_active_windows(chat_id)
+    aw[day_key] = message_id
+    save_data(data)
+
+
+def get_active_window_id(chat_id: int, day_key: str):
+    aw = get_or_create_active_windows(chat_id)
+    return aw.get(day_key)
+
+
+def delete_active_window_if_exists(chat_id: int, day_key: str):
+    mid = get_active_window_id(chat_id, day_key)
+    if not mid:
+        return
+    try:
+        bot.delete_message(chat_id, mid)
+    except:
+        pass
+
+    aw = get_or_create_active_windows(chat_id)
+    if day_key in aw:
+        del aw[day_key]
+    save_data(data)
+
+
+def update_or_send_day_window(chat_id: int, day_key: str):
+    """
+    Если окно дня существует — обновляем через edit.
+    Если нет — создаём.
+    """
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+
+    mid = get_active_window_id(chat_id, day_key)
+    if mid:
+        try:
+            bot.edit_message_text(
+                txt,
+                chat_id=chat_id,
+                message_id=mid,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            return
+        except:
+            pass
+
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
+
+# ==========================================================
+# SECTION 15 — Управление финансовым режимом
+# ==========================================================
+
+def is_finance_mode(chat_id: int) -> bool:
+    return chat_id in finance_active_chats
+
+
+def set_finance_mode(chat_id: int, enabled: bool):
+    if enabled:
+        finance_active_chats.add(chat_id)
+    else:
+        finance_active_chats.discard(chat_id)
+
+
+def require_finance(chat_id: int) -> bool:
+    """
+    Проверка: включён ли финансовый режим.
+    Если нет — показываем подсказку /поехали.
+    """
+    if not is_finance_mode(chat_id):
+        send_info(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
+        return False
+    return True
+
+
         
         
         
