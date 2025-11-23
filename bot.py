@@ -2250,11 +2250,12 @@ def handle_text(msg):
                                 "note": note,
                                 "owner": msg.from_user.id,
                                 "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
-                                 "origin_msg_id": msg.message_id,  # FIX VARIANT 3
+                                "origin_msg_id": msg.message_id,  # FIX VARIANT 3
                         }
 
                         store.setdefault("records", []).append(rec)
                         store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
+                        log_info(f"ADD: добавлена запись id={rid} msg_id={msg.message_id} day={day_key} amount={amount} note='{note}'")
                         store["next_id"] = rid + 1
                         added_any = True
 
@@ -2572,29 +2573,25 @@ def handle_document(msg):
 # ==========================================================
 # SECTION 18.5 — Edited messages: direct correction of records
 # ==========================================================
-
 @bot.edited_message_handler(content_types=["text"])
 def handle_edited_message(msg):
     """
-    Позволяет ИЗМЕНИТЬ финансовую запись простым редактированием
-    своего сообщения в Telegram. Работает без кнопок.
-    Логика:
-      • ищем запись по msg_id
-      • переписываем amount и note
-      • пересчитываем баланс
-      • обновляем окно дня
-      • сохраняем JSON/CSV + бэкап
+    Редактирование записи через редактирование сообщения.
     """
     chat_id = msg.chat.id
     message_id = msg.message_id
     new_text = (msg.text or "").strip()
 
-    # если финансовый режим не включён — игнор
+    log_info(f"EDITED: пришёл edited_message в чате {chat_id}, msg_id={message_id}, text='{new_text}'")
+
+    # 1) Проверка фин. режима
     if not is_finance_mode(chat_id):
+        log_info(f"EDITED: игнор, finance_mode=OFF для чата {chat_id}")
         return
 
-    # запрещено в restore_mode
+    # 2) Проверка restore_mode
     if restore_mode:
+        log_info("EDITED: игнор, restore_mode=True")
         return
 
     update_chat_info_from_message(msg)
@@ -2602,7 +2599,7 @@ def handle_edited_message(msg):
     store = get_chat_store(chat_id)
     day_key = today_key()
 
-    # Ищем запись по msg_id
+    # 3) Ищем запись по msg_id / origin_msg_id
     target = None
     for day, recs in store.get("daily_records", {}).items():
         for r in recs:
@@ -2614,24 +2611,30 @@ def handle_edited_message(msg):
             break
 
     if not target:
-        # Сообщение не является финансовой записью
+        log_info(f"EDITED: запись не найдена по msg_id={message_id} в daily_records чата {chat_id}")
         return
 
-    # Парсим новое содержимое
+    log_info(f"EDITED: найдена запись ID={target.get('id')} за день {day_key}")
+
+    # 4) Парсим новое содержимое
     try:
         new_amount, new_note = split_amount_and_note(new_text)
-    except Exception:
+    except Exception as e:
+        log_error(f"EDITED: ошибка парсинга суммы: {e}")
         bot.send_message(chat_id, "❌ Ошибка: не удалось разобрать сумму.")
         return
 
     rid = target["id"]
+    log_info(f"EDITED: обновляем запись ID={rid}, amount={new_amount}, note='{new_note}'")
 
-    # Обновляем (встроенная функция)
+    # 5) Обновляем запись
     update_record_in_chat(chat_id, rid, new_amount, new_note)
 
-    # Обновляем окно
+    # 6) Обновляем окно
     update_or_send_day_window(chat_id, day_key)
-# ==========================================================
+    log_info(f"EDITED: окно дня {day_key} обновлено для чата {chat_id}")
+
+ # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
 
@@ -2672,6 +2675,14 @@ def start_keep_alive_thread():
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
     json_str = request.get_data().decode("utf-8")
+
+    # DEBUG 1: логируем, если прилетел edited_message
+    try:
+        if '"edited_message"' in json_str:
+            log_info("WEBHOOK: получен update с edited_message")
+    except Exception as e:
+        log_error(f"DEBUG webhook edited check error: {e}")
+
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "OK", 200
