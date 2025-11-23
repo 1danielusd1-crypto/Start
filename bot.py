@@ -1678,6 +1678,7 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
         "amount": amount,
         "note": note,
         "owner": owner,
+         "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
     }
 
     data.setdefault("records", []).append(rec)
@@ -2247,6 +2248,7 @@ def handle_text(msg):
                                 "amount": amount,
                                 "note": note,
                                 "owner": msg.from_user.id,
+                                 "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
                         }
 
                         store.setdefault("records", []).append(rec)
@@ -2564,7 +2566,68 @@ def handle_document(msg):
 
     except Exception as e:
         log_error(f"handle_document error: {e}")
+# ==========================================================
+# SECTION 18.5 — Edited messages: direct correction of records
+# ==========================================================
 
+@bot.edited_message_handler(content_types=["text"])
+def handle_edited_message(msg):
+    """
+    Позволяет ИЗМЕНИТЬ финансовую запись простым редактированием
+    своего сообщения в Telegram. Работает без кнопок.
+    Логика:
+      • ищем запись по msg_id
+      • переписываем amount и note
+      • пересчитываем баланс
+      • обновляем окно дня
+      • сохраняем JSON/CSV + бэкап
+    """
+    chat_id = msg.chat.id
+    message_id = msg.message_id
+    new_text = (msg.text or "").strip()
+
+    # если финансовый режим не включён — игнор
+    if not is_finance_mode(chat_id):
+        return
+
+    # запрещено в restore_mode
+    if restore_mode:
+        return
+
+    update_chat_info_from_message(msg)
+
+    store = get_chat_store(chat_id)
+    day_key = today_key()
+
+    # Ищем запись по msg_id
+    target = None
+    for day, recs in store.get("daily_records", {}).items():
+        for r in recs:
+            if r.get("msg_id") == message_id:
+                target = r
+                day_key = day
+                break
+        if target:
+            break
+
+    if not target:
+        # Сообщение не является финансовой записью
+        return
+
+    # Парсим новое содержимое
+    try:
+        new_amount, new_note = split_amount_and_note(new_text)
+    except Exception:
+        bot.send_message(chat_id, "❌ Ошибка: не удалось разобрать сумму.")
+        return
+
+    rid = target["id"]
+
+    # Обновляем (встроенная функция)
+    update_record_in_chat(chat_id, rid, new_amount, new_note)
+
+    # Обновляем окно
+    update_or_send_day_window(chat_id, day_key)
 # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
@@ -2599,57 +2662,6 @@ def start_keep_alive_thread():
 # Финансовая логика к документам не относится
 
 
-# ==========================================================
-# SECTION 18.3 — EDITED MESSAGE HANDLER (изменение исходных сообщений)
-# ==========================================================
-
-@bot.edited_message_handler(content_types=["text"])
-def handle_edited_text(msg):
-    """
-    Позволяет исправлять финансовую запись просто изменив своё сообщение в чате.
-    Поиск записи ведётся по message_id.
-    """
-    chat_id = msg.chat.id
-    message_id = msg.message_id
-    new_text = msg.text.strip()
-
-    update_chat_info_from_message(msg)
-
-    # restore-mode → правки запрещены
-    if restore_mode:
-        return
-
-    # финансовый режим выключен → игнорировать
-    if not is_finance_mode(chat_id):
-        return
-
-    store = get_chat_store(chat_id)
-    day_key = today_key()
-
-    # ищем запись в daily_records
-    day_recs = store.get("daily_records", {}).get(day_key, [])
-    target = None
-    for r in day_recs:
-        if r.get("msg_id") == message_id:
-            target = r
-            break
-
-    if not target:
-        return  # сообщение не является финансовой записью
-
-    # парсим новое сообщение
-    try:
-        amount, note = split_amount_and_note(new_text)
-    except Exception:
-        bot.send_message(chat_id, "Ошибка при обновлении. Введите сумму и текст.")
-        return
-
-    # обновляем запись
-    rid = target["id"]
-    update_record_in_chat(chat_id, rid, amount, note)
-
-    # обновляем окно
-    update_or_send_day_window(chat_id, day_key)
 # ==========================================================
 # SECTION 20 — Webhook / Flask / main()
 # ==========================================================
