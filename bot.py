@@ -1378,11 +1378,8 @@ def require_finance(chat_id: int) -> bool:
 
 @bot.callback_query_handler(func=lambda c: True)
 def on_callback(call):
-    """
-    Универсальный обработчик всех callback_data.
-    """
     try:
-        # NEW FORWARD SYSTEM — open source chat selection
+        # сначала обрабатываем кнопку "Пересылка A ↔ B"
         if call.data == "fw_open":
             kb = build_forward_source_menu()
             bot.edit_message_text(
@@ -1392,10 +1389,11 @@ def on_callback(call):
                 reply_markup=kb
             )
             return
-                # Если это fw_ — НЕ обрабатываем здесь,
-        # отдаём управление второму обработчику (on_forward_callback)
+
+        # если это другая команда fw_, передаём её on_forward_callback
         if call.data.startswith("fw_"):
             return
+            
         data_str = call.data or ""
         chat_id = call.message.chat.id
 
