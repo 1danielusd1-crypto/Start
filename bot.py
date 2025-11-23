@@ -1,4 +1,4 @@
-=# Code_022.7 — A2 only A↔B forwarding
+# Code_022.7 — A2 only A↔B forwarding
 # • Только новая система пересылки A↔B
 # • Владелец присутствует в списке чатов
 # • Кнопки "Назад" во всех уровнях меню пересылки
@@ -2597,7 +2597,16 @@ def startup():
     else:
         log_info("Polling без webhook.")
         bot.infinity_polling(skip_pending=True)
-
+        
+    # 6) Уведомление владельца о запуске
+    if OWNER_ID:
+        try:
+            bot.send_message(
+                int(OWNER_ID),
+                f"🤖 Бот запущен!\nВерсия: {VERSION}\nВремя: {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        except Exception as e:
+            log_error(f"Cannot notify owner on startup: {e}")
 
 if __name__ == "__main__":
     startup()
