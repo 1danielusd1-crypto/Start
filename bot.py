@@ -1678,7 +1678,8 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
         "amount": amount,
         "note": note,
         "owner": owner,
-         "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
+        "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
+        "origin_msg_id": msg.message_id,  # FIX VARIANT 3
     }
 
     data.setdefault("records", []).append(rec)
@@ -2248,7 +2249,8 @@ def handle_text(msg):
                                 "amount": amount,
                                 "note": note,
                                 "owner": msg.from_user.id,
-                                 "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
+                                "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
+                                 "origin_msg_id": msg.message_id,  # FIX VARIANT 3
                         }
 
                         store.setdefault("records", []).append(rec)
@@ -2604,7 +2606,7 @@ def handle_edited_message(msg):
     target = None
     for day, recs in store.get("daily_records", {}).items():
         for r in recs:
-            if r.get("msg_id") == message_id:
+            if r.get("msg_id") == message_id or r.get("origin_msg_id") == message_id:
                 target = r
                 day_key = day
                 break
