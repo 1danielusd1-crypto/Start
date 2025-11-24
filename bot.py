@@ -2311,11 +2311,11 @@ def handle_text(msg):
 
                 log_info(f"ADD: id={rid}, msg_id={msg.message_id}, day={day_key}, amount={amount}")
 
-            if added_any:
-                    txt, _ = render_day_window(chat_id, day_key)
-                    kb = build_main_keyboard(day_key, chat_id)
+        if added_any:
+                txt, _ = render_day_window(chat_id, day_key)
+                kb = build_main_keyboard(day_key, chat_id)
 
-                    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
                         
                 # обновляем окно ПЕРВЫМ
                 #update_or_send_day_window(chat_id, day_key)
