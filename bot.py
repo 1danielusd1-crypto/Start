@@ -2679,12 +2679,21 @@ def handle_edited_message(msg):
 
     rid = target["id"]
     log_info(f"EDITED: обновляем запись ID={rid}, amount={new_amount}, note='{new_note}'")
+    # 1) Обновляем запись, но НЕ запускаем сразу бэкап
+    update_record_in_chat(chat_id, rid, new_amount, new_note, run_backup=False)
 
+    # 2) СНАЧАЛА обновляем окно (важно!)
+    update_or_send_day_window(chat_id, target_day)
+
+    # 3) Теперь — вручную делаем бэкап
+    try:
+        send_backup_to_channel(chat_id)
+    except:
+        pass
     # 5) Обновляем запись
-    update_record_in_chat(chat_id, rid, new_amount, new_note)
-
+    #update_record_in_chat(chat_id, rid, new_amount, new_note)=
     # 6) Обновляем окно
-    update_or_send_day_window(chat_id, day_key)
+    #update_or_send_day_window(chat_id, day_key)
     log_info(f"EDITED: окно дня {day_key} обновлено для чата {chat_id}")
 
  # ==========================================================
