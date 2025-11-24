@@ -2254,6 +2254,14 @@ def handle_text(msg):
         store = get_chat_store(chat_id)
         wait = store.get("edit_wait")
         
+        auto_add_enabled = store.get("settings", {}).get("auto_add", False)
+
+        if (
+            (wait and wait.get("type") == "add" and looks_like_amount(text))
+            or
+            (auto_add_enabled and looks_like_amount(text))
+        ):
+        
         #if True:
         #if (store.get("settings", {}).get("auto_add", False) and looks_like_amount(text)) \
            #or (wait and wait.get("type") == "add"):
@@ -2261,7 +2269,7 @@ def handle_text(msg):
             #or (auto_add == True and looks_like_amount(text)) 
             #or (looks_like_amount(text) and wait type missing):
         #if wait and wait.get("type") == "add" or looks_like_amount(text):
-        if wait and wait.get("type") == "add":
+        #if wait and wait.get("type") == "add":
         #if wait and wait.get("type") == "add" or looks_like_amount(msg.text):
         #if (wait and wait.get("type") == "add") or looks_like_amount(text):
         #if (
