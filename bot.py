@@ -2255,9 +2255,11 @@ def handle_text(msg):
         wait = store.get("edit_wait")
         
         #if True:
-        if (wait and wait.get("type") == "add") 
-            or (auto_add == True and looks_like_amount(text)) 
-            or (looks_like_amount(text) and wait type missing):
+        if (store.get("settings", {}).get("auto_add", False) and looks_like_amount(text)) \
+           or (wait and wait.get("type") == "add"):
+        #if (wait and wait.get("type") == "add") 
+            #or (auto_add == True and looks_like_amount(text)) 
+            #or (looks_like_amount(text) and wait type missing):
         #if wait and wait.get("type") == "add" or looks_like_amount(text):
         #if wait and wait.get("type") == "add":
         #if wait and wait.get("type") == "add" or looks_like_amount(msg.text):
