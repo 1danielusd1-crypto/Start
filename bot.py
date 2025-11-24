@@ -2252,35 +2252,36 @@ def handle_text(msg):
             forward_text_anon(chat_id, msg, targets)
 
         store = get_chat_store(chat_id)
+        #wait = store.get("edit_wait")
         wait = store.get("edit_wait")
-        
         auto_add_enabled = store.get("settings", {}).get("auto_add", False)
 
-        if (
-            (wait and wait.get("type") == "add" and looks_like_amount(text))
-            or
-            (auto_add_enabled and looks_like_amount(text))
-        ):
-        
-        #if True:
-        #if (store.get("settings", {}).get("auto_add", False) and looks_like_amount(text)) \
-           #or (wait and wait.get("type") == "add"):
-        #if (wait and wait.get("type") == "add") 
-            #or (auto_add == True and looks_like_amount(text)) 
-            #or (looks_like_amount(text) and wait type missing):
-        #if wait and wait.get("type") == "add" or looks_like_amount(text):
-        #if wait and wait.get("type") == "add":
-        #if wait and wait.get("type") == "add" or looks_like_amount(msg.text):
-        #if (wait and wait.get("type") == "add") or looks_like_amount(text):
-        #if (
-            #(wait and wait.get("type") == "add" and looks_like_amount(text))
-            #or
-            #(store.get("settings", {}).get("auto_add", False) and looks_like_amount(text))
-       # ):
+        # -----------------------------------------
+        # 🟢 ЛОГИКА ВКЛЮЧЕНИЯ "ДОБАВИТЬ ЗАПИСЬ"
+        # -----------------------------------------
+        should_add = False
+
+        # 1) режим кнопки "Добавить"
+        if wait and wait.get("type") == "add" and looks_like_amount(text):
+                should_add = True
                 day_key = wait.get("day_key")
 
+        # 2) режим auto_add
+        elif auto_add_enabled and looks_like_amount(text):
+                should_add = True
+                # день — тот, который открыт, если нет — сегодняшняя дата
+                day_key = store.get("current_view_day", today_key())
+
+        # если ничего не подошло — пропускаем
+        if not should_add:
+                pass
+        else:
+                # -----------------
+                # 🟢 Добавление записи
+                # -----------------
                 lines = text.split("\n")
                 added_any = False
+
                 for line in lines:
                         line = line.strip()
                         if not line:
@@ -2292,8 +2293,6 @@ def handle_text(msg):
                                 bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
                                 continue
 
-                        # 1) добавляем запись (без сохранений и без бэкапов)
-                        store = get_chat_store(chat_id)
                         rid = store.get("next_id", 1)
 
                         rec = {
@@ -2303,31 +2302,26 @@ def handle_text(msg):
                                 "amount": amount,
                                 "note": note,
                                 "owner": msg.from_user.id,
-                                "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
-                                "origin_msg_id": msg.message_id,  # FIX VARIANT 3
+                                "msg_id": msg.message_id,
+                                "origin_msg_id": msg.message_id,
                         }
 
                         store.setdefault("records", []).append(rec)
                         store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
-                        log_info(f"ADD: добавлена запись id={rid} msg_id={msg.message_id} day={day_key} amount={amount} note='{note}'")
+
                         store["next_id"] = rid + 1
                         added_any = True
 
-                # 2) СНАЧАЛА обновляем окно дня
-                # 2) Создаём новое окно и сохраняем как активное
+                # 🟢 Обновление окна
                 if added_any:
                         txt, _ = render_day_window(chat_id, day_key)
                         kb = build_main_keyboard(day_key, chat_id)
-
                         sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-
-                        # Запоминаем msg_id нового окна
                         set_active_window_id(chat_id, day_key, sent.message_id)
-                        
-                # 3) ПОТОМ выполняем сохранение и бэкап
+
+                # 🟢 Сохранение
                 store["balance"] = sum(x["amount"] for x in store["records"])
 
-                # Полный пересчёт глобального списка
                 data["records"] = []
                 for cid, st in data.get("chats", {}).items():
                         data["records"].extend(st.get("records", []))
@@ -2352,10 +2346,10 @@ def handle_text(msg):
                 bot.send_message(chat_id, f"❌ Ошибка суммы: {text}")
                 return
 
-    # 1) обновляем запись, НО без бэкапа
+            # 1) обновляем запись, НО без бэкапа
             update_record_in_chat(chat_id, rid, amount, note, do_backup=False)
 
-    # 2) находим день записи
+            # 2) находим день записи
             day_key = None
             store = get_chat_store(chat_id)
             for dk, recs in store.get("daily_records", {}).items():
@@ -2364,11 +2358,11 @@ def handle_text(msg):
                         day_key = dk
                         break
 
-    # 3) СНАЧАЛА обновляем окно
+            # 3) СНАЧАЛА обновляем окно
             if day_key:
                 update_or_send_day_window(chat_id, day_key)
 
-    # 4) ПОТОМ выполняем сохранения и бэкап
+            # 4) ПОТОМ выполняем сохранения и бэкап
             save_chat_json(chat_id)
             save_data(data)
             export_global_csv(data)
