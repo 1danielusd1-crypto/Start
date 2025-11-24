@@ -244,6 +244,9 @@ def get_chat_store(chat_id: int) -> dict:
             "edit_wait": None,
             "edit_target": None,
             "current_view_day": today_key(),
+            "settings": {
+                "auto_add": False
+            },
         }
     )
 
@@ -440,6 +443,15 @@ def split_amount_and_note(text: str):
 
     return amount, note
 
+# =============================================
+# NEW: определение, является ли текст суммой
+# =============================================
+def looks_like_amount(text):
+    try:
+        amount, note = split_amount_and_note(text)
+        return True
+    except:
+        return False
 # ==========================================================
 # SECTION 7 — Google Drive helpers
 # ==========================================================
@@ -1522,6 +1534,7 @@ def on_callback(call):
                 "/backup_gdrive_on / off — включить/выключить GDrive\n"
                 "/backup_channel_on / off — включить/выключить бэкап в канал\n"
                 "/stopforward — отключить пересылку\n"
+                 "/autoadd_info \n"
                 "/restore / /restore_off — режим восстановления\n"
             )
             bot.send_message(chat_id, info_text)
@@ -1900,6 +1913,7 @@ def cmd_help(msg):
         "/backup_gdrive_on / _off — включить/выключить GDrive\n"
         "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
         "/restore / /restore_off — режим восстановления JSON/CSV\n"
+        "/autoadd_info\n"
         "/help — эта справка\n"
     )
     send_info(chat_id, help_text)
@@ -2173,7 +2187,30 @@ def cmd_off_channel(msg):
     save_data(data)
     send_info(msg.chat.id, "📡 Бэкап в канал выключен")
     
-    
+ # ==========================================================
+# COMMAND — /autoadd.info  (toggle auto-add mode)
+# ==========================================================
+
+@bot.message_handler(commands=["autoadd_info", "autoadd.info"])
+def cmd_autoadd_info(msg):
+    chat_id = msg.chat.id
+    store = get_chat_store(chat_id)
+
+    settings = store.setdefault("settings", {})
+    current = settings.get("auto_add", False)
+
+    # Переключаем
+    new_state = not current
+    settings["auto_add"] = new_state
+    save_chat_json(chat_id)
+
+    bot.send_message(
+        chat_id,
+        f"⚙️ Авто-добавление сообщений: {'ВКЛЮЧЕНО' if new_state else 'ВЫКЛЮЧЕНО'}\n"
+        f"Использование:\n"
+        f"- ВКЛ → каждое сообщение с суммой записывается автоматически\n"
+        f"- ВЫКЛ → работает только через кнопку «Добавить»"
+    )
     
     #🔵🔵🔵🔵🔵🔵🔵
 # ==========================================================
@@ -2221,8 +2258,14 @@ def handle_text(msg):
         store = get_chat_store(chat_id)
         wait = store.get("edit_wait")
 
-        if wait and wait.get("type") == "add":
-
+        #if wait and wait.get("type") == "add":
+        #if wait and wait.get("type") == "add" or looks_like_amount(msg.text):
+        #if (wait and wait.get("type") == "add") or looks_like_amount(text):
+        if (
+            (wait and wait.get("type") == "add" and looks_like_amount(text))
+            or
+            (store.get("settings", {}).get("auto_add", False) and looks_like_amount(text))
+        ):
                 day_key = wait.get("day_key")
 
                 lines = text.split("\n")
