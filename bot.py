@@ -1,4 +1,4 @@
-# Code_022.6 не доработан доп. пересылка а🔁B
+# Code_022..9 📝 в новом окне
 # • доп. пересылка а🔁B
 # • ручное востановление
 # • пересылка всех типов сообщений
@@ -58,7 +58,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_022.6 доп. пересылка а🔁B"
+VERSION = "Code_022..9 📝 в новом окне"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -891,7 +891,7 @@ def render_day_window(chat_id: int, day_key: str):
         lines.append("Нет записей за этот день.")
 
     lines.append("")
-    lines.append(f"💰 <b>остаток:{fmt_num(total)}</b>")
+    lines.append(f"💰 <b>Итого:{fmt_num(total)}</b>")
 
     return "\n".join(lines), total
 
@@ -1482,7 +1482,7 @@ def on_callback(call):
             lines = ["📊 Отчёт:"]
             for dk, recs in sorted(store.get("daily_records", {}).items()):
                 s = sum(r["amount"] for r in recs)
-                lines.append(f"{dk}: ост:{fmt_num(s)}")
+                lines.append(f"{dk}: {fmt_num(s)}")
             bot.send_message(chat_id, "\n".join(lines))
             return
 
@@ -1493,8 +1493,8 @@ def on_callback(call):
             bot.send_message(
                 chat_id,
                 f"💰 <b>Общий итог</b>\n\n"
-                f"• По этому чату ОСТ: <b>{fmt_num(chat_bal)}</b>\n"
-                f"• По всем чатам ОСТ: <b>{fmt_num(overall)}</b>",
+                f"• По этому чату: <b>{fmt_num(chat_bal)}</b>\n"
+                f"• По всем чатам: <b>{fmt_num(overall)}</b>",
                 parse_mode="HTML"
             )
             return
@@ -1853,7 +1853,7 @@ def send_info(chat_id: int, text: str):
         log_error(f"send_info: {e}")
 
 
-@bot.message_handler(commands=["ok"])
+@bot.message_handler(commands=["поехали"])
 def cmd_enable_finance(msg):
     chat_id = msg.chat.id
     set_finance_mode(chat_id, True)
@@ -2173,56 +2173,7 @@ def cmd_off_channel(msg):
     save_data(data)
     send_info(msg.chat.id, "📡 Бэкап в канал выключен")
     
- # ==========================================================
-# SECTION 17 — BACKUP (GDRIVE + CHANNEL)
-# ==========================================================
-
-# ==========================================================
-# SECTION 17.5 — ChatID Discovery (my_chat_member handler)
-# ==========================================================
-
-@bot.my_chat_member_handler()
-def handle_my_chat_member(event):
-    """
-    Детектор всех чатов, где находится бот.
-    Работает даже если никто не писал сообщения.
-    """
-    try:
-        chat = event.chat
-        chat_id = chat.id
-        chat_title = chat.title or f"Чат {chat_id}"
-        chat_type = chat.type
-
-        log_info(f"CHAT_DISCOVERY: бот замечен в чате {chat_id} ({chat_title}), type={chat_type}")
-
-        # --- 1. Обновляем info чата ---
-        store = get_chat_store(chat_id)
-        info = store.setdefault("info", {})
-        info["title"] = chat_title
-        info["type"] = chat_type
-        info["username"] = getattr(chat, "username", None)
-        save_chat_json(chat_id)
-
-        # --- 2. Добавляем в known_chats владельца ---
-        if OWNER_ID and str(chat_id) != str(OWNER_ID):
-            owner_store = get_chat_store(int(OWNER_ID))
-            kc = owner_store.setdefault("known_chats", {})
-            kc[str(chat_id)] = {
-                "title": chat_title,
-                "username": getattr(chat, "username", None),
-                "type": chat_type,
-            }
-            save_chat_json(int(OWNER_ID))
-
-            log_info(f"CHAT_DISCOVERY: добавлен в known_chats владельца {OWNER_ID}")
-
-    except Exception as e:
-        log_error(f"handle_my_chat_member error: {e}")
-
-
-# ==========================================================
-# SECTION 18 — Text handler
-# ==========================================================
+    
     
     #🔵🔵🔵🔵🔵🔵🔵
 # ==========================================================
@@ -2347,15 +2298,30 @@ def handle_text(msg):
                 bot.send_message(chat_id, f"❌ Ошибка суммы: {text}")
                 return
 
-            update_record_in_chat(chat_id, rid, amount, note)
+    # 1) обновляем запись, НО без бэкапа
+            update_record_in_chat(chat_id, rid, amount, note, do_backup=False)
+
+    # 2) находим день записи
+            day_key = None
+            store = get_chat_store(chat_id)
+            for dk, recs in store.get("daily_records", {}).items():
+                for r in recs:
+                    if r["id"] == rid:
+                        day_key = dk
+                        break
+
+    # 3) СНАЧАЛА обновляем окно
+            if day_key:
+                update_or_send_day_window(chat_id, day_key)
+
+    # 4) ПОТОМ выполняем сохранения и бэкап
+            save_chat_json(chat_id)
+            save_data(data)
+            export_global_csv(data)
+            send_backup_to_channel(chat_id)
 
             store["edit_wait"] = None
             save_data(data)
-
-            day_key = wait.get("day_key")
-            txt, _ = render_day_window(chat_id, day_key)
-            kb = build_main_keyboard(day_key, chat_id)
-            bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
             return
 
         if text.upper() == "ДА":
@@ -2679,21 +2645,12 @@ def handle_edited_message(msg):
 
     rid = target["id"]
     log_info(f"EDITED: обновляем запись ID={rid}, amount={new_amount}, note='{new_note}'")
-    # 1) Обновляем запись, но НЕ запускаем сразу бэкап
-    update_record_in_chat(chat_id, rid, new_amount, new_note, run_backup=False)
 
-    # 2) СНАЧАЛА обновляем окно (важно!)
-    update_or_send_day_window(chat_id, target_day)
-
-    # 3) Теперь — вручную делаем бэкап
-    try:
-        send_backup_to_channel(chat_id)
-    except:
-        pass
     # 5) Обновляем запись
-    #update_record_in_chat(chat_id, rid, new_amount, new_note)=
+    update_record_in_chat(chat_id, rid, new_amount, new_note)
+
     # 6) Обновляем окно
-    #update_or_send_day_window(chat_id, day_key)
+    update_or_send_day_window(chat_id, day_key)
     log_info(f"EDITED: окно дня {day_key} обновлено для чата {chat_id}")
 
  # ==========================================================
