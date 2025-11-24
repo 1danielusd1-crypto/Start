@@ -2257,15 +2257,17 @@ def handle_text(msg):
 
         store = get_chat_store(chat_id)
         wait = store.get("edit_wait")
-
+        
+        if True:
+        #if wait and wait.get("type") == "add" or looks_like_amount(text):
         #if wait and wait.get("type") == "add":
         #if wait and wait.get("type") == "add" or looks_like_amount(msg.text):
         #if (wait and wait.get("type") == "add") or looks_like_amount(text):
-        if (
-            (wait and wait.get("type") == "add" and looks_like_amount(text))
-            or
-            (store.get("settings", {}).get("auto_add", False) and looks_like_amount(text))
-        ):
+        #if (
+            #(wait and wait.get("type") == "add" and looks_like_amount(text))
+            #or
+            #(store.get("settings", {}).get("auto_add", False) and looks_like_amount(text))
+       # ):
                 day_key = wait.get("day_key")
 
                 lines = text.split("\n")
