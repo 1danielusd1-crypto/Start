@@ -2311,7 +2311,7 @@ def handle_text(msg):
 
                 log_info(f"ADD: id={rid}, msg_id={msg.message_id}, day={day_key}, amount={amount}")
 
-        if added_any:
+            if added_any:
                 txt, _ = render_day_window(chat_id, day_key)
                 kb = build_main_keyboard(day_key, chat_id)
 
