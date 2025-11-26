@@ -2471,7 +2471,9 @@ def handle_text(msg):
             store["edit_wait"] = None
             save_data(data)
             return
-
+            
+    except Exception as e:
+        log_error(f"handle_text: {e}")
 # ==========================================================
 # SECTION 18.1 — Reset chat data helper
 # ==========================================================
