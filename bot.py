@@ -2413,9 +2413,8 @@ def handle_text(msg):
 
                 try:
                     amount, note = split_amount_and_note(line)
-                except:
-                    #bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
-                     bot.send_message(chat_id, f"❌ Ошибка суммы: {line}\nПродолжаю расчёт…")
+                except Exception:
+                    bot.send_message(chat_id, f"❌ Ошибка суммы: {line}\nПродолжаю расчёт…")
                     continue
 
                 rid = store.get("next_id", 1)
@@ -2456,7 +2455,7 @@ def handle_text(msg):
 
             try:
                 amount, note = split_amount_and_note(text)
-            except:
+            except Exception:
                 bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
                 return
 
