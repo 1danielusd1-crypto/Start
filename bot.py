@@ -1802,17 +1802,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    #📝📝✂️✂️✂️📝📝
-def send_and_auto_delete(chat_id, text, reply_markup=None, delay=5):
-    msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
-    threading.Timer(delay, lambda: safe_delete(chat_id, msg.message_id)).start()
-    return msg
 
-def safe_delete(chat_id, message_id):
-    try:
-        bot.delete_message(chat_id, message_id)
-    except Exception:
-        pass
 #bot.send_message(chat_id, text)
 #на
 #send_and_auto_delete
@@ -1905,21 +1895,17 @@ def require_finance(chat_id: int) -> bool:
         return False
     return True
 
-
-        
-        
-        
-        
-        # ==========================================================
+# ==========================================================
 # SECTION 17 — Команды
 # ==========================================================
 
+#def send_info(chat_id: int, text: str):
+    #try:
+        #bot.send_message(chat_id, text)
+    #except Exception as e:
+        #log_error(f"send_info: {e}")
 def send_info(chat_id: int, text: str):
-    try:
-        bot.send_message(chat_id, text)
-    except Exception as e:
-        log_error(f"send_info: {e}")
-
+    send_and_auto_delete(chat_id, text, 10)
 
 @bot.message_handler(commands=["ok"])
 def cmd_enable_finance(msg):
@@ -2272,7 +2258,26 @@ def cmd_autoadd_info(msg):
         f"- ВЫКЛ → работает только через кнопку «Добавить»"
     )
     
-    #🔵🔵🔵🔵🔵🔵🔵
+# ==========================================================
+# SECTION 18 — Text handler (финансы + пересылка + chat_info)
+# ==========================================================
+
+def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
+    try:
+        msg = bot.send_message(chat_id, text)
+        def _delete():
+            time.sleep(delay)
+            try:
+                bot.delete_message(chat_id, msg.message_id)
+            except Exception:
+                pass
+        threading.Thread(target=_delete, daemon=True).start()
+    except Exception as e:
+        log_error(f"send_and_auto_delete: {e}")
+
+
+def update_chat_info_from_message(msg):
+ #🔵🔵🔵🔵🔵🔵🔵
 # ==========================================================
 # SECTION 18 — Text handler (финансы + пересылка + chat_info)
 # ==========================================================
