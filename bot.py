@@ -2276,7 +2276,7 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
         log_error(f"send_and_auto_delete: {e}")
 
 
-def update_chat_info_from_message(msg):
+#def update_chat_info_from_message(msg):
  #🔵🔵🔵🔵🔵🔵🔵
 # ==========================================================
 # SECTION 18 — Text handler (финансы + пересылка + chat_info)
