@@ -1612,10 +1612,33 @@ def on_callback(call):
         # выбор конкретной записи для редактирования
         if cmd.startswith("edit_rec_"):
             rid = int(cmd.split("_")[-1])
-            store["edit_wait"] = {"type": "edit", "day_key": day_key, "rid": rid}
+            store["edit_wait"] = {
+                "type": "edit",
+                "day_key": day_key,
+                "rid": rid
+            }
             save_data(data)
-            bot.send_message(chat_id, f"Введите новую сумму и текст для записи R{rid}:")
+
+            # строим текст для редактирования
+            text_edit = f"✏️ Редактирование записи R{rid}\n\n" \
+                        f"Введите новую сумму и текст.\n" \
+                        f"Можно прислать несколько строк."
+
+            # строим клавиатуру для возврата назад
+            kb_back = types.InlineKeyboardMarkup()
+            kb_back.row(
+                types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_list")
+            )
+
+            # редактируем текущее окно, НЕ создаём новое сообщение
+            bot.edit_message_text(
+                text_edit,
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb_back
+            )
             return
+            
         if cmd.startswith("del_rec_"):
             rid = int(cmd.split("_")[-1])
             delete_record_in_chat(chat_id, rid)
@@ -2262,7 +2285,7 @@ def update_chat_info_from_message(msg):
 
 _finalize_timers = {}
 
-def schedule_finalize(chat_id: int, day_key: str, delay: float = 3.0):
+def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
     def _job():
         store = get_chat_store(chat_id)
 
@@ -2486,7 +2509,7 @@ def handle_text(msg):
             now_t = time.time()
 
             # истекает через 60 секунд
-            if reset_flag and (now_t - reset_time <= 60):
+            if reset_flag and (now_t - reset_time <= 10):
                 reset_chat_data(chat_id)
                 bot.send_message(chat_id, "🔄 Данные чата обнулены.")
             else:
