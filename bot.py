@@ -2157,8 +2157,13 @@ def cmd_reset(msg):
     chat_id = msg.chat.id
     if not require_finance(chat_id):
         return
-    send_info(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
 
+    store = get_chat_store(chat_id)
+    store["reset_wait"] = True
+    store["reset_time"] = time.time()
+    save_data(data)
+
+    bot.send_message(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
 
 @bot.message_handler(commands=["stopforward"])
 def cmd_stopforward(msg):
@@ -2471,6 +2476,32 @@ def handle_text(msg):
             store["edit_wait"] = None
             save_data(data)
             return
+            
+        # =====================================================
+        # 4) Подтверждение обнуления ("ДА") — только после /reset
+        # =====================================================
+        if text.upper() == "ДА":
+            reset_flag = store.get("reset_wait", False)
+            reset_time = store.get("reset_time", 0)
+            now_t = time.time()
+
+            # истекает через 60 секунд
+            if reset_flag and (now_t - reset_time <= 60):
+                reset_chat_data(chat_id)
+                bot.send_message(chat_id, "🔄 Данные чата обнулены.")
+            else:
+                bot.send_message(chat_id, "Нет активного запроса на обнуление.")
+            
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            save_data(data)
+            return
+            
+        # Если был режим reset_wait, но сообщение не "ДА" → сбрасываем
+        if store.get("reset_wait", False):
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            save_data(data)
             
     except Exception as e:
         log_error(f"handle_text: {e}")
@@ -2798,7 +2829,20 @@ def handle_edited_message(msg):
     update_or_send_day_window(chat_id, day_key)
     log_info(f"EDITED: окно дня {day_key} обновлено для чата {chat_id}")
 
- # ==========================================================
+@bot.message_handler(content_types=["deleted_message"])
+def handle_deleted_message(msg):
+    try:
+        chat_id = msg.chat.id
+        store = get_chat_store(chat_id)
+
+        if store.get("reset_wait", False):
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            save_data(data)
+    except:
+        pass
+        
+# ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
 
