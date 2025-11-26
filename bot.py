@@ -1,4 +1,4 @@
-# Code_022.9.10 флаг
+# Code_022.9.11 флаг✅
 #==========================================================
 
 # 🧭 Description: Code_022.1
@@ -54,7 +54,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_022.9.10 флаг"
+VERSION = "Code_ 022.9.11 флаг✅"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -1820,39 +1820,47 @@ def update_or_send_day_window(chat_id: int, day_key: str):
 
     sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
     set_active_window_id(chat_id, day_key, sent.message_id)
-# ==========================================================
-# SECTION 14.1 — Отложенное создание нового окна (после сохранений)
+    
+## ==========================================================
+# SECTION 14.2 — debounce создания нового окна после серии сообщений
 # ==========================================================
 
-def delayed_recreate_window(chat_id: int, old_day_key: str, delay: float = 2.0):
+_last_msg_time = {}
+_debounce_timer = {}
+
+def schedule_final_window(chat_id: int, day_key: str, delay: float = 2.0):
     """
-    Логика:
-    1) ждем delay секунд
-    2) создаём новое окно
-    3) удаляем старое окно
+    Создаёт новое окно только когда поток сообщений остановился.
     """
+    global _debounce_timer
+
     def _task():
         time.sleep(delay)
+        # если с тех пор не было новых сообщений — финализируем
+        if time.time() - _last_msg_time.get(chat_id, 0) >= delay:
+            # создаём новое окно
+            new_txt, _ = render_day_window(chat_id, day_key)
+            kb = build_main_keyboard(day_key, chat_id)
+            sent = bot.send_message(chat_id, new_txt, reply_markup=kb, parse_mode="HTML")
+            # удаляем старое
+            try:
+                old_mid = get_active_window_id(chat_id, day_key)
+                if old_mid and old_mid != sent.message_id:
+                    bot.delete_message(chat_id, old_mid)
+            except:
+                pass
+            set_active_window_id(chat_id, day_key, sent.message_id)
 
-        # новое окно
-        new_day_key = old_day_key
-        new_txt, _ = render_day_window(chat_id, new_day_key)
-        new_kb = build_main_keyboard(new_day_key, chat_id)
-        sent = bot.send_message(chat_id, new_txt, reply_markup=new_kb, parse_mode="HTML")
-
-        # удаляем старое окно
+    # отменяем предыдущий таймер
+    if chat_id in _debounce_timer:
         try:
-            old_mid = get_active_window_id(chat_id, old_day_key)
-            if old_mid:
-                bot.delete_message(chat_id, old_mid)
+            _debounce_timer[chat_id].cancel()
         except:
             pass
 
-        # обновляем ID активного окна
-        set_active_window_id(chat_id, new_day_key, sent.message_id)
+    _debounce_timer[chat_id] = threading.Timer(delay, _task)
+    _debounce_timer[chat_id].start()
 
-    threading.Thread(target=_task, daemon=True).start()
-    
 # ==========================================================
 # SECTION 15 — Управление финансовым режимом
 # ==========================================================
@@ -2252,12 +2260,7 @@ def update_chat_info_from_message(msg):
     """
     chat_id = msg.chat.id
     store = get_chat_store(chat_id)
-# ==========================================================
-# 1) СНАЧАЛА: мгновенное обновление текущего окна
-# ==========================================================
-    day_key = store.get("current_view_day", today_key())
-    update_or_send_day_window(chat_id, day_key)
-    
+
     info = store.setdefault("info", {})
     info["title"] = msg.chat.title or info.get("title") or f"Чат {chat_id}"
     info["username"] = msg.chat.username or info.get("username")
@@ -2289,6 +2292,7 @@ def handle_text(msg):
             forward_text_anon(chat_id, msg, targets)
 
         store = get_chat_store(chat_id)
+        _last_msg_time[chat_id] = time.time()
         #wait = store.get("edit_wait")
         wait = store.get("edit_wait")
         auto_add_enabled = store.get("settings", {}).get("auto_add", False)
@@ -2351,10 +2355,13 @@ def handle_text(msg):
 
                 # 🟢 Обновление окна
                 if added_any:
-                        txt, _ = render_day_window(chat_id, day_key)
-                        kb = build_main_keyboard(day_key, chat_id)
-                        sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-                        set_active_window_id(chat_id, day_key, sent.message_id)
+                        #txt, _ = render_day_window(chat_id, day_key)
+                        #kb = build_main_keyboard(day_key, chat_id)
+                        #sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                        #set_active_window_id(chat_id, day_key, sent.message_id)
+                        #⬇️в текущем окне
+                         update_or_send_day_window(chat_id, day_key)
+
 
                 # 🟢 Сохранение
                 store["balance"] = sum(x["amount"] for x in store["records"])
@@ -2372,10 +2379,6 @@ def handle_text(msg):
 
                 store["edit_wait"] = None
                 save_data(data)
-                # ==========================================================
-# 3–5) ПОСЛЕ сохранений запускаем отложённое создание нового окна
-# ==========================================================
-                delayed_recreate_window(chat_id, day_key, delay=2.0)
                 return
 
         if wait and wait.get("type") == "edit":
@@ -2411,6 +2414,7 @@ def handle_text(msg):
 
             store["edit_wait"] = None
             save_data(data)
+            schedule_final_window(chat_id, day_key)
             return
 
         if text.upper() == "ДА":
