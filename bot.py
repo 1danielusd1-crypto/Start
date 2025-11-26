@@ -1605,8 +1605,13 @@ def on_callback(call):
             kb2.row(
                 types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
             )
-
-            bot.send_message(chat_id, "Выберите запись:", reply_markup=kb2)
+            
+            bot.edit_message_text(
+                "Выберите действие:",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
             return
 
         # выбор конкретной записи для редактирования
@@ -1797,7 +1802,25 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
+    📝📝✂️✂️✂️📝📝
+def send_and_auto_delete(chat_id, text, reply_markup=None, delay=5):
+    msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
+    threading.Timer(delay, lambda: safe_delete(chat_id, msg.message_id)).start()
+    return msg
 
+def safe_delete(chat_id, message_id):
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+#bot.send_message(chat_id, text)
+#на
+#send_and_auto_delete
+#
+#send_info(chat_id, "🚀 Фина")
+#на
+#def send_info(chat_id, text, delay=5):
+    #return send_and_auto_delete(chat_id, text, delay=delay)
 # ==========================================================
 # SECTION 14 — Active window system (версия код-010)
 # ==========================================================
@@ -1878,7 +1901,7 @@ def require_finance(chat_id: int) -> bool:
     Если нет — показываем подсказку /поехали.
     """
     if not is_finance_mode(chat_id):
-        send_info(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
+        send_and_auto_delete(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
         return False
     return True
 
