@@ -2466,7 +2466,7 @@ def handle_text(msg):
                         #kb = build_main_keyboard(day_key, chat_id)
                         #sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
                         update_or_send_day_window(chat_id, day_key)
-                         update_or_end_day_window(chat_id, day_key)# текущее окно обновояет
+                         #update_or_end_day_window(chat_id, day_key)# текущее окно обновояет
                         # запускаем таймер финальной логики (3 сек тишины)
                         schedule_finalize(chat_id, day_key)
                          # set_active_window_id(chat_id, day_key, sent.message_id)
