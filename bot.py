@@ -1802,7 +1802,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    📝📝✂️✂️✂️📝📝
+    #📝📝✂️✂️✂️📝📝
 def send_and_auto_delete(chat_id, text, reply_markup=None, delay=5):
     msg = bot.send_message(chat_id, text, reply_markup=reply_markup)
     threading.Timer(delay, lambda: safe_delete(chat_id, msg.message_id)).start()
