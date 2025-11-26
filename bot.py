@@ -1549,7 +1549,7 @@ def on_callback(call):
                 reply_markup=kb
             )
             return
-        elif cmd == "edit_list":
+        if cmd == "edit_list":
             store["current_view_day"] = day_key
             kb = build_edit_list_keyboard(day_key, chat_id)
             bot.edit_message_reply_markup(
@@ -1592,11 +1592,11 @@ def on_callback(call):
         # список записей для редактирования
         
                 # список записей для редактирования — НОВАЯ ВЕРСИЯ
-        if cmd == "edit_list":
-            day_recs = store.get("daily_records", {}).get(day_key, [])
-            if not day_recs:
-                bot.send_message(chat_id, "Нет записей за этот день.")
-                return
+        #if cmd == "edit_list":
+            #day_recs = store.get("daily_records", {}).get(day_key, [])
+            #if not day_recs:
+                #bot.send_message(chat_id, "Нет записей за этот день.")
+                #return
 
             kb2 = types.InlineKeyboardMarkup(row_width=3)
 
