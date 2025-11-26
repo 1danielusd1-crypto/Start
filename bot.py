@@ -1549,15 +1549,40 @@ def on_callback(call):
                 reply_markup=kb
             )
             return
+        # ---------------------------------------------
+        # Редактирование: список записей (edit_list)
+        # ---------------------------------------------
         if cmd == "edit_list":
             store["current_view_day"] = day_key
-            kb = build_edit_list_keyboard(day_key, chat_id)
+
+            day_recs = store.get("daily_records", {}).get(day_key, [])
+            if not day_recs:
+                bot.answer_callback_query(call.id, "Нет записей за этот день", show_alert=True)
+                return
+
+            kb2 = types.InlineKeyboardMarkup(row_width=3)
+
+            for r in day_recs:
+                lbl = f"{r['short_id']} {fmt_num(r['amount'])} — {r.get('note','')}"
+                rid = r["id"]
+
+                kb2.row(
+                    types.InlineKeyboardButton(lbl, callback_data="none"),
+                    types.InlineKeyboardButton("✏️", callback_data=f"d:{day_key}:edit_rec_{rid}"),
+                    types.InlineKeyboardButton("❌", callback_data=f"d:{day_key}:del_rec_{rid}")
+                )
+
+            kb2.row(
+                types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
+            )
+
             bot.edit_message_reply_markup(
                 chat_id=chat_id,
                 message_id=call.message.message_id,
-                reply_markup=kb
+                reply_markup=kb2
             )
             return
+            
         # назад к основному окну дня
         if cmd == "back_main":
             store["current_view_day"] = day_key
@@ -1598,24 +1623,7 @@ def on_callback(call):
                 #bot.send_message(chat_id, "Нет записей за этот день.")
                 #return
 
-            kb2 = types.InlineKeyboardMarkup(row_width=3)
-
-            for r in day_recs:
-                lbl = f"{r['short_id']} {fmt_num(r['amount'])} — {r.get('note','')}"
-                rid = r["id"]
-
-                kb2.row(
-                    types.InlineKeyboardButton(lbl, callback_data="none"),
-                    types.InlineKeyboardButton("✏️", callback_data=f"d:{day_key}:edit_rec_{rid}"),
-                    types.InlineKeyboardButton("❌", callback_data=f"d:{day_key}:del_rec_{rid}")
-                )
-
-            kb2.row(
-                types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
-            )
-
-            bot.send_message(chat_id, "Выберите запись:", reply_markup=kb2)
-            return
+            
 
         # выбор конкретной записи для редактирования
         if cmd.startswith("edit_rec_"):
