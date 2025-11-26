@@ -1539,7 +1539,7 @@ def on_callback(call):
             bot.send_message(chat_id, info_text)
             return
 
-        # меню редактирования
+        # меню редактированияedit_menu
         if cmd == "edit_menu":
             store["current_view_day"] = day_key
             kb = build_edit_menu_keyboard(day_key, chat_id)
@@ -1549,7 +1549,15 @@ def on_callback(call):
                 reply_markup=kb
             )
             return
-
+        elif cmd == "edit_list":
+            store["current_view_day"] = day_key
+            kb = build_edit_list_keyboard(day_key, chat_id)
+            bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
+            return
         # назад к основному окну дня
         if cmd == "back_main":
             store["current_view_day"] = day_key
