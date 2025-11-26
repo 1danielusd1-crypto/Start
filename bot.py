@@ -1897,14 +1897,25 @@ def update_or_send_day_window(chat_id: int, day_key: str):
 # ==========================================================
 
 def is_finance_mode(chat_id: int) -> bool:
-    return chat_id in finance_active_chats
+    """
+    Проверяет режим по флагу в store.
+    /ok (и /поехали, если сделаешь) должны выставлять store["finance_mode"] = True.
+    """
+    store = get_chat_store(chat_id)
+    return bool(store.get("finance_mode", False))
 
 
 def set_finance_mode(chat_id: int, enabled: bool):
-    if enabled:
-        finance_active_chats.add(chat_id)
-    else:
-        finance_active_chats.discard(chat_id)
+    """
+    Унифицированная установка финансового режима.
+    """
+    store = get_chat_store(chat_id)
+    store["finance_mode"] = bool(enabled)
+
+    # на будущее: если хочешь, можно дублировать в data["finance_active_chats"]
+    # но для работы достаточно флага в store
+    save_chat_json(chat_id)
+    save_data(data)
 
 
 def require_finance(chat_id: int) -> bool:
@@ -1913,15 +1924,9 @@ def require_finance(chat_id: int) -> bool:
     Если нет — показываем подсказку /поехали.
     """
     if not is_finance_mode(chat_id):
-        send_info(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
+        send_info(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /ok (или /поехали)")
         return False
     return True
-
-
-        
-        
-        
-        
 # ==========================================================
 # SECTION 17 — Команды
 # ==========================================================
@@ -1935,27 +1940,25 @@ def send_info(chat_id: int, text: str):
 
 @bot.message_handler(commands=["ok"])
 def cmd_ok(msg):
-        try:
-                chat_id = msg.chat.id
-                store = get_chat_store(chat_id)
+    try:
+        chat_id = msg.chat.id
+        store = get_chat_store(chat_id)
 
-                # включаем финансовый режим
-                store["finance_mode"] = True
-                save_chat_json(chat_id)
+        # включаем финансовый режим
+        set_finance_mode(chat_id, True)
 
-                # устанавливаем текущий день
-                day_key = today_key()
-                store["current_view_day"] = day_key
+        # устанавливаем текущий день
+        day_key = today_key()
+        store["current_view_day"] = day_key
 
-                # создаём окно сразу, без ожидания других команд
-                update_or_send_day_window(chat_id, day_key)
+        # создаём окно сразу, без ожидания других команд
+        update_or_send_day_window(chat_id, day_key)
 
-                # запускаем финализацию (на случай, если сразу будут суммы)
-                schedule_finalize(chat_id, day_key)
+        # запускаем финализацию (на случай, если сразу будут суммы)
+        schedule_finalize(chat_id, day_key)
 
-        except Exception as e:
-                log_error(f"cmd_ok: {e}")
-
+    except Exception as e:
+        log_error(f"cmd_ok: {e}")
 
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
