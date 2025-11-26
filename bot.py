@@ -1,4 +1,7 @@
-# Code_022.9.12 ТЗ 1 2 3 4/✅+обнов«ок» /многострочка
+#update_or_send_day_window(chat_id, day_key)
+#тз1234
+#bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
+# Code_022.9.11 флаг✅
 #==========================================================
 
 # 🧭 Description: Code_022.1
@@ -54,7 +57,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_022.9.12 ТЗ 1 2 3 4✅"
+VERSION = "Code_ 022.9.11 флаг✅"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -1851,7 +1854,7 @@ def require_finance(chat_id: int) -> bool:
         
         
         
-# ==========================================================
+        # ==========================================================
 # SECTION 17 — Команды
 # ==========================================================
 
@@ -1863,27 +1866,12 @@ def send_info(chat_id: int, text: str):
 
 
 @bot.message_handler(commands=["ok"])
-def cmd_ok(msg):
-        try:
-                chat_id = msg.chat.id
-                store = get_chat_store(chat_id)
-
-                # включаем финансовый режим
-                store["finance_mode"] = True
-                save_chat_json(chat_id)
-
-                # устанавливаем текущий день
-                day_key = today_key()
-                store["current_view_day"] = day_key
-
-                # создаём окно сразу, без ожидания других команд
-                update_or_send_day_window(chat_id, day_key)
-
-                # запускаем финализацию (на случай, если сразу будут суммы)
-                schedule_finalize(chat_id, day_key)
-
-        except Exception as e:
-                log_error(f"cmd_ok: {e}")
+def cmd_enable_finance(msg):
+    chat_id = msg.chat.id
+    set_finance_mode(chat_id, True)
+    save_data(data)
+    send_info(chat_id, "🚀 Финансовый режим включён!\nОтправьте /start")
+    return
 
 
 @bot.message_handler(commands=["start"])
@@ -2394,10 +2382,10 @@ def handle_text(msg):
                         #txt, _ = render_day_window(chat_id, day_key)
                         #kb = build_main_keyboard(day_key, chat_id)
                         #sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-                        update_or_send_day_window(chat_id, day_key)# текущее окно обновояет
+                        update_or_end_day_window(chat_id, day_key)# текущее окно обновояет
                         # запускаем таймер финальной логики (3 сек тишины)
                         schedule_finalize(chat_id, day_key)
-                        #set_active_window_id(chat_id, day_key, sent.message_id)
+                         # set_active_window_id(chat_id, day_key, sent.message_id)
 
                 # 🟢 Сохранение
                 store["balance"] = sum(x["amount"] for x in store["records"])
