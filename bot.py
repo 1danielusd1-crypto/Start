@@ -903,7 +903,26 @@ def render_day_window(chat_id: int, day_key: str):
     lines.append(f"💰 <b>Итого:{fmt_num(total)}</b>")
 
     return "\n".join(lines), total
+# ==========================================================
+# SECTION 11.1 — Keyboard for per-record edit/delete
+# ==========================================================
 
+def build_record_inline_keyboard(day_key: str, recs_sorted: list):
+    """
+    Генерирует клавиатуру с кнопками ✍️ и ⭕ для каждой записи R*.
+    Не ломает структуру render_day_window.
+    """
+    kb = types.InlineKeyboardMarkup()
+
+    for r in recs_sorted:
+        rid = r["id"]
+        short = r.get("short_id", f"R{rid}")
+        kb.row(
+            types.InlineKeyboardButton(f"✍️ {short}", callback_data=f"edit:{day_key}:{rid}"),
+            types.InlineKeyboardButton(f"⭕ {short}", callback_data=f"del:{day_key}:{rid}")
+        )
+
+    return kb
 #💠💠💠💠💠💠💠💠
 # ==========================================================
 # SECTION 12 — Keyboards: main window, calendar, edit menu, forwarding
@@ -919,6 +938,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
 
     kb.row(
         types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"d:{day_key}:prev"),
+        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open"),
         types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next")
     )
 
@@ -1410,6 +1430,36 @@ def on_callback(call):
         # --------------------------------------------------
         # 3) ОКНО ДНЯ / РЕДАКТИРОВАНИЕ / СТАРОЕ МЕНЮ ПЕРЕСЫЛКИ
         # --------------------------------------------------
+                # ======================================
+        # 🔥 КНОПКИ ЗАПИСЕЙ: edit: и del:
+        # ======================================
+
+        # --- ✍️ Редактировать ---
+        if data_str.startswith("edit:"):
+            _, day_key, rid = data_str.split(":")
+            rid = int(rid)
+            store = get_chat_store(chat_id)
+            store["edit_wait"] = {
+                "type": "edit",
+                "day_key": day_key,
+                "rid": rid,
+                "origin_msg_id": None
+            }
+            bot.send_message(chat_id, f"✍️ Введите новое значение для записи R{rid}:")
+            return
+
+        # --- ⭕ Удалить ---
+        if data_str.startswith("del:"):
+            _, day_key, rid = data_str.split(":")
+            rid = int(rid)
+            store = get_chat_store(chat_id)
+            store["edit_wait"] = {
+                "type": "delete_confirm",
+                "day_key": day_key,
+                "rid": rid
+            }
+            bot.send_message(chat_id, f"❗ Удалить запись R{rid}? Напишите: ДА")
+            return
         if not data_str.startswith("d:"):
             return
 
@@ -1803,7 +1853,27 @@ def update_or_send_day_window(chat_id: int, day_key: str):
     Если нет — создаём.
     """
     txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
+
+    # --- ДОБАВЛЯЕМ INLINE-КНОПКИ НА КАЖДЫЙ РЕКОРД ---
+    store = get_chat_store(chat_id)
+    recs_sorted = sorted(
+        store.get("daily_records", {}).get(day_key, []),
+        key=lambda x: x.get("timestamp")
+    )
+    kb_records = build_record_inline_keyboard(day_key, recs_sorted)
+
+    # ниже — основная клавиатура окна
+    kb_main = build_main_keyboard(day_key, chat_id)
+
+    # объединяем две клавиатуры:
+    # первой идёт клавиатура записей, потом основная
+    kb = types.InlineKeyboardMarkup()
+    for row in kb_records.keyboard:
+        kb.row(*row)
+    for row in kb_main.keyboard:
+        kb.row(*row)
+    #txt, _ = render_day_window(chat_id, day_key)
+    #kb = build_main_keyboard(day_key, chat_id)
 
     mid = get_active_window_id(chat_id, day_key)
     if mid:
@@ -2395,7 +2465,8 @@ def handle_text(msg):
                         #txt, _ = render_day_window(chat_id, day_key)
                         #kb = build_main_keyboard(day_key, chat_id)
                         #sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-                        update_or_end_day_window(chat_id, day_key)# текущее окно обновояет
+                        update_or_send_day_window(chat_id, day_key)
+                         update_or_end_day_window(chat_id, day_key)# текущее окно обновояет
                         # запускаем таймер финальной логики (3 сек тишины)
                         schedule_finalize(chat_id, day_key)
                          # set_active_window_id(chat_id, day_key, sent.message_id)
@@ -2419,32 +2490,30 @@ def handle_text(msg):
                 return
 
         # =====================================================
-        # 3) МНОГОСТРОЧНОЕ РЕДАКТИРОВАНИЕ ЗАПИСИ (ТЗ-4)
+        # МНОГОСТРОЧНОЕ РЕДАКТИРОВАНИЕ (ТЗ-4)
         # =====================================================
         if wait and wait.get("type") == "edit":
-            origin_id = wait.get("origin_msg_id")
-            day_key = wait.get("day_key")
+            rid = wait["rid"]
+            day_key = wait["day_key"]
+            origin_id = wait["origin_msg_id"]
 
-            if not day_key:
-                day_key = store.get("current_view_day", today_key())
-
-            # 3.1 — читаем все строки сообщения
+            # читаем строки
             lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
 
-            # 3.2 — получаем все записи, связанные с этим origin_msg_id
+            # получаем все записи с этим origin_msg_id
             existing = []
             for rec in store.get("records", []):
                 if rec.get("origin_msg_id") == origin_id:
                     existing.append(rec)
 
-            # 3.3 — если строк больше чем записей → добавляем недостающие
+            # если строк больше → добавляем новые записи
             if len(lines) > len(existing):
                 diff = len(lines) - len(existing)
                 for _ in range(diff):
-                    rid = store.get("next_id", 1)
+                    nrid = store.get("next_id", 1)
                     new_rec = {
-                        "id": rid,
-                        "short_id": f"R{rid}",
+                        "id": nrid,
+                        "short_id": f"R{nrid}",
                         "timestamp": now_local().isoformat(timespec="seconds"),
                         "amount": 0,
                         "note": "",
@@ -2454,29 +2523,29 @@ def handle_text(msg):
                     }
                     store["records"].append(new_rec)
                     store.setdefault("daily_records", {}).setdefault(day_key, []).append(new_rec)
-                    store["next_id"] = rid + 1
+                    store["next_id"] = nrid + 1
 
-                # пересчитываем список
-                existing = [rec for rec in store["records"] if rec.get("origin_msg_id") == origin_id]
+                # обновляем список existing
+                existing = [r for r in store["records"] if r.get("origin_msg_id") == origin_id]
 
-            # 3.4 — если строк меньше чем записей → удаляем лишние записи
+            # если строк меньше → удаляем лишние
             if len(lines) < len(existing):
                 extra = existing[len(lines):]
-                remaining = existing[:len(lines)]
-                for rec in extra:
-                    store["records"].remove(rec)
+                keep = existing[:len(lines)]
+                for r in extra:
+                    store["records"].remove(r)
                     try:
-                        store["daily_records"][day_key].remove(rec)
+                        store["daily_records"][day_key].remove(r)
                     except:
                         pass
-                existing = remaining
+                existing = keep
 
-            # 3.5 — обновляем каждую запись по своей строке
+            # обновляем каждую запись по строке
             for idx, line in enumerate(lines):
                 rec = existing[idx]
                 try:
                     amount, note = split_amount_and_note(line)
-                except Exception:
+                except:
                     bot.send_message(chat_id, f"❌ Ошибка суммы: {line}\nПродолжаю расчёт…")
                     continue
 
@@ -2484,16 +2553,25 @@ def handle_text(msg):
                 rec["note"] = note
                 rec["timestamp"] = now_local().isoformat(timespec="seconds")
 
-            # 3.6 — обновляем окно
+            # обновляем окно
             update_or_send_day_window(chat_id, day_key)
 
-            # 3.7 — запускаем финальную логику через 3 секунды тишины
+            # финализация через 3 сек
             schedule_finalize(chat_id, day_key)
 
             store["edit_wait"] = None
             save_data(data)
             return
+        # --- удаление записи ---
+        if wait and wait.get("type") == "delete_confirm" and text.upper() == "ДА":
+            rid = wait["rid"]
+            day_key = wait["day_key"]
 
+            delete_record_in_chat(chat_id, rid)
+            update_or_send_day_window(chat_id, day_key)
+
+            store["edit_wait"] = None
+            return
         if text.upper() == "ДА":
             reset_chat_data(chat_id)
             bot.send_message(chat_id, "🔄 Данные чата обнулены.")
