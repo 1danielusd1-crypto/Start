@@ -979,11 +979,9 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
 
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         kb.row(
-            types.InlineKeyboardButton("🔁 Пересылка ↔️", callback_data=f"d:{day_key}:forward_menu")
+            types.InlineKeyboardButton("🔁 Пересылка ↔️", callback_data=f"d:{day_key}:forward_menu"),
+            types.InlineKeyboardButton("🔀 Пересылка A ↔ B", callback_data="fw_open")
         )
-    kb.row(
-        types.InlineKeyboardButton("🔀 Пересылка A ↔ B", callback_data="fw_open")
-    )
     kb.row(
         types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open"),
         types.InlineKeyboardButton("📆 Выбрать день", callback_data=f"d:{day_key}:pick_date")
@@ -2293,6 +2291,16 @@ def handle_text(msg):
 
         store = get_chat_store(chat_id)
         _last_msg_time[chat_id] = time.time()
+        # ==========================================================
+# 1) Сначала — обновляем текущее окно (edit_message)
+# ==========================================================
+        day_key = store.get("current_view_day", today_key())
+        update_or_send_day_window(chat_id, day_key)
+
+# ==========================================================
+# 3) Запускаем таймер создания нового окна (финального)
+# ==========================================================
+        schedule_final_window(chat_id, day_key)
         #wait = store.get("edit_wait")
         wait = store.get("edit_wait")
         auto_add_enabled = store.get("settings", {}).get("auto_add", False)
@@ -2414,7 +2422,7 @@ def handle_text(msg):
 
             store["edit_wait"] = None
             save_data(data)
-            schedule_final_window(chat_id, day_key)
+            #schedule_final_window(chat_id, day_key)
             return
 
         if text.upper() == "ДА":
