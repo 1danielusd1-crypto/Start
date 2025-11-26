@@ -2251,6 +2251,83 @@ def cmd_autoadd_info(msg):
 # SECTION 18 — Text handler (финансы + пересылка + chat_info)
 # ==========================================================
 
+# ==========================================================
+# SECTION 18 — Text handler (финансы + пересылка + chat_info)
+# ==========================================================
+
+# ДЕБАУНС-ФИНАЛИЗАЦИЯ для каждого чата
+_finalize_timers = {}
+
+def schedule_debounced_finalize(chat_id: int, day_key: str, delay: float = 3.0):
+    """
+    Через delay секунд после последнего сообщения:
+
+      1) Пересчёт всех данных
+      2) save_data, save_chat_json, export_global_csv, backup
+      3) Создание нового окна
+      4) Удаление старого окна через 1 секунду
+    """
+
+    def _job():
+        # === 1) Пересчёт данных ===
+        store = get_chat_store(chat_id)
+
+        # пересчёт баланса чата
+        store["balance"] = sum(x.get("amount", 0) for x in store.get("records", []))
+
+        # пересборка глобальных records
+        all_recs = []
+        for cid, st in data.get("chats", {}).items():
+            all_recs.extend(st.get("records", []))
+        data["records"] = all_recs
+        data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
+
+        # === 2) Сохранение и бэкап ===
+        save_data(data)
+        save_chat_json(chat_id)
+        export_global_csv(data)
+        send_backup_to_channel(chat_id)
+
+        # === 3) Создание нового окна ===
+        old_mid = get_active_window_id(chat_id, day_key)
+
+        txt, _ = render_day_window(chat_id, day_key)
+        kb = build_main_keyboard(day_key, chat_id)
+
+        sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+        new_mid = sent.message_id
+
+        set_active_window_id(chat_id, day_key, new_mid)
+
+        # === 4) Удаляем старое окно через 1 секунду ===
+        if old_mid and old_mid != new_mid:
+            def _delete_old():
+                time.sleep(1.0)
+                try:
+                    bot.delete_message(chat_id, old_mid)
+                except:
+                    pass
+
+            threading.Thread(target=_delete_old, daemon=True).start()
+
+    # отменяем предыдущий таймер (если он ещё не отработал)
+    t_prev = _finalize_timers.get(chat_id)
+    if t_prev and t_prev.is_alive():
+        try:
+            t_prev.cancel()
+        except:
+            pass
+
+    # запускаем новый таймер
+    t = threading.Timer(delay, _job)
+    _finalize_timers[chat_id] = t
+    t.start()
+
+
+# ==========================================================
+# ОБНОВЛЕНИЕ ИНФОРМАЦИИ О ЧАТЕ
+# ==========================================================
+
 def update_chat_info_from_message(msg):
     """
     Обновляет информацию о чате при каждом сообщении.
@@ -2264,6 +2341,7 @@ def update_chat_info_from_message(msg):
     info["username"] = msg.chat.username or info.get("username")
     info["type"] = msg.chat.type
 
+    # сохраняем инфо о чате владельцу
     if OWNER_ID and str(chat_id) != str(OWNER_ID):
         owner_store = get_chat_store(int(OWNER_ID))
         kc = owner_store.setdefault("known_chats", {})
@@ -2277,6 +2355,10 @@ def update_chat_info_from_message(msg):
     save_chat_json(chat_id)
 
 
+# ==========================================================
+# TEXT HANDLER
+# ==========================================================
+
 @bot.message_handler(content_types=["text"])
 def handle_text(msg):
     try:
@@ -2285,123 +2367,103 @@ def handle_text(msg):
 
         update_chat_info_from_message(msg)
 
+        # пересылка текста
         targets = resolve_forward_targets(chat_id)
         if targets:
             forward_text_anon(chat_id, msg, targets)
 
         store = get_chat_store(chat_id)
-        _last_msg_time[chat_id] = time.time()
-        # ==========================================================
-# 1) Сначала — обновляем текущее окно (edit_message)
-# ==========================================================
-        day_key = store.get("current_view_day", today_key())
-        update_or_send_day_window(chat_id, day_key)
-
-# ==========================================================
-# 3) Запускаем таймер создания нового окна (финального)
-# ==========================================================
-        schedule_final_window(chat_id, day_key)
-        #wait = store.get("edit_wait")
         wait = store.get("edit_wait")
         auto_add_enabled = store.get("settings", {}).get("auto_add", False)
 
-        # -----------------------------------------
-        # 🟢 ЛОГИКА ВКЛЮЧЕНИЯ "ДОБАВИТЬ ЗАПИСЬ"
-        # -----------------------------------------
+        # текущий день
+        day_key = store.get("current_view_day", today_key())
+
+        # =====================================================
+        # 1) СНАЧАЛА — ОБНОВЛЯЕМ ТЕКУЩЕЕ ОКНО (edit), НЕ СОЗДАЁМ НОВОЕ
+        # =====================================================
+        update_or_send_day_window(chat_id, day_key)
+
+        # =====================================================
+        # 2) ЛОГИКА ДОБАВЛЕНИЯ (кнопка + auto_add)
+        # =====================================================
         should_add = False
 
-        # 1) режим кнопки "Добавить"
+        # режим кнопки "Добавить"
         if wait and wait.get("type") == "add" and looks_like_amount(text):
-                should_add = True
-                day_key = wait.get("day_key")
+            should_add = True
+            day_key = wait.get("day_key")
 
-        # 2) режим auto_add
+        # режим auto_add
         elif auto_add_enabled and looks_like_amount(text):
-                should_add = True
-                # день — тот, который открыт, если нет — сегодняшняя дата
-                day_key = store.get("current_view_day", today_key())
+            should_add = True
+            day_key = store.get("current_view_day", today_key())
 
-        # если ничего не подошло — пропускаем
+        # нет добавления
         if not should_add:
-                pass
+            pass
         else:
-                # -----------------
-                # 🟢 Добавление записи
-                # -----------------
-                lines = text.split("\n")
-                added_any = False
+            lines = text.split("\n")
+            added_any = False
 
-                for line in lines:
-                        line = line.strip()
-                        if not line:
-                                continue
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
 
-                        try:
-                                amount, note = split_amount_and_note(line)
-                        except Exception:
-                                bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
-                                continue
+                try:
+                    amount, note = split_amount_and_note(line)
+                except:
+                    #bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
+                     bot.send_message(chat_id, f"❌ Ошибка суммы: {line}\nПродолжаю расчёт…")
+                    continue
 
-                        rid = store.get("next_id", 1)
+                rid = store.get("next_id", 1)
 
-                        rec = {
-                                "id": rid,
-                                "short_id": f"R{rid}",
-                                "timestamp": now_local().isoformat(timespec="seconds"),
-                                "amount": amount,
-                                "note": note,
-                                "owner": msg.from_user.id,
-                                "msg_id": msg.message_id,
-                                "origin_msg_id": msg.message_id,
-                        }
+                rec = {
+                    "id": rid,
+                    "short_id": f"R{rid}",
+                    "timestamp": now_local().isoformat(timespec="seconds"),
+                    "amount": amount,
+                    "note": note,
+                    "owner": msg.from_user.id,
+                    "msg_id": msg.message_id,
+                    "origin_msg_id": msg.message_id,
+                }
 
-                        store.setdefault("records", []).append(rec)
-                        store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
+                store.setdefault("records", []).append(rec)
+                store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
 
-                        store["next_id"] = rid + 1
-                        added_any = True
+                store["next_id"] = rid + 1
+                added_any = True
 
-                # 🟢 Обновление окна
-                if added_any:
-                        #txt, _ = render_day_window(chat_id, day_key)
-                        #kb = build_main_keyboard(day_key, chat_id)
-                        #sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-                        #set_active_window_id(chat_id, day_key, sent.message_id)
-                        #⬇️в текущем окне
-                         update_or_send_day_window(chat_id, day_key)
+            if added_any:
+                # обновляем окно (edit)
+                update_or_send_day_window(chat_id, day_key)
 
+                # запускаем дебаунс финализации
+                schedule_debounced_finalize(chat_id, day_key)
 
-                # 🟢 Сохранение
-                store["balance"] = sum(x["amount"] for x in store["records"])
+            store["edit_wait"] = None
+            save_data(data)
+            return
 
-                data["records"] = []
-                for cid, st in data.get("chats", {}).items():
-                        data["records"].extend(st.get("records", []))
-
-                data["overall_balance"] = sum(x["amount"] for x in data["records"])
-
-                save_data(data)
-                save_chat_json(chat_id)
-                export_global_csv(data)
-                send_backup_to_channel(chat_id)
-
-                store["edit_wait"] = None
-                save_data(data)
-                return
-
+        # =====================================================
+        # 3) РЕДАКТИРОВАНИЕ ЗАПИСИ
+        # =====================================================
         if wait and wait.get("type") == "edit":
             rid = wait.get("rid")
 
             try:
                 amount, note = split_amount_and_note(text)
-            except Exception:
-                bot.send_message(chat_id, f"❌ Ошибка суммы: {text}")
+            except:
+                bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
                 return
 
-            # 1) обновляем запись, НО без бэкапа
+            # обновляем запись только в памяти
             update_record_in_chat(chat_id, rid, amount, note, do_backup=False)
 
-            # 2) находим день записи
+            # находим день записи
             day_key = None
             store = get_chat_store(chat_id)
             for dk, recs in store.get("daily_records", {}).items():
@@ -2410,21 +2472,20 @@ def handle_text(msg):
                         day_key = dk
                         break
 
-            # 3) СНАЧАЛА обновляем окно
             if day_key:
+                # обновляем окно
                 update_or_send_day_window(chat_id, day_key)
 
-            # 4) ПОТОМ выполняем сохранения и бэкап
-            save_chat_json(chat_id)
-            save_data(data)
-            export_global_csv(data)
-            send_backup_to_channel(chat_id)
+                # запускаем дебаунс
+                schedule_debounced_finalize(chat_id, day_key)
 
             store["edit_wait"] = None
             save_data(data)
-            #schedule_final_window(chat_id, day_key)
             return
 
+        # =====================================================
+        # 4) СБРОС ДАННЫХ ЧАТА (ДА)
+        # =====================================================
         if text.upper() == "ДА":
             reset_chat_data(chat_id)
             bot.send_message(chat_id, "🔄 Данные чата обнулены.")
@@ -2432,7 +2493,7 @@ def handle_text(msg):
 
     except Exception as e:
         log_error(f"handle_text: {e}")
-
+        
 # ==========================================================
 # SECTION 18.1 — Reset chat data helper
 # ==========================================================
