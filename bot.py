@@ -1,4 +1,4 @@
-#update_or_send_day_window(chat_id, day_key)
+#норм
 #тз1234
 #bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
 # Code_022.9.11 флаг✅
@@ -1605,45 +1605,17 @@ def on_callback(call):
             kb2.row(
                 types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
             )
-            
-            bot.edit_message_text(
-                "Выберите действие:",
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                reply_markup=kb
-            )
+
+            bot.send_message(chat_id, "Выберите запись:", reply_markup=kb2)
             return
 
         # выбор конкретной записи для редактирования
         if cmd.startswith("edit_rec_"):
             rid = int(cmd.split("_")[-1])
-            store["edit_wait"] = {
-                "type": "edit",
-                "day_key": day_key,
-                "rid": rid
-            }
+            store["edit_wait"] = {"type": "edit", "day_key": day_key, "rid": rid}
             save_data(data)
-
-            # строим текст для редактирования
-            text_edit = f"✏️ Редактирование записи R{rid}\n\n" \
-                        f"Введите новую сумму и текст.\n" \
-                        f"Можно прислать несколько строк."
-
-            # строим клавиатуру для возврата назад
-            kb_back = types.InlineKeyboardMarkup()
-            kb_back.row(
-                types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_list")
-            )
-
-            # редактируем текущее окно, НЕ создаём новое сообщение
-            bot.edit_message_text(
-                text_edit,
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                reply_markup=kb_back
-            )
+            bot.send_message(chat_id, f"Введите новую сумму и текст для записи R{rid}:")
             return
-            
         if cmd.startswith("del_rec_"):
             rid = int(cmd.split("_")[-1])
             delete_record_in_chat(chat_id, rid)
@@ -1803,14 +1775,6 @@ def delete_record_in_chat(chat_id: int, rid: int):
     export_global_csv(data)
     send_backup_to_channel(chat_id)
 
-#bot.send_message(chat_id, text)
-#на
-#send_and_auto_delete
-#
-#send_info(chat_id, "🚀 Фина")
-#на
-#def send_info(chat_id, text, delay=5):
-    #return send_and_auto_delete(chat_id, text, delay=delay)
 # ==========================================================
 # SECTION 14 — Active window system (версия код-010)
 # ==========================================================
@@ -1891,21 +1855,25 @@ def require_finance(chat_id: int) -> bool:
     Если нет — показываем подсказку /поехали.
     """
     if not is_finance_mode(chat_id):
-        send_and_auto_delete(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
+        send_info(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
         return False
     return True
 
-# ==========================================================
+
+        
+        
+        
+        
+        # ==========================================================
 # SECTION 17 — Команды
 # ==========================================================
 
-#def send_info(chat_id: int, text: str):
-    #try:
-        #bot.send_message(chat_id, text)
-    #except Exception as e:
-        #log_error(f"send_info: {e}")
 def send_info(chat_id: int, text: str):
-    send_and_auto_delete(chat_id, text, 10)
+    try:
+        bot.send_message(chat_id, text)
+    except Exception as e:
+        log_error(f"send_info: {e}")
+
 
 @bot.message_handler(commands=["ok"])
 def cmd_enable_finance(msg):
@@ -2189,13 +2157,8 @@ def cmd_reset(msg):
     chat_id = msg.chat.id
     if not require_finance(chat_id):
         return
+    send_info(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
 
-    store = get_chat_store(chat_id)
-    store["reset_wait"] = True
-    store["reset_time"] = time.time()
-    save_data(data)
-
-    bot.send_message(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
 
 @bot.message_handler(commands=["stopforward"])
 def cmd_stopforward(msg):
@@ -2258,26 +2221,7 @@ def cmd_autoadd_info(msg):
         f"- ВЫКЛ → работает только через кнопку «Добавить»"
     )
     
-# ==========================================================
-# SECTION 18 — Text handler (финансы + пересылка + chat_info)
-# ==========================================================
-
-def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
-    try:
-        msg = bot.send_message(chat_id, text)
-        def _delete():
-            time.sleep(delay)
-            try:
-                bot.delete_message(chat_id, msg.message_id)
-            except Exception:
-                pass
-        threading.Thread(target=_delete, daemon=True).start()
-    except Exception as e:
-        log_error(f"send_and_auto_delete: {e}")
-
-
-#def update_chat_info_from_message(msg):
- #🔵🔵🔵🔵🔵🔵🔵
+    #🔵🔵🔵🔵🔵🔵🔵
 # ==========================================================
 # SECTION 18 — Text handler (финансы + пересылка + chat_info)
 # ==========================================================
@@ -2313,7 +2257,7 @@ def update_chat_info_from_message(msg):
 
 _finalize_timers = {}
 
-def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
+def schedule_finalize(chat_id: int, day_key: str, delay: float = 3.0):
     def _job():
         store = get_chat_store(chat_id)
 
@@ -2527,32 +2471,6 @@ def handle_text(msg):
             store["edit_wait"] = None
             save_data(data)
             return
-            
-        # =====================================================
-        # 4) Подтверждение обнуления ("ДА") — только после /reset
-        # =====================================================
-        if text.upper() == "ДА":
-            reset_flag = store.get("reset_wait", False)
-            reset_time = store.get("reset_time", 0)
-            now_t = time.time()
-
-            # истекает через 60 секунд
-            if reset_flag and (now_t - reset_time <= 10):
-                reset_chat_data(chat_id)
-                bot.send_message(chat_id, "🔄 Данные чата обнулены.")
-            else:
-                bot.send_message(chat_id, "Нет активного запроса на обнуление.")
-            
-            store["reset_wait"] = False
-            store["reset_time"] = 0
-            save_data(data)
-            return
-            
-        # Если был режим reset_wait, но сообщение не "ДА" → сбрасываем
-        if store.get("reset_wait", False):
-            store["reset_wait"] = False
-            store["reset_time"] = 0
-            save_data(data)
             
     except Exception as e:
         log_error(f"handle_text: {e}")
@@ -2880,20 +2798,7 @@ def handle_edited_message(msg):
     update_or_send_day_window(chat_id, day_key)
     log_info(f"EDITED: окно дня {day_key} обновлено для чата {chat_id}")
 
-@bot.message_handler(content_types=["deleted_message"])
-def handle_deleted_message(msg):
-    try:
-        chat_id = msg.chat.id
-        store = get_chat_store(chat_id)
-
-        if store.get("reset_wait", False):
-            store["reset_wait"] = False
-            store["reset_time"] = 0
-            save_data(data)
-    except:
-        pass
-        
-# ==========================================================
+ # ==========================================================
 # SECTION 19 — Keep-alive
 # ==========================================================
 
