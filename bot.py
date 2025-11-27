@@ -403,6 +403,129 @@ def looks_like_amount(text):
         return True
     except Exception:
         return False
+
+# ==========================================================
+# SECTION 7 — Info & record helpers
+# ==========================================================
+
+def send_info(chat_id: int, text: str):
+    """
+    Простой инфо-обёртка:
+    отправляет сообщение в чат, ошибки пишет в лог.
+    """
+    try:
+        bot.send_message(chat_id, text)
+    except Exception as e:
+        log_error(f"send_info: {e}")
+
+
+def _rebuild_global_records():
+    """
+    Пересборка data["records"] и data["overall_balance"]
+    на основе всех чатов.
+    """
+    all_records = []
+    for cid, st in (data.get("chats") or {}).items():
+        all_records.extend(st.get("records", []))
+    data["records"] = all_records
+    data["overall_balance"] = sum(r.get("amount", 0) for r in all_records)
+
+
+def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str):
+    """
+    Обновление одной записи по ID:
+      • ищем её в daily_records и records
+      • меняем сумму, комментарий, timestamp
+      • пересчитываем баланс чата и глобальный баланс
+      • сохраняем JSON/CSV и делаем бэкап
+    """
+    store = get_chat_store(chat_id)
+
+    target = None
+    # 1) ищем запись в daily_records
+    for dk, recs in store.get("daily_records", {}).items():
+        for r in recs:
+            if r.get("id") == rid:
+                target = r
+                break
+        if target:
+            break
+
+    if not target:
+        # если запись не нашли — тихо выходим
+        return
+
+    ts = now_local().isoformat(timespec="seconds")
+    target["amount"] = amount
+    target["note"] = note
+    target["timestamp"] = ts
+
+    # 2) обновляем такую же запись в store["records"]
+    for r in store.get("records", []):
+        if r.get("id") == rid:
+            r["amount"] = amount
+            r["note"] = note
+            r["timestamp"] = ts
+            break
+
+    # 3) пересчёт баланса чата
+    store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+
+    # 4) пересобрать глобальные records/overall_balance
+    _rebuild_global_records()
+
+    # 5) сохранить и сделать бэкап
+    save_data(data)
+    save_chat_json(chat_id)
+    export_global_csv(data)
+    send_backup_to_channel(chat_id)
+
+
+def delete_record_in_chat(chat_id: int, rid: int):
+    """
+    Удаление записи по ID:
+      • выбрасываем её из daily_records и records
+      • перенумеровываем R1, R2, ...
+      • пересчитываем баланс чата и глобальный
+      • сохраняем и делаем бэкап
+    """
+    store = get_chat_store(chat_id)
+    removed = False
+
+    # 1) daily_records
+    daily = store.get("daily_records", {})
+    for dk, recs in list(daily.items()):
+        new_recs = [r for r in recs if r.get("id") != rid]
+        if len(new_recs) != len(recs):
+            daily[dk] = new_recs
+            removed = True
+
+    # 2) records
+    all_recs = store.get("records", [])
+    new_all = [r for r in all_recs if r.get("id") != rid]
+    if len(new_all) != len(all_recs):
+        store["records"] = new_all
+        removed = True
+
+    if not removed:
+        # ничего не удалили — выходим
+        return
+
+    # 3) пересчитать баланс
+    store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+
+    # 4) перенумеровать R1, R2... (функция описана ниже в SECTION 14)
+    renumber_chat_records(chat_id)
+
+    # 5) пересборка глобальных records / overall_balance
+    _rebuild_global_records()
+
+    # 6) сохранить и бэкап
+    save_data(data)
+    save_chat_json(chat_id)
+    export_global_csv(data)
+    send_backup_to_channel(chat_id)
+    
 #✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅
 # ==========================================================
 # SECTION 8 — Global CSV export & backup to channel/chat
@@ -978,6 +1101,95 @@ def apply_forward_mode(A: int, B: int, mode: str):
     elif mode == "del":
         remove_forward_link(A, B)
         remove_forward_link(B, A)
+# ==========================================================
+# SECTION 12.2 — Legacy forward menus (fw_cfg_*)
+# ==========================================================
+
+def build_forward_chat_list(day_key: str, chat_id: int):
+    """
+    Старое меню пересылки:
+    выводит список известных чатов владельца.
+    Используется в callback 'forward_menu'.
+    """
+    kb = types.InlineKeyboardMarkup(row_width=1)
+
+    if not OWNER_ID:
+        return kb
+
+    owner_store = get_chat_store(int(OWNER_ID))
+    known = owner_store.get("known_chats", {})
+
+    if not known:
+        kb.row(
+            types.InlineKeyboardButton(
+                "Пока нет известных чатов",
+                callback_data="none"
+            )
+        )
+    else:
+        for cid, ch in known.items():
+            title = ch.get("title") or f"Чат {cid}"
+            kb.row(
+                types.InlineKeyboardButton(
+                    title,
+                    callback_data=f"fw_cfg_{cid}"
+                )
+            )
+
+    kb.row(
+        types.InlineKeyboardButton(
+            "🔙 Назад",
+            callback_data=f"d:{day_key}:edit_menu"
+        )
+    )
+
+    return kb
+
+
+def build_forward_direction_menu(day_key: str, chat_id: int, target_chat_id: int):
+    """
+    Старое подменю направления:
+      • ➡️ этот чат → цель
+      • ⬅️ цель → этот чат
+      • ↔️ двусторонняя
+      • ❌ удалить все связи
+    callback-данные:
+      fw_one_<id>, fw_rev_<id>, fw_two_<id>, fw_del_<id>
+    """
+    kb = types.InlineKeyboardMarkup(row_width=1)
+
+    kb.row(
+        types.InlineKeyboardButton(
+            "➡️ Этот чат → цель",
+            callback_data=f"fw_one_{target_chat_id}"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            "⬅️ Цель → этот чат",
+            callback_data=f"fw_rev_{target_chat_id}"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            "↔️ Двусторонняя ↔️",
+            callback_data=f"fw_two_{target_chat_id}"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            "❌ Удалить все связи",
+            callback_data=f"fw_del_{target_chat_id}"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            "🔙 Назад",
+            callback_data=f"d:{day_key}:forward_menu"
+        )
+    )
+
+    return kb
 
 # ==========================================================
 # SECTION 14 — Active window system
