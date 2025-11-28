@@ -2973,29 +2973,42 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             send_backup_to_channel(chat_id)   # в бэкап-канал
             send_backup_to_chat(chat_id)      # JSON в сам чат
 
-            # === 5. Обновляем окно дня ===
-            if OWNER_ID and str(chat_id) == str(OWNER_ID):
-                # 🔹 ЛИЧКА ВЛАДЕЛЬЦА: только обновляем / создаём одно окно
-                update_or_send_day_window(chat_id, day_key)
-            else:
-                # 🔹 ДРУГИЕ ЧАТЫ: создаём новое окно и удаляем старое (как было)
-                old_mid = get_active_window_id(chat_id, day_key)
+            # === 5. Окно дня: ВСЕГДА новое сообщение + удаление старого ===
+            old_mid = get_active_window_id(chat_id, day_key)
 
-                txt, _ = render_day_window(chat_id, day_key)
-                kb = build_main_keyboard(day_key, chat_id)
-                sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+            txt, _ = render_day_window(chat_id, day_key)
+            kb = build_main_keyboard(day_key, chat_id)
+
+            new_mid = None
+            try:
+                sent = bot.send_message(
+                    chat_id,
+                    txt,
+                    reply_markup=kb,
+                    parse_mode="HTML"
+                )
                 new_mid = sent.message_id
-
                 set_active_window_id(chat_id, day_key, new_mid)
+            except Exception as e:
+                # если вдруг не смогли отправить новое сообщение —
+                # пробуем хотя бы обновить существующее окно
+                log_error(f"schedule_finalize: send_message error for chat {chat_id}: {e}")
+                try:
+                    update_or_send_day_window(chat_id, day_key)
+                    new_mid = get_active_window_id(chat_id, day_key)
+                except Exception as e2:
+                    log_error(f"schedule_finalize: fallback update_or_send_day_window error: {e2}")
 
-                if old_mid and old_mid != new_mid:
-                    def _delete_old():
-                        time.sleep(1.0)
-                        try:
-                            bot.delete_message(chat_id, old_mid)
-                        except Exception:
-                            pass
-                    threading.Thread(target=_delete_old, daemon=True).start()
+            # удаляем старое окно, если оно было и отличается от нового
+            if old_mid and new_mid and old_mid != new_mid:
+                def _delete_old():
+                    time.sleep(1.0)
+                    try:
+                        bot.delete_message(chat_id, old_mid)
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_delete_old, daemon=True).start()
 
             # === 6. Обновляем «Общий итог» ===
             refresh_total_message_if_any(chat_id)
@@ -3099,7 +3112,7 @@ def handle_text(msg):
                         #txt, _ = render_day_window(chat_id, day_key)
                         #kb = build_main_keyboard(day_key, chat_id)
                         #sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-                        update_or_send_day_window(chat_id, day_key)# текущее окно обновояет
+                        #update_or_send_day_window(chat_id, day_key)# текущее окно обновояет
                         # запускаем таймер финальной логики (3 сек тишины)
                         schedule_finalize(chat_id, day_key)
                          # set_active_window_id(chat_id, day_key, sent.message_id)
