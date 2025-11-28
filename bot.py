@@ -1,5 +1,4 @@
-#🎈
-#тз1234
+#🎈с4-15/18/20
 #bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
 # Code_022.9.11 флаг✅
 #==========================================================
@@ -57,7 +56,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_ 022.9.11 флаг✅"
+VERSION = "Code_ 022.9.11 🎈с4-15/18/20"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -1632,18 +1631,59 @@ def on_callback(call):
             return
 
         # общий итог
+        # общий итог
         if cmd == "total":
             chat_bal = store.get("balance", 0)
-            overall = data.get("overall_balance", 0)
-            bot.send_message(
-                chat_id,
-                f"💰 <b>Общий итог</b>\n\n"
-                f"• По этому чату: <b>{fmt_num(chat_bal)}</b>\n"
-                f"• По всем чатам: <b>{fmt_num(overall)}</b>",
-                parse_mode="HTML"
-            )
-            return
 
+            # Для обычных чатов — только свой остаток
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                bot.send_message(
+                    chat_id,
+                    f"💰 <b>Общий итог по этому чату:</b> {fmt_num(chat_bal)}",
+                    parse_mode="HTML"
+                )
+                return
+
+            # Для владельца — подробный отчёт по всем чатам
+            lines = []
+
+            info = store.get("info", {})
+            title = info.get("title") or f"Чат {chat_id}"
+
+            lines.append("💰 <b>Общий итог (для владельца)</b>")
+            lines.append("")
+            lines.append(f"• Этот чат ({title}): <b>{fmt_num(chat_bal)}</b>")
+
+            all_chats = data.get("chats", {})
+            total_all = 0
+            other_lines = []
+
+            for cid, st in all_chats.items():
+                try:
+                    cid_int = int(cid)
+                except Exception:
+                    continue
+
+                bal = st.get("balance", 0)
+                total_all += bal
+
+                # этот чат уже вывели выше
+                if cid_int == chat_id:
+                    continue
+
+                info2 = st.get("info", {})
+                title2 = info2.get("title") or f"Чат {cid_int}"
+                other_lines.append(f"   • {title2}: {fmt_num(bal)}")
+
+            if other_lines:
+                lines.append("")
+                lines.append("• Другие чаты:")
+                lines.extend(other_lines)
+
+            lines.append("")
+            lines.append(f"• Всего по всем чатам: <b>{fmt_num(total_all)}</b>")
+
+            bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
         # справка
         if cmd == "info":
             try:
@@ -1654,25 +1694,27 @@ def on_callback(call):
             info_text = (
                 f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
                 "Команды:\n"
-                "/поехали — включить финансовый режим в чате\n"
-                "/start — открыть окно дня\n"
-                "/view YYYY-MM-DD — открыть день\n"
-                "/prev /next — навигация\n"
-                "/balance — баланс\n"
-                "/report — отчёт\n"
-                "/csv — экспорт CSV (Drive+канал)\n"
-                "/json — выгрузка JSON\n"
-                "/reset — обнулить данные\n"
-                "/ping — проверка\n"
-                "/backup_gdrive_on / off — включить/выключить GDrive\n"
-                "/backup_channel_on / off — включить/выключить бэкап в канал\n"
+                "/ok, /поехали — включить финансовый режим\n"
+                "/start — окно сегодняшнего дня\n"
+                "/view YYYY-MM-DD — открыть конкретный день\n"
+                "/prev — предыдущий день\n"
+                "/next — следующий день\n"
+                "/balance — баланс по этому чату\n"
+                "/report — краткий отчёт по дням\n"
+                "/csv — CSV этого чата\n"
+                "/json — JSON этого чата\n"
+                "/reset — обнулить данные чата (с подтверждением)\n"
                 "/stopforward — отключить пересылку\n"
-                "/autoadd_info \n"
-                "/restore / /restore_off — режим восстановления\n"
+                "/ping — проверка, жив ли бот\n"
+                "/backup_gdrive_on / _off — включить/выключить GDrive\n"
+                "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
+                "/restore / /restore_off — режим восстановления JSON/CSV\n"
+                "/autoadd_info — режим авто-добавления по суммам\n"
+                "/help — эта справка\n"
             )
             bot.send_message(chat_id, info_text)
             return
-
+            
         # меню редактирования
         if cmd == "edit_menu":
             store["current_view_day"] = day_key
@@ -2105,6 +2147,7 @@ def send_info(chat_id: int, text: str):
 @bot.message_handler(commands=["ok"])
 def cmd_enable_finance(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     set_finance_mode(chat_id, True)
     save_data(data)
     send_info(chat_id, "🚀 Финансовый режим включён!\nОтправьте /start")
@@ -2114,6 +2157,7 @@ def cmd_enable_finance(msg):
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2128,32 +2172,33 @@ def cmd_start(msg):
 @bot.message_handler(commands=["help"])
 def cmd_help(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     if not is_finance_mode(chat_id):
         send_info(chat_id, "ℹ️ Финансовый режим выключен")
         return
-
     help_text = (
-        "📘 Команды финансового бота:\n\n"
-        "/поехали — включить финансовый режим\n"
+        f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
+        "Команды:\n"
+        "/ok, /поехали — включить финансовый режим\n"
         "/start — окно сегодняшнего дня\n"
         "/view YYYY-MM-DD — открыть конкретный день\n"
         "/prev — предыдущий день\n"
         "/next — следующий день\n"
-        "/balance — баланс\n"
-        "/report — краткий отчёт\n"
-        "/csv — экспорт CSV (Drive+канал+чат)\n"
-        "/json — выгрузка JSON\n"
-        "/reset — обнулить данные чата\n"
+        "/balance — баланс по этому чату\n"
+        "/report — краткий отчёт по дням\n"
+        "/csv — CSV этого чата\n"
+        "/json — JSON этого чата\n"
+        "/reset — обнулить данные чата (с подтверждением)\n"
         "/stopforward — отключить пересылку\n"
-        "/ping — жив ли бот\n"
+        "/ping — проверка, жив ли бот\n"
         "/backup_gdrive_on / _off — включить/выключить GDrive\n"
         "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
         "/restore / /restore_off — режим восстановления JSON/CSV\n"
-        "/autoadd_info\n"
+        "/autoadd_info — режим авто-добавления по суммам\n"
         "/help — эта справка\n"
     )
     send_info(chat_id, help_text)
-
+    
 # ==========================================================
 # RESTORE MODE COMMANDS
 # ==========================================================
@@ -2213,6 +2258,7 @@ def cmd_view(msg):
 @bot.message_handler(commands=["prev"])
 def cmd_prev(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2229,6 +2275,7 @@ def cmd_prev(msg):
 @bot.message_handler(commands=["next"])
 def cmd_next(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2245,6 +2292,7 @@ def cmd_next(msg):
 @bot.message_handler(commands=["balance"])
 def cmd_balance(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2256,6 +2304,7 @@ def cmd_balance(msg):
 @bot.message_handler(commands=["report"])
 def cmd_report(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2270,24 +2319,25 @@ def cmd_report(msg):
 
 def cmd_csv_all(chat_id: int):
     """
-    Общий CSV по всем чатам (для кнопки в меню редактирования).
+    Общий CSV этого чата (все дни этого чата).
     """
     if not require_finance(chat_id):
         return
-
     try:
-        export_global_csv(data)
-        if not os.path.exists(CSV_FILE):
-            send_info(chat_id, "Файл общего CSV ещё не создан.")
+        # актуализируем per-chat JSON/CSV
+        save_chat_json(chat_id)
+        path = chat_csv_file(chat_id)
+        if not os.path.exists(path):
+            send_info(chat_id, "CSV файла ещё нет.")
             return
-
-        upload_to_gdrive(CSV_FILE)
-
-        with open(CSV_FILE, "rb") as f:
-            bot.send_document(chat_id, f, caption="📂 Общий CSV (все чаты)")
+        with open(path, "rb") as f:
+            bot.send_document(
+                chat_id,
+                f,
+                caption=f"📂 Общий CSV всех операций чата {chat_id}"
+            )
     except Exception as e:
         log_error(f"cmd_csv_all: {e}")
-
 
 def cmd_csv_day(chat_id: int, day_key: str):
     """
@@ -2338,6 +2388,7 @@ def cmd_csv(msg):
     Экспортирует CSV текущего чата.
     """
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2366,6 +2417,7 @@ def cmd_csv(msg):
 @bot.message_handler(commands=["json"])
 def cmd_json(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2382,6 +2434,7 @@ def cmd_json(msg):
 @bot.message_handler(commands=["reset"])
 def cmd_reset(msg):
     chat_id = msg.chat.id
+    
     if not require_finance(chat_id):
         return
 
@@ -2477,6 +2530,21 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
         threading.Thread(target=_delete, daemon=True).start()
     except Exception as e:
         log_error(f"send_and_auto_delete: {e}")
+        
+def delete_message_later(chat_id: int, message_id: int, delay: int = 10):
+    """
+    Отложенное удаление сообщения пользователя (например, команд).
+    """
+    try:
+        def _job():
+            time.sleep(delay)
+            try:
+                bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+        threading.Thread(target=_job, daemon=True).start()
+    except Exception as e:
+        log_error(f"delete_message_later: {e}")
 
 _edit_cancel_timers = {}
 
