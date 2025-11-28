@@ -2111,7 +2111,7 @@ def restore_file_switch(chat_id: int, path: str, fname: str):
       • data_<cid>.csv  — CSV одного чата
     """
     try:
-        🎈
+        #🎈
         # Восстановление глобального data.json
         #if fname == "data.json":
             #new_data = _load_json(path, {})
