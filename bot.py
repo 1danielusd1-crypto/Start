@@ -302,12 +302,20 @@ def save_chat_json(chat_id: int):
 
         _save_json(chat_path_json, payload)
 
-        # CSV
+        # CSV — строго по датам и времени
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
-            for dk, recs in store.get("daily_records", {}).items():
-                for r in recs:
+
+            daily = store.get("daily_records", {})
+
+        # дни — по возрастанию: 2025-01-01, 2025-01-02, ...
+            for dk in sorted(daily.keys()):
+                recs = daily.get(dk, [])
+            # внутри дня — по времени
+                recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
+
+                for r in recs_sorted:
                     w.writerow([
                         chat_id,
                         r.get("id"),
@@ -991,32 +999,58 @@ def render_day_window(chat_id: int, day_key: str):
 # SECTION 12 — Keyboards: main window, calendar, edit menu, forwarding
 # ==========================================================
 
-def build_main_keyboard(day_key: str, chat_id=None):
-    kb = types.InlineKeyboardMarkup(row_width=2)
+def build_calendar_keyboard(center_day: datetime, chat_id=None):
+    """
+    Календарь на 31 день.
+    Дни с записями помечаются точкой: • 12.03
+    """
+    kb = types.InlineKeyboardMarkup(row_width=4)
+
+    daily = {}
+    if chat_id is not None:
+        store = get_chat_store(chat_id)
+        daily = store.get("daily_records", {})
+
+    start_day = center_day - timedelta(days=15)
+    for week in range(0, 32, 4):
+        row = []
+        for d in range(4):
+            day = start_day + timedelta(days=week + d)
+            label = day.strftime("%d.%m")
+            key = day.strftime("%Y-%m-%d")
+
+            # 🔹 если в этот день есть записи — помечаем точкой
+            if daily.get(key):
+                label = "📝 " + label
+
+            row.append(
+                types.InlineKeyboardButton(
+                    label,
+                    callback_data=f"d:{key}:open"
+                )
+            )
+        kb.row(*row)
 
     kb.row(
-        types.InlineKeyboardButton("➕ Добавить", callback_data=f"d:{day_key}:add"),
-        types.InlineKeyboardButton("📝 Редактировать", callback_data=f"d:{day_key}:edit_menu")
+        types.InlineKeyboardButton(
+            "⬅️ −31",
+            callback_data=f"c:{(center_day - timedelta(days=31)).strftime('%Y-%m-%d')}"
+        ),
+        types.InlineKeyboardButton(
+            "➡️ +31",
+            callback_data=f"c:{(center_day + timedelta(days=31)).strftime('%Y-%m-%d')}"
+        )
     )
 
+    # 🔹 Кнопка "Сегодня" в самом календаре (ТЗ-14)
     kb.row(
-        types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"d:{day_key}:prev"),
-        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{day_key}:today"),
-        types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next")
-    )
-
-    kb.row(
-        types.InlineKeyboardButton("📅 Календарь", callback_data=f"d:{day_key}:calendar"),
-        types.InlineKeyboardButton("📊 Отчёт", callback_data=f"d:{day_key}:report")
-    )
-
-    kb.row(
-        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
-        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
+        types.InlineKeyboardButton(
+            "📅 Сегодня",
+            callback_data=f"d:{today_key()}:open"
+        )
     )
 
     return kb
-
 
 def build_calendar_keyboard(center_day: datetime):
     kb = types.InlineKeyboardMarkup(row_width=4)
@@ -1480,7 +1514,7 @@ def on_callback(call):
             except ValueError:
                 return
 
-            kb = build_calendar_keyboard(center_dt)
+            kb = build_calendar_keyboard(center_dt, chat_id)
             try:
                 bot.edit_message_reply_markup(
                     chat_id=chat_id,
@@ -1562,7 +1596,7 @@ def on_callback(call):
             except Exception:
                 cdt = now_local()
 
-            kb = build_calendar_keyboard(cdt)
+            kb = build_calendar_keyboard(cdt, chat_id)
             bot.edit_message_reply_markup(
                 chat_id=chat_id,
                 message_id=call.message.message_id,
@@ -1832,8 +1866,8 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
         "amount": amount,
         "note": note,
         "owner": owner,
-        "msg_id": msg.message_id,   # ← ДОБАВЛЕНО
-        "origin_msg_id": msg.message_id,  # FIX VARIANT 3
+        "msg_id": msg.message_id,   # ← оставляю как у тебя
+        "origin_msg_id": msg.message_id,
     }
 
     data.setdefault("records", []).append(rec)
@@ -1841,9 +1875,13 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
     store.setdefault("records", []).append(rec)
     store.setdefault("daily_records", {}).setdefault(today_key(), []).append(rec)
 
+    # 🔹 перенумеровываем все записи этого чата по датам/времени
+    renumber_chat_records(chat_id)
+
+    # балансы пересчитаем уже по новым R-номерам (но суммы те же)
     store["balance"] = sum(x["amount"] for x in store["records"])
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
-    store["next_id"] = rid + 1
+    # store["next_id"] теперь выставлен внутри renumber_chat_records
 
     #update_or_send_day_window(chat_id)
     save_data(data)
@@ -1851,8 +1889,7 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
     export_global_csv(data)
 
     send_backup_to_channel(chat_id)
-
-
+    
 def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str):
     store = get_chat_store(chat_id)
     found = None
@@ -1896,6 +1933,9 @@ def delete_record_in_chat(chat_id: int, rid: int):
         else:
             del store["daily_records"][day]
 
+    # 🔹 перенумеровываем R-номера после удаления
+    renumber_chat_records(chat_id)
+
     store["balance"] = sum(x["amount"] for x in store["records"])
 
     data["records"] = [x for x in data["records"] if x["id"] != rid]
@@ -1906,7 +1946,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-
+    
 #bot.send_message(chat_id, text)
 #на
 #send_and_auto_delete
@@ -1915,6 +1955,39 @@ def delete_record_in_chat(chat_id: int, rid: int):
 #на
 #def send_info(chat_id, text, delay=5):
     #return send_and_auto_delete(chat_id, text, delay=delay)
+def renumber_chat_records(chat_id: int):
+    """
+    Перенумеровывает записи в чате по реальному порядку:
+      • сортируем по day_key и timestamp
+      • присваиваем ID: 1,2,3... и short_id: R1,R2,...
+      • обновляем store["records"] и next_id
+    """
+    store = get_chat_store(chat_id)
+    daily = store.get("daily_records", {})
+
+    all_recs = []
+
+    # проходим дни по возрастанию
+    for dk in sorted(daily.keys()):
+        recs = daily.get(dk, [])
+        # внутри дня сортируем по времени
+        recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
+        # сохраняем отсортированный список обратно
+        daily[dk] = recs_sorted
+
+        for r in recs_sorted:
+            all_recs.append(r)
+
+    # перенумерация
+    new_id = 1
+    for r in all_recs:
+        r["id"] = new_id
+        r["short_id"] = f"R{new_id}"
+        new_id += 1
+
+    store["records"] = list(all_recs)
+    store["next_id"] = new_id
+    
 # ==========================================================
 # SECTION 14 — Active window system (версия код-010)
 # ==========================================================
