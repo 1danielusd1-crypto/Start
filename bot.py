@@ -1061,13 +1061,14 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset")
     )
 
+    # Кнопки пересылки — только для владельца
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         kb.row(
             types.InlineKeyboardButton("🔁 Пересылка ↔️", callback_data=f"d:{day_key}:forward_menu")
         )
-    kb.row(
-        types.InlineKeyboardButton("🔀 Пересылка A ↔ B", callback_data="fw_open")
-    )
+        kb.row(
+            types.InlineKeyboardButton("🔀 Пересылка A ↔ B", callback_data="fw_open")
+        )
     kb.row(
         types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open"),
         types.InlineKeyboardButton("📆 Выбрать день", callback_data=f"d:{day_key}:pick_date")
@@ -1672,7 +1673,16 @@ def on_callback(call):
         if cmd == "add":
             store["edit_wait"] = {"type": "add", "day_key": day_key}
             save_data(data)
-            bot.send_message(chat_id, "Введите сумму и комментарий: +500 Пример")
+
+            # подсказка пользователю, живёт 15 сек и исчезает
+            send_and_auto_delete(
+                chat_id,
+                "Введите сумму и комментарий (пример: +500 кафе)",
+                15
+            )
+
+            # через 15 секунд, если ничего не пришло — отменяем режим add
+            schedule_cancel_wait(chat_id, 15)
             return
 
         # список записей для редактирования
@@ -2289,8 +2299,16 @@ def cmd_reset(msg):
     store["reset_time"] = time.time()
     save_data(data)
 
-    bot.send_message(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
+    # подсказка с автоудалением через 15 сек
+    send_and_auto_delete(
+        chat_id,
+        "⚠️ Вы уверены, что хотите обнулить данные? Напишите ДА в течение 15 секунд.",
+        15
+    )
 
+    # через 15 сек — если «ДА» не пришло, сбросить reset_wait
+    schedule_cancel_wait(chat_id, 15)
+    
 @bot.message_handler(commands=["stopforward"])
 def cmd_stopforward(msg):
     if str(msg.chat.id) != str(OWNER_ID):
@@ -2369,6 +2387,46 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
     except Exception as e:
         log_error(f"send_and_auto_delete: {e}")
 
+_edit_cancel_timers = {}
+
+def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
+    """
+    Через delay секунд:
+      • отменяет режим добавления записи (edit_wait.type == 'add')
+      • сбрасывает флаг reset_wait (если ещё висит)
+    """
+    def _job():
+        try:
+            store = get_chat_store(chat_id)
+            changed = False
+
+            # отменяем ожидание добавления записи
+            wait = store.get("edit_wait")
+            if wait and wait.get("type") == "add":
+                store["edit_wait"] = None
+                changed = True
+
+            # отменяем режим обнуления, если пользователь так и не подтвердил
+            if store.get("reset_wait", False):
+                store["reset_wait"] = False
+                store["reset_time"] = 0
+                changed = True
+
+            if changed:
+                save_data(data)
+        except Exception as e:
+            log_error(f"schedule_cancel_wait job: {e}")
+
+    prev = _edit_cancel_timers.get(chat_id)
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(delay, _job)
+    _edit_cancel_timers[chat_id] = t
+    t.start()
 
 #def update_chat_info_from_message(msg):
  #🔵🔵🔵🔵🔵🔵🔵
@@ -2630,18 +2688,18 @@ def handle_text(msg):
             reset_time = store.get("reset_time", 0)
             now_t = time.time()
 
-            # истекает через 60 секунд
-            if reset_flag and (now_t - reset_time <= 10):
+            # окно жизни запроса — 15 секунд
+            if reset_flag and (now_t - reset_time <= 15):
                 reset_chat_data(chat_id)
-                bot.send_message(chat_id, "🔄 Данные чата обнулены.")
+                send_and_auto_delete(chat_id, "🔄 Данные чата обнулены.", 15)
             else:
-                bot.send_message(chat_id, "Нет активного запроса на обнуление.")
-            
+                send_and_auto_delete(chat_id, "Нет активного запроса на обнуление.", 15)
+
             store["reset_wait"] = False
             store["reset_time"] = 0
             save_data(data)
             return
-            
+
         # Если был режим reset_wait, но сообщение не "ДА" → сбрасываем
         if store.get("reset_wait", False):
             store["reset_wait"] = False
