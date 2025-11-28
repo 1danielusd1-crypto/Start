@@ -1094,13 +1094,10 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset")
     )
 
-    # Кнопки пересылки — только для владельца
+    # ОДНА общая кнопка "Пересылка" для обоих режимов
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         kb.row(
-            types.InlineKeyboardButton("🔁 Пересылка ↔️", callback_data=f"d:{day_key}:forward_menu")
-        )
-        kb.row(
-            types.InlineKeyboardButton("🔀 Пересылка A ↔ B", callback_data="fw_open")
+            types.InlineKeyboardButton("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu")
         )
     kb.row(
         types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open"),
@@ -1856,10 +1853,50 @@ def on_callback(call):
             send_and_auto_delete(chat_id, f"🗑 Запись R{rid} удалена.", 10)
             return
             
-        # СТАРОЕ МЕНЮ ПЕРЕСЫЛКИ (на базе day_key)
+        # ОБЩЕЕ МЕНЮ ПЕРЕСЫЛКИ
         if cmd == "forward_menu":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                send_and_auto_delete(chat_id, "Меню доступно только владельцу.")
+                bot.send_message(chat_id, "Меню доступно только владельцу.")
+                return
+
+            kb = types.InlineKeyboardMarkup(row_width=1)
+
+            # 1) Старый режим: forward_rules по чатам
+            kb.row(
+                types.InlineKeyboardButton(
+                    "📨 По чатам (старый режим)",
+                    callback_data=f"d:{day_key}:forward_old"
+                )
+            )
+
+            # 2) Новый режим: A ↔ B (fw_open уже обрабатывается в ветке fw_*)
+            kb.row(
+                types.InlineKeyboardButton(
+                    "🔀 Пары A ↔ B",
+                    callback_data="fw_open"
+                )
+            )
+
+            # Назад в меню редактирования
+            kb.row(
+                types.InlineKeyboardButton(
+                    "🔙 Назад",
+                    callback_data=f"d:{day_key}:edit_menu"
+                )
+            )
+
+            bot.edit_message_text(
+                "Меню пересылки:\nВыберите режим:",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
+            return
+
+        # СТАРОЕ МЕНЮ ПЕРЕСЫЛКИ (по чатам, как раньше)
+        if cmd == "forward_old":
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                bot.send_message(chat_id, "Меню доступно только владельцу.")
                 return
 
             kb = build_forward_chat_list(day_key, chat_id)
