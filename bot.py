@@ -55,7 +55,7 @@ backup_flags = {
 }
 
 # режим восстановления (JSON/CSV)
-restore_mode = False
+#restore_mode = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1983,15 +1983,15 @@ def handle_text(msg):
 
         # RESTORE ON
         if text.startswith("/restore"):
-            global restore_mode
-            restore_mode = True
+            #global restore_mode
+            #restore_mode = True
             send_and_auto_delete(chat_id, "🔧 Режим восстановления включён.", 10)
             return
 
         # RESTORE OFF
         if text.startswith("/restore_off"):
-            global restore_mode
-            restore_mode = False
+            #global restore_mode
+            #restore_mode = False
             send_and_auto_delete(chat_id, "Режим восстановления выключен.", 10)
             return
 
@@ -2072,8 +2072,8 @@ def handle_document(msg):
         fname = (file.file_name or "").lower()
 
         # если режим восстановления выключен → просто выходим
-        if not restore_mode:
-            return
+        #if not restore_mode:
+            #return
 
         # принимаем только JSON/CSV
         if not (fname.endswith(".json") or fname.endswith(".csv")):
