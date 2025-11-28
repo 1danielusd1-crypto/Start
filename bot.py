@@ -2088,7 +2088,7 @@ def handle_document(msg):
         # авто-выход из режима
         global restore_mode
         restore_mode = False
-
+        send_and_auto_delete(chat_id, "Режим восстановления выключен.", 8)
         # очистка временного файла
         try:
             os.remove(temp_path)
@@ -2111,19 +2111,39 @@ def restore_file_switch(chat_id: int, path: str, fname: str):
       • data_<cid>.csv  — CSV одного чата
     """
     try:
+        🎈
         # Восстановление глобального data.json
+        #if fname == "data.json":
+            #new_data = _load_json(path, {})
+            #if isinstance(new_data, dict):
+              #  _save_json(DATA_FILE, new_data)
+
+                # перезагрузить данные в память
+                #global data
+                #data = load_data()
+
+                #send_and_auto_delete(chat_id, "✔️ Восстановлен главный data.json", 10)
+            #return
+#🎈
         if fname == "data.json":
             new_data = _load_json(path, {})
             if isinstance(new_data, dict):
+        # сохраняем файл
                 _save_json(DATA_FILE, new_data)
 
-                # перезагрузить данные в память
+        # ПЕРЕЗАГРУЖАЕМ ВСЕ ДАННЫЕ В ОПЕРАТИВНУЮ ПАМЯТЬ
                 global data
                 data = load_data()
 
                 send_and_auto_delete(chat_id, "✔️ Восстановлен главный data.json", 10)
-            return
 
+        # Обновляем окно после восстановления
+                try:
+                    update_or_send_day_window(chat_id, today_key())
+                except:
+                    pass
+
+            return
         # csv_meta.json
         if fname == "csv_meta.json":
             meta = _load_json(path, {})
