@@ -998,6 +998,31 @@ def render_day_window(chat_id: int, day_key: str):
 # ==========================================================
 # SECTION 12 — Keyboards: main window, calendar, edit menu, forwarding
 # ==========================================================
+def build_main_keyboard(day_key: str, chat_id=None):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+
+    kb.row(
+        types.InlineKeyboardButton("➕ Добавить", callback_data=f"d:{day_key}:add"),
+        types.InlineKeyboardButton("📝 Редактировать", callback_data=f"d:{day_key}:edit_menu")
+    )
+
+    kb.row(
+        types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"d:{day_key}:prev"),
+        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{day_key}:today"),
+        types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next")
+    )
+
+    kb.row(
+        types.InlineKeyboardButton("📅 Календарь", callback_data=f"d:{day_key}:calendar"),
+        types.InlineKeyboardButton("📊 Отчёт", callback_data=f"d:{day_key}:report")
+    )
+
+    kb.row(
+        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
+        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
+    )
+
+    return kb
 
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
     """
