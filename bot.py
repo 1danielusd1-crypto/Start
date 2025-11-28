@@ -2259,6 +2259,7 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     send_backup_to_channel(chat_id)
     backup_to_chat_smart(chat_id)
 
+
 def delete_record_in_chat(chat_id: int, rid: int):
     store = get_chat_store(chat_id)
 
@@ -2284,8 +2285,8 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    backup_to_chat_smart(chat_id
-    
+    backup_to_chat_smart(chat_id)
+        
 def renumber_chat_records(chat_id: int):
     """
     Перенумеровывает записи в чате по реальному порядку:
@@ -2988,9 +2989,8 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             export_global_csv(data)
 
             # === 4. Бэкапы ===
-            # === 4. Бэкапы ===
             send_backup_to_channel(chat_id)   # в бэкап-канал
-            backup_to_chat_smart(chat_id)     # JSON в сам чат (с особым режимом для OWNER)
+            backup_to_chat_smart(chat_id)       # JSON в сам чат
 
             # === 5. Окно дня: ВСЕГДА новое сообщение + удаление старого ===
             old_mid = get_active_window_id(chat_id, day_key)
@@ -3144,8 +3144,8 @@ def handle_text(msg):
                         data["records"].extend(st.get("records", []))
 
                 data["overall_balance"] = sum(x["amount"] for x in data["records"])
-
-               save_data(data)
+                
+                save_data(data)
                 save_chat_json(chat_id)
                 export_global_csv(data)
                 send_backup_to_channel(chat_id)
@@ -3154,6 +3154,7 @@ def handle_text(msg):
                 store["edit_wait"] = None
                 save_data(data)
                 return
+
 
         # =====================================================
         # 3) МНОГОСТРОЧНОЕ РЕДАКТИРОВАНИЕ ЗАПИСИ (ТЗ-4)
@@ -3280,8 +3281,8 @@ def reset_chat_data(chat_id: int):
         save_chat_json(chat_id)
         export_global_csv(data)
         send_backup_to_channel(chat_id)
-        backup_to_chat_smart(chat_id) 
-
+        backup_to_chat_smart(chat_id)   # ← новый бэкап JSON в чат
+        
         # 🔥 СРАЗУ ПЕРЕРИСОВЫВАЕМ ОКНО
         day_key = store.get("current_view_day", today_key())
         update_or_send_day_window(chat_id, day_key)
