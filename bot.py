@@ -1,4 +1,4 @@
-#🎈с4-15/18/20
+#🎈с4-15/18/20 и тд
 #bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
 # Code_022.9.11 флаг✅
 #==========================================================
@@ -275,12 +275,8 @@ def save_chat_json(chat_id: int):
     Save per-chat JSON, CSV and META for one chat.
     """
     try:
-        # гарантируем, что store для этого чата существует
         store = data.get("chats", {}).get(str(chat_id), {})
         if not store:
-            # если вдруг не было записи про этот чат (новый чат или после чистки файлов),
-            # создаём её через get_chat_store
-            store = get_chat_store(chat_id)
             return
 
         chat_path_json = chat_json_file(chat_id)
@@ -732,165 +728,52 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         log_error(f"send_backup_to_channel_for_file({base_path}): {e}")
 
 
-def send_backup_to_chat_self(chat_id: int):
+def send_backup_to_channel(chat_id: int):
     """
-    Бэкап JSON этого чата прямо в этот же чат.
+    Send per-chat JSON/CSV and optionally global CSV to BACKUP_CHAT_ID,
+    respecting channel backup flag.
 
-    Логика:
-    - сохраняем актуальный data_<chat_id>.json
-    - отправляем его в чат, либо обновляем предыдущее сообщение с файлом
-      (метаданные лежат в chat_backup_meta.json).
+    Новое:
+    • перед первым бекапом для КАЖДОГО чата в канал уходит отдельным сообщением
+      chat_id в виде emoji-цифр (8️⃣5️⃣9️⃣2️⃣2️⃣0️⃣0️⃣8️⃣1️⃣)
+    • имя чата добавляем в имя файлов бекапа
     """
+    flags = backup_flags or {}
+    if not flags.get("channel", True):
+        log_info("Channel backup disabled (channel flag = False).")
+        return
+    if not BACKUP_CHAT_ID:
+        log_info("BACKUP_CHAT_ID not set, skipping backup to channel.")
+        return
+
     try:
-        if not chat_id:
-            return
+        chat_title = _get_chat_title_for_backup(chat_id)
 
-        # 1) гарантируем актуальный JSON для чата
-        save_chat_json(chat_id)
-        path = chat_json_file(chat_id)
-
-        if not os.path.exists(path):
-            log_info(f"send_backup_to_chat_self: файл {path} не найден")
-            return
-
-        meta = _load_chat_backup_meta()
-        msg_key = f"msg_chat_{chat_id}"
-        ts_key = f"timestamp_chat_{chat_id}"
-
-        # helper: открыть файл как BytesIO для Telegram, с нормальным именем
-        def _open_for_telegram() -> io.BytesIO:
-            with open(path, "rb") as src:
-                buf = io.BytesIO(src.read())
-            # имя файла, которое увидит Telegram
-            buf.name = os.path.basename(path)
-            return buf
-
-        caption = (
-            f"🧾 backup JSON чата {chat_id} — "
-            f"{now_local().strftime('%Y-%m-%d %H:%M')}"
-        )
-
-        old_mid = meta.get(msg_key)
-
-        # 2) если у нас уже есть message_id — пробуем обновить документ
-        if old_mid:
+        # 1) Перед первым бекапом чата отправляем его ID emoji-цифрами
+        if chat_id not in backup_channel_notified_chats:
             try:
-                fobj = _open_for_telegram()
-                bot.edit_message_media(
-                    chat_id=chat_id,
-                    message_id=old_mid,
-                    media=InputMediaDocument(fobj, caption=caption),
-                )
-                log_info(
-                    f"send_backup_to_chat_self: обновлён backup JSON "
-                    f"в чате {chat_id}, msg_id={old_mid}"
-                )
+                emoji_id = format_chat_id_emoji(chat_id)
+                bot.send_message(int(BACKUP_CHAT_ID), emoji_id)
+                backup_channel_notified_chats.add(chat_id)
+                log_info(f"Sent chat_id emoji to backup channel for chat {chat_id}")
             except Exception as e:
-                # если не получилось отредактировать — отправляем заново
-                log_error(
-                    f"send_backup_to_chat_self: edit_message_media "
-                    f"не удалось ({e}), отправляю новый документ"
-                )
-                fobj = _open_for_telegram()
-                sent = bot.send_document(chat_id, fobj, caption=caption)
-                meta[msg_key] = sent.message_id
-        else:
-            # 3) первый раз — просто отправляем документ
-            fobj = _open_for_telegram()
-            sent = bot.send_document(chat_id, fobj, caption=caption)
-            meta[msg_key] = sent.message_id
-            log_info(
-                f"send_backup_to_chat_self: отправлен первый backup JSON "
-                f"в чат {chat_id}, msg_id={sent.message_id}"
-            )
+                log_error(f"send_backup_to_channel: failed to send chat id {chat_id}: {e}")
 
-        # 4) метка времени
-        meta[ts_key] = now_local().isoformat(timespec="seconds")
-        _save_chat_backup_meta(meta)
+        # 2) ensure per-chat files are fresh
+        save_chat_json(chat_id)
+        send_backup_to_channel_for_file(chat_json_file(chat_id), f"json_chat_{chat_id}", chat_title)
+        send_backup_to_channel_for_file(chat_csv_file(chat_id), f"csv_chat_{chat_id}", chat_title)
+
+        # 3) optional: update global CSV snapshot (без имени чата, это общий файл)
+        export_global_csv(data)
+        send_backup_to_channel_for_file(CSV_FILE, "csv_global", None)
+        if os.path.exists("csv_meta.json"):
+            send_backup_to_channel_for_file("csv_meta.json", "csv_meta", None)
 
     except Exception as e:
-        log_error(f"send_backup_to_chat_self({chat_id}): {e}")
-
-def send_backup_to_chat_self(chat_id: int):
-    """
-    Бэкап JSON этого чата прямо в этот же чат.
-
-    Логика:
-    - сохраняем актуальный data_<chat_id>.json
-    - отправляем его в чат, либо обновляем предыдущее сообщение с файлом
-      (метаданные лежат в chat_backup_meta.json).
-    """
-    try:
-        if not chat_id:
-            return
-
-        # 1) гарантируем актуальный JSON для чата (при необходимости создастся с нуля)
-        save_chat_json(chat_id)
-        path = chat_json_file(chat_id)
-
-        if not os.path.exists(path):
-            log_info(f"send_backup_to_chat_self: файл {path} не найден")
-            return
-
-        meta = _load_chat_backup_meta()
-        msg_key = f"msg_chat_{chat_id}"
-        ts_key = f"timestamp_chat_{chat_id}"
-
-        # helper: открыть файл как BytesIO для Telegram
-        def _open_for_telegram() -> io.BytesIO:
-            with open(path, "rb") as src:
-                buf = io.BytesIO(src.read())
-            # имя файла, которое увидит Telegram
-            buf.name = os.path.basename(path)
-            return buf
-
-        caption = (
-            f"🧾 backup JSON чата {chat_id} — "
-            f"{now_local().strftime('%Y-%m-%d %H:%M')}"
-        )
-
-        old_mid = meta.get(msg_key)
-
-        # 2) если у нас уже есть message_id — пробуем обновить документ
-        if old_mid:
-            try:
-                fobj = _open_for_telegram()
-                bot.edit_message_media(
-                    chat_id=chat_id,
-                    message_id=old_mid,
-                    media=telebot.types.InputMediaDocument(fobj, caption=caption),
-                )
-                log_info(
-                    f"send_backup_to_chat_self: обновлён backup JSON "
-                    f"в чате {chat_id}, msg_id={old_mid}"
-                )
-            except Exception as e:
-                # если не получилось отредактировать (например, сообщение удалили) —
-                # отправляем новый документ
-                log_error(
-                    f"send_backup_to_chat_self: edit_message_media "
-                    f"не удалось ({e}), отправляю новый документ"
-                )
-                fobj = _open_for_telegram()
-                sent = bot.send_document(chat_id, fobj, caption=caption)
-                meta[msg_key] = sent.message_id
-        else:
-            # 3) первый раз — просто отправляем документ
-            fobj = _open_for_telegram()
-            sent = bot.send_document(chat_id, fobj, caption=caption)
-            meta[msg_key] = sent.message_id
-            log_info(
-                f"send_backup_to_chat_self: отправлен первый backup JSON "
-                f"в чат {chat_id}, msg_id={sent.message_id}"
-            )
-
-        # 4) обновляем метку времени и сохраняем метаданные
-        meta[ts_key] = now_local().isoformat(timespec="seconds")
-        _save_chat_backup_meta(meta)
-
-    except Exception as e:
-        log_error(f"send_backup_to_chat_self({chat_id}): {e}")
+        log_error(f"send_backup_to_channel({chat_id}): {e}")
         
+
 #🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢
 # ==========================================================
 # SECTION 9 — Forward rules persistence (owner file)
@@ -3614,6 +3497,7 @@ def main():
                 log_error(f"notify owner on start: {e}")
 
     app.run(host="0.0.0.0", port=PORT)
+
 
 if __name__ == "__main__":
     main()
