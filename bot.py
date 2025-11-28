@@ -864,23 +864,6 @@ def send_backup_to_channel(chat_id: int):
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
         
-def backup_to_chat_smart(chat_id: int):
-    """
-    Унифицированный бэкап JSON в чат:
-    • для владельца — используем send_backup_to_chat_self(...)
-      (эта функция уже точно работает в его личке)
-    • для остальных чатов — send_backup_to_chat(...)
-    """
-    try:
-        if OWNER_ID and str(chat_id) == str(OWNER_ID):
-            # личка владельца — тот же механизм, что и при старте
-            send_backup_to_chat_self(chat_id)
-        else:
-            # все остальные чаты
-            send_backup_to_chat(chat_id)
-    except Exception as e:
-        log_error(f"backup_to_chat_smart({chat_id}): {e}")
-        
 def send_backup_to_chat_self(chat_id: int):
     """
     Бэкап JSON этого чата прямо в этот же чат.
@@ -970,6 +953,24 @@ def send_backup_to_chat_self(chat_id: int):
 
     except Exception as e:
         log_error(f"send_backup_to_chat_self({chat_id}): {e}")        
+
+def backup_to_chat_smart(chat_id: int):
+    """
+    Унифицированный бэкап JSON в чат:
+    • для владельца — используем send_backup_to_chat_self(...)
+      (ровно та же логика, что и при старте бота)
+    • для остальных чатов — send_backup_to_chat(...)
+    """
+    try:
+        if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            # Личка владельца
+            send_backup_to_chat_self(chat_id)
+        else:
+            # Все остальные чаты
+            send_backup_to_chat(chat_id)
+    except Exception as e:
+        log_error(f"backup_to_chat_smart({chat_id}): {e}")
+        
 #🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢
 # ==========================================================
 # SECTION 9 — Forward rules persistence (owner file)
