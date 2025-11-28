@@ -276,17 +276,20 @@ def save_chat_json(chat_id: int):
     """
     try:
         # гарантируем, что store для этого чата существует
-        store = data.get("chats", {}).get(str(chat_id), {})
+        store = data.get("chats", {}).get(str(chat_id))
         if not store:
             # если вдруг не было записи про этот чат (новый чат или после чистки файлов),
             # создаём её через get_chat_store
             store = get_chat_store(chat_id)
-            return
 
         chat_path_json = chat_json_file(chat_id)
         chat_path_csv = chat_csv_file(chat_id)
         chat_path_meta = chat_meta_file(chat_id)
 
+        # дальше оставляешь свой код без изменений:
+        # создание файлов, подготовка payload, _save_json(...),
+        # сохранение meta и т.д.
+    
         # ensure files exist
         for p in (chat_path_json, chat_path_csv, chat_path_meta):
             if not os.path.exists(p):
