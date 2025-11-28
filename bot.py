@@ -864,7 +864,23 @@ def send_backup_to_channel(chat_id: int):
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
         
-
+def backup_to_chat_smart(chat_id: int):
+    """
+    Унифицированный бэкап JSON в чат:
+    • для владельца — используем send_backup_to_chat_self(...)
+      (эта функция уже точно работает в его личке)
+    • для остальных чатов — send_backup_to_chat(...)
+    """
+    try:
+        if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            # личка владельца — тот же механизм, что и при старте
+            send_backup_to_chat_self(chat_id)
+        else:
+            # все остальные чаты
+            send_backup_to_chat(chat_id)
+    except Exception as e:
+        log_error(f"backup_to_chat_smart({chat_id}): {e}")
+        
 def send_backup_to_chat_self(chat_id: int):
     """
     Бэкап JSON этого чата прямо в этот же чат.
@@ -2241,8 +2257,7 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    send_backup_to_chat(chat_id)    # ← добавляем
-
+    backup_to_chat_smart(chat_id)
 
 def delete_record_in_chat(chat_id: int, rid: int):
     store = get_chat_store(chat_id)
@@ -2269,7 +2284,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    send_backup_to_chat(chat_id)    # ← доба
+    backup_to_chat_smart(chat_id
     
 def renumber_chat_records(chat_id: int):
     """
@@ -2973,8 +2988,9 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             export_global_csv(data)
 
             # === 4. Бэкапы ===
+            # === 4. Бэкапы ===
             send_backup_to_channel(chat_id)   # в бэкап-канал
-            send_backup_to_chat(chat_id)      # JSON в сам чат
+            backup_to_chat_smart(chat_id)     # JSON в сам чат (с особым режимом для OWNER)
 
             # === 5. Окно дня: ВСЕГДА новое сообщение + удаление старого ===
             old_mid = get_active_window_id(chat_id, day_key)
@@ -3129,11 +3145,11 @@ def handle_text(msg):
 
                 data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
-                save_data(data)
+               save_data(data)
                 save_chat_json(chat_id)
                 export_global_csv(data)
                 send_backup_to_channel(chat_id)
-                send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
+                backup_to_chat_smart(chat_id)  # 🔁 умный бэкап в чат
 
                 store["edit_wait"] = None
                 save_data(data)
@@ -3264,7 +3280,7 @@ def reset_chat_data(chat_id: int):
         save_chat_json(chat_id)
         export_global_csv(data)
         send_backup_to_channel(chat_id)
-        send_backup_to_chat(chat_id)   # ← новый бэкап JSON в чат
+        backup_to_chat_smart(chat_id) 
 
         # 🔥 СРАЗУ ПЕРЕРИСОВЫВАЕМ ОКНО
         day_key = store.get("current_view_day", today_key())
