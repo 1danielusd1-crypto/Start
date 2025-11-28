@@ -158,9 +158,11 @@ def _save_csv_meta(meta: dict):
         log_info("csv_meta.json updated")
     except Exception as e:
         log_error(f"_save_csv_meta: {e}")
+        
 def _load_chat_backup_meta():
     """
-    Метаданные бэкапов прямо в чаты (message_id на каждый chat_id).
+    Метаданные бэкапов прямо в чаты:
+      { "msg_chat_<chat_id>": message_id, ... }
     """
     return _load_json(CHAT_BACKUP_META_FILE, {})
 
@@ -171,7 +173,7 @@ def _save_chat_backup_meta(meta: dict):
         log_info("chat_backup_meta.json updated")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
-
+        
 def default_data():
     return {
         "overall_balance": 0,
@@ -647,43 +649,48 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str):
 
 def send_backup_to_channel(chat_id: int):
     """
-    Send per-chat JSON/CSV and optionally global CSV to BACKUP_CHAT_ID,
-    respecting channel backup flag.
+    Бэкап данных:
+      • JSON/CSV чата + глобальный CSV → в BACKUP_CHAT_ID (если настроен)
+      • JSON этого чата → в тот же чат (один служебный документ, который обновляется)
     """
-    flags = backup_flags or {}
-    if not flags.get("channel", True):
-        log_info("Channel backup disabled (channel flag = False).")
-        return
-    if not BACKUP_CHAT_ID:
-        log_info("BACKUP_CHAT_ID not set, skipping backup to channel.")
-        return
-
     try:
-        # ensure per-chat files are fresh
+        # всегда сначала сохраняем актуальные файлы чата
         save_chat_json(chat_id)
-        send_backup_to_channel_for_file(chat_json_file(chat_id), f"json_chat_{chat_id}")
-        send_backup_to_channel_for_file(chat_csv_file(chat_id), f"csv_chat_{chat_id}")
 
-        # optional: update global CSV snapshot
-        export_global_csv(data)
-        send_backup_to_channel_for_file(CSV_FILE, "csv_global")
-        if os.path.exists("csv_meta.json"):
-            send_backup_to_channel_for_file("csv_meta.json", "csv_meta")
-            # 🔹 новый блок — бэкап прямо в чат
+        # --- 1. Бэкап в канал (если включён и указан BACKUP_CHAT_ID) ---
+        flags = backup_flags or {}
+        if flags.get("channel", True) and BACKUP_CHAT_ID:
+            send_backup_to_channel_for_file(chat_json_file(chat_id), f"json_chat_{chat_id}")
+            send_backup_to_channel_for_file(chat_csv_file(chat_id), f"csv_chat_{chat_id}")
+
+            export_global_csv(data)
+            send_backup_to_channel_for_file(CSV_FILE, "csv_global")
+            if os.path.exists("csv_meta.json"):
+                send_backup_to_channel_for_file("csv_meta.json", "csv_meta")
+        else:
+            if not flags.get("channel", True):
+                log_info("Channel backup disabled (channel flag = False).")
+            if not BACKUP_CHAT_ID:
+                log_info("BACKUP_CHAT_ID not set, skipping backup to BACKUP_CHAT_ID.")
+
+        # --- 2. Бэкап JSON в этот же чат (самовосстанавливающийся) ---
         send_backup_to_chat_self(chat_id)
-
 
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
-
+        
 def send_backup_to_chat_self(chat_id: int):
     """
-    Бэкап JSON прямо в тот чат, где работает бот:
-      • создаётся один служебный документ
-      • далее он только обновляется через edit_message_media
+    Бэкап JSON прямо в тот же чат, где работает бот.
+
+    Логика:
+      • первый раз — отправляем документ и запоминаем message_id
+      • дальше — пытаемся обновлять его через edit_message_media
+      • если пользователь удалил сообщение → edit_message_media падает,
+        мы ловим ошибку, отправляем новый документ и обновляем message_id
     """
     try:
-        # гарантируем актуальный JSON чата
+        # гарантируем актуальный JSON этого чата
         save_chat_json(chat_id)
         path = chat_json_file(chat_id)
         if not os.path.exists(path):
@@ -691,29 +698,31 @@ def send_backup_to_chat_self(chat_id: int):
 
         meta = _load_chat_backup_meta()
         key = f"msg_chat_{chat_id}"
+        msg_id = meta.get(key)
 
-        with open(path, "rb") as f:
-            caption = f"🧾 JSON-бэкап этого чата ({chat_id}) — {now_local().strftime('%Y-%m-%d %H:%M')}"
-            msg_id = meta.get(key)
+        caption = f"🧾 JSON-бэкап этого чата ({chat_id}) — {now_local().strftime('%Y-%m-%d %H:%M')}"
 
-            if msg_id:
-                # пробуем обновить существующий документ
-                try:
+        if msg_id:
+            # Пытаемся ОБНОВИТЬ существующее сообщение
+            try:
+                with open(path, "rb") as f:
                     bot.edit_message_media(
                         chat_id=chat_id,
                         message_id=msg_id,
                         media=telebot.types.InputMediaDocument(f, caption=caption),
                     )
-                    log_info(f"Chat backup updated in chat {chat_id}")
-                except Exception as e:
-                    # если не получилось (сообщение удалили и т.п.) — шлём заново
-                    log_error(f"edit_message_media chat backup {chat_id}: {e}")
+                log_info(f"Chat backup updated in chat {chat_id}")
+            except Exception as e:
+                # Если сообщение удалено или другая ошибка — шлём заново
+                log_error(f"edit_message_media chat backup {chat_id}: {e}")
+                with open(path, "rb") as f:
                     sent = bot.send_document(chat_id, f, caption=caption)
-                    meta[key] = sent.message_id
-            else:
-                # первого раза ещё нет — просто создаём сообщение
-                sent = bot.send_document(chat_id, f, caption=caption)
                 meta[key] = sent.message_id
+        else:
+            # Ещё ни разу не было — создаём новое сообщение
+            with open(path, "rb") as f:
+                sent = bot.send_document(chat_id, f, caption=caption)
+            meta[key] = sent.message_id
 
         _save_chat_backup_meta(meta)
 
@@ -934,9 +943,6 @@ def forward_media_group_anon(source_chat_id: int, messages: list, targets: list[
 # ==========================================================
 
 def render_day_window(chat_id: int, day_key: str):
-    """
-    Рендер окна дня.
-    """
     store = get_chat_store(chat_id)
     recs = store.get("daily_records", {}).get(day_key, [])
     lines = []
@@ -944,27 +950,41 @@ def render_day_window(chat_id: int, day_key: str):
     lines.append(f"📅 <b>{day_key}</b>")
     lines.append("")
 
-    total = 0
+    total_income = 0.0   # сумма всех приходов (>= 0)
+    total_expense = 0.0  # сумма всех расходов (> 0 как модуль)
 
     recs_sorted = sorted(recs, key=lambda x: x.get("timestamp"))
 
     for r in recs_sorted:
         amt = r["amount"]
-        total += amt
-        #sign = "+" if amt >= 0 else "-"
+        if amt >= 0:
+            total_income += amt
+        else:
+            total_expense += -amt
 
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
-
         lines.append(f"{sid} {fmt_num(amt)} <i>{note}</i>")
-        
+
     if not recs_sorted:
         lines.append("Нет записей за этот день.")
 
     lines.append("")
-    lines.append(f"💰 <b>Итого:{fmt_num(total)}</b>")
 
+    if recs_sorted:
+        # Расход за день (отрицательное число)
+        lines.append(f"📉 Расход за день: {fmt_num(-total_expense) if total_expense else fmt_num(0)}")
+        # Приход за день (положительное число)
+        lines.append(f"📈 Приход за день: {fmt_num(total_income) if total_income else fmt_num(0)}")
+
+    # Остаток по чату — берём из store["balance"]
+    bal_chat = store.get("balance", 0)
+    lines.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}")
+
+    # total оставляем как "итог за день" (приход - расход), вдруг пригодится
+    total = total_income - total_expense
     return "\n".join(lines), total
+    
 
 #💠💠💠💠💠💠💠💠
 # ==========================================================
@@ -981,6 +1001,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
 
     kb.row(
         types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"d:{day_key}:prev"),
+        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{day_key}:today"),
         types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next")
     )
 
@@ -2635,31 +2656,43 @@ def handle_text(msg):
 
 def reset_chat_data(chat_id: int):
     """
-    Полный сброс данных чата.
+    Полное обнуление данных чата:
+      • баланс
+      • записи / daily_records
+      • next_id
+      • active_windows
+      • edit_wait / edit_target
+      • обновление окна дня
+      • бэкап
     """
-    chats = data.setdefault("chats", {})
-    if str(chat_id) in chats:
-        chats[str(chat_id)] = {
-            "info": {},
-            "known_chats": {},
-            "balance": 0,
-            "records": [],
-            "daily_records": {},
-            "next_id": 1,
-            "active_windows": {},
-            "edit_wait": None,
-            "edit_target": None,
-            "current_view_day": today_key(),
-            "settings": {
-                "auto_add": False
-            },
-        }
+    try:
+        store = get_chat_store(chat_id)
 
-    save_chat_json(chat_id)
-    save_data(data)
-    export_global_csv(data)
-    send_backup_to_channel(chat_id)
+        # Полная очистка данных
+        store["balance"] = 0
+        store["records"] = []
+        store["daily_records"] = {}
+        store["next_id"] = 1
+        store["active_windows"] = {}
+        store["edit_wait"] = None
+        store["edit_target"] = None
 
+        # Сохраняем изменения
+        save_data(data)
+        save_chat_json(chat_id)
+        export_global_csv(data)
+        send_backup_to_channel(chat_id)
+
+        # 🔥 СРАЗУ ПЕРЕРИСОВЫВАЕМ ОКНО
+        day_key = store.get("current_view_day", today_key())
+        update_or_send_day_window(chat_id, day_key)
+
+        # Сообщение пользователю
+        send_and_auto_delete(chat_id, "🧹 Данные чата полностью обнулены.", 10)
+
+    except Exception as e:
+        log_error(f"reset_chat_data({chat_id}): {e}")
+        
 # ==========================================================
 # SECTION 18.2 — Media forwarding (анонимно + media_group)
 # ==========================================================
