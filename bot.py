@@ -1351,6 +1351,7 @@ def apply_forward_mode(A: int, B: int, mode: str):
         remove_forward_link(B, A)
         
 #🟠🟠🟠🟠🟠🟠🟠🟠🟠
+
 #🟠🟠🟠🟠🟠🟠🟠🟠🟠
 # ==========================================================
 # SECTION 16 — Callback handler
@@ -1630,23 +1631,23 @@ def on_callback(call):
             bot.send_message(chat_id, "\n".join(lines))
             return
 
-        # общий итог
-        # общий итог
+        # общий итог: логика OWNER / не OWNER + запоминаем msg_id
         if cmd == "total":
             chat_bal = store.get("balance", 0)
 
-            # Для обычных чатов — только свой остаток
+            # обычные чаты — только свой остаток
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                bot.send_message(
+                sent = bot.send_message(
                     chat_id,
                     f"💰 <b>Общий итог по этому чату:</b> {fmt_num(chat_bal)}",
                     parse_mode="HTML"
                 )
+                store["total_msg_id"] = sent.message_id
+                save_data(data)
                 return
 
-            # Для владельца — подробный отчёт по всем чатам
+            # OWNER — расширенный вывод
             lines = []
-
             info = store.get("info", {})
             title = info.get("title") or f"Чат {chat_id}"
 
@@ -1663,14 +1664,10 @@ def on_callback(call):
                     cid_int = int(cid)
                 except Exception:
                     continue
-
                 bal = st.get("balance", 0)
                 total_all += bal
-
-                # этот чат уже вывели выше
                 if cid_int == chat_id:
                     continue
-
                 info2 = st.get("info", {})
                 title2 = info2.get("title") or f"Чат {cid_int}"
                 other_lines.append(f"   • {title2}: {fmt_num(bal)}")
@@ -1683,7 +1680,11 @@ def on_callback(call):
             lines.append("")
             lines.append(f"• Всего по всем чатам: <b>{fmt_num(total_all)}</b>")
 
-            bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
+            sent = bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
+            store["total_msg_id"] = sent.message_id
+            save_data(data)
+            return
+            
         # справка
         if cmd == "info":
             try:
@@ -1785,7 +1786,7 @@ def on_callback(call):
         if cmd == "edit_list":
             day_recs = store.get("daily_records", {}).get(day_key, [])
             if not day_recs:
-                bot.send_message(chat_id, "Нет записей за этот день.")
+                send_and_auto_delete(chat_id, "Нет записей за этот день.")
                 return
 
             kb2 = types.InlineKeyboardMarkup(row_width=3)
@@ -1846,13 +1847,19 @@ def on_callback(call):
             rid = int(cmd.split("_")[-1])
             delete_record_in_chat(chat_id, rid)
             update_or_send_day_window(chat_id, day_key)
-            bot.send_message(chat_id, f"🗑 Запись R{rid} удалена.")
+            refresh_total_message_if_any(chat_id)
+            if OWNER_ID and str(chat_id) != str(OWNER_ID):
+                try:
+                    refresh_total_message_if_any(int(OWNER_ID))
+                except Exception:
+                    pass
+            send_and_auto_delete(chat_id, f"🗑 Запись R{rid} удалена.", 10)
             return
             
         # СТАРОЕ МЕНЮ ПЕРЕСЫЛКИ (на базе day_key)
         if cmd == "forward_menu":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                bot.send_message(chat_id, "Меню доступно только владельцу.")
+                send_and_auto_delete(chat_id, "Меню доступно только владельцу.")
                 return
 
             kb = build_forward_chat_list(day_key, chat_id)
@@ -1878,28 +1885,28 @@ def on_callback(call):
         if cmd.startswith("fw_one_"):
             tgt = int(cmd.split("_")[-1])
             add_forward_link(chat_id, tgt, "oneway_to")
-            bot.send_message(chat_id, f"Установлена пересылка ➡️  {chat_id} → {tgt}")
+            send_and_auto_delete(chat_id, f"Установлена пересылка ➡️  {chat_id} → {tgt}")
             return
 
         if cmd.startswith("fw_rev_"):
             tgt = int(cmd.split("_")[-1])
             add_forward_link(tgt, chat_id, "oneway_to")
             add_forward_link(chat_id, tgt, "oneway_from")
-            bot.send_message(chat_id, f"Установлена пересылка ⬅️  {tgt} → {chat_id}")
+            send_and_auto_delete(chat_id, f"Установлена пересылка ⬅️  {tgt} → {chat_id}")
             return
 
         if cmd.startswith("fw_two_"):
             tgt = int(cmd.split("_")[-1])
             add_forward_link(chat_id, tgt, "twoway")
             add_forward_link(tgt, chat_id, "twoway")
-            bot.send_message(chat_id, f"Установлена двусторонняя пересылка ↔️  {chat_id} ⇄ {tgt}")
+            send_and_auto_delete(chat_id, f"Установлена двусторонняя пересылка ↔️  {chat_id} ⇄ {tgt}")
             return
 
         if cmd.startswith("fw_del_"):
             tgt = int(cmd.split("_")[-1])
             remove_forward_link(chat_id, tgt)
             remove_forward_link(tgt, chat_id)
-            bot.send_message(chat_id, f"Все связи с {tgt} удалены.")
+            send_and_auto_delete(chat_id, f"Все связи с {tgt} удалены.")
             return
 
         # выбор даты вручную
@@ -2007,14 +2014,6 @@ def delete_record_in_chat(chat_id: int, rid: int):
     export_global_csv(data)
     send_backup_to_channel(chat_id)
     
-#bot.send_message(chat_id, text)
-#на
-#send_and_auto_delete
-#
-#send_info(chat_id, "🚀 Фина")
-#на
-#def send_info(chat_id, text, delay=5):
-    #return send_and_auto_delete(chat_id, text, delay=delay)
 def renumber_chat_records(chat_id: int):
     """
     Перенумеровывает записи в чате по реальному порядку:
@@ -2131,16 +2130,81 @@ def require_finance(chat_id: int) -> bool:
         send_and_auto_delete(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
         return False
     return True
+# ==========================================================
+# SECTION 15.1 — Обновление сообщения «Общий итог»
+# ==========================================================
 
+def refresh_total_message_if_any(chat_id: int):
+    """
+    Если в чате есть активное сообщение '💰 Общий итог',
+    пересчитывает и обновляет его текст.
+    """
+    store = get_chat_store(chat_id)
+    msg_id = store.get("total_msg_id")
+    if not msg_id:
+        return
+
+    try:
+        chat_bal = store.get("balance", 0)
+
+        # Обычный чат — только свой итог
+        if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+            text = f"💰 <b>Общий итог по этому чату:</b> {fmt_num(chat_bal)}"
+        else:
+            # Владелец видит все чаты
+            lines = []
+            info = store.get("info", {})
+            title = info.get("title") or f"Чат {chat_id}"
+
+            lines.append("💰 <b>Общий итог (для владельца)</b>")
+            lines.append("")
+            lines.append(f"• Этот чат ({title}): <b>{fmt_num(chat_bal)}</b>")
+
+            all_chats = data.get("chats", {})
+            total_all = 0
+            other_lines = []
+
+            for cid, st in all_chats.items():
+                try:
+                    cid_int = int(cid)
+                except Exception:
+                    continue
+                bal = st.get("balance", 0)
+                total_all += bal
+                if cid_int == chat_id:
+                    continue
+                info2 = st.get("info", {})
+                title2 = info2.get("title") or f"Чат {cid_int}"
+                other_lines.append(f"   • {title2}: {fmt_num(bal)}")
+
+            if other_lines:
+                lines.append("")
+                lines.append("• Другие чаты:")
+                lines.extend(other_lines)
+
+            lines.append("")
+            lines.append(f"• Всего по всем чатам: <b>{fmt_num(total_all)}</b>")
+
+            text = "\n".join(lines)
+
+        bot.edit_message_text(
+            text,
+            chat_id=chat_id,
+            message_id=msg_id,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        log_error(f"refresh_total_message_if_any({chat_id}): {e}")
+        # если не смогли обновить — просто забываем id
+        store["total_msg_id"] = None
+        save_data(data)
+        
+        
 # ==========================================================
 # SECTION 17 — Команды
 # ==========================================================
 
-#def send_info(chat_id: int, text: str):
-    #try:
-        #bot.send_message(chat_id, text)
-    #except Exception as e:
-        #log_error(f"send_info: {e}")
+
 def send_info(chat_id: int, text: str):
     send_and_auto_delete(chat_id, text, 10)
 
@@ -2207,7 +2271,7 @@ def cmd_help(msg):
 def cmd_restore(msg):
     global restore_mode
     restore_mode = True
-    bot.send_message(
+    send_and_auto_delete(
         msg.chat.id,
         "📥 Режим восстановления включён.\n"
         "Теперь отправьте файл:\n"
@@ -2223,7 +2287,7 @@ def cmd_restore(msg):
 def cmd_restore_off(msg):
     global restore_mode
     restore_mode = False
-    bot.send_message(msg.chat.id, "🔒 Режим восстановления выключен.")
+    send_and_auto_delete(msg.chat.id, "🔒 Режим восстановления выключен.")
 
 
 @bot.message_handler(commands=["ping"])
@@ -2234,6 +2298,7 @@ def cmd_ping(msg):
 @bot.message_handler(commands=["view"])
 def cmd_view(msg):
     chat_id = msg.chat.id
+    send_and_auto_delete(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2258,7 +2323,7 @@ def cmd_view(msg):
 @bot.message_handler(commands=["prev"])
 def cmd_prev(msg):
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    send_and_auto_delete(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
 
@@ -2457,6 +2522,7 @@ def cmd_reset(msg):
 def cmd_stopforward(msg):
     if str(msg.chat.id) != str(OWNER_ID):
         send_info(msg.chat.id, "Эта команда только для владельца.")
+        delete_message_later(chat_id, msg.message_id, 15)
         return
     clear_forward_all()
     send_info(msg.chat.id, "Пересылка полностью отключена.")
@@ -2467,6 +2533,7 @@ def cmd_on_drive(msg):
     backup_flags["drive"] = True
     save_data(data)
     send_info(msg.chat.id, "☁️ Бэкап в Google Drive включён")
+    delete_message_later(chat_id, msg.message_id, 15)
 
 
 @bot.message_handler(commands=["backup_gdrive_off"])
@@ -2474,6 +2541,7 @@ def cmd_off_drive(msg):
     backup_flags["drive"] = False
     save_data(data)
     send_info(msg.chat.id, "☁️ Бэкап в Google Drive выключен")
+    delete_message_later(chat_id, msg.message_id, 15)
 
 
 @bot.message_handler(commands=["backup_channel_on"])
@@ -2481,6 +2549,7 @@ def cmd_on_channel(msg):
     backup_flags["channel"] = True
     save_data(data)
     send_info(msg.chat.id, "📡 Бэкап в канал включён")
+    delete_message_later(chat_id, msg.message_id, 15)
 
 
 @bot.message_handler(commands=["backup_channel_off"])
@@ -2488,6 +2557,7 @@ def cmd_off_channel(msg):
     backup_flags["channel"] = False
     save_data(data)
     send_info(msg.chat.id, "📡 Бэкап в канал выключен")
+    delete_message_later(chat_id, msg.message_id, 15)
     
  # ==========================================================
 # COMMAND — /autoadd.info  (toggle auto-add mode)
@@ -2496,6 +2566,7 @@ def cmd_off_channel(msg):
 @bot.message_handler(commands=["autoadd_info", "autoadd.info"])
 def cmd_autoadd_info(msg):
     chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
     store = get_chat_store(chat_id)
 
     settings = store.setdefault("settings", {})
@@ -2506,7 +2577,7 @@ def cmd_autoadd_info(msg):
     settings["auto_add"] = new_state
     save_chat_json(chat_id)
 
-    bot.send_message(
+    send_and_auto_delete(
         chat_id,
         f"⚙️ Авто-добавление сообщений: {'ВКЛЮЧЕНО' if new_state else 'ВЫКЛЮЧЕНО'}\n"
         f"Использование:\n"
@@ -2639,11 +2710,24 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
         data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
 
         # === 3. Сохранения ===
-        save_data(data)
+                # 1) сохранить
         save_chat_json(chat_id)
+        save_data(data)
         export_global_csv(data)
-        send_backup_to_channel(chat_id)
 
+        # 2) обновить окно
+        update_or_send_day_window(chat_id, day_key)
+
+        # 2.1) если есть открытый «Общий итог» — обновляем
+        refresh_total_message_if_any(chat_id)
+        if OWNER_ID and str(chat_id) != str(OWNER_ID):
+            try:
+                refresh_total_message_if_any(int(OWNER_ID))
+            except Exception:
+                pass
+
+        # 3) бэкап
+        send_backup_to_channel(chat_id)
         # === 4. Создаём НОВОЕ окно и удаляем старое ===
 
         # 4.1 запоминаем старое окно
@@ -2732,7 +2816,7 @@ def handle_text(msg):
                         try:
                                 amount, note = split_amount_and_note(line)
                         except Exception:
-                                bot.send_message(chat_id, f"❌ Ошибка суммы: {line}\nПродолжаю расчёт…")
+                                send_and_auto_delete(chat_id, f"❌ Ошибка суммы: {line}\nПродолжаю расчёт…")
                                 continue
 
                         rid = store.get("next_id", 1)
@@ -2801,7 +2885,7 @@ def handle_text(msg):
                     break
 
             if not target:
-                bot.send_message(chat_id, "❌ Запись не найдена.")
+                send_and_auto_delete(chat_id, "❌ Запись не найдена.")
                 store["edit_wait"] = None
                 return
 
@@ -2832,13 +2916,20 @@ def handle_text(msg):
                 store.setdefault("daily_records", {}).setdefault(day_key, []).append(new_rec)
                 store["next_id"] = rid2 + 1
 
-            update_or_send_day_window(chat_id, day_key)
+            update_record_in_chat(chat_id, rid, amount, note)
             schedule_finalize(chat_id, day_key)
+            #update_or_send_day_window(chat_id, day_key)
+            refresh_total_message_if_any(chat_id)
+            if OWNER_ID and str(chat_id) != str(OWNER_ID):
+                try:
+                    refresh_total_message_if_any(int(OWNER_ID))
+                except Exception:
+                    pass
 
             store["edit_wait"] = None
             save_data(data)
             return
-            
+            #schedule_finalize(chat_id, day_key)
         # =====================================================
         # 4) Подтверждение обнуления ("ДА") — только после /reset
         # =====================================================
@@ -2905,7 +2996,22 @@ def reset_chat_data(chat_id: int):
         update_or_send_day_window(chat_id, day_key)
 
         # Сообщение пользователю
-        send_and_auto_delete(chat_id, "🧹 Данные чата полностью обнулены.", 10)
+        # бэкап в канал + JSON в чат
+        send_backup_to_channel(chat_id)
+
+        # после обнуления обновляем окно и общий итог
+        try:
+            day_key = get_chat_store(chat_id).get("current_view_day", today_key())
+            update_or_send_day_window(chat_id, day_key)
+        except Exception:
+            pass
+
+        refresh_total_message_if_any(chat_id)
+        if OWNER_ID and str(chat_id) != str(OWNER_ID):
+            try:
+                refresh_total_message_if_any(int(OWNER_ID))
+            except Exception:
+                pass
 
     except Exception as e:
         log_error(f"reset_chat_data({chat_id}): {e}")
@@ -3015,14 +3121,14 @@ def handle_document(msg):
     if restore_mode:
         # принимаем только JSON/CSV
         if not (fname.endswith(".json") or fname.endswith(".csv")):
-            bot.send_message(chat_id, f"⚠️ Файл '{fname}' не является JSON/CSV.")
+            send_and_auto_delete(chat_id, f"⚠️ Файл '{fname}' не является JSON/CSV.")
             return
 
         try:
             file_info = bot.get_file(file.file_id)
             raw = bot.download_file(file_info.file_path)
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Ошибка скачивания файла: {e}")
+            send_and_auto_delete(chat_id, f"❌ Ошибка скачивания файла: {e}")
             return
 
         tmp_path = f"restore_{chat_id}_{fname}"
@@ -3036,9 +3142,9 @@ def handle_document(msg):
                 os.replace(tmp_path, "data.json")
                 data = load_data()
                 restore_mode = False
-                bot.send_message(chat_id, "🟢 Глобальный data.json восстановлен!")
+                send_and_auto_delete(chat_id, "🟢 Глобальный data.json восстановлен!")
             except Exception as e:
-                bot.send_message(chat_id, f"❌ Ошибка: {e}")
+                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
             return
 
         # 2) csv_meta.json
@@ -3046,9 +3152,9 @@ def handle_document(msg):
             try:
                 os.replace(tmp_path, "csv_meta.json")
                 restore_mode = False
-                bot.send_message(chat_id, "🟢 csv_meta.json восстановлен!")
+                send_and_auto_delete(chat_id, "🟢 csv_meta.json восстановлен!")
             except Exception as e:
-                bot.send_message(chat_id, f"❌ Ошибка: {e}")
+                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
             return
 
         # 3) per-chat JSON data_<chat>.json
@@ -3056,14 +3162,14 @@ def handle_document(msg):
             try:
                 target = int(fname.replace("data_", "").replace(".json", ""))
             except:
-                bot.send_message(chat_id, "❌ Невозможно определить chat_id из имени файла.")
+                send_and_auto_delete(chat_id, "❌ Невозможно определить chat_id из имени файла.")
                 return
 
             try:
                 os.replace(tmp_path, fname)
                 store = _load_json(fname, {})
                 if not store:
-                    bot.send_message(chat_id, "❌ Файл повреждён или пуст.")
+                    send_and_auto_delete(chat_id, "❌ Файл повреждён или пуст.")
                     return
 
                 store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
@@ -3085,14 +3191,14 @@ def handle_document(msg):
 
                 restore_mode = False
 
-                bot.send_message(
+                send_and_auto_delete(
                     chat_id,
                     f"🟢 Чат {target} восстановлен.\n"
                     f"Записей: {len(store.get('records', []))}\n"
                     f"Баланс: {store['balance']}"
                 )
             except Exception as e:
-                bot.send_message(chat_id, f"❌ Ошибка: {e}")
+                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
             return
 
         # 4) per-chat CSV
@@ -3100,12 +3206,12 @@ def handle_document(msg):
             try:
                 os.replace(tmp_path, fname)
                 restore_mode = False
-                bot.send_message(chat_id, f"🟢 CSV восстановлен: {fname}")
+                send_and_auto_delete(chat_id, f"🟢 CSV восстановлен: {fname}")
             except Exception as e:
-                bot.send_message(chat_id, f"❌ Ошибка: {e}")
+                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
             return
 
-        bot.send_message(chat_id, f"⚠️ Формат не поддерживается: {fname}")
+        send_and_auto_delete(chat_id, f"⚠️ Формат не поддерживается: {fname}")
         return
 
     # --------- ВЕТКА ПЕРЕСЫЛКИ (restore_mode == False)  -----------
