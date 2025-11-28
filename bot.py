@@ -1077,33 +1077,8 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
 
     return kb
 
-def build_calendar_keyboard(center_day: datetime):
-    kb = types.InlineKeyboardMarkup(row_width=4)
 
-    start_day = center_day - timedelta(days=15)
-    for week in range(0, 32, 4):
-        row = []
-        for d in range(4):
-            day = start_day + timedelta(days=week + d)
-            label = day.strftime("%d.%m")
-            key = day.strftime("%Y-%m-%d")
-            row.append(types.InlineKeyboardButton(label, callback_data=f"d:{key}:open"))
-        kb.row(*row)
-
-    kb.row(
-        types.InlineKeyboardButton("⬅️ −31", callback_data=f"c:{(center_day - timedelta(days=31)).strftime('%Y-%m-%d')}"),
-        types.InlineKeyboardButton("➡️ +31", callback_data=f"c:{(center_day + timedelta(days=31)).strftime('%Y-%m-%d')}")
-    )
-
-    kb.row(
-        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open")
-    )
-
-    return kb
-    
-    
-    
-    # ==========================================================
+# ==========================================================
 # МЕНЮ РЕДАКТИРОВАНИЯ (с кнопкой пересылки)
 # ==========================================================
 
@@ -1613,7 +1588,25 @@ def on_callback(call):
             )
             set_active_window_id(chat_id, nd, call.message.message_id)
             return
+            
+        # переход к сегодняшнему дню
+        if cmd == "today":
+            nd = today_key()
+            txt, _ = render_day_window(chat_id, nd)
+            kb = build_main_keyboard(nd, chat_id)
 
+            store["current_view_day"] = nd
+
+            bot.edit_message_text(
+                txt,
+                chat_id,
+                call.message.message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            set_active_window_id(chat_id, nd, call.message.message_id)
+            return
+            
         # показать календарь
         if cmd == "calendar":
             try:
@@ -1773,7 +1766,7 @@ def on_callback(call):
                 "Выберите действие:",
                 chat_id=chat_id,
                 message_id=call.message.message_id,
-                reply_markup=kb
+                reply_markup=kb2
             )
             return
 
