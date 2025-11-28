@@ -3709,7 +3709,7 @@ def main():
 
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
-
+    sened_backup_to_chat_self(owner_id)
     app.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
