@@ -861,84 +861,6 @@ def send_backup_to_channel(chat_id: int):
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
         
-def send_backup_to_chat_self(chat_id: int):
-    """
-    Бэкап JSON этого чата прямо в этот же чат.
-
-    Логика:
-    - сохраняем актуальный data_<chat_id>.json
-    - отправляем его в чат, либо обновляем предыдущее сообщение с файлом
-      (метаданные лежат в chat_backup_meta.json).
-    """
-    try:
-        if not chat_id:
-            return
-
-        # 1) гарантируем актуальный JSON для чата
-        save_chat_json(chat_id)
-        path = chat_json_file(chat_id)
-
-        if not os.path.exists(path):
-            log_info(f"send_backup_to_chat_self: файл {path} не найден")
-            return
-
-        meta = _load_chat_backup_meta()
-        msg_key = f"msg_chat_{chat_id}"
-        ts_key = f"timestamp_chat_{chat_id}"
-
-        # helper: открыть файл как BytesIO для Telegram, с нормальным именем
-        def _open_for_telegram() -> io.BytesIO:
-            with open(path, "rb") as src:
-                buf = io.BytesIO(src.read())
-            # имя файла, которое увидит Telegram
-            buf.name = os.path.basename(path)
-            return buf
-
-        caption = (
-            f"🧾 backup JSON чата {chat_id} — "
-            f"{now_local().strftime('%Y-%m-%d %H:%M')}"
-        )
-
-        old_mid = meta.get(msg_key)
-
-        # 2) если у нас уже есть message_id — пробуем обновить документ
-        if old_mid:
-            try:
-                fobj = _open_for_telegram()
-                bot.edit_message_media(
-                    chat_id=chat_id,
-                    message_id=old_mid,
-                    media=InputMediaDocument(fobj, caption=caption),
-                )
-                log_info(
-                    f"send_backup_to_chat_self: обновлён backup JSON "
-                    f"в чате {chat_id}, msg_id={old_mid}"
-                )
-            except Exception as e:
-                # если не получилось отредактировать — отправляем заново
-                log_error(
-                    f"send_backup_to_chat_self: edit_message_media "
-                    f"не удалось ({e}), отправляю новый документ"
-                )
-                fobj = _open_for_telegram()
-                sent = bot.send_document(chat_id, fobj, caption=caption)
-                meta[msg_key] = sent.message_id
-        else:
-            # 3) первый раз — просто отправляем документ
-            fobj = _open_for_telegram()
-            sent = bot.send_document(chat_id, fobj, caption=caption)
-            meta[msg_key] = sent.message_id
-            log_info(
-                f"send_backup_to_chat_self: отправлен первый backup JSON "
-                f"в чат {chat_id}, msg_id={sent.message_id}"
-            )
-
-        # 4) метка времени
-        meta[ts_key] = now_local().isoformat(timespec="seconds")
-        _save_chat_backup_meta(meta)
-
-    except Exception as e:
-        log_error(f"send_backup_to_chat_self({chat_id}): {e}")
 
 def send_backup_to_chat_self(chat_id: int):
     """
@@ -2316,6 +2238,7 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
+    send_backup_to_chat(chat_id)    # ← добавляем
 
 
 def delete_record_in_chat(chat_id: int, rid: int):
@@ -2343,6 +2266,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
+    send_backup_to_chat(chat_id)    # ← доба
     
 def renumber_chat_records(chat_id: int):
     """
@@ -3027,62 +2951,69 @@ _finalize_timers = {}
 
 def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
     def _job():
-        store = get_chat_store(chat_id)
+        try:
+            store = get_chat_store(chat_id)
 
-        # === 1. Пересчитать баланс ===
-        store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+            # === 1. Пересчитать баланс ===
+            store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
 
-        # === 2. Пересборка глобальных records ===
-        all_recs = []
-        for cid, st in data.get("chats", {}).items():
-            all_recs.extend(st.get("records", []))
-        data["records"] = all_recs
-        data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
+            # === 2. Пересборка глобальных records ===
+            all_recs = []
+            for cid, st in data.get("chats", {}).items():
+                all_recs.extend(st.get("records", []))
+            data["records"] = all_recs
+            data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
 
-        # === 3. Сохранения ===
-        save_chat_json(chat_id)
-        save_data(data)
-        export_global_csv(data)
+            # === 3. Сохранения ===
+            save_chat_json(chat_id)
+            save_data(data)
+            export_global_csv(data)
 
-        # === 4. Бэкапы ===
-        send_backup_to_channel(chat_id)   # в канал
-        send_backup_to_chat(chat_id)      # в сам чат
+            # === 4. Бэкапы ===
+            send_backup_to_channel(chat_id)   # в бэкап-канал
+            send_backup_to_chat(chat_id)      # JSON в сам чат
 
-        # === 5. Обновить текущее окно ===
-        update_or_send_day_window(chat_id, day_key)
+            # === 5. Обновляем окно дня ===
+            if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                # 🔹 ЛИЧКА ВЛАДЕЛЬЦА: только обновляем / создаём одно окно
+                update_or_send_day_window(chat_id, day_key)
+            else:
+                # 🔹 ДРУГИЕ ЧАТЫ: создаём новое окно и удаляем старое (как было)
+                old_mid = get_active_window_id(chat_id, day_key)
 
-        # 5.1) если есть открытый «Общий итог» — обновляем
-        refresh_total_message_if_any(chat_id)
-        if OWNER_ID and str(chat_id) != str(OWNER_ID):
-            try:
-                refresh_total_message_if_any(int(OWNER_ID))
-            except Exception:
-                pass
+                txt, _ = render_day_window(chat_id, day_key)
+                kb = build_main_keyboard(day_key, chat_id)
+                sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                new_mid = sent.message_id
 
-        # === 6. Создаём НОВОЕ окно и удаляем старое ===
-        old_mid = get_active_window_id(chat_id, day_key)
+                set_active_window_id(chat_id, day_key, new_mid)
 
-        txt, _ = render_day_window(chat_id, day_key)
-        kb = build_main_keyboard(day_key, chat_id)
-        sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-        new_mid = sent.message_id
+                if old_mid and old_mid != new_mid:
+                    def _delete_old():
+                        time.sleep(1.0)
+                        try:
+                            bot.delete_message(chat_id, old_mid)
+                        except Exception:
+                            pass
+                    threading.Thread(target=_delete_old, daemon=True).start()
 
-        set_active_window_id(chat_id, day_key, new_mid)
-
-        if old_mid and old_mid != new_mid:
-            def _delete_old():
-                time.sleep(1.0)
+            # === 6. Обновляем «Общий итог» ===
+            refresh_total_message_if_any(chat_id)
+            if OWNER_ID and str(chat_id) != str(OWNER_ID):
                 try:
-                    bot.delete_message(chat_id, old_mid)
+                    refresh_total_message_if_any(int(OWNER_ID))
                 except Exception:
                     pass
-            threading.Thread(target=_delete_old, daemon=True).start()
+
+        except Exception as e:
+            log_error(f"schedule_finalize job error for chat {chat_id}: {e}")
+
     # отменяем старый таймер
     t_prev = _finalize_timers.get(chat_id)
     if t_prev and t_prev.is_alive():
         try:
             t_prev.cancel()
-        except:
+        except Exception:
             pass
 
     # запускаем новый
@@ -3186,6 +3117,7 @@ def handle_text(msg):
                 save_chat_json(chat_id)
                 export_global_csv(data)
                 send_backup_to_channel(chat_id)
+                send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
 
                 store["edit_wait"] = None
                 save_data(data)
@@ -3311,18 +3243,16 @@ def reset_chat_data(chat_id: int):
         store["edit_target"] = None
 
         # Сохраняем изменения
+        # Сохраняем изменения
         save_data(data)
         save_chat_json(chat_id)
         export_global_csv(data)
         send_backup_to_channel(chat_id)
+        send_backup_to_chat(chat_id)   # ← новый бэкап JSON в чат
 
         # 🔥 СРАЗУ ПЕРЕРИСОВЫВАЕМ ОКНО
         day_key = store.get("current_view_day", today_key())
         update_or_send_day_window(chat_id, day_key)
-
-        # Сообщение пользователю
-        # бэкап в канал + JSON в чат
-        send_backup_to_channel(chat_id)
 
         # после обнуления обновляем окно и общий итог
         try:
