@@ -1634,6 +1634,19 @@ def on_callback(call):
             cmd_csv_day(chat_id, day_key)
             return
 
+        # обнуление через кнопку "⚙️ Обнулить" (с таким же подтверждением, как /reset)
+        if cmd == "reset":
+            if not require_finance(chat_id):
+                return
+
+            store["reset_wait"] = True
+            store["reset_time"] = time.time()
+            save_data(data)
+
+            # сообщение с запросом подтверждения
+            send_info(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
+            return
+
         # добавление записи
         if cmd == "add":
             store["edit_wait"] = {"type": "add", "day_key": day_key}
