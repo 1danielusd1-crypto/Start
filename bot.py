@@ -86,6 +86,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
+log_info(f"WORKDIR: {os.getcwd()}")
+log_info(f"META FILE PATH: {os.path.abspath(CHAT_BACKUP_META_FILE)}")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 app = Flask(__name__)
