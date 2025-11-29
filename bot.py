@@ -2933,6 +2933,7 @@ def update_chat_info_from_message(msg):
         save_chat_json(int(OWNER_ID))
 
     save_chat_json(chat_id)
+# --- ДОБАВЬ ЭТО ---
     try:
         send_backup_to_chat(chat_id)
     except Exception as e:
