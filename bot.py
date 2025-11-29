@@ -2915,7 +2915,10 @@ def update_chat_info_from_message(msg):
     store = get_chat_store(chat_id)
 
     info = store.setdefault("info", {})
-    info["title"] = msg.chat.title or info.get("title") or f"Чат {chat_id}"
+    # --- ВАЖНО: НЕ менять title для владельца ---
+    if str(chat_id) != str(OWNER_ID):
+        info["title"] = msg.chat.title or info.get("title") or f"Чат {chat_id}"
+# у владельца title оставляем прежний и не трогаем
     info["username"] = msg.chat.username or info.get("username")
     info["type"] = msg.chat.type
 
