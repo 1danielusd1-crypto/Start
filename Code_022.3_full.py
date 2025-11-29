@@ -1,13 +1,19 @@
-# 🧭 Description: Code_022.2
-#  • Full finance UI: окно дня, навигация, edit-меню
-#  • Per-chat независимые файлы: data_<chat>.json, .csv, meta
-#  • Backup: Google Drive + Backup Channel
-#  • Forwarding: текст + медиа, анонимно, только OWNER настраивает
-#  • known_chats → автоматическое сохранение в data_<OWNER>.json
-#  • Быстрые отклики, оптимизированное сохранение
+#🎈💢бекап
+#bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
+# Code_022.9.11 флаг✅
+#==========================================================
+
+# 🧭 Description: Code_022.1
+#  • Full finance UI: day window, edit menu, /prev /next /view, 31-day calendar, reports
+#  • Per-chat storage: data_<chat_id>.json, data_<chat_id>.csv, csv_meta_<chat_id>.json
+#  • Backup & restore via Google Drive + backup Telegram channel
+#  • Anonymous message forwarding between chats (forward_rules, owner-configurable)
+#  • Finance mode must be enabled per chat via /поехали
+#  • Keep-alive, webhook/Flask, daily window scheduler, auto backups
 # ==========================================================
 
-# ========== SECTION 1 — IMPORTS ==========
+#🟠🟠🟠🟠🟠🟠🟠🟠🟠🟠
+# ========== SECTION 1 — Imports & basic config ==========
 import os
 import io
 import json
@@ -23,6 +29,12 @@ from zoneinfo import ZoneInfo
 import requests
 import telebot
 from telebot import types
+from telebot.types import (
+    InputMediaPhoto,
+    InputMediaVideo,
+    InputMediaDocument,
+    InputMediaAudio
+)
 from flask import Flask, request
 
 # --- Google Drive ---
@@ -30,8 +42,8 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-
-# ========== SECTION 2 — ENVIRONMENT & GLOBALS ==========
+#⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️
+# ========== SECTION 2 — Environment & globals ==========
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OWNER_ID = os.getenv("OWNER_ID", "").strip()
@@ -44,7 +56,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_022.3"
+VERSION = "Code_ 022.9.11 🎈с4-15/18/20"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
@@ -52,54 +64,70 @@ KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
 CSV_FILE = "data.csv"
 CSV_META_FILE = "csv_meta.json"
-
-# backup flags
+# meta для бэкапов прямо в чаты
+#CHAT_BACKUP_META_FILE = "chat_backup_meta.json"
+# Global flags (runtime, also duplicated into data["backup_flags"])
 backup_flags = {
     "drive": True,
     "channel": True,
 }
 
+# ==========================================================
+# RESTORE MODE FLAG
+# ==========================================================
+
+# В этом режиме пересылка документов полностью отключается,
+# и бот использует документы ТОЛЬКО для восстановления data.json / data_<chat>.json / csv_meta / CSV.
+restore_mode = False
+
+# logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
+#log_info(f"WORKDIR: {os.getcwd()}")
+#log_info(f"META FILE PATH: {os.path.abspath(CHAT_BACKUP_META_FILE)}")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 app = Flask(__name__)
 
-# main runtime storage
+# main in-memory store
 data = {}
 
-# финансовый режим активных чатов
+# chats where finance mode is enabled
 finance_active_chats = set()
 
-
 # ==========================================================
-# SECTION 3 — TIME / LOG HELPERS
+# SECTION 3 — Helpers (time, logging)
 # ==========================================================
 
 def log_info(msg: str):
     logger.info(msg)
 
+
 def log_error(msg: str):
     logger.error(msg)
 
+
 def get_tz():
+    """Return local timezone, with fallback to UTC-3."""
     try:
         return ZoneInfo(DEFAULT_TZ)
     except Exception:
         return timezone(timedelta(hours=-3))
 
+
 def now_local():
     return datetime.now(get_tz())
+
 
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
 
 
 # ==========================================================
-# SECTION 4 — JSON / CSV HELPERS
+# SECTION 4 — JSON/CSV helpers
 # ==========================================================
 
 def _load_json(path: str, default):
@@ -108,8 +136,10 @@ def _load_json(path: str, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception as e:
+        log_error(f"JSON load error {path}: {e}")
         return default
+
 
 def _save_json(path: str, obj):
     try:
@@ -122,12 +152,230 @@ def _save_json(path: str, obj):
 def _load_csv_meta():
     return _load_json(CSV_META_FILE, {})
 
+
 def _save_csv_meta(meta: dict):
     try:
         _save_json(CSV_META_FILE, meta)
+        log_info("csv_meta.json updated")
     except Exception as e:
         log_error(f"_save_csv_meta: {e}")
+        
+# === ABSOLUTE PATH FIX FOR RENDER ===
+CHAT_BACKUP_META_FILE = "chat_backup_meta.json"
+log_info(f"chat_backup_meta.json PATH = {CHAT_BACKUP_META_FILE}")
 
+
+def _load_chat_backup_meta() -> dict:
+    """Загрузка meta-файла бэкапов для всех чатов."""
+
+    try:
+        if not os.path.exists(CHAT_BACKUP_META_FILE):
+            return {}
+
+        return _load_json(CHAT_BACKUP_META_FILE, {})
+    except Exception as e:
+        log_error(f"_load_chat_backup_meta: {e}")
+        return {}
+
+
+def _save_chat_backup_meta(meta: dict) -> None:
+    """Сохранение meta-файла в ТОТ ЖЕ каталог, где лежит бот."""
+    try:
+        log_info(f"SAVING META TO: {os.path.abspath(CHAT_BACKUP_META_FILE)}")
+        _save_json(CHAT_BACKUP_META_FILE, meta)
+        log_info("chat_backup_meta.json updated")
+    except Exception as e:
+        log_error(f"_save_chat_backup_meta: {e}")
+
+
+# === Backup JSON to the same chat ===
+def send_backup_to_chat(chat_id: int) -> None:
+    """
+    Универсальный авто-бэкап JSON прямо в чате.
+    Работает одинаково для владельца, групп, каналов, всех чатов.
+
+    Логика:
+    • гарантируем актуальный data_<chat_id>.json
+    • читаем meta-файл chat_backup_meta.json
+    • если есть msg_id → edit_message_media()
+    • если нет / не найдено → отправляем новое сообщение
+    • обновляем meta-файл в рабочей директории (Render-friendly)
+    """
+
+    try:
+        if not chat_id:
+            return
+
+        # Обновляем JSON для чата
+        try:
+            save_chat_json(chat_id)
+        except Exception as e:
+            log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
+
+        json_path = chat_json_file(chat_id)
+        if not os.path.exists(json_path):
+            log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
+            return
+
+        # Загрузка meta-файла
+        meta = _load_chat_backup_meta()
+        msg_key = f"msg_chat_{chat_id}"
+        ts_key = f"timestamp_chat_{chat_id}"
+
+        chat_title = _get_chat_title_for_backup(chat_id)
+        caption = (
+            f"🧾 Авто-бэкап JSON чата: {chat_title}\n"
+            f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        def _open_file() -> io.BytesIO | None:
+            """Чтение JSON в BytesIO с правильным именем файла."""
+            try:
+                with open(json_path, "rb") as f:
+                    data_bytes = f.read()
+            except Exception as e:
+                log_error(f"send_backup_to_chat open({json_path}): {e}")
+                return None
+
+            if not data_bytes:
+                return None
+
+            safe = _safe_chat_title_for_filename(chat_title)
+            base = os.path.basename(json_path)
+            name_no_ext, dot, ext = base.partition(".")
+
+            if safe:
+                file_name = f"{name_no_ext}_{safe}"
+                if ext:
+                    file_name += f".{ext}"
+            else:
+                file_name = base
+
+            buf = io.BytesIO(data_bytes)
+            buf.name = file_name
+            return buf
+
+        msg_id = meta.get(msg_key)
+
+        # === Попытка обновления существующего сообщения ===
+        if msg_id:
+            fobj = _open_file()
+            if not fobj:
+                return
+
+            try:
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=telebot.types.InputMediaDocument(fobj, caption=caption)
+                )
+                log_info(f"Chat backup UPDATED in chat {chat_id}")
+
+                # Сохраняем timestamp
+                meta[ts_key] = now_local().isoformat(timespec="seconds")
+                _save_chat_backup_meta(meta)
+                return
+
+            except Exception as e:
+                # сообщение удалено / не найдено — создаём заново
+                log_error(f"send_backup_to_chat edit FAILED in {chat_id}: {e}")
+
+        # === ИЛИ создаём новое сообщение ===
+        fobj = _open_file()
+        if not fobj:
+            return
+
+        sent = bot.send_document(chat_id, fobj, caption=caption)
+        meta[msg_key] = sent.message_id
+        meta[ts_key] = now_local().isoformat(timespec="seconds")
+
+        _save_chat_backup_meta(meta)
+        log_info(f"Chat backup CREATED in chat {chat_id}")
+
+    except Exception as e:
+        log_error(f"send_backup_to_chat({chat_id}): {e}")
+
+def send_backup_to_chat_extra(chat_id: int) -> None:
+    """
+    ВТОРОЙ независимый backup в чате.
+    Использует СВОЙ meta-ключ: msg_chat2_<chat_id>
+    """
+    try:
+        if not chat_id:
+            return
+
+        # обновляем json
+        save_chat_json(chat_id)
+
+        json_path = chat_json_file(chat_id)
+        if not os.path.exists(json_path):
+            log_error(f"send_backup_to_chat_extra: {json_path} NOT FOUND")
+            return
+
+        # Загружаем meta
+        meta = _load_chat_backup_meta()
+        msg_key = f"msg_chat2_{chat_id}"
+        ts_key = f"timestamp_chat2_{chat_id}"
+
+        chat_title = _get_chat_title_for_backup(chat_id)
+
+        caption = (
+            f"🧾 Доп. авто-бэкап JSON чата: {chat_title}\n"
+            f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        def _open_file():
+            try:
+                with open(json_path, "rb") as f:
+                    data_bytes = f.read()
+            except:
+                return None
+
+            if not data_bytes:
+                return None
+
+            safe = _safe_chat_title_for_filename(chat_title)
+            base = os.path.basename(json_path)
+            name_no_ext, dot, ext = base.partition(".")
+            if safe:
+                file_name = f"{name_no_ext}_{safe}.{ext}"
+            else:
+                file_name = base
+
+            buf = io.BytesIO(data_bytes)
+            buf.name = file_name
+            return buf
+
+        msg_id = meta.get(msg_key)
+
+        # Попытка обновить существующий бэкап
+        if msg_id:
+            fobj = _open_file()
+            if fobj:
+                try:
+                    bot.edit_message_media(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        media=telebot.types.InputMediaDocument(fobj, caption=caption)
+                    )
+                    meta[ts_key] = now_local().isoformat(timespec="seconds")
+                    _save_chat_backup_meta(meta)
+                    return
+                except Exception as e:
+                    log_error(f"send_backup_to_chat_extra edit FAILED: {e}")
+
+        # Создаём новое сообщение
+        fobj = _open_file()
+        if not fobj:
+            return
+
+        sent = bot.send_document(chat_id, fobj, caption=caption)
+        meta[msg_key] = sent.message_id
+        meta[ts_key] = now_local().isoformat(timespec="seconds")
+        _save_chat_backup_meta(meta)
+
+    except Exception as e:
+        log_error(f"send_backup_to_chat_extra({chat_id}): {e}")
 
 def default_data():
     return {
@@ -139,71 +387,72 @@ def default_data():
         "backup_flags": {"drive": True, "channel": True},
         "finance_active_chats": {},
         "forward_rules": {},
-        # Новый блок: данные всех известных чатов
-        "known_chats": {},
     }
 
 
 def load_data():
     d = _load_json(DATA_FILE, default_data())
-
     base = default_data()
     for k, v in base.items():
         if k not in d:
             d[k] = v
-
-    # восстановление флагов
+    # sync runtime flags from stored flags
     flags = d.get("backup_flags") or {}
     backup_flags["drive"] = bool(flags.get("drive", True))
     backup_flags["channel"] = bool(flags.get("channel", True))
-
-    # фин.режим
+    # restore finance_active_chats set
     fac = d.get("finance_active_chats") or {}
     finance_active_chats.clear()
     for cid, enabled in fac.items():
         if enabled:
             try:
                 finance_active_chats.add(int(cid))
-            except:
+            except Exception:
                 pass
-
     return d
 
 
 def save_data(d):
+    # mirror finance_active_chats set into dict
     fac = {}
     for cid in finance_active_chats:
         fac[str(cid)] = True
-
     d["finance_active_chats"] = fac
     d["backup_flags"] = {
         "drive": bool(backup_flags.get("drive", True)),
         "channel": bool(backup_flags.get("channel", True)),
     }
-
     _save_json(DATA_FILE, d)
 
-
+#🟡🟡🟡🟡🟡🟡🟡🟡
 # ==========================================================
-# SECTION 5 — PER-CHAT STORAGE
+# SECTION 5 — Per-chat storage helpers
 # ==========================================================
 
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
 
+
 def chat_csv_file(chat_id: int) -> str:
     return f"data_{chat_id}.csv"
+
 
 def chat_meta_file(chat_id: int) -> str:
     return f"csv_meta_{chat_id}.json"
 
 
 def get_chat_store(chat_id: int) -> dict:
+    """
+    Хранилище данных одного чата.
+    Добавлено поле "known_chats" для отображения названий/username в меню пересылки.
+    """
     chats = data.setdefault("chats", {})
-    return chats.setdefault(
+
+    store = chats.setdefault(
         str(chat_id),
         {
-            "info": {},
+            "info": {},                 # информация о чате (название, username)
+            "known_chats": {},          # словарь известных чатов (для владельца)
             "balance": 0,
             "records": [],
             "daily_records": {},
@@ -212,98 +461,231 @@ def get_chat_store(chat_id: int) -> dict:
             "edit_wait": None,
             "edit_target": None,
             "current_view_day": today_key(),
+            "settings": {
+                "auto_add": False
+            },
         }
     )
 
-# ==========================================================
-# SECTION 6 — NUMBER PARSING & FORMATTING
-# ==========================================================
+    # гарантируем наличие known_chats после обновления бота
+    if "known_chats" not in store:
+        store["known_chats"] = {}
 
-def fmt_num(x: int) -> str:
-    return f"{x:,}".replace(",", " ")
+    return store
 
-# Умный парсер чисел: +500, - 1.200, "1 200,50", "1.200,50"
 
-# Универсальный парсер сумм как в Code_022:
-#   • поддерживает + / - / разные разделители
-#   • БЕЗ знака — расход (отрицательно)
-num_re = re.compile(r'[+\-]?\s*\d(?:[\d\s\._\'",]*\d)?')
-
-def parse_amount_token(token: str) -> float:
+def save_chat_json(chat_id: int):
     """
-    Преобразует строку вида:
-      "1.200", "1 200", "1,200", "1.200,50", "+1 000", "-2.500,75", "1_000", "1'234"
-    в число с двумя десятичными (float).
-    Правила знаков:
-      • без знака → ОТРИЦАТЕЛЬНО (расход)
-      • '-' → отрицательно
-      • '+' → положительно
+    Save per-chat JSON, CSV and META for one chat.
     """
-    if not token:
-        return 0.0
-    t = token.strip()
-
-    # нормализуем возможные "длинные" минусы
-    for uni_minus in ("−", "–", "—"):
-        t = t.replace(uni_minus, "-")
-
-    sign = -1
-    m = re.match(r"^([+\-])\s*", t)
-    if m:
-        sign = 1 if m.group(1) == "+" else -1
-        t = t[m.end():]
-
-    # убираем пробелы и "декоративные" разделители
-    t = re.sub(r"[ _\'\"]+", "", t)
-    if not t:
-        return 0.0
-
-    # оставляем только цифры и разделители
-    t = re.sub(r"[^0-9\.,]", "", t)
-    if not t:
-        return 0.0
-
-    has_dot = "." in t
-    has_comma = "," in t
-
-    if has_dot and has_comma:
-        # определяем, какой разделитель ближе к концу — он десятичный
-        if t.rfind(",") > t.rfind("."):
-            t = t.replace(".", "").replace(",", ".")
-        else:
-            t = t.replace(",", "")
-    elif has_comma and not has_dot:
-        # только запятая → считаем её десятичной
-        t = t.replace(".", "").replace(",", ".")
-    else:
-        # только точка или вообще нет разделителей
-        t = t.replace(",", "")
-
     try:
-        value = float(t)
-        return round(sign * value, 2)
-    except Exception:
-        return 0.0
+        # гарантируем, что store для этого чата существует
+        store = data.get("chats", {}).get(str(chat_id))
+        if not store:
+            # если вдруг не было записи про этот чат (новый чат или после чистки файлов),
+            # создаём её через get_chat_store
+            store = get_chat_store(chat_id)
+
+        chat_path_json = chat_json_file(chat_id)
+        chat_path_csv = chat_csv_file(chat_id)
+        chat_path_meta = chat_meta_file(chat_id)
+
+        # дальше оставляешь свой код без изменений:
+        # создание файлов, подготовка payload, _save_json(...),
+        # сохранение meta и т.д.
+    
+        # ensure files exist
+        for p in (chat_path_json, chat_path_csv, chat_path_meta):
+            if not os.path.exists(p):
+                with open(p, "a", encoding="utf-8"):
+                    pass
+
+        payload = {
+            "chat_id": chat_id,
+            "balance": store.get("balance", 0),
+            "records": store.get("records", []),
+            "daily_records": store.get("daily_records", {}),
+            "next_id": store.get("next_id", 1),
+            "info": store.get("info", {}),
+            "known_chats": store.get("known_chats", {}),
+        }
+
+        _save_json(chat_path_json, payload)
+
+        # CSV — строго по датам и времени
+        with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
+
+            daily = store.get("daily_records", {})
+
+        # дни — по возрастанию: 2025-01-01, 2025-01-02, ...
+            for dk in sorted(daily.keys()):
+                recs = daily.get(dk, [])
+            # внутри дня — по времени
+                recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
+
+                for r in recs_sorted:
+                    w.writerow([
+                        chat_id,
+                        r.get("id"),
+                        r.get("short_id"),
+                        r.get("timestamp"),
+                        r.get("amount"),
+                        r.get("note"),
+                        r.get("owner"),
+                        dk,
+                    ])
+
+        meta = {
+            "last_saved": now_local().isoformat(timespec="seconds"),
+            "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
+        }
+        _save_json(chat_path_meta, meta)
+
+        log_info(f"Per-chat files saved for chat {chat_id}")
+
+    except Exception as e:
+        log_error(f"save_chat_json({chat_id}): {e}")
+
+#🟣🟣🟣🟣🟣🟣🟣🟣🟣
+# ==========================================================
+# SECTION 6 — Number formatting & parsing (EU format, decimals)
+# ==========================================================
+def fmt_num(x):
+    """
+    Европейский формат вывода с обязательным знаком.
+    Примеры:
+        +1234.56 → ➕ 1.234,56
+        -800     → ➖ 800
+        0        → ➕ 0
+    """
+
+    sign = "+" if x >= 0 else "-"
+    x = abs(x)
+
+    s = f"{x:.12f}".rstrip("0").rstrip(".")
+
+    if "." in s:
+        int_part, dec_part = s.split(".")
+    else:
+        int_part, dec_part = s, ""
+
+    int_part = f"{int(int_part):,}".replace(",", ".")
+
+    if dec_part:
+        s = f"{int_part},{dec_part}"
+    else:
+        s = int_part
+
+    return f"{sign}{s}"
+
+    
+
+# регулярка на первое число даже внутри слов
+num_re = re.compile(r"[+\-–]?\s*\d[\d\s.,_'’]*")
 
 
-def parse_amount(text: str) -> int:
+def parse_amount(raw: str) -> float:
     """
-    Парсер сумм на основе Code_022.
-    Ищет первое число в строке и возвращает целое значение (ARS),
-    округляя до ближайшего целого.
+    Универсальный парсер:
+    - понимает любые разделители
+    - смешанные форматы (1.234,56 / 1,234.56)
+    - определяет десятичную часть по самому правому разделителю
+    - число без знака = расход
     """
-    s = (text or "").strip()
-    m = num_re.search(s)
+
+    s = raw.strip()
+
+    # Определяем знак
+    is_negative = s.startswith("-") or s.startswith("–")
+    is_positive = s.startswith("+")
+
+    # Убираем знак для разбора числа
+    s_clean = s.lstrip("+-–").strip()
+
+    # Удаляем мусор
+    s_clean = (
+        s_clean.replace(" ", "")
+        .replace("_", "")
+        .replace("’", "")
+        .replace("'", "")
+    )
+
+    # Нет разделителей — просто число
+    if "," not in s_clean and "." not in s_clean:
+        value = float(s_clean)
+        if not is_positive and not is_negative:
+            is_negative = True
+        return -value if is_negative else value
+
+    # Оба разделителя: "." и ","
+    if "." in s_clean and "," in s_clean:
+        # самый правый — десятичный знак
+        if s_clean.rfind(",") > s_clean.rfind("."):
+            # 1.234,56 → запятая = десятичный
+            s_clean = s_clean.replace(".", "")
+            s_clean = s_clean.replace(",", ".")
+        else:
+            # 1,234.56 → точка = десятичный
+            s_clean = s_clean.replace(",", "")
+    else:
+        # Один разделитель:
+        # если справа 1 или 2 цифры → десятичный
+        if "," in s_clean:
+            pos = s_clean.rfind(",")
+            if len(s_clean) - pos - 1 in (1, 2):
+                s_clean = s_clean.replace(".", "")
+                s_clean = s_clean.replace(",", ".")
+            else:
+                s_clean = s_clean.replace(",", "")
+        elif "." in s_clean:
+            pos = s_clean.rfind(".")
+            if len(s_clean) - pos - 1 in (1, 2):
+                s_clean = s_clean.replace(",", "")
+            else:
+                s_clean = s_clean.replace(".", "")
+
+    value = float(s_clean)
+
+    # число без знака → расход
+    if not is_positive and not is_negative:
+        is_negative = True
+
+    return -value if is_negative else value
+
+
+def split_amount_and_note(text: str):
+    """
+    Возвращает:
+        amount (float)
+        note (str)
+    """
+    m = num_re.search(text)
     if not m:
         raise ValueError("no number found")
 
-    token = m.group(0)
-    value = parse_amount_token(token)
-    return int(round(value))
+    raw_number = m.group(0)
 
+    amount = parse_amount(raw_number)
 
+    # Описание = весь текст без числа
+    note = text.replace(raw_number, " ").strip()
+    note = re.sub(r"\s+", " ", note).lower()
+
+    return amount, note
+
+# =============================================
+# NEW: определение, является ли текст суммой
+# =============================================
+def looks_like_amount(text):
+    try:
+        amount, note = split_amount_and_note(text)
+        return True
+    except:
+        return False
 # ==========================================================
-# SECTION 7 — GOOGLE DRIVE
+# SECTION 7 — Google Drive helpers
 # ==========================================================
 
 def _get_drive_service():
@@ -315,15 +697,17 @@ def _get_drive_service():
             info,
             scopes=["https://www.googleapis.com/auth/drive"]
         )
-        return build("drive", "v3", credentials=creds)
+        service = build("drive", "v3", credentials=creds)
+        return service
     except Exception as e:
         log_error(f"Drive service error: {e}")
         return None
 
 
 def upload_to_gdrive(path: str, mime_type: str = None, description: str | None = None):
-    if not backup_flags.get("drive", True):
-        log_info("GDrive backup disabled.")
+    flags = backup_flags or {}
+    if not flags.get("drive", True):
+        log_info("GDrive backup disabled (drive flag = False).")
         return
 
     service = _get_drive_service()
@@ -331,7 +715,7 @@ def upload_to_gdrive(path: str, mime_type: str = None, description: str | None =
         return
 
     if not os.path.exists(path):
-        log_error(f"upload_to_gdrive: file not found: {path}")
+        log_error(f"upload_to_gdrive: file not found {path}")
         return
 
     fname = os.path.basename(path)
@@ -346,7 +730,7 @@ def upload_to_gdrive(path: str, mime_type: str = None, description: str | None =
         existing = service.files().list(
             q=f"name = '{fname}' and '{GDRIVE_FOLDER_ID}' in parents and trashed = false",
             spaces="drive",
-            fields="files(id, name)"
+            fields="files(id, name)",
         ).execute()
         items = existing.get("files", [])
         if items:
@@ -356,14 +740,14 @@ def upload_to_gdrive(path: str, mime_type: str = None, description: str | None =
                 media_body=media,
                 body={"description": description or ""},
             ).execute()
-            log_info(f"GDrive updated: {fname}")
+            log_info(f"GDrive: updated {fname}, id={file_id}")
         else:
             created = service.files().create(
                 body=file_metadata,
                 media_body=media,
                 fields="id"
             ).execute()
-            log_info(f"GDrive created: {fname}")
+            log_info(f"GDrive: created {fname}, id={created.get('id')}")
     except Exception as e:
         log_error(f"upload_to_gdrive({path}): {e}")
 
@@ -376,22 +760,20 @@ def download_from_gdrive(filename: str, dest_path: str) -> bool:
         res = service.files().list(
             q=f"name = '{filename}' and '{GDRIVE_FOLDER_ID}' in parents and trashed = false",
             spaces="drive",
-            fields="files(id, name, mimeType, size)"
+            fields="files(id, name, mimeType, size)",
         ).execute()
         items = res.get("files", [])
         if not items:
             log_info(f"GDrive: {filename} not found")
             return False
-
         file_id = items[0]["id"]
         request = service.files().get_media(fileId=file_id)
         fh = io.FileIO(dest_path, "wb")
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while not done:
-            _, done = downloader.next_chunk()
-
-        log_info(f"GDrive downloaded {filename}")
+            status, done = downloader.next_chunk()
+        log_info(f"GDrive: downloaded {filename} -> {dest_path}")
         return True
     except Exception as e:
         log_error(f"download_from_gdrive({filename}): {e}")
@@ -400,41 +782,38 @@ def download_from_gdrive(filename: str, dest_path: str) -> bool:
 
 def restore_from_gdrive_if_needed() -> bool:
     """
-    Выполняется только при старте.
-    Если локальные файлы отсутствуют — подтягиваем их из Google Drive.
+    If local DATA_FILE/CSV_FILE/CSV_META_FILE are missing,
+    try to restore them from Google Drive.
     """
     restored_any = False
-
     if not os.path.exists(DATA_FILE):
-        if download_from_gdrive(DATA_FILE, DATA_FILE):
+        if download_from_gdrive(os.path.basename(DATA_FILE), DATA_FILE):
             restored_any = True
-
     if not os.path.exists(CSV_FILE):
-        if download_from_gdrive(CSV_FILE, CSV_FILE):
+        if download_from_gdrive(os.path.basename(CSV_FILE), CSV_FILE):
             restored_any = True
-
     if not os.path.exists(CSV_META_FILE):
-        if download_from_gdrive(CSV_META_FILE, CSV_META_FILE):
+        if download_from_gdrive(os.path.basename(CSV_META_FILE), CSV_META_FILE):
             restored_any = True
 
     if restored_any:
-        log_info("Restored data from Google Drive")
+        log_info("Data restored from Google Drive.")
+    else:
+        log_info("GDrive restore: nothing to restore.")
     return restored_any
-
-
+    
+    
+    
 # ==========================================================
-# SECTION 8 — GLOBAL CSV EXPORT & BACKUP TO CHANNEL
+# SECTION 8 — Global CSV export & backup to channel
 # ==========================================================
 
 def export_global_csv(d: dict):
-    """
-    Формирует единый CSV-файл по всем чатам для архивного хранения.
-    """
+    """Legacy global CSV with all chats (for backup channel)."""
     try:
         with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
-
             for cid, cdata in d.get("chats", {}).items():
                 for dk, records in cdata.get("daily_records", {}).items():
                     for r in records:
@@ -449,61 +828,246 @@ def export_global_csv(d: dict):
                             dk,
                         ])
     except Exception as e:
-        log_error(f"export_global_csv error: {e}")
+        log_error(f"export_global_csv: {e}")
 
 
-def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str):
+# Emoji-цифры для отправки chat_id в бекап-канал
+EMOJI_DIGITS = {
+    "0": "0️⃣",
+    "1": "1️⃣",
+    "2": "2️⃣",
+    "3": "3️⃣",
+    "4": "4️⃣",
+    "5": "5️⃣",
+    "6": "6️⃣",
+    "7": "7️⃣",
+    "8": "8️⃣",
+    "9": "9️⃣",
+}
+
+# чаты, для которых мы уже отправили ID в канал бекапов (за время работы бота)
+backup_channel_notified_chats = set()
+
+
+def format_chat_id_emoji(chat_id: int) -> str:
+    """Преобразует числовой chat_id в строку из emoji-цифр."""
+    return "".join(EMOJI_DIGITS.get(ch, ch) for ch in str(chat_id))
+
+
+def _safe_chat_title_for_filename(title) -> str:
+    """Делает короткое безопасное имя чата для имени файла."""
+    if not title:
+        return ""
+    title = str(title).strip()
+    # заменяем пробелы
+    title = title.replace(" ", "_")
+    # убираем все странные символы, оставляем буквы/цифры/подчёркивания/дефисы
+    title = re.sub(r"[^0-9A-Za-zА-Яа-я_\-]+", "", title)
+    # ограничим длину, чтобы имя файла не раздувать
+    return title[:32]
+
+
+def _get_chat_title_for_backup(chat_id: int) -> str:
+    """Пытается достать название чата из store["info"]["title"]"""
+    try:
+        store = data.get("chats", {}).get(str(chat_id), {}) if isinstance(data, dict) else {}
+        info = store.get("info", {})
+        title = info.get("title")
+        if title:
+            return title
+    except Exception as e:
+        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
+    return f"chat_{chat_id}"
+    
+def _get_chat_title_for_backup(chat_id: int) -> str:
     """
-    Отправляет файл в backup-канал, обновляя старую версию через edit_message_media.
+    Берём название чата из store["info"], чтобы подписывать бэкап.
+    """
+    try:
+        store = get_chat_store(chat_id)
+        info = store.get("info", {})
+        title = info.get("title")
+        if title:
+            return title
+    except Exception as e:
+        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
+    return f"chat_{chat_id}"
+
+
+
+        
+            
+
+def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_title: str = None):
+    """Helper to send or update a file in BACKUP_CHAT_ID with csv_meta tracking.
+    Добавлено:
+    • если передан chat_title — он включается в имя файла, которое видит Telegram
+    • защита от пустого файла (Telegram даёт 400)
     """
     if not BACKUP_CHAT_ID:
         return
     if not os.path.exists(base_path):
+        log_error(f"send_backup_to_channel_for_file: {base_path} not found")
         return
-
     try:
         meta = _load_csv_meta()
         msg_key = f"msg_{meta_key_prefix}"
         ts_key = f"timestamp_{meta_key_prefix}"
-
-        with open(base_path, "rb") as f:
-            caption = f"📦 {os.path.basename(base_path)} — {now_local().strftime('%Y-%m-%d %H:%M')}"
-            if meta.get(msg_key):
-                try:
-                    bot.edit_message_media(
-                        chat_id=int(BACKUP_CHAT_ID),
-                        message_id=meta[msg_key],
-                        media=telebot.types.InputMediaDocument(f, caption=caption)
-                    )
-                except Exception:
-                    sent = bot.send_document(int(BACKUP_CHAT_ID), f, caption=caption)
-                    meta[msg_key] = sent.message_id
-            else:
-                sent = bot.send_document(int(BACKUP_CHAT_ID), f, caption=caption)
+        base_name = os.path.basename(base_path)
+        name_without_ext, dot, ext = base_name.partition(".")
+        safe_title = _safe_chat_title_for_filename(chat_title)
+        if safe_title:
+            file_name = f"{name_without_ext}_{safe_title}"
+            if dot:  # было расширение
+                file_name += f".{ext}"
+        else:
+            file_name = base_name
+        caption = f"📦 {file_name} — {now_local().strftime('%Y-%m-%d %H:%M')}"
+        def _open_for_telegram() -> io.BytesIO | None:
+            if not os.path.exists(base_path):
+                log_error(f"send_backup_to_channel_for_file: {base_path} not found")
+                return None
+            with open(base_path, "rb") as src:
+                data_bytes = src.read()
+            if not data_bytes:
+                log_error(f"send_backup_to_channel_for_file: {base_path} is empty, skip")
+                return None
+            buf = io.BytesIO(data_bytes)
+            buf.name = file_name
+            buf.seek(0)
+            return buf
+        if meta.get(msg_key):
+            try:
+                fobj = _open_for_telegram()
+                if not fobj:
+                    return
+                bot.edit_message_media(
+                    chat_id=int(BACKUP_CHAT_ID),
+                    message_id=meta[msg_key],
+                    media=telebot.types.InputMediaDocument(fobj, caption=caption),
+                )
+                log_info(f"Channel file updated: {base_path}")
+            except Exception as e:
+                log_error(f"edit_message_media {base_path}: {e}")
+                fobj = _open_for_telegram()
+                if not fobj:
+                    return
+                sent = bot.send_document(int(BACKUP_CHAT_ID), fobj, caption=caption)
                 meta[msg_key] = sent.message_id
-
+        else:
+            fobj = _open_for_telegram()
+            if not fobj:
+                return
+            sent = bot.send_document(int(BACKUP_CHAT_ID), fobj, caption=caption)
+            meta[msg_key] = sent.message_id
         meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_csv_meta(meta)
-
     except Exception as e:
         log_error(f"send_backup_to_channel_for_file({base_path}): {e}")
 
+def send_backup_to_channel(chat_id: int):
+    """
+    Общий бэкап файлов чата в BACKUP_CHAT_ID.
+    Делает:
+    • проверку флага backup_flags["channel"]
+    • один раз (на первый бэкап чата) отправляет chat_id эмодзи в канал
+    • обновляет/создаёт:
+        - data_<chat_id>.json
+        - data_<chat_id>.csv
+        - при желании глобальные data.json / data.csv
+    """
+    try:
+        if not BACKUP_CHAT_ID:
+            return
+        if not backup_flags.get("channel", True):
+            log_info("send_backup_to_channel: channel backup disabled by flag.")
+            return
+        try:
+            backup_chat_id = int(BACKUP_CHAT_ID)
+        except Exception:
+            log_error("send_backup_to_channel: BACKUP_CHAT_ID не является числом.")
+            return
+        # гарантируем свежие файлы
+        save_chat_json(chat_id)
+        export_global_csv(data)
+        save_data(data)
+        chat_title = _get_chat_title_for_backup(chat_id)
+        # 1) один раз отправляем emoji chat_id в канал бэкапов
+        if chat_id not in backup_channel_notified_chats:
+            try:
+                emoji_id = format_chat_id_emoji(chat_id)
+                bot.send_message(backup_chat_id, emoji_id)
+                backup_channel_notified_chats.add(chat_id)
+            except Exception as e:
+                log_error(
+                    f"send_backup_to_channel: не удалось отправить emoji chat_id "
+                    f"в канал: {e}"
+                )
+        # 2) per-chat JSON / CSV
+        json_path = chat_json_file(chat_id)
+        csv_path = chat_csv_file(chat_id)
+        send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
+        send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
+        # 3) при желании — глобальные файлы (можно закомментировать, если не нужно)
+        send_backup_to_channel_for_file(DATA_FILE, "global_data", "ALL_CHATS")
+        send_backup_to_channel_for_file(CSV_FILE, "global_csv", "ALL_CHATS")
+    except Exception as e:
+        log_error(f"send_backup_to_channel({chat_id}): {e}")
+        
+
+
+        
+#🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢
 # ==========================================================
-# SECTION 9 — FORWARD RULES & OWNER META (forward_rules + known_chats)
+# SECTION 9 — Forward rules persistence (owner file)
 # ==========================================================
 
 def _owner_data_file() -> str | None:
+    """
+    Файл владельца, где хранится forward_rules.
+    """
     if not OWNER_ID:
         return None
-    return f"data_{int(OWNER_ID)}.json"
+    try:
+        return f"data_{int(OWNER_ID)}.json"
+    except Exception:
+        return None
 
 
-def persist_owner_meta():
+def load_forward_rules():
     """
-    Сохраняет в data_<OWNER_ID>.json:
-      • forward_rules (правила пересылки)
-      • known_chats (список чатов с title/username/type)
-    При этом НЕ трогаются финансовые данные владельца.
+    Загружает forward_rules из файла владельца.
+    Поддерживает старый формат (списки) и новый (словарь).
+    """
+    try:
+        path = _owner_data_file()
+        if not path or not os.path.exists(path):
+            return {}
+
+        payload = _load_json(path, {}) or {}
+        fr = payload.get("forward_rules", {})
+
+        upgraded = {}
+
+        for src, value in fr.items():
+            if isinstance(value, list):
+                upgraded[src] = {}
+                for dst in value:
+                    upgraded[src][dst] = "oneway_to"
+            elif isinstance(value, dict):
+                upgraded[src] = value
+            else:
+                continue
+
+        return upgraded
+    except Exception as e:
+        log_error(f"load_forward_rules: {e}")
+        return {}
+
+
+def persist_forward_rules_to_owner():
+    """
+    Сохраняет forward_rules (в НОВОМ формате) только в data_OWNER.json.
     """
     try:
         path = _owner_data_file()
@@ -516,166 +1080,215 @@ def persist_owner_meta():
             if not isinstance(payload, dict):
                 payload = {}
 
-        # добавляем forward_rules
-        fr = data.get("forward_rules", {}) or {}
-        if fr:
-            payload["forward_rules"] = fr
-        else:
-            payload.pop("forward_rules", None)
-
-        # добавляем known_chats
-        kc = data.get("known_chats", {}) or {}
-        if kc:
-            payload["known_chats"] = kc
-        else:
-            payload.pop("known_chats", None)
+        payload["forward_rules"] = data.get("forward_rules", {})
 
         _save_json(path, payload)
-        log_info(f"Owner meta persisted → {path}")
+        log_info(f"forward_rules persisted to {path}")
 
     except Exception as e:
-        log_error(f"persist_owner_meta: {e}")
+        log_error(f"persist_forward_rules_to_owner: {e}")
 
-
-def persist_forward_rules_to_owner():
-    """
-    Старое имя функции. Теперь просто вызывает persist_owner_meta().
-    """
-    persist_owner_meta()
-
-
-def register_known_chat_from_chat(chat):
-    """
-    Регистрирует чат в глобальном data["known_chats"].
-    Сохраняет:
-      id, title, username, type
-    Автоматически обновляет data_<OWNER_ID>.json.
-    """
-    try:
-        if not OWNER_ID:
-            return
-
-        chat_id = chat.id
-        if str(chat_id) == str(OWNER_ID):
-            # чат владельца не сохраняем как "известный"
-            return
-
-        kc = data.setdefault("known_chats", {})
-        cid = str(chat_id)
-
-        info = kc.get(cid, {})
-        info["id"] = chat_id
-        info["type"] = getattr(chat, "type", "")
-
-        title = getattr(chat, "title", None)
-        username = getattr(chat, "username", None)
-
-        if title:
-            info["title"] = title
-        if username:
-            info["username"] = username
-
-        kc[cid] = info
-        save_data(data)
-        persist_owner_meta()
-
-    except Exception as e:
-        log_error(f"register_known_chat_from_chat: {e}")
-
-
+#✅✅✅✅✅✅
 # ==========================================================
-# SECTION 10 — FORWARD RULES LOGIC
+# SECTION 10 — Работа с forward_rules (логика пересылки)
+# ==========================================================
+# ==========================================================
+# SECTION 10 — Общая логика forward_rules (для обеих систем)
 # ==========================================================
 
-def resolve_forward_targets(source_chat_id: int) -> list[int]:
-    """
-    Возвращает список чатов, куда нужно переслать сообщение.
-    Все ID приводятся к int.
-    """
-    fr = data.get("forward_rules", {}) or {}
-    arr = fr.get(str(source_chat_id), [])
-    result = []
-    for x in arr:
+def resolve_forward_targets(source_chat_id: int):
+    fr = data.get("forward_rules", {})
+    src = str(source_chat_id)
+    if src not in fr:
+        return []
+    out = []
+    for dst, mode in fr[src].items():
         try:
-            result.append(int(x))
+            out.append((int(dst), mode))
         except:
-            pass
-    return result
+            continue
+    return out
 
 
-def add_forward_link(src_chat_id: int, dst_chat_id: int):
-    """Добавляет одностороннюю пересылку: src → dst."""
+def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     fr = data.setdefault("forward_rules", {})
-    arr = fr.setdefault(str(src_chat_id), [])
-    if str(dst_chat_id) not in arr:
-        arr.append(str(dst_chat_id))
+    src = str(src_chat_id)
+    dst = str(dst_chat_id)
+    fr.setdefault(src, {})[dst] = mode
     save_data(data)
-    persist_owner_meta()
 
 
 def remove_forward_link(src_chat_id: int, dst_chat_id: int):
-    """Удаляет одностороннюю пересылку src → dst."""
-    fr = data.get("forward_rules", {}) or {}
-    arr = fr.get(str(src_chat_id), [])
-    if str(dst_chat_id) in arr:
-        arr.remove(str(dst_chat_id))
+    fr = data.get("forward_rules", {})
+    src = str(src_chat_id)
+    dst = str(dst_chat_id)
+    if src in fr and dst in fr[src]:
+        del fr[src][dst]
+    if src in fr and not fr[src]:
+        del fr[src]
     save_data(data)
-    persist_owner_meta()
-
 
 def clear_forward_all():
-    """Удаляет ВСЕ правила пересылки."""
+    """Полностью отключает всю пересылку."""
     data["forward_rules"] = {}
+    persist_forward_rules_to_owner()
     save_data(data)
-    persist_owner_meta()
 
+
+# ----------------------------------------------------------
+#   ФУНКЦИИ АНOНИМНОЙ ПЕРЕСЫЛКИ
+# ----------------------------------------------------------
+
+def forward_text_anon(source_chat_id: int, msg, targets: list[tuple[int, str]]):
+    """Анонимная пересылка текста."""
+    for dst, mode in targets:
+        try:
+            bot.copy_message(dst, source_chat_id, msg.message_id)
+        except Exception as e:
+            log_error(f"forward_text_anon to {dst}: {e}")
+
+
+def forward_media_anon(source_chat_id: int, msg, targets: list[tuple[int, str]]):
+    """Анонимная пересылка любых медиа."""
+    for dst, mode in targets:
+        try:
+            bot.copy_message(dst, source_chat_id, msg.message_id)
+        except Exception as e:
+            log_error(f"forward_media_anon to {dst}: {e}")
+
+
+# ----------------------------------------------------------
+#   ПОДДЕРЖКА MEDIA GROUP (альбомов)
+# ----------------------------------------------------------
+
+_media_group_cache = {}  # { chat_id : { group_id : [messages...] } }
+
+
+def collect_media_group(chat_id: int, msg):
+    """
+    Собирает альбом (media_group) в кэш пока все элементы не пришли.
+    """
+    gid = msg.media_group_id
+    if not gid:
+        return [msg]
+
+    group = _media_group_cache.setdefault(chat_id, {})
+    arr = group.setdefault(gid, [])
+    arr.append(msg)
+
+    if len(arr) == 1:
+        time.sleep(0.2)
+
+    complete = group.pop(gid, arr)
+    return complete
+
+
+def forward_media_group_anon(source_chat_id: int, messages: list, targets: list[tuple[int, str]]):
+    """
+    Пересылка собранного альбома анонимно.
+    """
+    if not messages:
+        return
+
+    media_list = []
+    for msg in messages:
+        if msg.content_type == "photo":
+            file_id = msg.photo[-1].file_id
+            caption = msg.caption or None
+            media_list.append(InputMediaPhoto(file_id, caption=caption))
+
+        elif msg.content_type == "video":
+            file_id = msg.video.file_id
+            caption = msg.caption or None
+            media_list.append(InputMediaVideo(file_id, caption=caption))
+
+        elif msg.content_type == "document":
+            file_id = msg.document.file_id
+            caption = msg.caption or None
+            media_list.append(InputMediaDocument(file_id, caption=caption))
+
+        elif msg.content_type == "audio":
+            file_id = msg.audio.file_id
+            caption = msg.caption or None
+            media_list.append(InputMediaAudio(file_id, caption=caption))
+
+        else:
+            for dst, mode in targets:
+                try:
+                    bot.copy_message(dst, source_chat_id, msg.message_id)
+                except:
+                    pass
+            return
+
+    for dst, mode in targets:
+        try:
+            bot.send_media_group(dst, media_list)
+        except Exception as e:
+            log_error(f"forward_media_group_anon to {dst}: {e}")
 
 # ==========================================================
-# SECTION 11 — RENDER DAY WINDOW
+# SECTION 11 — Day window renderer (версия код-010)
 # ==========================================================
 
 def render_day_window(chat_id: int, day_key: str):
-    """
-    Формирует окно дня: список записей + сумма.
-    """
     store = get_chat_store(chat_id)
-    day_recs = store.get("daily_records", {}).get(day_key, [])
+    recs = store.get("daily_records", {}).get(day_key, [])
+    lines = []
 
-    lines = [f"📅 <b>{day_key}</b>"]
-    total = 0
+    lines.append(f"📅 <b>{day_key}</b>")
+    lines.append("")
 
-    for r in day_recs:
+    total_income = 0.0   # сумма всех приходов (>= 0)
+    total_expense = 0.0  # сумма всех расходов (> 0 как модуль)
+
+    recs_sorted = sorted(recs, key=lambda x: x.get("timestamp"))
+
+    for r in recs_sorted:
         amt = r["amount"]
-        total += amt
-        sign = "➕" if amt >= 0 else "➖"
+        if amt >= 0:
+            total_income += amt
+        else:
+            total_expense += -amt
+
         note = html.escape(r.get("note", ""))
-        lines.append(f"{sign} {fmt_num(amt)} — {note}")
+        sid = r.get("short_id", f"R{r['id']}")
+        lines.append(f"{sid} {fmt_num(amt)} <i>{note}</i>")
+
+    if not recs_sorted:
+        lines.append("Нет записей за этот день.")
 
     lines.append("")
-    lines.append(f"💰 Итого за день: {fmt_num(total)}")
 
+    if recs_sorted:
+        # Расход за день (отрицательное число)
+        lines.append(f"📉 Расход за день: {fmt_num(-total_expense) if total_expense else fmt_num(0)}")
+        # Приход за день (положительное число)
+        lines.append(f"📈 Приход за день: {fmt_num(total_income) if total_income else fmt_num(0)}")
+
+    # Остаток по чату — берём из store["balance"]
+    bal_chat = store.get("balance", 0)
+    lines.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}")
+
+    # total оставляем как "итог за день" (приход - расход), вдруг пригодится
+    total = total_income - total_expense
     return "\n".join(lines), total
+    
 
-
+#💠💠💠💠💠💠💠💠
 # ==========================================================
-# SECTION 12 — KEYBOARDS: MAIN / CALENDAR / EDIT MENU
+# SECTION 12 — Keyboards: main window, calendar, edit menu, forwarding
 # ==========================================================
-
-
 def build_main_keyboard(day_key: str, chat_id=None):
-    """
-    Главная клавиатура окна дня (без кнопки "Добавить").
-    Добавление записей происходит напрямую из текстовых сообщений.
-    """
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb = types.InlineKeyboardMarkup(row_width=3)
 
     kb.row(
-        types.InlineKeyboardButton("📝 Редактировать", callback_data=f"d:{day_key}:edit_menu"),
-        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
+        types.InlineKeyboardButton("➕ Добавить", callback_data=f"d:{day_key}:add"),
+        types.InlineKeyboardButton("📝 Редактировать", callback_data=f"d:{day_key}:edit_menu")
     )
 
     kb.row(
         types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"d:{day_key}:prev"),
+        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{day_key}:today"),
         types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next")
     )
 
@@ -685,21 +1298,23 @@ def build_main_keyboard(day_key: str, chat_id=None):
     )
 
     kb.row(
-        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info")
+        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
+        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
     )
+
     return kb
 
-
-
-def build_calendar_keyboard(center_day: datetime, chat_id: int):
+def build_calendar_keyboard(center_day: datetime, chat_id=None):
     """
     Календарь на 31 день.
-    Дни, в которых есть транзакции, помечаем точкой • перед датой.
+    Дни с записями помечаются точкой: • 12.03
     """
     kb = types.InlineKeyboardMarkup(row_width=4)
 
-    store = get_chat_store(chat_id)
-    daily = store.get("daily_records", {})
+    daily = {}
+    if chat_id is not None:
+        store = get_chat_store(chat_id)
+        daily = store.get("daily_records", {})
 
     start_day = center_day - timedelta(days=15)
     for week in range(0, 32, 4):
@@ -707,22 +1322,45 @@ def build_calendar_keyboard(center_day: datetime, chat_id: int):
         for d in range(4):
             day = start_day + timedelta(days=week + d)
             label = day.strftime("%d.%m")
-            day_key = day.strftime("%Y-%m-%d")
-            # пометка дней с операциями
-            if day_key in daily and daily[day_key]:
-                label = "•" + label
-            row.append(types.InlineKeyboardButton(label, callback_data=f"d:{day_key}:open"))
+            key = day.strftime("%Y-%m-%d")
+
+            # 🔹 если в этот день есть записи — помечаем точкой
+            if daily.get(key):
+                label = "📝 " + label
+
+            row.append(
+                types.InlineKeyboardButton(
+                    label,
+                    callback_data=f"d:{key}:open"
+                )
+            )
         kb.row(*row)
 
     kb.row(
-        types.InlineKeyboardButton("⬅️ −31", callback_data=f"c:{(center_day - timedelta(days=31)).strftime('%Y-%m-%d')}"),
-        types.InlineKeyboardButton("➡️ +31", callback_data=f"c:{(center_day + timedelta(days=31)).strftime('%Y-%m-%d')}")
+        types.InlineKeyboardButton(
+            "⬅️ −31",
+            callback_data=f"c:{(center_day - timedelta(days=31)).strftime('%Y-%m-%d')}"
+        ),
+        types.InlineKeyboardButton(
+            "➡️ +31",
+            callback_data=f"c:{(center_day + timedelta(days=31)).strftime('%Y-%m-%d')}"
+        )
     )
 
-    kb.row(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open"))
+    # 🔹 Кнопка "Сегодня" в самом календаре (ТЗ-14)
+    kb.row(
+        types.InlineKeyboardButton(
+            "📅 Сегодня",
+            callback_data=f"d:{today_key()}:open"
+        )
+    )
+
     return kb
 
 
+# ==========================================================
+# МЕНЮ РЕДАКТИРОВАНИЯ (с кнопкой пересылки)
+# ==========================================================
 
 def build_edit_menu_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -737,12 +1375,11 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset")
     )
 
-    # Меню пересылки — ТОЛЬКО OWNER
+    # ОДНА общая кнопка "Пересылка" для обоих режимов
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         kb.row(
-            types.InlineKeyboardButton("🔁 Пересылка", callback_data="fw:menu")
+            types.InlineKeyboardButton("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu")
         )
-
     kb.row(
         types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open"),
         types.InlineKeyboardButton("📆 Выбрать день", callback_data=f"d:{day_key}:pick_date")
@@ -752,23 +1389,858 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
         types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main")
     )
+
     return kb
 
+def build_forward_chat_list(day_key: str, chat_id: int):
+    """
+    Меню выбора чата для пересылки.
+    Теперь список берём из known_chats владельца (все чаты, где был бот).
+    """
+    kb = types.InlineKeyboardMarkup()
+
+    if not OWNER_ID:
+        return kb
+
+    # берем ВСЕ чаты, где бот видел сообщения
+    owner_store = get_chat_store(int(OWNER_ID))
+    known = owner_store.get("known_chats", {})
+
+    rules = data.get("forward_rules", {})
+
+    for cid, info in known.items():
+        try:
+            int_cid = int(cid)
+        except:
+            continue
+
+        title = info.get("title") or f"Чат {cid}"
+        cur_mode = rules.get(str(chat_id), {}).get(cid)
+
+        if cur_mode == "oneway_to":
+            label = f"{title} ➡️"
+        elif cur_mode == "oneway_from":
+            label = f"{title} ⬅️"
+        elif cur_mode == "twoway":
+            label = f"{title} ↔️"
+        else:
+            label = f"{title}"
+
+        kb.row(
+            types.InlineKeyboardButton(
+                label,
+                callback_data=f"d:{day_key}:fw_cfg_{cid}"
+            )
+        )
+
+    kb.row(
+        types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
+    )
+    return kb
+
+def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int):
+    """
+    Меню направлений:
+        ➡️ owner → target
+        ⬅️ target → owner
+        ↔️ двусторонняя
+        ❌ удалить
+        🔙 назад
+    """
+    kb = types.InlineKeyboardMarkup(row_width=1)
+
+    kb.row(
+        types.InlineKeyboardButton(
+            f"➡️ В одну сторону (от {owner_chat} → {target_chat})",
+            callback_data=f"d:{day_key}:fw_one_{target_chat}"
+        )
+    )
+
+    kb.row(
+        types.InlineKeyboardButton(
+            f"⬅️ В обратную ({target_chat} → {owner_chat})",
+            callback_data=f"d:{day_key}:fw_rev_{target_chat}"
+        )
+    )
+
+    kb.row(
+        types.InlineKeyboardButton(
+            "↔️ Двусторонняя пересылка",
+            callback_data=f"d:{day_key}:fw_two_{target_chat}"
+        )
+    )
+
+    kb.row(
+        types.InlineKeyboardButton(
+            "❌ Удалить все связи",
+            callback_data=f"d:{day_key}:fw_del_{target_chat}"
+        )
+    )
+
+    kb.row(
+        types.InlineKeyboardButton(
+            "🔙 Назад",
+            callback_data=f"d:{day_key}:forward_menu"
+        )
+    )
+
+    return kb
 # ==========================================================
-# SECTION 13 — ADD / UPDATE / DELETE RECORDS
+# SECTION 12.1 — NEW FORWARD SYSTEM (Chat A ↔ B)
+# ==========================================================
+
+def build_forward_source_menu():
+    """
+    Меню выбора чата A (источник пересылки).
+    Использует known_chats владельца.
+    """
+    kb = types.InlineKeyboardMarkup()
+
+    if not OWNER_ID:
+        return kb
+
+    owner_store = get_chat_store(int(OWNER_ID))
+    known = owner_store.get("known_chats", {})
+
+    for cid, ch in known.items():
+        title = ch.get("title") or f"Чат {cid}"
+        kb.row(
+            types.InlineKeyboardButton(
+                title,
+                callback_data=f"fw_src:{cid}"
+            )
+        )
+
+    # Назад → возврат в меню редактирования
+    kb.row(
+        types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root")
+    )
+
+    return kb
+
+
+def build_forward_target_menu(src_id: int):
+    """
+    Меню выбора чата B (получатель пересылки) для уже выбранного A.
+    """
+    kb = types.InlineKeyboardMarkup()
+
+    if not OWNER_ID:
+        return kb
+
+    owner_store = get_chat_store(int(OWNER_ID))
+    known = owner_store.get("known_chats", {})
+
+    for cid, ch in known.items():
+        try:
+            int_cid = int(cid)
+        except Exception:
+            continue
+
+        if int_cid == src_id:
+            continue
+
+        title = ch.get("title") or f"Чат {cid}"
+        kb.row(
+            types.InlineKeyboardButton(
+                title,
+                callback_data=f"fw_tgt:{src_id}:{cid}"
+            )
+        )
+
+    # Назад → обратно к выбору A
+    kb.row(
+        types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src")
+    )
+
+    return kb
+
+
+def build_forward_mode_menu(A: int, B: int):
+    """
+    Меню выбора режима пересылки между чатами A и B:
+        ➡️ A → B
+        ⬅️ B → A
+        ↔️ двусторонняя
+        ❌ удалить связь
+        🔙 назад (к выбору B)
+    """
+    kb = types.InlineKeyboardMarkup()
+
+    kb.row(
+        types.InlineKeyboardButton(
+            f"➡️ {A} → {B}",
+            callback_data=f"fw_mode:{A}:{B}:to"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            f"⬅️ {B} → {A}",
+            callback_data=f"fw_mode:{A}:{B}:from"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            f"↔️ {A} ⇄ {B}",
+            callback_data=f"fw_mode:{A}:{B}:two"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            "❌ Удалить связь A-B",
+            callback_data=f"fw_mode:{A}:{B}:del"
+        )
+    )
+
+    # Назад → обратно к выбору B для A
+    kb.row(
+        types.InlineKeyboardButton(
+            "🔙 Назад",
+            callback_data=f"fw_back_tgt:{A}"
+        )
+    )
+
+    return kb
+
+
+def apply_forward_mode(A: int, B: int, mode: str):
+    """
+    Применяет выбранный режим пересылки между чатами A и B.
+    Использует общие функции add_forward_link / remove_forward_link.
+    """
+    if mode == "to":
+        # только A → B
+        add_forward_link(A, B, "oneway_to")
+        remove_forward_link(B, A)
+
+    elif mode == "from":
+        # только B → A
+        add_forward_link(B, A, "oneway_to")
+        remove_forward_link(A, B)
+
+    elif mode == "two":
+        # двусторонняя пересылка
+        add_forward_link(A, B, "twoway")
+        add_forward_link(B, A, "twoway")
+
+    elif mode == "del":
+        # полностью удалить связь (в обе стороны)
+        remove_forward_link(A, B)
+        remove_forward_link(B, A)
+        
+#🟠🟠🟠🟠🟠🟠🟠🟠🟠
+
+#🟠🟠🟠🟠🟠🟠🟠🟠🟠
+# ==========================================================
+# SECTION 16 — Callback handler
+# ==========================================================
+
+@bot.callback_query_handler(func=lambda c: True)
+def on_callback(call):
+    """
+    Универсальный обработчик всех callback_data:
+      • fw_*  — новое меню пересылки A ↔ B (только для владельца)
+      • c:*   — календарь
+      • d:*   — команды окна дня, редактирование, старое меню пересылки
+    """
+    try:
+        data_str = call.data or ""
+        chat_id = call.message.chat.id
+
+        # --------------------------------------------------
+        # 1) NEW FORWARD SYSTEM — все callback-и fw_*
+        # --------------------------------------------------
+        if data_str.startswith("fw_"):
+            # меню пересылки доступно только владельцу
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                try:
+                    bot.answer_callback_query(
+                        call.id,
+                        "Меню пересылки доступно только владельцу.",
+                        show_alert=True
+                    )
+                except Exception:
+                    pass
+                return
+
+            # открыть выбор чата A
+            if data_str == "fw_open":
+                kb = build_forward_source_menu()
+                bot.edit_message_text(
+                    "Выберите чат A:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # назад из выбора A → обратно в меню редактирования
+            if data_str == "fw_back_root":
+                owner_store = get_chat_store(int(OWNER_ID))
+                day_key = owner_store.get("current_view_day", today_key())
+
+                kb = build_edit_menu_keyboard(day_key, chat_id)
+                try:
+                    bot.edit_message_text(
+                        f"Меню редактирования для {day_key}:",
+                        chat_id=chat_id,
+                        message_id=call.message.message_id,
+                        reply_markup=kb
+                    )
+                except Exception:
+                    bot.send_message(
+                        chat_id,
+                        f"Меню редактирования для {day_key}:",
+                        reply_markup=kb
+                    )
+                return
+
+            # назад из выбора B → снова выбор A
+            if data_str == "fw_back_src":
+                kb = build_forward_source_menu()
+                bot.edit_message_text(
+                    "Выберите чат A:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # назад из выбора режима → снова выбор B для A
+            if data_str.startswith("fw_back_tgt:"):
+                try:
+                    A = int(data_str.split(":", 1)[1])
+                except Exception:
+                    return
+                kb = build_forward_target_menu(A)
+                bot.edit_message_text(
+                    f"Источник пересылки: {A}\nВыберите чат B:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # выбор чата A
+            if data_str.startswith("fw_src:"):
+                try:
+                    A = int(data_str.split(":", 1)[1])
+                except Exception:
+                    return
+                kb = build_forward_target_menu(A)
+                bot.edit_message_text(
+                    f"Источник пересылки: {A}\nВыберите чат B:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # выбор чата B для A
+            if data_str.startswith("fw_tgt:"):
+                parts = data_str.split(":")
+                if len(parts) != 3:
+                    return
+                _, A_str, B_str = parts
+                try:
+                    A = int(A_str)
+                    B = int(B_str)
+                except Exception:
+                    return
+
+                kb = build_forward_mode_menu(A, B)
+                bot.edit_message_text(
+                    f"Настройка пересылки: {A} ⇄ {B}",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # выбор режима пересылки между A и B
+            if data_str.startswith("fw_mode:"):
+                parts = data_str.split(":")
+                if len(parts) != 4:
+                    return
+                _, A_str, B_str, mode = parts
+                try:
+                    A = int(A_str)
+                    B = int(B_str)
+                except Exception:
+                    return
+
+                apply_forward_mode(A, B, mode)
+                kb = build_forward_source_menu()
+                bot.edit_message_text(
+                    "Маршрут обновлён.\nВыберите чат A:",
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+                return
+
+            # на всякий случай
+            return
+
+        # --------------------------------------------------
+        # 2) КАЛЕНДАРЬ (c:YYYY-MM-DD)
+        # --------------------------------------------------
+        if data_str.startswith("c:"):
+            center = data_str[2:]
+            try:
+                center_dt = datetime.strptime(center, "%Y-%m-%d")
+            except ValueError:
+                return
+
+            kb = build_calendar_keyboard(center_dt, chat_id)
+            try:
+                bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=kb
+                )
+            except Exception:
+                pass
+            return
+
+        # --------------------------------------------------
+        # 3) ОКНО ДНЯ / РЕДАКТИРОВАНИЕ / СТАРОЕ МЕНЮ ПЕРЕСЫЛКИ
+        # --------------------------------------------------
+        if not data_str.startswith("d:"):
+            return
+
+        _, day_key, cmd = data_str.split(":", 2)
+        store = get_chat_store(chat_id)
+
+        # открытие конкретного дня
+        if cmd == "open":
+            txt, _ = render_day_window(chat_id, day_key)
+            kb = build_main_keyboard(day_key, chat_id)
+
+            store["current_view_day"] = day_key
+
+            bot.edit_message_text(
+                txt,
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            set_active_window_id(chat_id, day_key, call.message.message_id)
+            return
+
+        # предыдущий день
+        if cmd == "prev":
+            d = datetime.strptime(day_key, "%Y-%m-%d") - timedelta(days=1)
+            nd = d.strftime("%Y-%m-%d")
+            txt, _ = render_day_window(chat_id, nd)
+            kb = build_main_keyboard(nd, chat_id)
+
+            store["current_view_day"] = nd
+
+            bot.edit_message_text(
+                txt,
+                chat_id,
+                call.message.message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            set_active_window_id(chat_id, nd, call.message.message_id)
+            return
+
+        # следующий день
+        if cmd == "next":
+            d = datetime.strptime(day_key, "%Y-%m-%d") + timedelta(days=1)
+            nd = d.strftime("%Y-%m-%d")
+            txt, _ = render_day_window(chat_id, nd)
+            kb = build_main_keyboard(nd, chat_id)
+
+            store["current_view_day"] = nd
+
+            bot.edit_message_text(
+                txt,
+                chat_id,
+                call.message.message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            set_active_window_id(chat_id, nd, call.message.message_id)
+            return
+            
+        # переход к сегодняшнему дню
+        if cmd == "today":
+            nd = today_key()
+            txt, _ = render_day_window(chat_id, nd)
+            kb = build_main_keyboard(nd, chat_id)
+
+            store["current_view_day"] = nd
+
+            bot.edit_message_text(
+                txt,
+                chat_id,
+                call.message.message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            set_active_window_id(chat_id, nd, call.message.message_id)
+            return
+            
+        # показать календарь
+        if cmd == "calendar":
+            try:
+                cdt = datetime.strptime(day_key, "%Y-%m-%d")
+            except Exception:
+                cdt = now_local()
+
+            kb = build_calendar_keyboard(cdt, chat_id)
+            bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
+            return
+
+        # отчёт по дням
+        if cmd == "report":
+            lines = ["📊 Отчёт:"]
+            for dk, recs in sorted(store.get("daily_records", {}).items()):
+                s = sum(r["amount"] for r in recs)
+                lines.append(f"{dk}: {fmt_num(s)}")
+            bot.send_message(chat_id, "\n".join(lines))
+            return
+
+        # общий итог: логика OWNER / не OWNER + запоминаем msg_id
+        if cmd == "total":
+            chat_bal = store.get("balance", 0)
+
+            # обычные чаты — только свой остаток
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                sent = bot.send_message(
+                    chat_id,
+                    f"💰 <b>Общий итог по этому чату:</b> {fmt_num(chat_bal)}",
+                    parse_mode="HTML"
+                )
+                store["total_msg_id"] = sent.message_id
+                save_data(data)
+                return
+
+            # OWNER — расширенный вывод
+            lines = []
+            info = store.get("info", {})
+            title = info.get("title") or f"Чат {chat_id}"
+
+            lines.append("💰 <b>Общий итог (для владельца)</b>")
+            lines.append("")
+            lines.append(f"• Этот чат ({title}): <b>{fmt_num(chat_bal)}</b>")
+
+            all_chats = data.get("chats", {})
+            total_all = 0
+            other_lines = []
+
+            for cid, st in all_chats.items():
+                try:
+                    cid_int = int(cid)
+                except Exception:
+                    continue
+                bal = st.get("balance", 0)
+                total_all += bal
+                if cid_int == chat_id:
+                    continue
+                info2 = st.get("info", {})
+                title2 = info2.get("title") or f"Чат {cid_int}"
+                other_lines.append(f"   • {title2}: {fmt_num(bal)}")
+
+            if other_lines:
+                lines.append("")
+                lines.append("• Другие чаты:")
+                lines.extend(other_lines)
+
+            lines.append("")
+            lines.append(f"• Всего по всем чатам: <b>{fmt_num(total_all)}</b>")
+
+            sent = bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
+            store["total_msg_id"] = sent.message_id
+            save_data(data)
+            return
+            
+        # справка
+        if cmd == "info":
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+
+            info_text = (
+                f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
+                "Команды:\n"
+                "/ok, /поехали — включить финансовый режим\n"
+                "/start — окно сегодняшнего дня\n"
+                "/view YYYY-MM-DD — открыть конкретный день\n"
+                "/prev — предыдущий день\n"
+                "/next — следующий день\n"
+                "/balance — баланс по этому чату\n"
+                "/report — краткий отчёт по дням\n"
+                "/csv — CSV этого чата\n"
+                "/json — JSON этого чата\n"
+                "/reset — обнулить данные чата (с подтверждением)\n"
+                "/stopforward — отключить пересылку\n"
+                "/ping — проверка, жив ли бот\n"
+                "/backup_gdrive_on / _off — включить/выключить GDrive\n"
+                "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
+                "/restore / /restore_off — режим восстановления JSON/CSV\n"
+                "/autoadd_info — режим авто-добавления по суммам\n"
+                "/help — эта справка\n"
+            )
+            bot.send_message(chat_id, info_text)
+            return
+            
+        # меню редактирования
+        if cmd == "edit_menu":
+            store["current_view_day"] = day_key
+            kb = build_edit_menu_keyboard(day_key, chat_id)
+            bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
+            return
+
+        # назад к основному окну дня
+        if cmd == "back_main":
+            store["current_view_day"] = day_key
+            txt, _ = render_day_window(chat_id, day_key)
+            kb = build_main_keyboard(day_key, chat_id)
+            bot.edit_message_text(
+                txt,
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            return
+
+        # общий CSV
+        if cmd == "csv_all":
+            cmd_csv_all(chat_id)
+            return
+
+        # CSV за день
+        if cmd == "csv_day":
+            cmd_csv_day(chat_id, day_key)
+            return
+
+        # обнуление через кнопку "⚙️ Обнулить" (с таким же подтверждением, как /reset)
+        if cmd == "reset":
+            if not require_finance(chat_id):
+                return
+
+            store["reset_wait"] = True
+            store["reset_time"] = time.time()
+            save_data(data)
+
+            # сообщение с запросом подтверждения
+            send_info(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
+            return
+
+        # добавление записи
+        if cmd == "add":
+            store["edit_wait"] = {"type": "add", "day_key": day_key}
+            save_data(data)
+
+            # подсказка пользователю, живёт 15 сек и исчезает
+            send_and_auto_delete(
+                chat_id,
+                "Введите сумму и комментарий (пример: +500 кафе)",
+                15
+            )
+
+            # через 15 секунд, если ничего не пришло — отменяем режим add
+            schedule_cancel_wait(chat_id, 15)
+            return
+
+        # список записей для редактирования
+        
+                # список записей для редактирования — НОВАЯ ВЕРСИЯ
+        if cmd == "edit_list":
+            day_recs = store.get("daily_records", {}).get(day_key, [])
+            if not day_recs:
+                send_and_auto_delete(chat_id, "Нет записей за этот день.")
+                return
+
+            kb2 = types.InlineKeyboardMarkup(row_width=3)
+
+            for r in day_recs:
+                lbl = f"{r['short_id']} {fmt_num(r['amount'])} — {r.get('note','')}"
+                rid = r["id"]
+
+                kb2.row(
+                    types.InlineKeyboardButton(lbl, callback_data="none"),
+                    types.InlineKeyboardButton("✏️", callback_data=f"d:{day_key}:edit_rec_{rid}"),
+                    types.InlineKeyboardButton("❌", callback_data=f"d:{day_key}:del_rec_{rid}")
+                )
+
+            kb2.row(
+                types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
+            )
+            
+            bot.edit_message_text(
+                "Выберите действие:",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb2
+            )
+            return
+
+        # выбор конкретной записи для редактирования
+        if cmd.startswith("edit_rec_"):
+            rid = int(cmd.split("_")[-1])
+            store["edit_wait"] = {
+                "type": "edit",
+                "day_key": day_key,
+                "rid": rid
+            }
+            save_data(data)
+
+            # строим текст для редактирования
+            text_edit = f"✏️ Редактирование записи R{rid}\n\n" \
+                        f"Введите новую сумму и текст.\n" \
+                        f"Можно прислать несколько строк."
+
+            # строим клавиатуру для возврата назад
+            kb_back = types.InlineKeyboardMarkup()
+            kb_back.row(
+                types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_list")
+            )
+
+            # редактируем текущее окно, НЕ создаём новое сообщение
+            bot.edit_message_text(
+                text_edit,
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb_back
+            )
+            return
+            
+        if cmd.startswith("del_rec_"):
+            rid = int(cmd.split("_")[-1])
+            delete_record_in_chat(chat_id, rid)
+            update_or_send_day_window(chat_id, day_key)
+            refresh_total_message_if_any(chat_id)
+            if OWNER_ID and str(chat_id) != str(OWNER_ID):
+                try:
+                    refresh_total_message_if_any(int(OWNER_ID))
+                except Exception:
+                    pass
+            send_and_auto_delete(chat_id, f"🗑 Запись R{rid} удалена.", 10)
+            return
+            
+        # ОБЩЕЕ МЕНЮ ПЕРЕСЫЛКИ
+        if cmd == "forward_menu":
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                bot.send_message(chat_id, "Меню доступно только владельцу.")
+                return
+
+            kb = types.InlineKeyboardMarkup(row_width=1)
+
+            # 1) Старый режим: forward_rules по чатам
+            kb.row(
+                types.InlineKeyboardButton(
+                    "📨 По чатам (старый режим)",
+                    callback_data=f"d:{day_key}:forward_old"
+                )
+            )
+
+            # 2) Новый режим: A ↔ B (fw_open уже обрабатывается в ветке fw_*)
+            kb.row(
+                types.InlineKeyboardButton(
+                    "🔀 Пары A ↔ B",
+                    callback_data="fw_open"
+                )
+            )
+
+            # Назад в меню редактирования
+            kb.row(
+                types.InlineKeyboardButton(
+                    "🔙 Назад",
+                    callback_data=f"d:{day_key}:edit_menu"
+                )
+            )
+
+            bot.edit_message_text(
+                "Меню пересылки:\nВыберите режим:",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
+            return
+
+        # СТАРОЕ МЕНЮ ПЕРЕСЫЛКИ (по чатам, как раньше)
+        if cmd == "forward_old":
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                bot.send_message(chat_id, "Меню доступно только владельцу.")
+                return
+
+            kb = build_forward_chat_list(day_key, chat_id)
+            bot.edit_message_text(
+                "Выберите чат, для которого хотите настроить пересылку:",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
+            return
+
+        if cmd.startswith("fw_cfg_"):
+            tgt = int(cmd.split("_")[-1])
+            kb = build_forward_direction_menu(day_key, chat_id, tgt)
+            bot.edit_message_text(
+                f"Настройка пересылки для чата {tgt}:",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=kb
+            )
+            return
+
+        if cmd.startswith("fw_one_"):
+            tgt = int(cmd.split("_")[-1])
+            add_forward_link(chat_id, tgt, "oneway_to")
+            send_and_auto_delete(chat_id, f"Установлена пересылка ➡️  {chat_id} → {tgt}")
+            return
+
+        if cmd.startswith("fw_rev_"):
+            tgt = int(cmd.split("_")[-1])
+            add_forward_link(tgt, chat_id, "oneway_to")
+            add_forward_link(chat_id, tgt, "oneway_from")
+            send_and_auto_delete(chat_id, f"Установлена пересылка ⬅️  {tgt} → {chat_id}")
+            return
+
+        if cmd.startswith("fw_two_"):
+            tgt = int(cmd.split("_")[-1])
+            add_forward_link(chat_id, tgt, "twoway")
+            add_forward_link(tgt, chat_id, "twoway")
+            send_and_auto_delete(chat_id, f"Установлена двусторонняя пересылка ↔️  {chat_id} ⇄ {tgt}")
+            return
+
+        if cmd.startswith("fw_del_"):
+            tgt = int(cmd.split("_")[-1])
+            remove_forward_link(chat_id, tgt)
+            remove_forward_link(tgt, chat_id)
+            send_and_auto_delete(chat_id, f"Все связи с {tgt} удалены.")
+            return
+
+        # выбор даты вручную
+        if cmd == "pick_date":
+            bot.send_message(chat_id, "Введите дату:\n/view YYYY-MM-DD")
+            return
+
+    except Exception as e:
+        log_error(f"on_callback error: {e}")
+        
+
+# ==========================================================
+# SECTION 13 — Add / Update / Delete (версия код-010)
 # ==========================================================
 
 def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
-    """
-    Добавляет финансовую запись в чат.
-    Обновляет:
-        • records
-        • daily_records
-        • баланс
-        • общий CSV
-        • per-chat JSON/CSV
-        • делает бэкап
-    """
     store = get_chat_store(chat_id)
 
     rid = store.get("next_id", 1)
@@ -779,32 +2251,31 @@ def add_record_to_chat(chat_id: int, amount: int, note: str, owner):
         "amount": amount,
         "note": note,
         "owner": owner,
+        "msg_id": msg.message_id,   # ← оставляю как у тебя
+        "origin_msg_id": msg.message_id,
     }
 
-    # Глобальный список (для общего CSV)
     data.setdefault("records", []).append(rec)
 
-    # Per-chat списки
     store.setdefault("records", []).append(rec)
     store.setdefault("daily_records", {}).setdefault(today_key(), []).append(rec)
 
-    store["balance"] = store.get("balance", 0) + amount
-    data["overall_balance"] = data.get("overall_balance", 0) + amount
-    store["next_id"] = rid + 1
+    # 🔹 перенумеровываем все записи этого чата по датам/времени
+    renumber_chat_records(chat_id)
 
+    # балансы пересчитаем уже по новым R-номерам (но суммы те же)
+    store["balance"] = sum(x["amount"] for x in store["records"])
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
+    # store["next_id"] теперь выставлен внутри renumber_chat_records
+
+    #update_or_send_day_window(chat_id)
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
-    save_chat_json(chat_id)
 
     send_backup_to_channel(chat_id)
-
-
-def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str, user=None):
-    """
-    Обновляет существующую запись.
-    Пересчитывает баланс, записывает в JSON/CSV, делает бэкап.
-    """
+    
+def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str):
     store = get_chat_store(chat_id)
     found = None
 
@@ -818,106 +2289,150 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     if not found:
         return
 
-    # Обновляем запись в daily_records
-    for day_recs in store.get("daily_records", {}).values():
-        for r in day_recs:
+    for day, arr in store.get("daily_records", {}).items():
+        for r in arr:
             if r["id"] == rid:
                 r.update(found)
 
-    # Пересчёт баланса по чату
-    store["balance"] = sum(x["amount"] for x in store.get("records", []))
+    store["balance"] = sum(x["amount"] for x in store["records"])
 
-    # Обновляем глобальный список
-    data["records"] = [
-        x if x["id"] != rid else found
-        for x in data.get("records", [])
-    ]
-    data["overall_balance"] = sum(x["amount"] for x in data.get("records", []))
-
+    data["records"] = [x if x["id"] != rid else found for x in data["records"]]
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
+    
+    #update_or_send_day_window(chat_id)
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
-    save_chat_json(chat_id)
-
     send_backup_to_channel(chat_id)
+    send_backup_to_chat(chat_id)    # ← добавляем
 
 
-def delete_record_in_chat(chat_id: int, rid: int, user=None):
-    """
-    Удаляет запись и пересчитывает баланс и CSV.
-    """
+def delete_record_in_chat(chat_id: int, rid: int):
     store = get_chat_store(chat_id)
 
-    before = len(store.get("records", []))
-    store["records"] = [r for r in store.get("records", []) if r["id"] != rid]
+    store["records"] = [x for x in store["records"] if x["id"] != rid]
 
-    # Чистим daily_records
-    for dk, arr in list(store.get("daily_records", {}).items()):
-        new_arr = [r for r in arr if r["id"] != rid]
-        if new_arr:
-            store["daily_records"][dk] = new_arr
+    for day, arr in list(store.get("daily_records", {}).items()):
+        arr2 = [x for x in arr if x["id"] != rid]
+        if arr2:
+            store["daily_records"][day] = arr2
         else:
-            del store["daily_records"][dk]
+            del store["daily_records"][day]
 
-    after = len(store.get("records", []))
-    if before == after:
-        return
+    # 🔹 перенумеровываем R-номера после удаления
+    renumber_chat_records(chat_id)
 
-    store["balance"] = sum(x["amount"] for x in store.get("records", []))
+    store["balance"] = sum(x["amount"] for x in store["records"])
 
-    data["records"] = [x for x in data.get("records", []) if x["id"] != rid]
-    data["overall_balance"] = sum(x["amount"] for x in data.get("records", []))
+    data["records"] = [x for x in data["records"] if x["id"] != rid]
+    data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
+    #update_or_send_day_window(chat_id)
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
-    save_chat_json(chat_id)
-
     send_backup_to_channel(chat_id)
-
-
-def reset_chat_data(chat_id: int):
+    send_backup_to_chat(chat_id)    # ← доба
+    
+def renumber_chat_records(chat_id: int):
     """
-    Полное обнуление данных одного чата (JSON/CSV).
+    Перенумеровывает записи в чате по реальному порядку:
+      • сортируем по day_key и timestamp
+      • присваиваем ID: 1,2,3... и short_id: R1,R2,...
+      • обновляем store["records"] и next_id
     """
-    chats = data.setdefault("chats", {})
-    if str(chat_id) in chats:
-        del chats[str(chat_id)]
+    store = get_chat_store(chat_id)
+    daily = store.get("daily_records", {})
 
-    # удаляем файлы
-    for p in (chat_json_file(chat_id), chat_csv_file(chat_id), chat_meta_file(chat_id)):
-        try:
-            os.remove(p)
-        except FileNotFoundError:
-            pass
+    all_recs = []
 
-    save_data(data)
-    export_global_csv(data)
-    send_backup_to_channel(chat_id)
+    # проходим дни по возрастанию
+    for dk in sorted(daily.keys()):
+        recs = daily.get(dk, [])
+        # внутри дня сортируем по времени
+        recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
+        # сохраняем отсортированный список обратно
+        daily[dk] = recs_sorted
 
+        for r in recs_sorted:
+            all_recs.append(r)
 
+    # перенумерация
+    new_id = 1
+    for r in all_recs:
+        r["id"] = new_id
+        r["short_id"] = f"R{new_id}"
+        new_id += 1
+
+    store["records"] = list(all_recs)
+    store["next_id"] = new_id
+    
 # ==========================================================
-# SECTION 14 — ACTIVE WINDOWS (Окно дня)
+# SECTION 14 — Active window system (версия код-010)
 # ==========================================================
 
 def get_or_create_active_windows(chat_id: int) -> dict:
     return data.setdefault("active_messages", {}).setdefault(str(chat_id), {})
 
+
 def set_active_window_id(chat_id: int, day_key: str, message_id: int):
-    active = get_or_create_active_windows(chat_id)
-    active[day_key] = message_id
+    aw = get_or_create_active_windows(chat_id)
+    aw[day_key] = message_id
     save_data(data)
 
-def get_active_window_id(chat_id: int, day_key: str):
-    return get_or_create_active_windows(chat_id).get(day_key)
 
+def get_active_window_id(chat_id: int, day_key: str):
+    aw = get_or_create_active_windows(chat_id)
+    return aw.get(day_key)
+
+
+def delete_active_window_if_exists(chat_id: int, day_key: str):
+    mid = get_active_window_id(chat_id, day_key)
+    if not mid:
+        return
+    try:
+        bot.delete_message(chat_id, mid)
+    except:
+        pass
+
+    aw = get_or_create_active_windows(chat_id)
+    if day_key in aw:
+        del aw[day_key]
+    save_data(data)
+
+
+def update_or_send_day_window(chat_id: int, day_key: str):
+    """
+    Если окно дня существует — обновляем через edit.
+    Если нет — создаём.
+    """
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+
+    mid = get_active_window_id(chat_id, day_key)
+    if mid:
+        try:
+            bot.edit_message_text(
+                txt,
+                chat_id=chat_id,
+                message_id=mid,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            return
+        except:
+            pass
+
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
 
 # ==========================================================
-# SECTION 15 — FINANCE MODE (режим финансов)
+# SECTION 15 — Управление финансовым режимом
 # ==========================================================
 
 def is_finance_mode(chat_id: int) -> bool:
     return chat_id in finance_active_chats
+
 
 def set_finance_mode(chat_id: int, enabled: bool):
     if enabled:
@@ -925,1121 +2440,1334 @@ def set_finance_mode(chat_id: int, enabled: bool):
     else:
         finance_active_chats.discard(chat_id)
 
+
 def require_finance(chat_id: int) -> bool:
     """
     Проверка: включён ли финансовый режим.
     Если нет — показываем подсказку /поехали.
     """
     if not is_finance_mode(chat_id):
-        send_info(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте /поехали")
+        send_and_auto_delete(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
         return False
     return True
-
-
 # ==========================================================
-# SECTION 16 — CALLBACK HANDLER
+# SECTION 15.1 — Обновление сообщения «Общий итог»
 # ==========================================================
 
-@bot.callback_query_handler(func=lambda c: True)
-def on_callback(call):
+def refresh_total_message_if_any(chat_id: int):
     """
-    Обработчик ВСЕХ callback_data.
-    Формат:
-        d:<day_key>:<cmd>
-        c:<center_day>
+    Если в чате есть активное сообщение '💰 Общий итог',
+    пересчитывает и обновляет его текст.
     """
+    store = get_chat_store(chat_id)
+    msg_id = store.get("total_msg_id")
+    if not msg_id:
+        return
+
     try:
-        data_str = call.data or ""
-        chat_id = call.message.chat.id
+        chat_bal = store.get("balance", 0)
 
-        # регистрируем чат (known_chats)
-        register_known_chat_from_chat(call.message.chat)
+        # Обычный чат — только свой итог
+        if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+            text = f"💰 <b>Общий итог по этому чату:</b> {fmt_num(chat_bal)}"
+        else:
+            # Владелец видит все чаты
+            lines = []
+            info = store.get("info", {})
+            title = info.get("title") or f"Чат {chat_id}"
 
-        # --------- 1) Календарь: c:<date> ---------
-        if data_str.startswith("c:"):
-            center = data_str[2:]
+            lines.append("💰 <b>Общий итог (для владельца)</b>")
+            lines.append("")
+            lines.append(f"• Этот чат ({title}): <b>{fmt_num(chat_bal)}</b>")
+
+            all_chats = data.get("chats", {})
+            total_all = 0
+            other_lines = []
+
+            for cid, st in all_chats.items():
+                try:
+                    cid_int = int(cid)
+                except Exception:
+                    continue
+                bal = st.get("balance", 0)
+                total_all += bal
+                if cid_int == chat_id:
+                    continue
+                info2 = st.get("info", {})
+                title2 = info2.get("title") or f"Чат {cid_int}"
+                other_lines.append(f"   • {title2}: {fmt_num(bal)}")
+
+            if other_lines:
+                lines.append("")
+                lines.append("• Другие чаты:")
+                lines.extend(other_lines)
+
+            lines.append("")
+            lines.append(f"• Всего по всем чатам: <b>{fmt_num(total_all)}</b>")
+
+            text = "\n".join(lines)
+
+        bot.edit_message_text(
+            text,
+            chat_id=chat_id,
+            message_id=msg_id,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        log_error(f"refresh_total_message_if_any({chat_id}): {e}")
+        # если не смогли обновить — просто забываем id
+        store["total_msg_id"] = None
+        save_data(data)
+        
+        
+# ==========================================================
+# SECTION 17 — Команды
+# ==========================================================
+
+
+def send_info(chat_id: int, text: str):
+    send_and_auto_delete(chat_id, text, 10)
+
+@bot.message_handler(commands=["ok"])
+def cmd_enable_finance(msg):
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    set_finance_mode(chat_id, True)
+    save_data(data)
+    send_info(chat_id, "🚀 Финансовый режим включён!\nОтправьте /start")
+    return
+
+
+@bot.message_handler(commands=["start"])
+def cmd_start(msg):
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    if not require_finance(chat_id):
+        return
+
+    day_key = today_key()
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
+
+
+@bot.message_handler(commands=["help"])
+def cmd_help(msg):
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    if not is_finance_mode(chat_id):
+        send_info(chat_id, "ℹ️ Финансовый режим выключен")
+        return
+    help_text = (
+        f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
+        "Команды:\n"
+        "/ok, /поехали — включить финансовый режим\n"
+        "/start — окно сегодняшнего дня\n"
+        "/view YYYY-MM-DD — открыть конкретный день\n"
+        "/prev — предыдущий день\n"
+        "/next — следующий день\n"
+        "/balance — баланс по этому чату\n"
+        "/report — краткий отчёт по дням\n"
+        "/csv — CSV этого чата\n"
+        "/json — JSON этого чата\n"
+        "/reset — обнулить данные чата (с подтверждением)\n"
+        "/stopforward — отключить пересылку\n"
+        "/ping — проверка, жив ли бот\n"
+        "/backup_gdrive_on / _off — включить/выключить GDrive\n"
+        "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
+        "/restore / /restore_off — режим восстановления JSON/CSV\n"
+        "/autoadd_info — режим авто-добавления по суммам\n"
+        "/help — эта справка\n"
+    )
+    send_info(chat_id, help_text)
+    
+# ==========================================================
+# RESTORE MODE COMMANDS
+# ==========================================================
+
+@bot.message_handler(commands=["restore"])
+def cmd_restore(msg):
+    global restore_mode
+    restore_mode = True
+    send_and_auto_delete(
+        msg.chat.id,
+        "📥 Режим восстановления включён.\n"
+        "Теперь отправьте файл:\n"
+        "• data.json\n"
+        "• data_<chat_id>.json\n"
+        "• csv_meta.json\n"
+        "• data_<chat>.csv\n\n"
+        "Пересылка документов временно отключена."
+    )
+
+
+@bot.message_handler(commands=["restore_off"])
+def cmd_restore_off(msg):
+    global restore_mode
+    restore_mode = False
+    send_and_auto_delete(msg.chat.id, "🔒 Режим восстановления выключен.")
+
+
+@bot.message_handler(commands=["ping"])
+def cmd_ping(msg):
+    send_info(msg.chat.id, "PONG — бот работает 🟢")
+
+
+@bot.message_handler(commands=["view"])
+def cmd_view(msg):
+    chat_id = msg.chat.id
+    send_and_auto_delete(chat_id, msg.message_id, 15)
+    if not require_finance(chat_id):
+        return
+
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        send_info(chat_id, "Использование: /view YYYY-MM-DD")
+        return
+
+    day_key = parts[1]
+    try:
+        datetime.strptime(day_key, "%Y-%m-%d")
+    except ValueError:
+        send_info(chat_id, "❌ Неверная дата. Формат: YYYY-MM-DD")
+        return
+
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
+
+
+@bot.message_handler(commands=["prev"])
+def cmd_prev(msg):
+    chat_id = msg.chat.id
+    send_and_auto_delete(chat_id, msg.message_id, 15)
+    if not require_finance(chat_id):
+        return
+
+    d = datetime.strptime(today_key(), "%Y-%m-%d") - timedelta(days=1)
+    day_key = d.strftime("%Y-%m-%d")
+
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
+
+
+@bot.message_handler(commands=["next"])
+def cmd_next(msg):
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    if not require_finance(chat_id):
+        return
+
+    d = datetime.strptime(today_key(), "%Y-%m-%d") + timedelta(days=1)
+    day_key = d.strftime("%Y-%m-%d")
+
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
+
+
+@bot.message_handler(commands=["balance"])
+def cmd_balance(msg):
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    if not require_finance(chat_id):
+        return
+
+    store = get_chat_store(chat_id)
+    bal = store.get("balance", 0)
+    send_info(chat_id, f"💰 Баланс: {fmt_num(bal)}")
+
+
+@bot.message_handler(commands=["report"])
+def cmd_report(msg):
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    if not require_finance(chat_id):
+        return
+
+    store = get_chat_store(chat_id)
+    lines = ["📊 Отчёт:"]
+    for dk, recs in sorted(store.get("daily_records", {}).items()):
+        day_sum = sum(r["amount"] for r in recs)
+        lines.append(f"{dk}: {fmt_num(day_sum)}")
+
+    send_info(chat_id, "\n".join(lines))
+
+
+def cmd_csv_all(chat_id: int):
+    """
+    Общий CSV этого чата (все дни этого чата).
+    """
+    if not require_finance(chat_id):
+        return
+    try:
+        # актуализируем per-chat JSON/CSV
+        save_chat_json(chat_id)
+        path = chat_csv_file(chat_id)
+        if not os.path.exists(path):
+            send_info(chat_id, "CSV файла ещё нет.")
+            return
+        with open(path, "rb") as f:
+            bot.send_document(
+                chat_id,
+                f,
+                caption=f"📂 Общий CSV всех операций чата {chat_id}"
+            )
+    except Exception as e:
+        log_error(f"cmd_csv_all: {e}")
+
+def cmd_csv_day(chat_id: int, day_key: str):
+    """
+    CSV только за один день для текущего чата.
+    """
+    if not require_finance(chat_id):
+        return
+
+    store = get_chat_store(chat_id)
+    day_recs = store.get("daily_records", {}).get(day_key, [])
+    if not day_recs:
+        send_info(chat_id, "Нет записей за этот день.")
+        return
+
+    tmp_name = f"data_{chat_id}_{day_key}.csv"
+    try:
+        with open(tmp_name, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
+            for r in day_recs:
+                w.writerow([
+                    chat_id,
+                    r.get("id"),
+                    r.get("short_id"),
+                    r.get("timestamp"),
+                    r.get("amount"),
+                    r.get("note"),
+                    r.get("owner"),
+                    day_key,
+                ])
+
+        upload_to_gdrive(tmp_name)
+
+        with open(tmp_name, "rb") as f:
+            bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}")
+    except Exception as e:
+        log_error(f"cmd_csv_day: {e}")
+    finally:
+        try:
+            os.remove(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+@bot.message_handler(commands=["csv"])
+def cmd_csv(msg):
+    """
+    Экспортирует CSV текущего чата.
+    """
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    if not require_finance(chat_id):
+        return
+
+    export_global_csv(data)
+    save_chat_json(chat_id)
+
+    per_csv = chat_csv_file(chat_id)
+    sent = None
+
+    if os.path.exists(per_csv):
+        upload_to_gdrive(per_csv)
+
+        with open(per_csv, "rb") as f:
+            sent = bot.send_document(chat_id, f, caption="📂 CSV этого чата")
+
+    if OWNER_ID and chat_id == int(OWNER_ID):
+        meta = _load_csv_meta()
+        if sent and getattr(sent, "document", None):
+            meta["file_id_csv"] = sent.document.file_id
+        meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
+        _save_csv_meta(meta)
+
+    send_backup_to_channel(chat_id)
+
+
+@bot.message_handler(commands=["json"])
+def cmd_json(msg):
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    if not require_finance(chat_id):
+        return
+
+    save_chat_json(chat_id)
+    p = chat_json_file(chat_id)
+
+    if os.path.exists(p):
+        with open(p, "rb") as f:
+            bot.send_document(chat_id, f, caption="🧾 JSON этого чата")
+    else:
+        send_info(chat_id, "Файл JSON ещё не создан.")
+
+
+@bot.message_handler(commands=["reset"])
+def cmd_reset(msg):
+    chat_id = msg.chat.id
+    
+    if not require_finance(chat_id):
+        return
+
+    store = get_chat_store(chat_id)
+    store["reset_wait"] = True
+    store["reset_time"] = time.time()
+    save_data(data)
+
+    # подсказка с автоудалением через 15 сек
+    send_and_auto_delete(
+        chat_id,
+        "⚠️ Вы уверены, что хотите обнулить данные? Напишите ДА в течение 15 секунд.",
+        15
+    )
+
+    # через 15 сек — если «ДА» не пришло, сбросить reset_wait
+    schedule_cancel_wait(chat_id, 15)
+    
+@bot.message_handler(commands=["stopforward"])
+def cmd_stopforward(msg):
+    if str(msg.chat.id) != str(OWNER_ID):
+        send_info(msg.chat.id, "Эта команда только для владельца.")
+        delete_message_later(chat_id, msg.message_id, 15)
+        return
+    clear_forward_all()
+    send_info(msg.chat.id, "Пересылка полностью отключена.")
+
+
+@bot.message_handler(commands=["backup_gdrive_on"])
+def cmd_on_drive(msg):
+    backup_flags["drive"] = True
+    save_data(data)
+    send_info(msg.chat.id, "☁️ Бэкап в Google Drive включён")
+    delete_message_later(chat_id, msg.message_id, 15)
+
+
+@bot.message_handler(commands=["backup_gdrive_off"])
+def cmd_off_drive(msg):
+    backup_flags["drive"] = False
+    save_data(data)
+    send_info(msg.chat.id, "☁️ Бэкап в Google Drive выключен")
+    delete_message_later(chat_id, msg.message_id, 15)
+
+
+@bot.message_handler(commands=["backup_channel_on"])
+def cmd_on_channel(msg):
+    backup_flags["channel"] = True
+    save_data(data)
+    send_info(msg.chat.id, "📡 Бэкап в канал включён")
+    delete_message_later(chat_id, msg.message_id, 15)
+
+
+@bot.message_handler(commands=["backup_channel_off"])
+def cmd_off_channel(msg):
+    backup_flags["channel"] = False
+    save_data(data)
+    send_info(msg.chat.id, "📡 Бэкап в канал выключен")
+    delete_message_later(chat_id, msg.message_id, 15)
+    
+ # ==========================================================
+# COMMAND — /autoadd.info  (toggle auto-add mode)
+# ==========================================================
+
+@bot.message_handler(commands=["autoadd_info", "autoadd.info"])
+def cmd_autoadd_info(msg):
+    chat_id = msg.chat.id
+    delete_message_later(chat_id, msg.message_id, 15)
+    store = get_chat_store(chat_id)
+
+    settings = store.setdefault("settings", {})
+    current = settings.get("auto_add", False)
+
+    # Переключаем
+    new_state = not current
+    settings["auto_add"] = new_state
+    save_chat_json(chat_id)
+
+    send_and_auto_delete(
+        chat_id,
+        f"⚙️ Авто-добавление сообщений: {'ВКЛЮЧЕНО' if new_state else 'ВЫКЛЮЧЕНО'}\n"
+        f"Использование:\n"
+        f"- ВКЛ → каждое сообщение с суммой записывается автоматически\n"
+        f"- ВЫКЛ → работает только через кнопку «Добавить»"
+    )
+    
+# ==========================================================
+# SECTION 18 — Text handler (финансы + пересылка + chat_info)
+# ==========================================================
+
+def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
+    try:
+        msg = bot.send_message(chat_id, text)
+        def _delete():
+            time.sleep(delay)
             try:
-                center_dt = datetime.strptime(center, "%Y-%m-%d")
-            except:
-                return
-
-            kb = build_calendar_keyboard(center_dt, chat_id)
-            try:
-                bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    reply_markup=kb
-                )
-            except:
-                pass
-            return
-
-        # ---------- 2) d:<day_key>:<cmd> ----------
-        if not data_str.startswith("d:"):
-            return
-
-        _, day_key, cmd = data_str.split(":", 2)
-
-        store = get_chat_store(chat_id)
-
-        # ============ Навигация ============
-
-        if cmd == "open":
-            txt, _ = render_day_window(chat_id, day_key)
-            kb = build_main_keyboard(day_key, chat_id)
-            bot.edit_message_text(
-                txt, chat_id=chat_id,
-                message_id=call.message.message_id,
-                reply_markup=kb, parse_mode="HTML"
-            )
-            set_active_window_id(chat_id, day_key, call.message.message_id)
-            return
-
-        if cmd == "prev":
-            d = datetime.strptime(day_key, "%Y-%m-%d") - timedelta(days=1)
-            new_day = d.strftime("%Y-%m-%d")
-            txt, _ = render_day_window(chat_id, new_day)
-            kb = build_main_keyboard(new_day, chat_id)
-            bot.edit_message_text(
-                txt, chat_id=chat_id,
-                message_id=call.message.message_id,
-                reply_markup=kb, parse_mode="HTML"
-            )
-            set_active_window_id(chat_id, new_day, call.message.message_id)
-            return
-
-        if cmd == "next":
-            d = datetime.strptime(day_key, "%Y-%m-%d") + timedelta(days=1)
-            new_day = d.strftime("%Y-%m-%d")
-            txt, _ = render_day_window(chat_id, new_day)
-            kb = build_main_keyboard(new_day, chat_id)
-            bot.edit_message_text(
-                txt, chat_id=chat_id,
-                message_id=call.message.message_id,
-                reply_markup=kb, parse_mode="HTML"
-            )
-            set_active_window_id(chat_id, new_day, call.message.message_id)
-            return
-
-
-        if cmd == "calendar":
-            try:
-                center = datetime.strptime(day_key, "%Y-%m-%d")
-            except:
-                center = now_local()
-            kb = build_calendar_keyboard(center, chat_id)
-            bot.edit_message_reply_markup(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                reply_markup=kb
-            )
-            return
-
-        # ============ Отчёты / Инфо / Общий итог ============
-
-        if cmd == "report":
-            if not require_finance(chat_id):
-                return
-            store = get_chat_store(chat_id)
-
-            total = sum(
-                sum(r["amount"] for r in recs)
-                for recs in store.get("daily_records", {}).values()
-            )
-            msg = (
-                f"📊 <b>Отчёт по чату</b>\n\n"
-                f"💬 Чат: <code>{chat_id}</code>\n"
-                f"💰 Баланс: {fmt_num(store.get('balance', 0))}\n"
-                f"📦 Записей: {len(store.get('records', []))}\n"
-                f"🔢 Дней: {len(store.get('daily_records', {}))}\n"
-                f"🟰 Сумма всех операций: {fmt_num(total)}"
-            )
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, msg, parse_mode="HTML")
-            return
-
-        if cmd == "info":
-            # Расширенная справка в стиле Code_022.1
-            info_text = (
-                f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
-                "Команды:\n"
-                "/поехали — включить финансовый режим в чате\n"
-                "/start — открыть окно дня\n"
-                "/reset — обнулить данные чата (через подтверждение)\n"
-                "/total — показать общий итог по чату\n"
-                "/info — эта справка\n"
-                "\n"
-                "Кнопки:\n"
-                "📝 Редактировать — открыть меню редактирования и экспорта\n"
-                "📊 Отчёт — краткий отчёт по чату\n"
-                "💰 Общий итог — текущий баланс по чату\n"
-                "📅 Календарь — быстрый переход по датам (точкой помечены дни с операциями)\n"
-                "🔁 Пересылка — настройка анонимной пересылки между чатами (только в чате владельца)\n"
-            )
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, info_text)
-            return
-
-        if cmd == "total":
-            if not require_finance(chat_id):
-                return
-            store = get_chat_store(chat_id)
-            total = store.get("balance", 0)
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, f"💰 Общий итог по чату: {fmt_num(total)}")
-            return
-
-        # ============ Edit Menu ============
-
-        if cmd == "edit_menu":
-            if not require_finance(chat_id):
-                return
-            kb = build_edit_menu_keyboard(day_key, chat_id)
-            try:
-                bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    reply_markup=kb
-                )
-            except:
-                pass
-            return
-
-        if cmd == "back_main":
-            txt, _ = render_day_window(chat_id, day_key)
-            kb = build_main_keyboard(day_key, chat_id)
-            bot.edit_message_text(
-                txt, chat_id=chat_id,
-                message_id=call.message.message_id,
-                reply_markup=kb, parse_mode="HTML"
-            )
-            return
-
-        # ============ Добавить запись ============
-
-        if cmd == "add":
-            if not require_finance(chat_id):
-                return
-            store["edit_wait"] = {"type": "add", "day_key": day_key}
-            save_data(data)
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id,
-                             "Введите запись:\n<b>+500 Обед</b>",
-                             parse_mode="HTML")
-            return
-
-        # ============ Редактирование списка ============
-
-        if cmd == "edit_list":
-            if not require_finance(chat_id):
-                return
-            store = get_chat_store(chat_id)
-            day_recs = store.get("daily_records", {}).get(day_key, [])
-
-            # запоминаем текущее окно дня как активное
-            try:
-                set_active_window_id(chat_id, day_key, call.message.message_id)
+                bot.delete_message(chat_id, msg.message_id)
             except Exception:
                 pass
-
-            kb = types.InlineKeyboardMarkup(row_width=1)
-            for r in day_recs:
-                label = f"{r['short_id']} | {fmt_num(r['amount'])} | {r['note']}"
-                kb.row(types.InlineKeyboardButton(label, callback_data=f"e:{day_key}:{r['id']}"))
-
-            kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, "Выберите запись для редактирования:", reply_markup=kb)
-            return
-
-        # ============ Выбор конкретной записи для редактирования ============
-
-        if cmd.startswith("edit_"):
-            # не используется — оставлено на будущее расширение
-            return
-
-        # ============ Выбор конкретной записи ("e:day:rid") ============
-
-        if data_str.startswith("e:"):
-            try:
-                _, dkey, rid_str = data_str.split(":", 2)
-                rid = int(rid_str)
-            except:
-                return
-
-            if not require_finance(chat_id):
-                return
-
-            store["edit_wait"] = {"type": "edit", "day_key": dkey, "rid": rid}
-            save_data(data)
-
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id,
-                             "Введите новое значение:\n<b>+500 Новая_заметка</b>",
-                             parse_mode="HTML")
-            return
-
-        # ============ CSV по дню ============
-
-        if cmd == "csv_day":
-            try:
-                fname = f"csv_day_{chat_id}_{day_key}.csv"
-                with open(fname, "w", newline="", encoding="utf-8") as f:
-                    w = csv.writer(f)
-                    w.writerow(["ID", "time", "amount", "note"])
-                    store = get_chat_store(chat_id)
-                    for r in store.get("daily_records", {}).get(day_key, []):
-                        w.writerow([
-                            r["id"],
-                            r["timestamp"],
-                            r["amount"],
-                            r["note"],
-                        ])
-                with open(fname, "rb") as f:
-                    bot.answer_callback_query(call.id)
-                    bot.send_document(chat_id, f, caption=f"CSV за {day_key}")
-            except Exception as e:
-                bot.send_message(chat_id, f"Ошибка CSV: {e}")
-            return
-
-        # ============ Общий CSV (global) ============
-
-        if cmd == "csv_all":
-            try:
-                export_global_csv(data)
-                with open(CSV_FILE, "rb") as f:
-                    bot.answer_callback_query(call.id)
-                    bot.send_document(chat_id, f, caption="Общий CSV")
-            except Exception as e:
-                bot.send_message(chat_id, f"Ошибка CSV: {e}")
-            return
-
-        # ============ Удаление / Reset ============
-
-        if cmd == "reset":
-            if not require_finance(chat_id):
-                return
-            store["edit_wait"] = {"type": "reset", "day_key": day_key}
-            save_data(data)
-
-            kb = types.InlineKeyboardMarkup()
-            kb.row(types.InlineKeyboardButton("Да, удалить все", callback_data=f"d:{day_key}:reset_yes"))
-            kb.row(types.InlineKeyboardButton("Отмена", callback_data=f"d:{day_key}:edit_menu"))
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, "Вы уверены, что хотите обнулить все данные чата?", reply_markup=kb)
-            return
-
-        if cmd == "reset_yes":
-            if not require_finance(chat_id):
-                return
-            reset_chat_data(chat_id)
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, "Данные очищены.")
-            return
-
-        # ============ Выбор даты ============
-
-        if cmd == "pick_date":
-            bot.answer_callback_query(call.id)
-            bot.send_message(chat_id, "Введите дату в формате YYYY-MM-DD:")
-            store["edit_wait"] = {"type": "pick_date"}
-            save_data(data)
-            return
-
+        threading.Thread(target=_delete, daemon=True).start()
     except Exception as e:
-        log_error(f"on_callback: {e}")
+        log_error(f"send_and_auto_delete: {e}")
+        
+def delete_message_later(chat_id: int, message_id: int, delay: int = 10):
+    """
+    Отложенное удаление сообщения пользователя (например, команд).
+    """
+    try:
+        def _job():
+            time.sleep(delay)
+            try:
+                bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+        threading.Thread(target=_job, daemon=True).start()
+    except Exception as e:
+        log_error(f"delete_message_later: {e}")
 
+_edit_cancel_timers = {}
+
+def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
+    """
+    Через delay секунд:
+      • отменяет режим добавления записи (edit_wait.type == 'add')
+      • сбрасывает флаг reset_wait (если ещё висит)
+    """
+    def _job():
+        try:
+            store = get_chat_store(chat_id)
+            changed = False
+
+            # отменяем ожидание добавления записи
+            wait = store.get("edit_wait")
+            if wait and wait.get("type") == "add":
+                store["edit_wait"] = None
+                changed = True
+
+            # отменяем режим обнуления, если пользователь так и не подтвердил
+            if store.get("reset_wait", False):
+                store["reset_wait"] = False
+                store["reset_time"] = 0
+                changed = True
+
+            if changed:
+                save_data(data)
+        except Exception as e:
+            log_error(f"schedule_cancel_wait job: {e}")
+
+    prev = _edit_cancel_timers.get(chat_id)
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(delay, _job)
+    _edit_cancel_timers[chat_id] = t
+    t.start()
+
+#def update_chat_info_from_message(msg):
+ #🔵🔵🔵🔵🔵🔵🔵
 # ==========================================================
-# SECTION 17 — TEXT HANDLER (текстовые сообщения)
+# SECTION 18 — Text handler (финансы + пересылка + chat_info)
 # ==========================================================
 
+def update_chat_info_from_message(msg):
+    """
+    Обновляет информацию о чате при каждом сообщении.
+    Хранится в: store["info"] и store["known_chats"] (для OWNER).
+    """
+    chat_id = msg.chat.id
+    store = get_chat_store(chat_id)
 
-@bot.message_handler(content_types=["text"], func=lambda m: not (m.text or "").startswith("/"))
+    info = store.setdefault("info", {})
+    # --- ВАЖНО: НЕ менять title для владельца ---
+    if str(chat_id) != str(OWNER_ID):
+        info["title"] = msg.chat.title or info.get("title") or f"Чат {chat_id}"
+# у владельца title оставляем прежний и не трогаем
+    info["username"] = msg.chat.username or info.get("username")
+    info["type"] = msg.chat.type
+
+    if OWNER_ID and str(chat_id) != str(OWNER_ID):
+        owner_store = get_chat_store(int(OWNER_ID))
+        kc = owner_store.setdefault("known_chats", {})
+        kc[str(chat_id)] = {
+            "title": info["title"],
+            "username": info["username"],
+            "type": info["type"],
+        }
+        save_chat_json(int(OWNER_ID))
+
+    save_chat_json(chat_id)
+# --- ДОБАВЬ ЭТО ---
+    try:
+        send_backup_to_chat(chat_id)
+    except Exception as e:
+        log_error(f"update_chat_info backup error: {e}")
+# -------------------
+# ==========================================================
+# DEBOUNCE — запуск логики через 3 секунды тишины
+# ==========================================================
+
+_finalize_timers = {}
+
+def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
+    def _job():
+        try:
+            store = get_chat_store(chat_id)
+
+            # === 1. Пересчитать баланс ===
+            store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+
+            # === 2. Пересборка глобальных records ===
+            all_recs = []
+            for cid, st in data.get("chats", {}).items():
+                all_recs.extend(st.get("records", []))
+            data["records"] = all_recs
+            data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
+
+            # === 3. Сохранения ===
+            save_chat_json(chat_id)
+            save_data(data)
+            export_global_csv(data)
+
+            # === 4. Бэкапы ===
+            send_backup_to_channel(chat_id)
+
+            # ДАЁМ удалиться старому окну дня
+            time.sleep(1.5)
+
+            send_backup_to_chat(chat_id)    # JSON в сам чат
+
+            # === 5. Окно дня: ВСЕГДА новое сообщение + удаление старого ===
+            old_mid = get_active_window_id(chat_id, day_key)
+
+            txt, _ = render_day_window(chat_id, day_key)
+            kb = build_main_keyboard(day_key, chat_id)
+
+            new_mid = None
+            try:
+                sent = bot.send_message(
+                    chat_id,
+                    txt,
+                    reply_markup=kb,
+                    parse_mode="HTML"
+                )
+                new_mid = sent.message_id
+                set_active_window_id(chat_id, day_key, new_mid)
+            except Exception as e:
+                # если вдруг не смогли отправить новое сообщение —
+                # пробуем хотя бы обновить существующее окно
+                log_error(f"schedule_finalize: send_message error for chat {chat_id}: {e}")
+                try:
+                    update_or_send_day_window(chat_id, day_key)
+                    new_mid = get_active_window_id(chat_id, day_key)
+                except Exception as e2:
+                    log_error(f"schedule_finalize: fallback update_or_send_day_window error: {e2}")
+
+            # удаляем старое окно, если оно было и отличается от нового
+            if old_mid and new_mid and old_mid != new_mid:
+                def _delete_old():
+                    time.sleep(1.0)
+                    try:
+                        bot.delete_message(chat_id, old_mid)
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_delete_old, daemon=True).start()
+
+            # === 6. Обновляем «Общий итог» ===
+            refresh_total_message_if_any(chat_id)
+            if OWNER_ID and str(chat_id) != str(OWNER_ID):
+                try:
+                    refresh_total_message_if_any(int(OWNER_ID))
+                except Exception:
+                    pass
+
+        except Exception as e:
+            log_error(f"schedule_finalize job error for chat {chat_id}: {e}")
+
+    # отменяем старый таймер
+    t_prev = _finalize_timers.get(chat_id)
+    if t_prev and t_prev.is_alive():
+        try:
+            t_prev.cancel()
+        except Exception:
+            pass
+
+    # запускаем новый
+    t = threading.Timer(delay, _job)
+    _finalize_timers[chat_id] = t
+    t.start()
+    
+@bot.message_handler(content_types=["text"])
 def handle_text(msg):
-    """
-    Обработка текстов:
-    • регистрируем чат в known_chats
-    • пересылка текста (анонимно)
-    • добавление записи напрямую из сообщения
-    • редактирование записи
-    • ввод даты для /pick_date
-    • подтверждение /reset
-    """
     try:
         chat_id = msg.chat.id
         text = (msg.text or "").strip()
 
-        # 1) Регистрируем чат
-        register_known_chat_from_chat(msg.chat)
+        update_chat_info_from_message(msg)
 
-        store = get_chat_store(chat_id)
-
-        # ---------- 2) Пересылка текста между чатами ----------
         targets = resolve_forward_targets(chat_id)
         if targets:
-            for dst in targets:
-                if dst == chat_id:
-                    continue
-                try:
-                    bot.send_message(dst, text)
-                except Exception as e:
-                    log_error(f"handle_text: forward error: {e}")
+            forward_text_anon(chat_id, msg, targets)
 
-        # ---------- 3) Обработка ожидаемого состояния ----------
+        store = get_chat_store(chat_id)
+        #wait = store.get("edit_wait")
         wait = store.get("edit_wait")
+        auto_add_enabled = store.get("settings", {}).get("auto_add", False)
 
-        # ---- 3A) Редактирование записи ----
-        if wait and wait.get("type") == "edit":
-            if not require_finance(chat_id):
+        # -----------------------------------------
+        # 🟢 ЛОГИКА ВКЛЮЧЕНИЯ "ДОБАВИТЬ ЗАПИСЬ"
+        # -----------------------------------------
+        should_add = False
+
+        # 1) режим кнопки "Добавить"
+        if wait and wait.get("type") == "add" and looks_like_amount(text):
+                should_add = True
+                day_key = wait.get("day_key")
+
+        # 2) режим auto_add
+        elif auto_add_enabled and looks_like_amount(text):
+                should_add = True
+                # день — тот, который открыт, если нет — сегодняшняя дата
+                day_key = store.get("current_view_day", today_key())
+
+        # если ничего не подошло — пропускаем
+        if not should_add:
+                pass
+        else:
+                # -----------------
+                # 🟢 Добавление записи
+                # -----------------
+                lines = text.split("\n")
+                added_any = False
+
+                for line in lines:
+                        line = line.strip()
+                        if not line:
+                                continue
+
+                        try:
+                                amount, note = split_amount_and_note(line)
+                        except Exception:
+                                send_and_auto_delete(chat_id, f"❌ Ошибка суммы: {line}\nПродолжаю расчёт…")
+                                continue
+
+                        rid = store.get("next_id", 1)
+
+                        rec = {
+                                "id": rid,
+                                "short_id": f"R{rid}",
+                                "timestamp": now_local().isoformat(timespec="seconds"),
+                                "amount": amount,
+                                "note": note,
+                                "owner": msg.from_user.id,
+                                "msg_id": msg.message_id,
+                                "origin_msg_id": msg.message_id,
+                        }
+
+                        store.setdefault("records", []).append(rec)
+                        store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
+
+                        store["next_id"] = rid + 1
+                        added_any = True
+
+                # 🟢 Обновление окна
+                if added_any:
+                        #txt, _ = render_day_window(chat_id, day_key)
+                        #kb = build_main_keyboard(day_key, chat_id)
+                        #sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+                        update_or_send_day_window(chat_id, day_key)# текущее окно обновояет
+                        # запускаем таймер финальной логики (3 сек тишины)
+                        schedule_finalize(chat_id, day_key)
+                         # set_active_window_id(chat_id, day_key, sent.message_id)
+
+                # 🟢 Сохранение
+                store["balance"] = sum(x["amount"] for x in store["records"])
+
+                data["records"] = []
+                for cid, st in data.get("chats", {}).items():
+                        data["records"].extend(st.get("records", []))
+
+                data["overall_balance"] = sum(x["amount"] for x in data["records"])
+
+                save_data(data)
+                save_chat_json(chat_id)
+                export_global_csv(data)
+                send_backup_to_channel(chat_id)
+                send_backup_to_chat_extra(chat_id)  # ← ДОБАВЬ ЭТО
+
                 store["edit_wait"] = None
                 save_data(data)
                 return
 
-            try:
-                parts = text.split(" ", 1)
-                amount = parse_amount(parts[0])
-                note = parts[1] if len(parts) > 1 else ""
-            except Exception:
-                bot.send_message(chat_id, "❌ Ошибка формата. Пример: +500 Такси")
+        # =====================================================
+        # 3) МНОГОСТРОЧНОЕ РЕДАКТИРОВАНИЕ ЗАПИСИ (ТЗ-4)
+        # =====================================================
+        # =====================================================
+        # 3) МНОГОСТРОЧНОЕ РЕДАКТИРОВАНИЕ ЗАПИСИ
+        # =====================================================
+        if wait and wait.get("type") == "edit":
+            rid = wait.get("rid")
+            day_key = wait.get("day_key", store.get("current_view_day", today_key()))
+
+            lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+
+            target = None
+            for r in store.get("records", []):
+                if r["id"] == rid:
+                    target = r
+                    break
+
+            if not target:
+                send_and_auto_delete(chat_id, "❌ Запись не найдена.")
+                store["edit_wait"] = None
                 return
 
-            rid = wait["rid"]
-            day_key = wait["day_key"]
-            update_record_in_chat(chat_id, rid, amount, note, msg.from_user.id)
+            # Удаляем старую запись
+            delete_record_in_chat(chat_id, rid)
 
-            store["edit_wait"] = None
-            save_data(data)
-
-            # обновляем текущее окно дня, если оно известно
-            try:
-                active_id = get_active_window_id(chat_id, day_key)
-            except Exception:
-                active_id = None
-
-            txt, _ = render_day_window(chat_id, day_key)
-            kb = build_main_keyboard(day_key, chat_id)
-
-            if active_id:
+            # Создаём новые записи по каждой строке
+            for line in lines:
                 try:
-                    bot.edit_message_text(txt, chat_id, active_id, reply_markup=kb, parse_mode="HTML")
-                except Exception:
-                    bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-            else:
-                bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-            return
+                    amount, note = split_amount_and_note(line)
+                except:
+                    bot.send_message(chat_id, f"❌ Ошибка суммы: {line}")
+                    continue
 
-        # ---- 3B) Ввод даты (pick_date) ----
-        if wait and wait.get("type") == "pick_date":
-            try:
-                dt = datetime.strptime(text, "%Y-%m-%d")
-            except:
-                bot.send_message(chat_id, "❌ Формат неверный. Пример: 2025-11-14")
-                return
+                rid2 = store.get("next_id", 1)
+                new_rec = {
+                    "id": rid2,
+                    "short_id": f"R{rid2}",
+                    "timestamp": now_local().isoformat(timespec="seconds"),
+                    "amount": amount,
+                    "note": note,
+                    "owner": msg.from_user.id,
+                    "msg_id": msg.message_id,
+                    "origin_msg_id": msg.message_id,
+                }
 
-            day_key = dt.strftime("%Y-%m-%d")
-            store["edit_wait"] = None
-            save_data(data)
+                store.setdefault("records", []).append(new_rec)
+                store.setdefault("daily_records", {}).setdefault(day_key, []).append(new_rec)
+                store["next_id"] = rid2 + 1
 
-            txt, _ = render_day_window(chat_id, day_key)
-            kb = build_main_keyboard(day_key, chat_id)
-
-            # открываем новое окно дня
-            sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-            try:
-                set_active_window_id(chat_id, day_key, sent.message_id)
-            except Exception:
-                pass
-            return
-
-        # ---- 3C) Подтверждение /reset ----
-        if text.upper() == "ДА":
-            if not require_finance(chat_id):
-                return
-            reset_chat_data(chat_id)
-            send_info(chat_id, "Данные чата обнулены.")
-            return
-
-        # ---- 4) Команды /поехали и /start обрабатываются отдельными хендлерами ----
-        if text.startswith("/"):
-            # отдаём обработку декораторам команд
-            return
-
-        # ---- 5) Добавление записи напрямую из сообщения ----
-        if not require_finance(chat_id):
-            return
-
-        try:
-            parts = text.split(" ", 1)
-            amount = parse_amount(parts[0])
-            note = parts[1] if len(parts) > 1 else ""
-        except Exception:
-            bot.send_message(chat_id, "❌ Не удалось распознать сумму. Пример: +500 Обед")
-            return
-
-        day_key = today_key()
-        add_record_to_chat(chat_id, amount, note, msg.from_user.id)
-
-        # обновляем или создаём окно дня
-        try:
-            active_id = get_active_window_id(chat_id, day_key)
-        except Exception:
-            active_id = None
-
-        txt, _ = render_day_window(chat_id, day_key)
-        kb = build_main_keyboard(day_key, chat_id)
-
-        if active_id:
-            try:
-                bot.edit_message_text(txt, chat_id, active_id, reply_markup=kb, parse_mode="HTML")
-            except Exception:
-                sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+            update_record_in_chat(chat_id, rid, amount, note)
+            schedule_finalize(chat_id, day_key)
+            #update_or_send_day_window(chat_id, day_key)
+            refresh_total_message_if_any(chat_id)
+            if OWNER_ID and str(chat_id) != str(OWNER_ID):
                 try:
-                    set_active_window_id(chat_id, day_key, sent.message_id)
+                    refresh_total_message_if_any(int(OWNER_ID))
                 except Exception:
                     pass
-        else:
-            sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+
+            store["edit_wait"] = None
+            save_data(data)
+            return
+            #schedule_finalize(chat_id, day_key)
+        # =====================================================
+        # 4) Подтверждение обнуления ("ДА") — только после /reset
+        # =====================================================
+        if text.upper() == "ДА":
+            reset_flag = store.get("reset_wait", False)
+            reset_time = store.get("reset_time", 0)
+            now_t = time.time()
+
+            # окно жизни запроса — 15 секунд
+            if reset_flag and (now_t - reset_time <= 15):
+                reset_chat_data(chat_id)
+                send_and_auto_delete(chat_id, "🔄 Данные чата обнулены.", 15)
+            else:
+                send_and_auto_delete(chat_id, "Нет активного запроса на обнуление.", 15)
+
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            save_data(data)
+            return
+
+        # Если был режим reset_wait, но сообщение не "ДА" → сбрасываем
+        if store.get("reset_wait", False):
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            save_data(data)
+            
+    except Exception as e:
+        log_error(f"handle_text: {e}")
+# ==========================================================
+# SECTION 18.1 — Reset chat data helper
+# ==========================================================
+
+def reset_chat_data(chat_id: int):
+    """
+    Полное обнуление данных чата:
+      • баланс
+      • записи / daily_records
+      • next_id
+      • active_windows
+      • edit_wait / edit_target
+      • обновление окна дня
+      • бэкап
+    """
+    try:
+        store = get_chat_store(chat_id)
+
+        # Полная очистка данных
+        store["balance"] = 0
+        store["records"] = []
+        store["daily_records"] = {}
+        store["next_id"] = 1
+        store["active_windows"] = {}
+        store["edit_wait"] = None
+        store["edit_target"] = None
+
+        # Сохраняем изменения
+        # Сохраняем изменения
+        save_data(data)
+        save_chat_json(chat_id)
+        export_global_csv(data)
+        send_backup_to_channel(chat_id)
+        send_backup_to_chat(chat_id)   # ← новый бэкап JSON в чат
+
+        # 🔥 СРАЗУ ПЕРЕРИСОВЫВАЕМ ОКНО
+        day_key = store.get("current_view_day", today_key())
+        update_or_send_day_window(chat_id, day_key)
+
+        # после обнуления обновляем окно и общий итог
+        try:
+            day_key = get_chat_store(chat_id).get("current_view_day", today_key())
+            update_or_send_day_window(chat_id, day_key)
+        except Exception:
+            pass
+
+        refresh_total_message_if_any(chat_id)
+        if OWNER_ID and str(chat_id) != str(OWNER_ID):
             try:
-                set_active_window_id(chat_id, day_key, sent.message_id)
+                refresh_total_message_if_any(int(OWNER_ID))
             except Exception:
                 pass
 
     except Exception as e:
-        log_error(f"handle_text: {e}")
-
-
+        log_error(f"reset_chat_data({chat_id}): {e}")
+        
 # ==========================================================
-# SECTION 18 — MEDIA HANDLER 
- 
+# SECTION 18.2 — Media forwarding (анонимно + media_group)
 # ==========================================================
 
-@bot.message_handler(content_types=[
-    "photo", "document", "audio", "voice",
-    "video", "video_note", "sticker",
-    "location", "contact"
-])
-def handle_media(msg):
-    """
-    Обработка медиа:
-    • регистрация known_chats
-    • анонимная пересылка copy_message
-    • без участия финансовой логики
-    """
+@bot.message_handler(
+    content_types=[
+        "photo", "audio", "video", "voice",
+        "video_note", "sticker", "animation"
+    ]
+)
+def handle_media_forward(msg):
     try:
         chat_id = msg.chat.id
 
-        # регистрируем чат
-        register_known_chat_from_chat(msg.chat)
+        update_chat_info_from_message(msg)
 
-        # пересылка
-        targets = resolve_forward_targets(chat_id)
-        if targets:
-            for dst in targets:
-                if dst == chat_id:
-                    continue
-                try:
-                    bot.copy_message(dst, chat_id, msg.message_id)
-                except Exception as e:
-                    log_error(f"handle_media: {e}")
+        try:
+            BOT_ID = bot.get_me().id
+        except:
+            BOT_ID = None
 
-    except Exception as e:
-        log_error(f"handle_media outer: {e}")
-
-# ==========================================================
-# SECTION 19 — SAVE CHAT JSON (перезаписанная версия 022.2)
-# ==========================================================
-
-def save_chat_json(chat_id: int):
-    """
-    Сохраняет:
-      • per-chat JSON
-      • per-chat CSV
-      • per-chat META
-    В файл владельца (data_<OWNER_ID>.json) дополнительно добавляет:
-      • forward_rules
-      • known_chats
-    """
-    try:
-        store = data.get("chats", {}).get(str(chat_id), {})
-        if not store:
+        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
             return
 
-        chat_path_json = chat_json_file(chat_id)
-        chat_path_csv = chat_csv_file(chat_id)
-        chat_path_meta = chat_meta_file(chat_id)
+        targets = resolve_forward_targets(chat_id)
+        if not targets:
+            return
 
-        # гарантируем что файлы существуют
-        for p in (chat_path_json, chat_path_csv, chat_path_meta):
-            if not os.path.exists(p):
-                with open(p, "a", encoding="utf-8"):
-                    pass
+        group_msgs = collect_media_group(chat_id, msg)
+        if not group_msgs:
+            return
 
-        # базовый payload
-        payload = {
-            "chat_id": chat_id,
-            "balance": store.get("balance", 0),
-            "records": store.get("records", []),
-            "daily_records": store.get("daily_records", {}),
-            "next_id": store.get("next_id", 1),
-            "info": store.get("info", {}),
-        }
+        if len(group_msgs) > 1:
+            forward_media_group_anon(chat_id, group_msgs, targets)
+            return
 
-        # ДОПОЛНЕНИЕ: если это файл владельца — записываем мета-настройки
-        if OWNER_ID and str(chat_id) == str(OWNER_ID):
-            fr = data.get("forward_rules", {}) or {}
-            kc = data.get("known_chats", {}) or {}
-            if fr:
-                payload["forward_rules"] = fr
-            if kc:
-                payload["known_chats"] = kc
-
-        _save_json(chat_path_json, payload)
-
-        # создаём CSV по чату
-        with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
-            for dk, recs in store.get("daily_records", {}).items():
-                for r in recs:
-                    w.writerow([
-                        chat_id,
-                        r.get("id"),
-                        r.get("short_id"),
-                        r.get("timestamp"),
-                        r.get("amount"),
-                        r.get("note"),
-                        r.get("owner"),
-                        dk,
-                    ])
-
-        # META
-        meta = {
-            "last_saved": now_local().isoformat(timespec="seconds"),
-            "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
-        }
-        _save_json(chat_path_meta, meta)
-
-        log_info(f"Per-chat saved → {chat_id}")
-
-    except Exception as e:
-        log_error(f"save_chat_json({chat_id}): {e}")
-
-
-# ==========================================================
-# SECTION 20 — BACKUP TO CHANNEL (патч расширенной логики)
-# ==========================================================
-
-def send_backup_to_channel(chat_id: int):
-    """
-    Выполняет:
-      • save_chat_json(chat_id)
-      • save_chat_json(owner) → чтобы владелец видел fresh forward_rules + known_chats
-      • отправляет JSON и CSV в backup-chat
-      • отправляет файл владельца (общий meta-файл)
-      • обновляет global CSV
-    """
-    flags = backup_flags or {}
-    if not flags.get("channel", True):
-        log_info("Channel backup disabled.")
-        return
-    if not BACKUP_CHAT_ID:
-        log_info("No BACKUP_CHAT_ID set.")
-        return
-
-    try:
-        # 1. Обновляем файл изменённого чата
-        save_chat_json(chat_id)
-
-        # 2. Обновляем файл владельца (там forward_rules+known_chats)
-        if OWNER_ID:
+        for dst, mode in targets:
             try:
-                save_chat_json(int(OWNER_ID))
+                bot.copy_message(dst, chat_id, msg.message_id)
             except Exception as e:
-                log_error(f"send_backup_to_channel owner update: {e}")
-
-        # 3. Отправляем JSON и CSV изменённого чата
-        send_backup_to_channel_for_file(chat_json_file(chat_id), f"json_chat_{chat_id}")
-        send_backup_to_channel_for_file(chat_csv_file(chat_id), f"csv_chat_{chat_id}")
-
-        # 4. Отправляем единый файл владельца (master-config)
-        if OWNER_ID:
-            own = int(OWNER_ID)
-            send_backup_to_channel_for_file(chat_json_file(own), "json_owner")
-
-        # 5. Обновляем глобальный CSV
-        export_global_csv(data)
-        send_backup_to_channel_for_file(CSV_FILE, "csv_global")
+                log_error(f"handle_media_forward to {dst}: {e}")
 
     except Exception as e:
-        log_error(f"send_backup_to_channel({chat_id}): {e}")
-
+        log_error(f"handle_media_forward error: {e}")
 
 # ==========================================================
-# SECTION 21 — UTILITIES
+# SECTION 18.3 — Forwarding of location / contact / poll / venue
 # ==========================================================
 
-def send_info(chat_id: int, text: str):
+@bot.message_handler(content_types=["location", "contact", "poll", "venue"])
+def handle_special_forward(msg):
+    global restore_mode
+
+    if restore_mode:
+        return
+
     try:
-        bot.send_message(chat_id, text)
+        chat_id = msg.chat.id
+        update_chat_info_from_message(msg)
+
+        try:
+            BOT_ID = bot.get_me().id
+        except:
+            BOT_ID = None
+
+        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
+            return
+
+        targets = resolve_forward_targets(chat_id)
+        if not targets:
+            return
+
+        for dst, mode in targets:
+            try:
+                bot.copy_message(dst, chat_id, msg.message_id)
+            except Exception as e:
+                log_error(f"handle_special_forward to {dst}: {e}")
+
     except Exception as e:
-        log_error(f"send_info: {e}")
+        log_error(f"handle_special_forward error: {e}")
 
 # ==========================================================
-# SECTION 22 — FILE UPLOAD HANDLER (OWNER restore)
+# SECTION 18.4 — DOCUMENTS: forwarding + restore (единый хендлер)
 # ==========================================================
 
 @bot.message_handler(content_types=["document"])
 def handle_document(msg):
     """
-    Владелец может прислать:
-        • data_<chat>.json
-        • data.json
-    Бот восстановит файл и, если это data.json — перезагрузит глобальные данные.
+    Логика обработки документов:
+    1) ВСЕ документы обновляют info/known_chats
+    2) Если restore_mode == True → используется как файл восстановления
+    3) Если restore_mode == False → обычная пересылка документа
     """
-    try:
-        doc = msg.document
-        if not doc or not doc.file_name:
+    global restore_mode, data
+
+    chat_id = msg.chat.id
+    update_chat_info_from_message(msg)
+
+    file = msg.document
+    fname = (file.file_name or "").lower()
+
+    # --------- ВЕТКА ВОССТАНОВЛЕНИЯ -----------
+    if restore_mode:
+        # принимаем только JSON/CSV
+        if not (fname.endswith(".json") or fname.endswith(".csv")):
+            send_and_auto_delete(chat_id, f"⚠️ Файл '{fname}' не является JSON/CSV.")
             return
 
-        fname = doc.file_name.lower()
-        owner_ok = OWNER_ID and msg.chat.id == int(OWNER_ID)
-
-        # Разрешаем владельцу заливать только JSON
-        if not owner_ok or not fname.endswith(".json"):
+        try:
+            file_info = bot.get_file(file.file_id)
+            raw = bot.download_file(file_info.file_path)
+        except Exception as e:
+            send_and_auto_delete(chat_id, f"❌ Ошибка скачивания файла: {e}")
             return
 
-        file_info = bot.get_file(doc.file_id)
-        downloaded = bot.download_file(file_info.file_path)
+        tmp_path = f"restore_{chat_id}_{fname}"
 
-        # Имя файла
+        with open(tmp_path, "wb") as f:
+            f.write(raw)
+
+        # 1) Глобальный data.json
         if fname == "data.json":
-            local = DATA_FILE
-        else:
-            local = fname
-
-        # Сохраняем полученный файл
-        with open(local, "wb") as f:
-            f.write(downloaded)
-
-        # Если это главный data.json — перезагрузить глобальные данные
-        if local == DATA_FILE:
             try:
-                restored = _load_json(DATA_FILE, default_data())
-                if isinstance(restored, dict):
-                    global data
-                    data = restored
-                    bot.send_message(msg.chat.id, "✔️ data.json успешно загружен и применён")
-                else:
-                    bot.send_message(msg.chat.id, "⚠️ Ошибка: data.json не является объектом JSON")
+                os.replace(tmp_path, "data.json")
+                data = load_data()
+                restore_mode = False
+                send_and_auto_delete(chat_id, "🟢 Глобальный data.json восстановлен!")
             except Exception as e:
-                bot.send_message(msg.chat.id, f"Ошибка загрузки JSON: {e}")
+                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
+            return
+
+        # 2) csv_meta.json
+        if fname == "csv_meta.json":
+            try:
+                os.replace(tmp_path, "csv_meta.json")
+                restore_mode = False
+                send_and_auto_delete(chat_id, "🟢 csv_meta.json восстановлен!")
+            except Exception as e:
+                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
+            return
+
+        # 3) per-chat JSON data_<chat>.json
+        if fname.startswith("data_") and fname.endswith(".json"):
+            try:
+                target = int(fname.replace("data_", "").replace(".json", ""))
+            except:
+                send_and_auto_delete(chat_id, "❌ Невозможно определить chat_id из имени файла.")
                 return
 
-        else:
-            bot.send_message(msg.chat.id, f"✔️ Файл {local} сохранён")
+            try:
+                os.replace(tmp_path, fname)
+                store = _load_json(fname, {})
+                if not store:
+                    send_and_auto_delete(chat_id, "❌ Файл повреждён или пуст.")
+                    return
+
+                store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+
+                data.setdefault("chats", {})[str(target)] = store
+                finance_active_chats.add(target)
+
+                # пересобираем глобальные records и overall_balance
+                all_recs = []
+                for cid, s in data.get("chats", {}).items():
+                    all_recs.extend(s.get("records", []))
+                data["records"] = all_recs
+                data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
+
+                save_data(data)
+                save_chat_json(target)
+
+                update_or_send_day_window(target, today_key())
+
+                restore_mode = False
+
+                send_and_auto_delete(
+                    chat_id,
+                    f"🟢 Чат {target} восстановлен.\n"
+                    f"Записей: {len(store.get('records', []))}\n"
+                    f"Баланс: {store['balance']}"
+                )
+            except Exception as e:
+                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
             return
 
+        # 4) per-chat CSV
+        if fname.startswith("data_") and fname.endswith(".csv"):
+            try:
+                os.replace(tmp_path, fname)
+                restore_mode = False
+                send_and_auto_delete(chat_id, f"🟢 CSV восстановлен: {fname}")
+            except Exception as e:
+                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
+            return
+
+        send_and_auto_delete(chat_id, f"⚠️ Формат не поддерживается: {fname}")
+        return
+
+    # --------- ВЕТКА ПЕРЕСЫЛКИ (restore_mode == False)  -----------
+
+    try:
+        try:
+            BOT_ID = bot.get_me().id
+        except:
+            BOT_ID = None
+
+        if BOT_ID and msg.from_user and msg.from_user.id == BOT_ID:
+            return
+
+        targets = resolve_forward_targets(chat_id)
+        if not targets:
+            return
+
+        group_msgs = collect_media_group(chat_id, msg)
+        if not group_msgs:
+            return
+
+        if len(group_msgs) > 1:
+            forward_media_group_anon(chat_id, group_msgs, targets)
+            return
+
+        for dst, mode in targets:
+            try:
+                bot.copy_message(dst, chat_id, msg.message_id)
+            except Exception as e:
+                log_error(f"handle_document forward to {dst}: {e}")
+
     except Exception as e:
-        log_error(f"handle_document: {e}")
-
-
+        log_error(f"handle_document error: {e}")
 # ==========================================================
-# SECTION 23 — COMMANDS HANDLER
+# SECTION 18.5 — Edited messages: direct correction of records
 # ==========================================================
-
-@bot.message_handler(commands=["start"])
-def cmd_start(msg):
+@bot.edited_message_handler(content_types=["text"])
+def handle_edited_message(msg):
     """
-    Старт: регистрирует чат, включает финансовый режим и сразу открывает окно дня.
+    Редактирование записи через редактирование сообщения.
     """
     chat_id = msg.chat.id
-    register_known_chat_from_chat(msg.chat)
+    message_id = msg.message_id
+    new_text = (msg.text or "").strip()
 
-    # Включаем финансовый режим сразу
-    set_finance_mode(chat_id, True)
-    save_data(data)
+    log_info(f"EDITED: пришёл edited_message в чате {chat_id}, msg_id={message_id}, text='{new_text}'")
 
-    dk = today_key()
-    txt, _ = render_day_window(chat_id, dk)
-    kb = build_main_keyboard(dk, chat_id)
-
-    bot.send_message(
-        chat_id,
-        "👋 Бот активен.\nФинансовый режим включён, окно на сегодня открыто."
-    )
-    bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-
-
-
-@bot.message_handler(commands=["поехали"])
-def cmd_go(msg):
-    chat_id = msg.chat.id
-    register_known_chat_from_chat(msg.chat)
-
-    set_finance_mode(chat_id, True)
-    save_data(data)
-
-    dk = today_key()
-    txt, _ = render_day_window(chat_id, dk)
-    kb = build_main_keyboard(dk, chat_id)
-
-    bot.send_message(chat_id, "⚙️ Финансовый режим включён")
-    bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-
-# ==========================================================
-# SECTION 24 — /reset, /total, /info (команды)
-# ==========================================================
-
-@bot.message_handler(commands=["reset"])
-def cmd_reset(msg):
-    chat_id = msg.chat.id
-    register_known_chat_from_chat(msg.chat)
-
-    if not require_finance(chat_id):
+    # 1) Проверка фин. режима
+    if not is_finance_mode(chat_id):
+        log_info(f"EDITED: игнор, finance_mode=OFF для чата {chat_id}")
         return
 
-    kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton("Да, удалить всё", callback_data=f"d:{today_key()}:reset_yes"))
-    kb.row(types.InlineKeyboardButton("Отмена", callback_data=f"d:{today_key()}:back_main"))
-
-    bot.send_message(chat_id, "Вы уверены, что хотите полностью обнулить данные чата?", reply_markup=kb)
-
-
-@bot.message_handler(commands=["total"])
-def cmd_total(msg):
-    chat_id = msg.chat.id
-    register_known_chat_from_chat(msg.chat)
-
-    if not require_finance(chat_id):
+    # 2) Проверка restore_mode
+    if restore_mode:
+        log_info("EDITED: игнор, restore_mode=True")
         return
+
+    update_chat_info_from_message(msg)
 
     store = get_chat_store(chat_id)
-    total = store.get("balance", 0)
+    day_key = today_key()
 
-    bot.send_message(chat_id, f"💰 Общий итог по чату: {fmt_num(total)}")
+    # 3) Ищем запись по msg_id / origin_msg_id
+    target = None
+    for day, recs in store.get("daily_records", {}).items():
+        for r in recs:
+            if r.get("msg_id") == message_id or r.get("origin_msg_id") == message_id:
+                target = r
+                day_key = day
+                break
+        if target:
+            break
 
+    if not target:
+        log_info(f"EDITED: запись не найдена по msg_id={message_id} в daily_records чата {chat_id}")
+        return
 
-@bot.message_handler(commands=["info"])
-def cmd_info(msg):
-    chat_id = msg.chat.id
-    register_known_chat_from_chat(msg.chat)
+    log_info(f"EDITED: найдена запись ID={target.get('id')} за день {day_key}")
 
-    info_msg = (
-        f"ℹ️ <b>Информация о боте</b>\n"
-        f"Версия: <code>{VERSION}</code>\n"
-        f"Финансовый режим: {'включён' if is_finance_mode(chat_id) else 'выключен'}\n"
-        f"Часовой пояс: {DEFAULT_TZ}\n"
-    )
-    bot.send_message(chat_id, info_msg, parse_mode="HTML")
-
-# ==========================================================
-# SECTION 25 — FORWARD MENU (ТОЛЬКО ДЛЯ OWNER)
-# ==========================================================
-
-def build_forward_menu_keyboard():
-    """
-    Показывает список всех известных чатов для владельца.
-    """
-    kc = data.get("known_chats", {})
-    kb = types.InlineKeyboardMarkup(row_width=1)
-
-    if not kc:
-        kb.row(types.InlineKeyboardButton("Нет известных чатов", callback_data="fw:none"))
-        return kb
-
-    for cid, info in kc.items():
-        title = info.get("title") or info.get("username") or f"Chat {cid}"
-        label = f"{title} (ID {cid})"
-        kb.row(types.InlineKeyboardButton(label, callback_data=f"fw:open:{cid}"))
-
-    kb.row(types.InlineKeyboardButton("Очистить все связи", callback_data="fw:clear_all"))
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{today_key()}:edit_menu"))
-
-    return kb
-
-
-def build_forward_direction_keyboard(src, dst):
-    """
-    Меню выбора направления пересылки:
-        src → dst
-        dst → src
-        ⇄ обоих
-    """
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(types.InlineKeyboardButton(f"{src} ➜ {dst}", callback_data=f"fw:one:{src}:{dst}"))
-    kb.row(types.InlineKeyboardButton(f"{dst} ➜ {src}", callback_data=f"fw:one:{dst}:{src}"))
-    kb.row(types.InlineKeyboardButton(f"{src} ⇄ {dst}", callback_data=f"fw:two:{src}:{dst}"))
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw:back"))
-    return kb
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("fw"))
-def on_forward_callback(call):
-    """
-    Меню пересылки — только для владельца.
-    """
+    # 4) Парсим новое содержимое
     try:
-        if not OWNER_ID or call.message.chat.id != int(OWNER_ID):
-            bot.answer_callback_query(call.id, "Нет доступа")
-            return
-
-        parts = call.data.split(":")
-        action = parts[1]
-
-        # ------- 1) Открыть список чатов -------
-        if action == "menu":
-            kb = build_forward_menu_keyboard()
-            bot.edit_message_text(
-                "🔁 Меню пересылки (выберите чат):",
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=kb
-            )
-            return
-
-        # ------- 2) Очистить все связи -------
-        if action == "clear_all":
-            clear_forward_all()
-            bot.answer_callback_query(call.id, "Все связи удалены.")
-            kb = build_forward_menu_keyboard()
-            bot.edit_message_reply_markup(
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=kb
-            )
-            return
-
-        # ------- 3) выбран чат (fw:open:<cid>) -------
-        if action == "open":
-            cid = parts[2]
-            selected_chat = cid
-            bot.answer_callback_query(call.id)
-
-            # меню выбора направления с OWNER_ID
-            kb = build_forward_direction_keyboard(OWNER_ID, selected_chat)
-            bot.edit_message_text(
-                f"Чат выбран: {selected_chat}\nВыберите направление пересылки:",
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=kb
-            )
-            return
-
-        # ------- 4) Односторонняя пересылка -------
-        if action == "one":
-            src = parts[2]
-            dst = parts[3]
-            add_forward_link(int(src), int(dst))
-
-            bot.answer_callback_query(call.id, f"Добавлено: {src} → {dst}")
-            kb = build_forward_menu_keyboard()
-            bot.edit_message_reply_markup(
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=kb
-            )
-            return
-
-        # ------- 5) Двусторонняя пересылка -------
-        if action == "two":
-            src = parts[2]
-            dst = parts[3]
-            add_forward_link(int(src), int(dst))
-            add_forward_link(int(dst), int(src))
-
-            bot.answer_callback_query(call.id, f"Связь {src} ⇄ {dst} установлена")
-            kb = build_forward_menu_keyboard()
-            bot.edit_message_reply_markup(
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=kb
-            )
-            return
-
-        # ------- 6) Назад -------
-        if action == "back":
-            kb = build_forward_menu_keyboard()
-            bot.edit_message_text(
-                "🔁 Меню пересылки:",
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=kb
-            )
-            return
-
+        new_amount, new_note = split_amount_and_note(new_text)
     except Exception as e:
-        log_error(f"on_forward_callback: {e}")
+        log_error(f"EDITED: ошибка парсинга суммы: {e}")
+        bot.send_message(chat_id, "❌ Ошибка: не удалось разобрать сумму.")
+        return
 
+    rid = target["id"]
+    log_info(f"EDITED: обновляем запись ID={rid}, amount={new_amount}, note='{new_note}'")
+
+    # 5) Обновляем запись
+    update_record_in_chat(chat_id, rid, new_amount, new_note)
+
+    # 6) Обновляем окно
+    update_or_send_day_window(chat_id, day_key)
+    log_info(f"EDITED: окно дня {day_key} обновлено для чата {chat_id}")
+
+@bot.message_handler(content_types=["deleted_message"])
+def handle_deleted_message(msg):
+    try:
+        chat_id = msg.chat.id
+        store = get_chat_store(chat_id)
+
+        if store.get("reset_wait", False):
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            save_data(data)
+    except:
+        pass
+        
 # ==========================================================
-# SECTION 26 — SERVICE: WEBHOOK & KEEP-ALIVE
+# SECTION 19 — Keep-alive
 # ==========================================================
 
-def keep_alive_thread():
-    """
-    Периодически делает self-ping, чтобы Render / Railway не засыпали приложение.
-    """
+KEEP_ALIVE_SEND_TO_OWNER = False
+
+def keep_alive_task():
     while True:
         try:
             if APP_URL:
-                requests.get(APP_URL)
+                try:
+                    resp = requests.get(APP_URL, timeout=10)
+                    log_info(f"Keep-alive ping -> {resp.status_code}")
+                except Exception as e:
+                    log_error(f"Keep-alive self error: {e}")
+
+            if KEEP_ALIVE_SEND_TO_OWNER and OWNER_ID:
+                try:
+                    pass
+                except Exception as e:
+                    log_error(f"Keep-alive notify error: {e}")
+
         except Exception as e:
-            log_error(f"keep_alive_thread: {e}")
-        time.sleep(KEEP_ALIVE_INTERVAL_SECONDS)
+            log_error(f"Keep-alive loop error: {e}")
+
+        time.sleep(max(10, KEEP_ALIVE_INTERVAL_SECONDS))
 
 
-def set_webhook():
-    """
-    Устанавливает webhook при запуске.
-    """
-    if not APP_URL:
-        log_info("APP_URL не задан — запускаем polling.")
-        return False
-
-    wh_url = f"{APP_URL}/{BOT_TOKEN}"
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-        bot.set_webhook(url=wh_url)
-        log_info(f"Webhook установлен: {wh_url}")
-        return True
-    except Exception as e:
-        log_error(f"set_webhook error: {e}")
-        return False
+def start_keep_alive_thread():
+    t = threading.Thread(target=keep_alive_task, daemon=True)
+    t.start()
+# Финансовая логика к документам не относится
 
 
 # ==========================================================
-# SECTION 27 — FLASK ENDPOINT
+# SECTION 20 — Webhook / Flask / main()
 # ==========================================================
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook_handler():
-    """
-    Все обновления от Telegram попадают сюда, если активен webhook.
-    """
+def telegram_webhook():
+    json_str = request.get_data().decode("utf-8")
+
+    # DEBUG 1: логируем, если прилетел edited_message
     try:
-        json_str = request.get_data().decode("utf-8")
-        update = telebot.types.Update.de_json(json_str)
-        bot.process_new_updates([update])
+        if '"edited_message"' in json_str:
+            log_info("WEBHOOK: получен update с edited_message")
     except Exception as e:
-        log_error(f"webhook_handler: {e}")
+        log_error(f"DEBUG webhook edited check error: {e}")
+
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
     return "OK", 200
 
 
-@app.route("/", methods=["GET"])
-def root():
-    return f"Bot {VERSION} running.", 200
-
-
-# ==========================================================
-# SECTION 28 — STARTUP RESTORE (Google Drive restore once)
-# ==========================================================
-
-def startup_restore():
-    """
-    Выполняется один раз при старте сервера.
-    Восстанавливает data.json, data.csv, csv_meta.json из Google Drive,
-    если их нет локально.
-    """
-    try:
-        restored = restore_from_gdrive_if_needed()
-        if restored:
-            log_info("✔️ Данные успешно восстановлены при старте.")
-        else:
-            log_info("Нет восстановления из Google Drive (локальные файлы найдены).")
-    except Exception as e:
-        log_error(f"startup_restore: {e}")
-
-
-# ==========================================================
-# SECTION 29 — SCHEDULE: AUTO-NEW-DAY WINDOW
-# ==========================================================
-
-def auto_new_day_thread():
-    """
-    Каждый день в 00:01 создаёт новое окно дня для активных чатов,
-    чтобы пользователю не приходилось нажимать ничего вручную.
-    """
-    while True:
-        try:
-            now_dt = now_local()
-            if now_dt.hour == 0 and now_dt.minute == 1:
-                dk = today_key()
-                for cid in list(finance_active_chats):
-                    try:
-                        txt, _ = render_day_window(cid, dk)
-                        kb = build_main_keyboard(dk, cid)
-                        bot.send_message(cid, txt, reply_markup=kb, parse_mode="HTML")
-                    except Exception as e:
-                        log_error(f"auto_new_day_thread chat {cid}: {e}")
-
-                time.sleep(60)
-
-        except Exception as e:
-            log_error(f"auto_new_day_thread: {e}")
-
-        time.sleep(20)
-
-
-# ==========================================================
-# SECTION 30 — STARTUP THREADS
-# ==========================================================
-
-def start_background_threads():
-    """
-    Запускает:
-      • keep-alive
-      • авто-новый день
-    """
-    th1 = threading.Thread(target=keep_alive_thread, daemon=True)
-    th1.start()
-
-    th2 = threading.Thread(target=auto_new_day_thread, daemon=True)
-    th2.start()
-
-    log_info("Background threads started.")
-
-# ==========================================================
-# SECTION 31 — RUN BOT (WEBHOOK / POLLING)
-# ==========================================================
-
-def run_polling():
-    """
-    Запуск обычным polling (если APP_URL не задан).
-    """
-    log_info("Запуск бота в режиме polling…")
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
-
-
-def run_webhook():
-    """
-    Запуск через webhook.
-    """
-    ok = set_webhook()
-    if not ok:
-        log_error("Webhook не установлен – fallback to polling")
-        run_polling()
+def set_webhook():
+    if not APP_URL:
+        log_info("APP_URL не указан — работаем в режиме polling.")
         return
 
-    log_info("Запуск Flask-сервера для приёма webhook…")
+    wh_url = APP_URL.rstrip("/") + f"/{BOT_TOKEN}"
+    bot.remove_webhook()
+    time.sleep(0.5)
+    bot.set_webhook(url=wh_url)
+    log_info(f"Webhook установлен: {wh_url}")
+
+
+def main():
+    global data
+
+    restored = restore_from_gdrive_if_needed()
+
+    data = load_data()
+    data["forward_rules"] = load_forward_rules()
+    log_info(f"Данные загружены. Версия бота: {VERSION}")
+
+    set_webhook()
+    start_keep_alive_thread()
+
+    if OWNER_ID:
+        try:
+            owner_id = int(OWNER_ID)
+        except Exception:
+            owner_id = None
+
+        if owner_id:
+            try:
+                # 1) текст "Бот запущен"
+                bot.send_message(
+                    owner_id,
+                    f"✅ Бот запущен (версия {VERSION}).\n"
+                    f"Восстановление: {'OK' if restored else 'пропущено'}"
+                )
+
+                # 2) сразу же первый бэкап JSON в чат владельца
+                #send_backup_to_chat_self(owner_id)
+
+            except Exception as e:
+                log_error(f"notify owner on start: {e}")
+
     app.run(host="0.0.0.0", port=PORT)
 
-
-# ==========================================================
-# SECTION 32 — MAIN
-# ==========================================================
-
 if __name__ == "__main__":
-    # 1) Восстанавливаем файлы из Google Drive, если их нет
-    startup_restore()
-
-    # 2) Загружаем данные
-    data = load_data()
-
-    # 3) Запускаем фоновые потоки
-    start_background_threads()
-
-    # 4) Запуск бота: webhook или polling
-    if APP_URL:
-        run_webhook()
-    else:
-        run_polling()
+    main()
