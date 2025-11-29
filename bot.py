@@ -3128,7 +3128,7 @@ def handle_text(msg):
                 save_chat_json(chat_id)
                 export_global_csv(data)
                 send_backup_to_channel(chat_id)
-                #send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
+                send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
 
                 store["edit_wait"] = None
                 save_data(data)
