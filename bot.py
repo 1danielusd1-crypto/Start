@@ -228,16 +228,42 @@ def save_data(d):
 # ==========================================================
 
 def chat_json_file(chat_id: int) -> str:
-    return f"data_{chat_id}.json"
-
+    """
+    Возвращает путь JSON-файла формата:    data_<username_or_title>.json
+    """
+    name = safe_chat_name(chat_id)
+    return f"data_{name}.json"
 
 def chat_csv_file(chat_id: int) -> str:
-    return f"data_{chat_id}.csv"
-
+    name = safe_chat_name(chat_id)
+    return f"data_{name}.csv"
 
 def chat_meta_file(chat_id: int) -> str:
-    return f"csv_meta_{chat_id}.json"
+    name = safe_chat_name(chat_id)
+    return f"csv_meta_{name}.json"
 
+def safe_chat_name(chat_id: int) -> str:
+    """
+    Возвращает безопасное имя чата:
+      1) username (если есть)
+      2) иначе title
+      3) иначе chat_<id>
+    Убираем пробелы и недопустимые символы.
+    """
+    store = get_chat_store(chat_id)
+    info = store.get("info", {})
+
+    name = info.get("username")
+    if not name:
+        name = info.get("title") or f"chat_{chat_id}"
+
+    # заменяем пробелы и убираем спецсимволы
+    name = str(name).strip()
+    name = name.replace(" ", "_")
+    name = re.sub(r"[^0-9A-Za-zА-Яа-я_\-]+", "", name)
+
+    # ограничение длины имени файла
+    return name[:32]
 
 def get_chat_store(chat_id: int) -> dict:
     """
@@ -3343,35 +3369,46 @@ def handle_document(msg):
             return
 
         # 3) per-chat JSON data_<chat>.json
+        # 3) per-chat JSON (новая логика, имя файла больше не содержит chat_id)
         if fname.startswith("data_") and fname.endswith(".json"):
             try:
-                target = int(fname.replace("data_", "").replace(".json", ""))
-            except:
-                send_and_auto_delete(chat_id, "❌ Невозможно определить chat_id из имени файла.")
-                return
+                # читаем временный файл
+                with open(tmp_path, "r", encoding="utf-8") as f:
+                    restored_store = json.load(f)
 
-            try:
-                os.replace(tmp_path, fname)
-                store = _load_json(fname, {})
-                if not store:
-                    send_and_auto_delete(chat_id, "❌ Файл повреждён или пуст.")
+                # в каждой per-chat JSON обязательно есть chat_id
+                target = restored_store.get("chat_id")
+                if not target:
+                    send_and_auto_delete(chat_id, "❌ В файле нет chat_id — невозможно определить чат.")
                     return
 
-                store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+                target = int(target)
 
-                data.setdefault("chats", {})[str(target)] = store
+                # записываем файл по новому правилу имени
+                new_path = chat_json_file(target)
+                os.replace(tmp_path, new_path)
+
+                # пересчитываем баланс
+                restored_store["balance"] = sum(
+                    r.get("amount", 0) for r in restored_store.get("records", [])
+                )
+
+                # сохраняем store в общие данные
+                data.setdefault("chats", {})[str(target)] = restored_store
                 finance_active_chats.add(target)
 
-                # пересобираем глобальные records и overall_balance
+                # пересобираем общие records
                 all_recs = []
-                for cid, s in data.get("chats", {}).items():
-                    all_recs.extend(s.get("records", []))
+                for cid, st in data.get("chats", {}).items():
+                    all_recs.extend(st.get("records", []))
+
                 data["records"] = all_recs
                 data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
 
                 save_data(data)
                 save_chat_json(target)
 
+                # обновляем окно
                 update_or_send_day_window(target, today_key())
 
                 restore_mode = False
@@ -3379,11 +3416,13 @@ def handle_document(msg):
                 send_and_auto_delete(
                     chat_id,
                     f"🟢 Чат {target} восстановлен.\n"
-                    f"Записей: {len(store.get('records', []))}\n"
-                    f"Баланс: {store['balance']}"
+                    f"Записей: {len(restored_store.get('records', []))}\n"
+                    f"Баланс: {restored_store['balance']}"
                 )
+
             except Exception as e:
                 send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
+
             return
 
         # 4) per-chat CSV
@@ -3600,15 +3639,16 @@ def main():
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
 
-            # 2) сразу же первый бэкап JSON в чат владельца (универсальная логика)
-            try:
-                send_backup_to_chat(owner_id)
-                log_info(f"Первый бэкап создан в чате владельца {owner_id}")
-            except Exception as e:
-                log_error(f"Ошибка создания первого бэкапа владельца: {e}")
+                # 2) сразу же первый бэкап JSON в чат владельца (универсальная логика)
+                try:
+                    send_backup_to_chat(owner_id)
+                    log_info(f"Первый бэкап создан в чате владельца {owner_id}")
+                except Exception as e:
+                    log_error(f"Ошибка создания первого бэкапа владельца: {e}")
 
-            
-    
+            except Exception as e:
+                log_error(f"notify owner on start: {e}")
+
     app.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
