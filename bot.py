@@ -789,7 +789,9 @@ def send_backup_to_chat(chat_id: int) -> None:
                     return
                 sent = bot.send_document(chat_id, fobj, caption=caption)
                 meta[msg_key] = sent.message_id
+                _save_chat_backup_meta(meta)   # <=== ВАЖНО
                 log_info(f"Chat backup re-sent in chat {chat_id}")
+                return                          # <=== ВАЖНО
         else:
             # --- первого сообщения ещё не было: создаём ---
             fobj = _open_file()
