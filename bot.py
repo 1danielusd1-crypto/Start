@@ -295,7 +295,87 @@ def send_backup_to_chat(chat_id: int) -> None:
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
 
+def send_backup_to_chat_extra(chat_id: int) -> None:
+    """
+    ВТОРОЙ независимый backup в чате.
+    Использует СВОЙ meta-ключ: msg_chat2_<chat_id>
+    """
+    try:
+        if not chat_id:
+            return
 
+        # обновляем json
+        save_chat_json(chat_id)
+
+        json_path = chat_json_file(chat_id)
+        if not os.path.exists(json_path):
+            log_error(f"send_backup_to_chat_extra: {json_path} NOT FOUND")
+            return
+
+        # Загружаем meta
+        meta = _load_chat_backup_meta()
+        msg_key = f"msg_chat2_{chat_id}"
+        ts_key = f"timestamp_chat2_{chat_id}"
+
+        chat_title = _get_chat_title_for_backup(chat_id)
+
+        caption = (
+            f"🧾 Доп. авто-бэкап JSON чата: {chat_title}\n"
+            f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        def _open_file():
+            try:
+                with open(json_path, "rb") as f:
+                    data_bytes = f.read()
+            except:
+                return None
+
+            if not data_bytes:
+                return None
+
+            safe = _safe_chat_title_for_filename(chat_title)
+            base = os.path.basename(json_path)
+            name_no_ext, dot, ext = base.partition(".")
+            if safe:
+                file_name = f"{name_no_ext}_{safe}.{ext}"
+            else:
+                file_name = base
+
+            buf = io.BytesIO(data_bytes)
+            buf.name = file_name
+            return buf
+
+        msg_id = meta.get(msg_key)
+
+        # Попытка обновить существующий бэкап
+        if msg_id:
+            fobj = _open_file()
+            if fobj:
+                try:
+                    bot.edit_message_media(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        media=telebot.types.InputMediaDocument(fobj, caption=caption)
+                    )
+                    meta[ts_key] = now_local().isoformat(timespec="seconds")
+                    _save_chat_backup_meta(meta)
+                    return
+                except Exception as e:
+                    log_error(f"send_backup_to_chat_extra edit FAILED: {e}")
+
+        # Создаём новое сообщение
+        fobj = _open_file()
+        if not fobj:
+            return
+
+        sent = bot.send_document(chat_id, fobj, caption=caption)
+        meta[msg_key] = sent.message_id
+        meta[ts_key] = now_local().isoformat(timespec="seconds")
+        _save_chat_backup_meta(meta)
+
+    except Exception as e:
+        log_error(f"send_backup_to_chat_extra({chat_id}): {e}")
 
 def default_data():
     return {
@@ -3128,7 +3208,7 @@ def handle_text(msg):
                 save_chat_json(chat_id)
                 export_global_csv(data)
                 send_backup_to_channel(chat_id)
-                send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
+                send_backup_to_chat_extra(chat_id)  # ← ДОБАВЬ ЭТО
 
                 store["edit_wait"] = None
                 save_data(data)
