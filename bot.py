@@ -161,9 +161,7 @@ def _save_csv_meta(meta: dict):
         log_error(f"_save_csv_meta: {e}")
         
 # === ABSOLUTE PATH FIX FOR RENDER ===
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CHAT_BACKUP_META_FILE = os.path.join(BASE_DIR, "chat_backup_meta.json")
-
+CHAT_BACKUP_META_FILE = "chat_backup_meta.json"
 log_info(f"chat_backup_meta.json PATH = {CHAT_BACKUP_META_FILE}")
 
 
