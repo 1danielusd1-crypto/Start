@@ -674,6 +674,7 @@ def _get_chat_title_for_backup(chat_id: int) -> str:
     except Exception as e:
         log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
     return f"chat_{chat_id}"
+    
 def send_backup_to_chat(chat_id: int):
     """
     Авто-бэкап JSON прямо в том чате, где бот находится.
@@ -863,113 +864,7 @@ def send_backup_to_channel(chat_id: int):
         send_backup_to_channel_for_file(CSV_FILE, "global_csv", "ALL_CHATS")
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
-        
-def send_backup_to_chat_self(chat_id: int):
-    """
-    Бэкап JSON этого чата прямо в этот же чат.
 
-    Логика:
-    - сохраняем актуальный data_<chat_id>.json
-    - отправляем его в чат, либо обновляем предыдущее сообщение с файлом
-      (метаданные лежат в chat_backup_meta.json).
-    """
-    try:
-        if not chat_id:
-            return
-
-        # 1) гарантируем актуальный JSON для чата (при необходимости создастся с нуля)
-        save_chat_json(chat_id)
-        path = chat_json_file(chat_id)
-
-        if not os.path.exists(path):
-            log_info(f"send_backup_to_chat_self: файл {path} не найден")
-            return
-
-        meta = _load_chat_backup_meta()
-        msg_key = f"msg_chat_{chat_id}"
-        ts_key = f"timestamp_chat_{chat_id}"
-
-        # helper: открыть файл как BytesIO для Telegram
-        def _open_for_telegram() -> io.BytesIO | None:
-            with open(path, "rb") as src:
-                data_bytes = src.read()
-
-            if not data_bytes:
-                log_error(f"send_backup_to_chat_self: {path} is empty, skip")
-                return None
-
-            buf = io.BytesIO(data_bytes)
-            buf.name = os.path.basename(path)  # имя файла в Telegram
-            buf.seek(0)                        # обязательно в начало!
-            return buf
-
-        caption = (
-            f"🧾 backup JSON чата {chat_id} — "
-            f"{now_local().strftime('%Y-%m-%d %H:%M')}"
-        )
-
-        old_mid = meta.get(msg_key)
-
-        # 2) если уже есть сообщение — пробуем отредактировать документ
-        if old_mid:
-            try:
-                fobj = _open_for_telegram()
-                if not fobj:
-                    return
-
-                bot.edit_message_media(
-                    chat_id=chat_id,
-                    message_id=old_mid,
-                    media=telebot.types.InputMediaDocument(fobj, caption=caption),
-                )
-                log_info(
-                    f"send_backup_to_chat_self: обновлён backup JSON "
-                    f"в чате {chat_id}, msg_id={old_mid}"
-                )
-
-            except Exception as e:
-                log_error(
-                    f"send_backup_to_chat_self: edit_message_media не удалось ({e}), пересоздаю сообщение"
-                )
-
-                # 🟢 КРИТИЧЕСКИЙ ФИКС:
-                # старый msg_id НЕ СУЩЕСТВУЕТ → сбрасываем его в meta
-                meta[msg_key] = None
-
-                fobj = _open_for_telegram()
-                if not fobj:
-                    return
-
-                sent = bot.send_document(chat_id, fobj, caption=caption)
-                meta[msg_key] = sent.message_id
-        else:
-            # 3) первый раз — просто отправляем документ
-            fobj = _open_for_telegram()
-            if not fobj:
-                return
-            sent = bot.send_document(chat_id, fobj, caption=caption)
-            meta[msg_key] = sent.message_id
-            log_info(
-                f"send_backup_to_chat_self: отправлен первый backup JSON "
-                f"в чат {chat_id}, msg_id={sent.message_id}"
-            )
-
-        # сохраняем обновлённый meta обязательно
-        meta[ts_key] = now_local().isoformat(timespec="seconds")
-        _save_chat_backup_meta(meta)
-
-    except Exception as e:
-        log_error(f"send_backup_to_chat_self({chat_id}): {e}")        
-
-def backup_to_chat_smart(chat_id: int):
-    """
-    Унифицированный бэкап JSON в чат:
-    • ВСЕ чаты (включая владельца) → send_backup_to_chat(...)
-    """
-    try:
-        send_backup_to_chat(chat_id)
-    except Exception as e:
-        log_error(f"backup_to_chat_smart({chat_id}): {e}")        
 #🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢
 # ==========================================================
 # SECTION 9 — Forward rules persistence (owner file)
@@ -2257,7 +2152,7 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    backup_to_chat_smart(chat_id)
+    send_backup_to_chat(chat_id)
 
 
 def delete_record_in_chat(chat_id: int, rid: int):
@@ -2285,7 +2180,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    backup_to_chat_smart(chat_id)
+    send_backup_to_chat(chat_id)
         
 def renumber_chat_records(chat_id: int):
     """
@@ -2990,7 +2885,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
 
             # === 4. Бэкапы ===
             send_backup_to_channel(chat_id)   # в бэкап-канал
-            backup_to_chat_smart(chat_id)       # JSON в сам чат
+            send_backup_to_chat(chat_id)      # JSON в сам чат
 
             # === 5. Окно дня: ВСЕГДА новое сообщение + удаление старого ===
             old_mid = get_active_window_id(chat_id, day_key)
@@ -3149,7 +3044,7 @@ def handle_text(msg):
                 save_chat_json(chat_id)
                 export_global_csv(data)
                 send_backup_to_channel(chat_id)
-                backup_to_chat_smart(chat_id)  # 🔁 умный бэкап в чат
+                send_backup_to_chat(chat_id) # 🔁 умный бэкап в чат
 
                 store["edit_wait"] = None
                 save_data(data)
@@ -3281,7 +3176,7 @@ def reset_chat_data(chat_id: int):
         save_chat_json(chat_id)
         export_global_csv(data)
         send_backup_to_channel(chat_id)
-        backup_to_chat_smart(chat_id)   # ← новый бэкап JSON в чат
+        send_backup_to_chat(chat_id)# ← новый бэкап JSON в чат
         
         # 🔥 СРАЗУ ПЕРЕРИСОВЫВАЕМ ОКНО
         day_key = store.get("current_view_day", today_key())
@@ -3704,7 +3599,7 @@ def main():
                 )
 
                 # 2) сразу же первый бэкап JSON в чат владельца
-                send_backup_to_chat_self(owner_id)
+                send_backup_to_chat(chat_id)
 
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
