@@ -916,6 +916,7 @@ def send_backup_to_chat_self(chat_id: int):
                 fobj = _open_for_telegram()
                 if not fobj:
                     return
+
                 bot.edit_message_media(
                     chat_id=chat_id,
                     message_id=old_mid,
@@ -925,14 +926,20 @@ def send_backup_to_chat_self(chat_id: int):
                     f"send_backup_to_chat_self: обновлён backup JSON "
                     f"в чате {chat_id}, msg_id={old_mid}"
                 )
+
             except Exception as e:
                 log_error(
-                    f"send_backup_to_chat_self: edit_message_media "
-                    f"не удалось ({e}), отправляю новый документ"
+                    f"send_backup_to_chat_self: edit_message_media не удалось ({e}), пересоздаю сообщение"
                 )
+
+                # 🟢 КРИТИЧЕСКИЙ ФИКС:
+                # старый msg_id НЕ СУЩЕСТВУЕТ → сбрасываем его в meta
+                meta[msg_key] = None
+
                 fobj = _open_for_telegram()
                 if not fobj:
                     return
+
                 sent = bot.send_document(chat_id, fobj, caption=caption)
                 meta[msg_key] = sent.message_id
         else:
@@ -947,7 +954,7 @@ def send_backup_to_chat_self(chat_id: int):
                 f"в чат {chat_id}, msg_id={sent.message_id}"
             )
 
-        # 4) обновляем метку времени
+        # сохраняем обновлённый meta обязательно
         meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
 
@@ -3709,7 +3716,7 @@ def main():
 
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
-    sened_backup_to_chat_self(owner_id)
+    
     app.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
