@@ -2961,8 +2961,12 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             export_global_csv(data)
 
             # === 4. Бэкапы ===
-            send_backup_to_channel(chat_id)   # в бэкап-канал
-            send_backup_to_chat(chat_id)      # JSON в сам чат
+            send_backup_to_channel(chat_id)
+
+            # ДАЁМ удалиться старому окну дня
+            time.sleep(1.5)
+
+            send_backup_to_chat(chat_id)    # JSON в сам чат
 
             # === 5. Окно дня: ВСЕГДА новое сообщение + удаление старого ===
             old_mid = get_active_window_id(chat_id, day_key)
