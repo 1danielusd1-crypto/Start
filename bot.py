@@ -2933,7 +2933,11 @@ def update_chat_info_from_message(msg):
         save_chat_json(int(OWNER_ID))
 
     save_chat_json(chat_id)
-
+    try:
+        send_backup_to_chat(chat_id)
+    except Exception as e:
+        log_error(f"update_chat_info backup error: {e}")
+# -------------------
 # ==========================================================
 # DEBOUNCE — запуск логики через 3 секунды тишины
 # ==========================================================
