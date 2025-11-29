@@ -3638,14 +3638,6 @@ def main():
                     f"✅ Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
-
-                # 2) сразу же первый бэкап JSON в чат владельца (универсальная логика)
-                try:
-                    send_backup_to_chat(owner_id)
-                    log_info(f"Первый бэкап создан в чате владельца {owner_id}")
-                except Exception as e:
-                    log_error(f"Ошибка создания первого бэкапа владельца: {e}")
-
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
 
