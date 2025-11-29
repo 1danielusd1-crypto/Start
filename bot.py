@@ -241,30 +241,52 @@ def chat_csv_file(chat_id: int) -> str:
 def chat_meta_file(chat_id: int) -> str:
     name = safe_chat_name(chat_id)
     return f"csv_meta_{name}.json"
-
+#🟢
 def safe_chat_name(chat_id: int) -> str:
     """
     Возвращает безопасное имя чата:
       1) username (если есть)
-      2) иначе title
-      3) иначе chat_<id>
-    Убираем пробелы и недопустимые символы.
+      2) title (если есть)
+      3) first_last (если title нет)
+      4) иначе chat_<id>
     """
     store = get_chat_store(chat_id)
     info = store.get("info", {})
 
+    # 1) username
     name = info.get("username")
-    if not name:
-        name = info.get("title") or f"chat_{chat_id}"
 
-    # заменяем пробелы и убираем спецсимволы
+    # 2) title
+    if not name:
+        title = info.get("title")
+        if title:
+            name = title
+
+    # 3) First_Last если title отсутствует
+    if not name:
+        first = info.get("first_name") or ""
+        last = info.get("last_name") or ""
+        if first:
+            name = f"{first}_{last}".strip("_")
+
+    # 4) fallback
+    if not name:
+        name = f"chat_{chat_id}"
+
+    # очистка от спецсимволов
     name = str(name).strip()
     name = name.replace(" ", "_")
     name = re.sub(r"[^0-9A-Za-zА-Яа-я_\-]+", "", name)
 
-    # ограничение длины имени файла
     return name[:32]
-
+#🔵
+def display_chat_name(chat_id: int) -> str:
+    """
+    Унифицированное отображаемое имя чата:
+    всегда совпадает с тем, что используется для формирования имён файлов бэкапа.
+    """
+    return safe_chat_name(chat_id)
+    #🔵
 def get_chat_store(chat_id: int) -> dict:
     """
     Хранилище данных одного чата.
@@ -793,15 +815,9 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         msg_key = f"msg_{meta_key_prefix}"
         ts_key = f"timestamp_{meta_key_prefix}"
         base_name = os.path.basename(base_path)
-        name_without_ext, dot, ext = base_name.partition(".")
-        safe_title = _safe_chat_title_for_filename(chat_title)
-        if safe_title:
-            file_name = f"{name_without_ext}_{safe_title}"
-            if dot:  # было расширение
-                file_name += f".{ext}"
-        else:
-            file_name = base_name
-        caption = f"📦 {file_name} — {now_local().strftime('%Y-%m-%d %H:%M')}"
+        # формируем имя файла ТОЛЬКО по имени чата, как в самих чатах
+        file_name = os.path.basename(base_path)
+        caption = f"📦 {file_name} — {now_local().strftime('%d.%m.%y %H:%M')}"
         def _open_for_telegram() -> io.BytesIO | None:
             if not os.path.exists(base_path):
                 log_error(f"send_backup_to_channel_for_file: {base_path} not found")
@@ -1290,7 +1306,7 @@ def build_forward_chat_list(day_key: str, chat_id: int):
         except:
             continue
 
-        title = info.get("title") or f"Чат {cid}"
+        title = display_chat_name(int_cid)
         cur_mode = rules.get(str(chat_id), {}).get(cid)
 
         if cur_mode == "oneway_to":
@@ -1379,7 +1395,7 @@ def build_forward_source_menu():
     known = owner_store.get("known_chats", {})
 
     for cid, ch in known.items():
-        title = ch.get("title") or f"Чат {cid}"
+        title = display_chat_name(int_cid)
         kb.row(
             types.InlineKeyboardButton(
                 title,
@@ -1416,7 +1432,7 @@ def build_forward_target_menu(src_id: int):
         if int_cid == src_id:
             continue
 
-        title = ch.get("title") or f"Чат {cid}"
+        title = display_chat_name(int(cid))
         kb.row(
             types.InlineKeyboardButton(
                 title,
@@ -1803,7 +1819,8 @@ def on_callback(call):
             # OWNER — расширенный вывод
             lines = []
             info = store.get("info", {})
-            title = info.get("title") or f"Чат {chat_id}"
+            title = display_chat_name(chat_id)
+            #title = info.get("title") or f"Чат {chat_id}"
 
             lines.append("💰 <b>Общий итог (для владельца)</b>")
             lines.append("")
@@ -1823,7 +1840,7 @@ def on_callback(call):
                 if cid_int == chat_id:
                     continue
                 info2 = st.get("info", {})
-                title2 = info2.get("title") or f"Чат {cid_int}"
+                title2 = display_chat_name(cid_int)
                 other_lines.append(f"   • {title2}: {fmt_num(bal)}")
 
             if other_lines:
@@ -2350,7 +2367,7 @@ def refresh_total_message_if_any(chat_id: int):
             # Владелец видит все чаты
             lines = []
             info = store.get("info", {})
-            title = info.get("title") or f"Чат {chat_id}"
+            title = display_chat_name(chat_id)
 
             lines.append("💰 <b>Общий итог (для владельца)</b>")
             lines.append("")
@@ -2370,7 +2387,7 @@ def refresh_total_message_if_any(chat_id: int):
                 if cid_int == chat_id:
                     continue
                 info2 = st.get("info", {})
-                title2 = info2.get("title") or f"Чат {cid_int}"
+                title2 = display_chat_name(cid_int)
                 other_lines.append(f"   • {title2}: {fmt_num(bal)}")
 
             if other_lines:
@@ -3415,7 +3432,7 @@ def handle_document(msg):
 
                 send_and_auto_delete(
                     chat_id,
-                    f"🟢 Чат {target} восстановлен.\n"
+                    f"🟢 {display_chat_name(target)} восстановлен.\n"
                     f"Записей: {len(restored_store.get('records', []))}\n"
                     f"Баланс: {restored_store['balance']}"
                 )
