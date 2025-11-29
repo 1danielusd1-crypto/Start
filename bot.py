@@ -697,9 +697,9 @@ def _get_chat_title_for_backup(chat_id: int) -> str:
     return f"chat_{chat_id}"
 
 
-def send_backup_to_chat(chat_id: int):
+def send_backup_to_chat(chat_id: int) -> None:
     """
-    Авто-бэкап JSON прямо в том чате, где бот находится.
+    Унифицированный авто-бэкап JSON прямо в том чате, где бот находится.
 
     Для каждого chat_id в chat_backup_meta.json храним:
       msg_chat_<chat_id>       -> message_id сообщения с файлом
@@ -715,14 +715,19 @@ def send_backup_to_chat(chat_id: int):
         if not chat_id:
             return
 
-        # 1) гарантируем, что JSON для этого чата свежий
-        save_chat_json(chat_id)
+        # 1) гарантируем актуальный JSON этого чата
+        try:
+            save_chat_json(chat_id)
+        except Exception as e:
+            log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
+
         path = chat_json_file(chat_id)
 
         if not os.path.exists(path):
             log_error(f"send_backup_to_chat: файл {path} не найден")
             return
 
+        # 2) читаем/готовим мета для этого чата
         meta = _load_chat_backup_meta()
         msg_key = f"msg_chat_{chat_id}"
         ts_key = f"timestamp_chat_{chat_id}"
@@ -734,9 +739,7 @@ def send_backup_to_chat(chat_id: int):
         )
 
         def _open_file() -> io.BytesIO | None:
-            """
-            Читаем data_<chat_id>.json в BytesIO для отправки.
-            """
+            """Читаем data_<chat_id>.json в BytesIO для отправки."""
             try:
                 with open(path, "rb") as src:
                     data_bytes = src.read()
@@ -749,7 +752,19 @@ def send_backup_to_chat(chat_id: int):
                 return None
 
             buf = io.BytesIO(data_bytes)
-            buf.name = os.path.basename(path)
+
+            # имя файла в Telegram: data_<safe_title>.json, если есть title
+            base_name = os.path.basename(path)
+            name_without_ext, dot, ext = base_name.partition(".")
+            safe_title = _safe_chat_title_for_filename(chat_title)
+            if safe_title:
+                file_name = f"{name_without_ext}_{safe_title}"
+                if dot:
+                    file_name += f".{ext}"
+            else:
+                file_name = base_name
+
+            buf.name = file_name
             return buf
 
         msg_id = meta.get(msg_key)
@@ -767,11 +782,8 @@ def send_backup_to_chat(chat_id: int):
                 )
                 log_info(f"Chat backup updated in chat {chat_id}")
             except Exception as e:
-                # ⚠️ Здесь как раз случай: сообщение удалено / устарело.
-                # Поэтому отправляем НОВОЕ и переписываем msg_id.
-                log_error(
-                    f"send_backup_to_chat edit_message_media chat {chat_id}: {e}"
-                )
+                # сообщение удалено / устарело — шлём новое и переписываем msg_id
+                log_error(f"send_backup_to_chat edit_message_media chat {chat_id}: {e}")
                 fobj = _open_file()
                 if not fobj:
                     return
@@ -793,6 +805,7 @@ def send_backup_to_chat(chat_id: int):
 
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
+        
 
 def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_title: str = None):
     """Helper to send or update a file in BACKUP_CHAT_ID with csv_meta tracking.
