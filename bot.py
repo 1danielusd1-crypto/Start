@@ -3607,8 +3607,7 @@ def main():
             except Exception as e:
                 log_error(f"Ошибка создания первого бэкапа владельца: {e}")
 
-            except Exception as e:
-                log_error(f"notify owner on start: {e}")
+            
     
     app.run(host="0.0.0.0", port=PORT)
 
