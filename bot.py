@@ -1850,8 +1850,8 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     #update_or_send_day_window(chat_id)
     save_data(data)
     save_chat_json(chat_id)
-    export_global_csv(data)
-    send_backup_to_channel(chat_id)
+    #1export_global_csv(data)
+    #1send_backup_to_channel(chat_id)
 
 
 def delete_record_in_chat(chat_id: int, rid: int):
@@ -2232,7 +2232,9 @@ def cmd_csv(msg):
         meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
         _save_csv_meta(meta)
 
-    send_backup_to_channel(chat_id)
+    #send_backup_to_channel(chat_id)
+    save_chat_json(chat_id)  # только один вызов
+ 
 
 
 @bot.message_handler(commands=["json"])
@@ -2359,7 +2361,7 @@ def update_chat_info_from_message(msg):
             "username": info["username"],
             "type": info["type"],
         }
-        #save_chat_json(int(OWNER_ID))
+        save_chat_json(int(OWNER_ID))
 
     #save_chat_json(chat_id)
 
