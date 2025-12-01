@@ -223,12 +223,42 @@ def send_backup_to_chat(chat_id: int) -> None:
         except:
             pass
 
-        with open(json_path, "rb") as f:
-            bot.edit_message_media(
-                media=telebot.types.InputMediaDocument(f, caption="📦 Backup"),
-                chat_id=chat_id,
-                message_id=msg_id
-            )
+        try:
+            with open(json_path, "rb") as f:
+                bot.edit_message_media(
+                    media=telebot.types.InputMediaDocument(f, caption="📦 Backup"),
+                    chat_id=chat_id,
+                    message_id=msg_id
+                )
+
+            # обновляем timestamp
+            meta[ts_key] = datetime.now().isoformat()
+            _save_chat_backup_meta(meta)
+            return
+
+        except Exception as edit_error:
+            # 🔥 ЛЮБАЯ ошибка редактирования = сообщение удалено, создаём новое
+            log_error(f"BACKUP: edit failed → creating NEW (chat {chat_id}): {edit_error}")
+
+            try:
+                if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                    bot.send_message(chat_id, "[DEBUG] EDIT FAILED — MESSAGE IS REMOVED")
+            except:
+                pass
+
+            # создаём новое сообщение
+            try:
+                with open(json_path, "rb") as f:
+                    new_msg = bot.send_document(chat_id, f, caption="📦 Backup")
+
+                meta[msg_key] = new_msg.message_id
+                meta[ts_key] = datetime.now().isoformat()
+                _save_chat_backup_meta(meta)
+                return
+
+            except Exception as send_err:
+                log_error(f"BACKUP: cannot send new message for chat {chat_id}: {send_err}")
+                return
 
         meta[ts_key] = datetime.now().isoformat()
         _save_chat_backup_meta(meta)
