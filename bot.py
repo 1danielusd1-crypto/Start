@@ -286,25 +286,7 @@ def send_backup_to_chat(chat_id: int) -> None:
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
         
-    # ===== DEBUG: Start of backup =====
-    try:
-        if OWNER_ID and str(chat_id) == str(OWNER_ID):
-            bot.send_message(chat_id, f"[DEBUG] START send_backup_to_chat({chat_id})")
-    except Exception as e:
-        log_error(f"DEBUG send msg failed: {e}")
 
-    # ===== DEBUG: read meta info =====
-    try:
-        if OWNER_ID and str(chat_id) == str(OWNER_ID):
-            meta_dbg = _load_chat_backup_meta()
-            msg_key_dbg = f"msg_chat_{chat_id}"
-            ts_key_dbg = f"timestamp_chat_{chat_id}"
-            bot.send_message(
-                chat_id,
-                f"[DEBUG] META LOADED: msg_id={meta_dbg.get(msg_key_dbg)} | ts={meta_dbg.get(ts_key_dbg)}"
-            )
-    except Exception as e:
-        log_error(f"DEBUG meta read failed: {e}")
 def default_data():
     return {
         "overall_balance": 0,
