@@ -317,8 +317,7 @@ def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
         _save_chat_backup_meta(meta)
 
     except Exception as e:
-        log_error(f"backup_json_to_same_chat({chat_id}): {e}")
-                        
+        log_error(f"backup_json_to_same_chat({chat_id}): {e}")                        
 #🟡🟡🟡🟡🟡🟡🟡🟡
 # ==========================================================
 # SECTION 5 — Per-chat storage helpers
