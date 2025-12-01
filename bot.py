@@ -158,134 +158,90 @@ def _save_chat_backup_meta(meta: dict) -> None:
 # === Backup JSON to the same chat ===
 def send_backup_to_chat(chat_id: int) -> None:
     """
-    Универсальный авто-бэкап JSON прямо в чате.
-    Работает одинаково для владельца, личных чатов, групп и каналов.
-    Логика:
-    • создаём / обновляем data_<chat_id>.json
-    • читаем chat_backup_meta.json
-    • если старое сообщение есть → обновляем через edit_message_media
-    • если нет → создаём новое
-    • meta-файл всегда хранится в рабочем каталоге
+    Создаёт или обновляет backup JSON файла в том же чате.
+    Работает одинаково для всех чатов, включая владельца.
+    Корректные debug-сообщения только в чате владельца.
     """
 
+    json_path = f"data_{chat_id}.json"
+    meta = _load_chat_backup_meta()
+
+    msg_key = f"msg_chat_{chat_id}"
+    ts_key = f"timestamp_chat_{chat_id}"
+
+    msg_id = meta.get(msg_key)
+
+    # ==== DEBUG: Старт ====
     try:
-        if not chat_id:
-            return
+        if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            bot.send_message(chat_id, f"[DEBUG] START backup | msg_id={msg_id}")
+    except:
+        pass
 
-        # 1) гарантируем, что JSON перезаписан
+    # ==== Проверяем, существует ли JSON ====
+    if not os.path.exists(json_path):
+        log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
+
         try:
-            save_chat_json(chat_id)
-        except Exception as e:
-            log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
+            if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                bot.send_message(chat_id, f"[DEBUG] JSON NOT FOUND: {json_path}")
+        except:
+            pass
 
-        json_path = chat_json_file(chat_id)
-        if not os.path.exists(json_path):
-            log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
-            try:
-                if OWNER_ID and str(chat_id) == str(OWNER_ID):
-                    bot.send_message(chat_id, f"[DEBUG] JSON NOT FOUND: {json_path}")
-            except:
-                pass
-            return
-        # 2) загрузка meta-файла
-        meta = _load_chat_backup_meta()
-        msg_key = f"msg_chat_{chat_id}"
-        ts_key = f"timestamp_chat_{chat_id}"
-        msg_id = meta.get(msg_key)
+        return
 
-        chat_title = _get_chat_title_for_backup(chat_id)
-        caption = (
-            f"🧾 Авто-бэкап JSON чата: {chat_title}\n"
-            f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-
-        # 3) функция открытия файла
-        def _open_file() -> io.BytesIO | None:
-            try:
-                with open(json_path, "rb") as f:
-                    data_bytes = f.read()
-            except Exception as e:
-                log_error(f"send_backup_to_chat open({json_path}): {e}")
-                return None
-
-            if not data_bytes:
-                return None
-
-            safe = _safe_chat_title_for_filename(chat_title)
-            base = os.path.basename(json_path)
-            name_no_ext, dot, ext = base.partition(".")
-
-            if safe:
-                file_name = f"{name_no_ext}_{safe}"
-                if ext:
-                    file_name += f".{ext}"
-            else:
-                file_name = base
-
-            buf = io.BytesIO(data_bytes)
-            buf.name = file_name
-            return buf
-
-        # === 4) ЕСЛИ СООБЩЕНИЕ ЕЩЁ НИКОГДА НЕ СОЗДАВАЛОСЬ ===
+    try:
+        # ==== Если msg_id нет — создаём новое сообщение ====
         if not msg_id or msg_id == "None":
             try:
                 if OWNER_ID and str(chat_id) == str(OWNER_ID):
                     bot.send_message(chat_id, "[DEBUG] creating NEW backup message")
             except:
                 pass
-            fobj = _open_file()
-            if not fobj:
-                return
-            sent = bot.send_document(chat_id, fobj, caption=caption)
+
+            with open(json_path, "rb") as f:
+                sent = bot.send_document(chat_id, f, caption="📦 Backup")
+
             meta[msg_key] = sent.message_id
-            meta[ts_key] = now_local().isoformat(timespec="seconds")
+            meta[ts_key] = datetime.now().isoformat()
             _save_chat_backup_meta(meta)
-            log_info(f"Chat backup CREATED for chat {chat_id}")
             return
 
-        # === 5) ПРОБУЕМ ОБНОВИТЬ СУЩЕСТВУЮЩЕЕ СООБЩЕНИЕ ===
-        fobj = _open_file()
-        if not fobj:
-            return
+        # ==== Если msg_id есть — пытаемся обновить ====
         try:
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 bot.send_message(chat_id, "[DEBUG] editing EXISTING backup")
         except:
             pass
-        try:
+
+        with open(json_path, "rb") as f:
             bot.edit_message_media(
+                media=telebot.types.InputMediaDocument(f, caption="📦 Backup"),
                 chat_id=chat_id,
-                message_id=msg_id,
-                media=telebot.types.InputMediaDocument(fobj, caption=caption)
+                message_id=msg_id
             )
-            meta[ts_key] = now_local().isoformat(timespec="seconds")
-            _save_chat_backup_meta(meta)
 
-            log_info(f"Chat backup UPDATED for chat {chat_id}")
-            return
-
-        except Exception as e:
-            log_error(f"send_backup_to_chat edit FAILED for {chat_id}: {e}")
-            try:
-                if OWNER_ID and str(chat_id) == str(OWNER_ID):
-                    bot.send_message(chat_id, "[DEBUG] EDIT FAILED → creating NEW backup")
-            except:
-                pass
-        # === 6) ЕСЛИ edit НЕ УДАЛСЯ → создаём НОВОЕ сообщение ===
-        fobj = _open_file()
-        if not fobj:
-            return
-
-        sent = bot.send_document(chat_id, fobj, caption=caption)
-        meta[msg_key] = sent.message_id
-        meta[ts_key] = now_local().isoformat(timespec="seconds")
+        meta[ts_key] = datetime.now().isoformat()
         _save_chat_backup_meta(meta)
-
-        log_info(f"Chat backup RE-CREATED (fallback) for chat {chat_id}")
+        return
 
     except Exception as e:
-        log_error(f"send_backup_to_chat({chat_id}): {e}")
-        
+        log_error(f"send_backup_to_chat edit FAILED for {chat_id}: {e}")
+
+        # ==== DEBUG: edit не удался — создаём заново ====
+        try:
+            if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                bot.send_message(chat_id, "[DEBUG] EDIT FAILED → creating NEW backup")
+        except:
+            pass
+
+        # ==== fallback создание нового сообщения ====
+        with open(json_path, "rb") as f:
+            sent = bot.send_document(chat_id, f, caption="📦 Backup")
+
+        meta[msg_key] = sent.message_id
+        meta[ts_key] = datetime.now().isoformat()
+        _save_chat_backup_meta(meta)
 
 def default_data():
     return {
