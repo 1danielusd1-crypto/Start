@@ -205,6 +205,82 @@ def save_data(d):
         "channel": bool(backup_flags.get("channel", True)),
     }
     _save_json(DATA_FILE, d)
+    
+# ============================
+#  BACKUP-TO-CHAT JSON system
+# ============================
+
+CHAT_BACKUP_META_FILE = "chat_backup_meta.json"
+
+
+def _load_chat_backup_meta() -> dict:
+    """
+    Метаданные бэкапов прямо в чаты:
+      {
+        "msg_chat_<chat_id>": message_id,
+        "timestamp_chat_<chat_id>": "2025-11-29T08:00:00"
+      }
+    """
+    try:
+        return _load_json(CHAT_BACKUP_META_FILE, {})
+    except Exception as e:
+        log_error(f"_load_chat_backup_meta: {e}")
+        return {}
+
+
+def _save_chat_backup_meta(meta: dict) -> None:
+    try:
+        _save_json(CHAT_BACKUP_META_FILE, meta)
+        log_info("chat_backup_meta.json updated")
+    except Exception as e:
+        log_error(f"_save_chat_backup_meta: {e}")
+
+
+def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
+    """
+    Бэкап JSON прямо в тот же чат:
+    - один чат = одно сообщение с файлом
+    - если сообщение удалили вручную — создаём новое
+    """
+    try:
+        meta = _load_chat_backup_meta()
+        msg_key = f"msg_chat_{chat_id}"
+        ts_key = f"timestamp_chat_{chat_id}"
+
+        path = chat_json_file(chat_id)
+
+        # на всякий случай ещё раз сохраняем payload в файл
+        _save_json(path, payload)
+
+        # если сообщение уже есть — пытаемся обновить через edit_message_media
+        if msg_key in meta:
+            try:
+                with open(path, "rb") as f:
+                    bot.edit_message_media(
+                        chat_id=chat_id,
+                        message_id=meta[msg_key],
+                        media=InputMediaDocument(f, filename=os.path.basename(path))
+                    )
+                meta[ts_key] = now_local().isoformat(timespec="seconds")
+                _save_chat_backup_meta(meta)
+                return
+            except Exception as e:
+                log_error(f"backup_json_to_same_chat/edit {chat_id}: {e}")
+                # падаем вниз, будем создавать новое сообщение
+
+        # если сообщения нет или edit не удался — отправляем новый документ
+        with open(path, "rb") as f:
+            msg = bot.send_document(
+                chat_id,
+                f,
+                caption=f"🧾 Backup JSON чата {chat_id}"
+            )
+        meta[msg_key] = msg.message_id
+        meta[ts_key] = now_local().isoformat(timespec="seconds")
+        _save_chat_backup_meta(meta)
+
+    except Exception as e:
+        log_error(f"backup_json_to_same_chat({chat_id}): {e}")
 
 #🟡🟡🟡🟡🟡🟡🟡🟡
 # ==========================================================
@@ -259,6 +335,7 @@ def get_chat_store(chat_id: int) -> dict:
 def save_chat_json(chat_id: int):
     """
     Save per-chat JSON, CSV and META for one chat.
+    Плюс: бэкап JSON-файла в тот же чат.
     """
     try:
         store = data.get("chats", {}).get(str(chat_id), {})
@@ -312,9 +389,12 @@ def save_chat_json(chat_id: int):
 
         log_info(f"Per-chat files saved for chat {chat_id}")
 
+        # ← вот здесь включаем бэкап в сам чат
+        backup_json_to_same_chat(chat_id, payload)
+
     except Exception as e:
         log_error(f"save_chat_json({chat_id}): {e}")
-
+        
 #🟣🟣🟣🟣🟣🟣🟣🟣🟣
 # ==========================================================
 # SECTION 6 — Number formatting & parsing (EU format, decimals)
