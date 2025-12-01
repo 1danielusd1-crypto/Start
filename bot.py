@@ -75,7 +75,7 @@ app = Flask(__name__)
 data = {}
 # chats where finance mode is enabled
 finance_active_chats = set()
-
+last_backup_call = {}
 # SECTION 3 — Helpers (time, logging)
 def log_info(msg: str):
     logger.info(msg)
@@ -157,6 +157,15 @@ def _save_chat_backup_meta(meta: dict) -> None:
 
 # === Backup JSON to the same chat ===
 def send_backup_to_chat(chat_id: int) -> None:
+
+    # ==== DEBOUNCE: защита от дублей ====
+    now = time.time()
+    last = last_backup_call.get(chat_id, 0)
+    if now - last < 0.3:
+        return
+    last_backup_call[chat_id] = now
+
+    # ==== DEBUG или твой код дальше ====
     """
     Создаёт или обновляет backup JSON файла в том же чате.
     Работает одинаково для всех чатов, включая владельца.
@@ -410,7 +419,7 @@ def save_chat_json(chat_id: int):
         _save_json(chat_path_meta, meta)
 
         log_info(f"Per-chat files saved for chat {chat_id}")
-
+        send_backup_to_chat(chat_id)
     except Exception as e:
         log_error(f"save_chat_json({chat_id}): {e}")
 
@@ -2151,7 +2160,7 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    send_backup_to_chat(chat_id)    # ← добавляем
+    #send_backup_to_chat(chat_id)    # ← добавляем
 
 
 def delete_record_in_chat(chat_id: int, rid: int):
@@ -2179,7 +2188,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
     save_chat_json(chat_id)
     export_global_csv(data)
     send_backup_to_channel(chat_id)
-    send_backup_to_chat(chat_id)    # ← доба
+    #send_backup_to_chat(chat_id)    # ← доба
     
 def renumber_chat_records(chat_id: int):
     """
@@ -2878,7 +2887,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
 
             # === 4. Бэкапы ===
             send_backup_to_channel(chat_id)   # в бэкап-канал
-            send_backup_to_chat(chat_id)      # JSON в сам чат
+            #send_backup_to_chat(chat_id)      # JSON в сам чат
 
             # === 5. Окно дня: ВСЕГДА новое сообщение + удаление старого ===
             old_mid = get_active_window_id(chat_id, day_key)
@@ -3037,7 +3046,7 @@ def handle_text(msg):
                 save_chat_json(chat_id)
                 export_global_csv(data)
                 send_backup_to_channel(chat_id)
-                send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
+                #send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
 
                 store["edit_wait"] = None
                 save_data(data)
@@ -3168,7 +3177,7 @@ def reset_chat_data(chat_id: int):
         save_chat_json(chat_id)
         export_global_csv(data)
         send_backup_to_channel(chat_id)
-        send_backup_to_chat(chat_id)   # ← новый бэкап JSON в чат
+        #send_backup_to_chat(chat_id)   # ← новый бэкап JSON в чат
 
         # 🔥 СРАЗУ ПЕРЕРИСОВЫВАЕМ ОКНО
         day_key = store.get("current_view_day", today_key())
