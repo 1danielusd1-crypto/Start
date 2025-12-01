@@ -46,7 +46,7 @@ from google.oauth2 import service_account
 # ========== SECTION 2 — Environment & globals ==========
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-OWNER_ID = os.getenv("OWNER_ID", "").strip()
+#OWNER_ID = os.getenv("OWNER_ID", "").strip()
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID", "").strip()
@@ -374,7 +374,7 @@ def get_chat_store(chat_id: int) -> dict:
         str(chat_id),
         {
             "info": {},                 # информация о чате (название, username)
-            "known_chats": {},          # словарь известных чатов (для владельца)
+                   # словарь известных чатов (для владельца)
             "balance": 0,
             "records": [],
             "daily_records": {},
@@ -390,8 +390,7 @@ def get_chat_store(chat_id: int) -> dict:
     )
 
     # гарантируем наличие known_chats после обновления бота
-    if "known_chats" not in store:
-        store["known_chats"] = {}
+    
 
     return store
 
@@ -429,7 +428,7 @@ def save_chat_json(chat_id: int):
             "daily_records": store.get("daily_records", {}),
             "next_id": store.get("next_id", 1),
             "info": store.get("info", {}),
-            "known_chats": store.get("known_chats", {}),
+            #"known_chats": store.get("known_chats", {}),
         }
 
         _save_json(chat_path_json, payload)
@@ -940,75 +939,6 @@ def send_backup_to_channel(chat_id: int):
 
         
 #🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢
-# ==========================================================
-# SECTION 9 — Forward rules persistence (owner file)
-# ==========================================================
-
-def _owner_data_file() -> str | None:
-    """
-    Файл владельца, где хранится forward_rules.
-    """
-    if not OWNER_ID:
-        return None
-    try:
-        return f"data_{int(OWNER_ID)}.json"
-    except Exception:
-        return None
-
-
-def load_forward_rules():
-    """
-    Загружает forward_rules из файла владельца.
-    Поддерживает старый формат (списки) и новый (словарь).
-    """
-    try:
-        path = _owner_data_file()
-        if not path or not os.path.exists(path):
-            return {}
-
-        payload = _load_json(path, {}) or {}
-        fr = payload.get("forward_rules", {})
-
-        upgraded = {}
-
-        for src, value in fr.items():
-            if isinstance(value, list):
-                upgraded[src] = {}
-                for dst in value:
-                    upgraded[src][dst] = "oneway_to"
-            elif isinstance(value, dict):
-                upgraded[src] = value
-            else:
-                continue
-
-        return upgraded
-    except Exception as e:
-        log_error(f"load_forward_rules: {e}")
-        return {}
-
-
-def persist_forward_rules_to_owner():
-    """
-    Сохраняет forward_rules (в НОВОМ формате) только в data_OWNER.json.
-    """
-    try:
-        path = _owner_data_file()
-        if not path:
-            return
-
-        payload = {}
-        if os.path.exists(path):
-            payload = _load_json(path, {})
-            if not isinstance(payload, dict):
-                payload = {}
-
-        payload["forward_rules"] = data.get("forward_rules", {})
-
-        _save_json(path, payload)
-        log_info(f"forward_rules persisted to {path}")
-
-    except Exception as e:
-        log_error(f"persist_forward_rules_to_owner: {e}")
 
 #✅✅✅✅✅✅
 # ==========================================================
@@ -1298,7 +1228,7 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
     )
 
     # ОДНА общая кнопка "Пересылка" для обоих режимов
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
+    #if OWNER_ID and str(chat_id) == str(OWNER_ID):
         kb.row(
             types.InlineKeyboardButton("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu")
         )
@@ -1321,12 +1251,13 @@ def build_forward_chat_list(day_key: str, chat_id: int):
     """
     kb = types.InlineKeyboardMarkup()
 
-    if not OWNER_ID:
-        return kb
+# Доступно ВСЕМ
+# known_chats убираем полностью — просто показываем все чаты, где бот был
+    all_chats = data.get("chats", {})
 
-    # берем ВСЕ чаты, где бот видел сообщения
-    owner_store = get_chat_store(int(OWNER_ID))
-    known = owner_store.get("known_chats", {})
+    for cid, store in all_chats.items():
+        title = store.get("info", {}).get("title") or f"Чат {cid}"
+        cur_mode = rules.get(str(chat_id), {}).get(cid)
 
     rules = data.get("forward_rules", {})
 
@@ -1412,20 +1343,18 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
 # ==========================================================
 
 def build_forward_source_menu():
-    """
-    Меню выбора чата A (источник пересылки).
-    Использует known_chats владельца.
-    """
     kb = types.InlineKeyboardMarkup()
 
-    if not OWNER_ID:
-        return kb
+    all_chats = data.get("chats", {})
 
-    owner_store = get_chat_store(int(OWNER_ID))
-    known = owner_store.get("known_chats", {})
+    for cid, store in all_chats.items():
+        try:
+            cid_int = int(cid)
+        except:
+            continue
 
-    for cid, ch in known.items():
-        title = ch.get("title") or f"Чат {cid}"
+        title = store.get("info", {}).get("title") or f"Чат {cid}"
+
         kb.row(
             types.InlineKeyboardButton(
                 title,
@@ -1433,36 +1362,28 @@ def build_forward_source_menu():
             )
         )
 
-    # Назад → возврат в меню редактирования
     kb.row(
         types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root")
     )
-
     return kb
 
 
 def build_forward_target_menu(src_id: int):
-    """
-    Меню выбора чата B (получатель пересылки) для уже выбранного A.
-    """
     kb = types.InlineKeyboardMarkup()
 
-    if not OWNER_ID:
-        return kb
+    all_chats = data.get("chats", {})
 
-    owner_store = get_chat_store(int(OWNER_ID))
-    known = owner_store.get("known_chats", {})
-
-    for cid, ch in known.items():
+    for cid, store in all_chats.items():
         try:
-            int_cid = int(cid)
-        except Exception:
+            cid_int = int(cid)
+        except:
             continue
 
-        if int_cid == src_id:
+        if cid_int == src_id:
             continue
 
-        title = ch.get("title") or f"Чат {cid}"
+        title = store.get("info", {}).get("title") or f"Чат {cid}"
+
         kb.row(
             types.InlineKeyboardButton(
                 title,
@@ -1470,14 +1391,11 @@ def build_forward_target_menu(src_id: int):
             )
         )
 
-    # Назад → обратно к выбору A
     kb.row(
         types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src")
     )
-
     return kb
-
-
+    
 def build_forward_mode_menu(A: int, B: int):
     """
     Меню выбора режима пересылки между чатами A и B:
@@ -1572,29 +1490,7 @@ def on_callback(call):
         # --------------------------------------------------
         # 1) NEW FORWARD SYSTEM — все callback-и fw_*
         # --------------------------------------------------
-        if data_str.startswith("fw_"):
-            # меню пересылки доступно только владельцу
-            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                try:
-                    bot.answer_callback_query(
-                        call.id,
-                        "Меню пересылки доступно только владельцу.",
-                        show_alert=True
-                    )
-                except Exception:
-                    pass
-                return
-
-            # открыть выбор чата A
-            if data_str == "fw_open":
-                kb = build_forward_source_menu()
-                bot.edit_message_text(
-                    "Выберите чат A:",
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    reply_markup=kb
-                )
-                return
+        
 
             # назад из выбора A → обратно в меню редактирования
             if data_str == "fw_back_root":
@@ -1834,17 +1730,12 @@ def on_callback(call):
         # общий итог: логика OWNER / не OWNER + запоминаем msg_id
         if cmd == "total":
             chat_bal = store.get("balance", 0)
-
-            # обычные чаты — только свой остаток
-            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                sent = bot.send_message(
-                    chat_id,
-                    f"💰 <b>Общий итог по этому чату:</b> {fmt_num(chat_bal)}",
-                    parse_mode="HTML"
-                )
-                store["total_msg_id"] = sent.message_id
-                save_data(data)
-                return
+            text = f"💰 Итог по этому чату: {fmt_num(chat_bal)}"
+            sent = bot.send_message(chat_id, text, parse_mode="HTML")
+            store["total_msg_id"] = sent.message_id
+            save_data(data)
+            return
+            
 
             # OWNER — расширенный вывод
             lines = []
@@ -2048,11 +1939,7 @@ def on_callback(call):
             delete_record_in_chat(chat_id, rid)
             update_or_send_day_window(chat_id, day_key)
             refresh_total_message_if_any(chat_id)
-            if OWNER_ID and str(chat_id) != str(OWNER_ID):
-                try:
-                    refresh_total_message_if_any(int(OWNER_ID))
-                except Exception:
-                    pass
+            
             send_and_auto_delete(chat_id, f"🗑 Запись R{rid} удалена.", 10)
             return
             
@@ -2711,12 +2598,7 @@ def cmd_csv(msg):
         with open(per_csv, "rb") as f:
             sent = bot.send_document(chat_id, f, caption="📂 CSV этого чата")
 
-    if OWNER_ID and chat_id == int(OWNER_ID):
-        meta = _load_csv_meta()
-        if sent and getattr(sent, "document", None):
-            meta["file_id_csv"] = sent.document.file_id
-        meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
-        _save_csv_meta(meta)
+    
 
     send_backup_to_channel(chat_id)
 
@@ -2911,23 +2793,15 @@ def update_chat_info_from_message(msg):
     Обновляет информацию о чате при каждом сообщении.
     Хранится в: store["info"] и store["known_chats"] (для OWNER).
     """
-    chat_id = msg.chat.id
-    store = get_chat_store(chat_id)
+    #chat_id = msg.chat.id
+    #store = get_chat_store(chat_id)
 
     info = store.setdefault("info", {})
     info["title"] = msg.chat.title or info.get("title") or f"Чат {chat_id}"
     info["username"] = msg.chat.username or info.get("username")
     info["type"] = msg.chat.type
 
-    if OWNER_ID and str(chat_id) != str(OWNER_ID):
-        owner_store = get_chat_store(int(OWNER_ID))
-        kc = owner_store.setdefault("known_chats", {})
-        kc[str(chat_id)] = {
-            "title": info["title"],
-            "username": info["username"],
-            "type": info["type"],
-        }
-        save_chat_json(int(OWNER_ID))
+    
 
     save_chat_json(chat_id)
 
@@ -3000,11 +2874,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
 
             # === 6. Обновляем «Общий итог» ===
             refresh_total_message_if_any(chat_id)
-            if OWNER_ID and str(chat_id) != str(OWNER_ID):
-                try:
-                    refresh_total_message_if_any(int(OWNER_ID))
-                except Exception:
-                    pass
+            
 
         except Exception as e:
             log_error(f"schedule_finalize job error for chat {chat_id}: {e}")
@@ -3178,12 +3048,7 @@ def handle_text(msg):
             schedule_finalize(chat_id, day_key)
             #update_or_send_day_window(chat_id, day_key)
             refresh_total_message_if_any(chat_id)
-            if OWNER_ID and str(chat_id) != str(OWNER_ID):
-                try:
-                    refresh_total_message_if_any(int(OWNER_ID))
-                except Exception:
-                    pass
-
+            
             store["edit_wait"] = None
             save_data(data)
             return
@@ -3263,11 +3128,7 @@ def reset_chat_data(chat_id: int):
             pass
 
         refresh_total_message_if_any(chat_id)
-        if OWNER_ID and str(chat_id) != str(OWNER_ID):
-            try:
-                refresh_total_message_if_any(int(OWNER_ID))
-            except Exception:
-                pass
+        
 
     except Exception as e:
         log_error(f"reset_chat_data({chat_id}): {e}")
