@@ -257,13 +257,13 @@ def send_backup_to_chat(chat_id: int) -> None:
             buf.name = file_name
             return buf
 
+        msg_key = f"msg_chat_{chat_id}"
         msg_id = meta.get(msg_key)
 
-        # === Попытка обновления существующего сообщения ===
-        if msg_id:
-            fobj = _open_file()
-            if not fobj:
-                return
+# если нет id → надо создать новый backup
+        if not msg_id or msg_id == "None":
+            send_backup_to_chat(chat_id)
+            return
 
             try:
                 bot.edit_message_media(
@@ -2711,13 +2711,7 @@ def cmd_csv(msg):
         with open(per_csv, "rb") as f:
             sent = bot.send_document(chat_id, f, caption="📂 CSV этого чата")
 
-    if OWNER_ID and chat_id == int(OWNER_ID):
-        meta = _load_csv_meta()
-        if sent and getattr(sent, "document", None):
-            meta["file_id_csv"] = sent.document.file_id
-        meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
-        _save_csv_meta(meta)
-
+    
     send_backup_to_channel(chat_id)
 
 
