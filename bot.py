@@ -733,7 +733,7 @@ def send_backup_to_channel(chat_id: int):
 
     try:
         # ensure per-chat files are fresh
-        save_chat_json(chat_id)
+        #save_chat_json(chat_id)
         send_backup_to_channel_for_file(chat_json_file(chat_id), f"json_chat_{chat_id}")
         send_backup_to_channel_for_file(chat_csv_file(chat_id), f"csv_chat_{chat_id}")
 
@@ -2359,7 +2359,7 @@ def update_chat_info_from_message(msg):
             "username": info["username"],
             "type": info["type"],
         }
-        save_chat_json(int(OWNER_ID))
+        #save_chat_json(int(OWNER_ID))
 
     save_chat_json(chat_id)
 
@@ -2369,7 +2369,7 @@ def update_chat_info_from_message(msg):
 
 _finalize_timers = {}
 
-def schedule_finalize(chat_id: int, day_key: str, delay: float = 3.0):
+def schedule_finalize(chat_id: int, day_key: str, delay: float = 1.0):
     def _job():
         store = get_chat_store(chat_id)
 
@@ -2386,7 +2386,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 3.0):
         # === 3. Сохранения ===
         save_data(data)
         save_chat_json(chat_id)
-        export_global_csv(data)
+        #export_global_csv(data)
         send_backup_to_channel(chat_id)
 
         # === 4. Создаём НОВОЕ окно и удаляем старое ===
@@ -2520,7 +2520,7 @@ def handle_text(msg):
 
                 save_data(data)
                 save_chat_json(chat_id)
-                export_global_csv(data)
+                #export_global_csv(data)
                 send_backup_to_channel(chat_id)
 
                 store["edit_wait"] = None
