@@ -239,8 +239,10 @@ def _save_chat_backup_meta(meta: dict) -> None:
 def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
     """
     Бэкап JSON прямо в тот же чат:
-    - один чат = одно сообщение с файлом
-    - если сообщение удалили вручную — создаём новое
+    - первый раз: отправляем файл и запоминаем message_id
+    - дальше: пытаемся ОБНОВИТЬ сообщение
+    - если сообщение реально удалили → создаём новое
+    - если любая другая ошибка при редактировании → НЕ спамим новыми файлами
     """
     try:
         meta = _load_chat_backup_meta()
@@ -249,10 +251,10 @@ def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
 
         path = chat_json_file(chat_id)
 
-        # на всякий случай ещё раз сохраняем payload в файл
+        # JSON на диске обновляем в любом случае
         _save_json(path, payload)
 
-        # если сообщение уже есть — пытаемся обновить через edit_message_media
+        # если у нас уже есть message_id — сначала пробуем редактировать
         if msg_key in meta:
             try:
                 with open(path, "rb") as f:
@@ -265,10 +267,21 @@ def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
                 _save_chat_backup_meta(meta)
                 return
             except Exception as e:
-                log_error(f"backup_json_to_same_chat/edit {chat_id}: {e}")
-                # падаем вниз, будем создавать новое сообщение
+                err_text = str(e)
+                log_error(f"backup_json_to_same_chat/edit {chat_id}: {err_text}")
 
-        # если сообщения нет или edit не удался — отправляем новый документ
+                # ✅ Новый файл создаём ТОЛЬКО если сообщение реально исчезло
+                # типичная ошибка от Telegram: "message to edit not found"
+                if "message to edit not found" in err_text.lower():
+                    # считаем, что сообщения больше нет → чистим мету и пойдём делать send_document
+                    meta.pop(msg_key, None)
+                    meta.pop(ts_key, None)
+                    _save_chat_backup_meta(meta)
+                else:
+                    # Любая другая ошибка: НИЧЕГО не шлём, чтобы не заспамить чат
+                    return
+
+        # сюда попадаем либо в первый раз, либо если точно знаем, что сообщение исчезло
         with open(path, "rb") as f:
             msg = bot.send_document(
                 chat_id,
@@ -281,7 +294,7 @@ def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
 
     except Exception as e:
         log_error(f"backup_json_to_same_chat({chat_id}): {e}")
-
+        
 #🟡🟡🟡🟡🟡🟡🟡🟡
 # ==========================================================
 # SECTION 5 — Per-chat storage helpers
