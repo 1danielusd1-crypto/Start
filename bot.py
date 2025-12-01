@@ -237,13 +237,6 @@ def _save_chat_backup_meta(meta: dict) -> None:
 
 
 def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
-    """
-    Бэкап JSON прямо в тот же чат:
-    - первый раз: отправляем файл
-    - дальше: обновляем существующее сообщение
-    - если файл удалён → создаём новый
-    - если ошибка не связана с удалением → НЕ отправляем новый файл
-    """
     try:
         meta = _load_chat_backup_meta()
         msg_key = f"msg_chat_{chat_id}"
@@ -251,64 +244,66 @@ def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
 
         path = chat_json_file(chat_id)
 
+        # Всегда пересохраняем файл на диске
         _save_json(path, payload)
 
-        # ==== Пробуем обновить существующее сообщение ====
+        # ============================================
+        # 1) Пытаемся обновить существующее сообщение
+        # ============================================
         if msg_key in meta:
             try:
                 with open(path, "rb") as f:
                     bot.edit_message_media(
                         chat_id=chat_id,
                         message_id=meta[msg_key],
-                        media=InputMediaDocument(f, filename=os.path.basename(path))
+                        media=InputMediaDocument(f)   # ← исправили здесь
                     )
+
                 meta[ts_key] = now_local().isoformat(timespec="seconds")
                 _save_chat_backup_meta(meta)
                 return
 
             except Exception as e:
-                err_text = str(e)
+                err_text = str(e).lower()
                 log_error(f"backup_json_to_same_chat/edit {chat_id}: {err_text}")
-                error_lower = err_text.lower()
 
-                # *все варианты ошибок удаления*
+                # Ошибки, которые означают что сообщение УДАЛЕНО
                 missing_errors = [
                     "message to edit not found",
                     "message not found",
                     "message_id_invalid",
                     "message id invalid",
-                    "message can't be edited",
-                    "can't edit",
                     "chat not found",
-                    "there is no media",
-                    "bad request: message to edit not found",
-                    "bad request: message not found",
-                    "bad request: message can't be edited",
+                    "bad request",
+                    "not enough rights",    # бывает в супергруппах
                 ]
 
-                if any(err in error_lower for err in missing_errors):
-                    # действительно удалено → пересоздаём
+                if any(err in err_text for err in missing_errors):
+                    # Удаляем запись → дальше создадим новый файл
                     meta.pop(msg_key, None)
                     meta.pop(ts_key, None)
                     _save_chat_backup_meta(meta)
                 else:
-                    # любая другая ошибка → НЕ создаём новое сообщение
+                    # Любая другая ошибка → не спамим
                     return
 
-        # ======= Создаём новое сообщение =======
+        # ============================================
+        # 2) Создаём новое сообщение с файлом
+        # ============================================
         with open(path, "rb") as f:
             msg = bot.send_document(
                 chat_id,
                 f,
                 caption=f"🧾 Backup JSON чата {chat_id}"
             )
+
         meta[msg_key] = msg.message_id
         meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
 
     except Exception as e:
         log_error(f"backup_json_to_same_chat({chat_id}): {e}")
-                
+        
 #🟡🟡🟡🟡🟡🟡🟡🟡
 # ==========================================================
 # SECTION 5 — Per-chat storage helpers
