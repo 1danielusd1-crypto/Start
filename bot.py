@@ -238,73 +238,42 @@ def _save_chat_backup_meta(meta: dict) -> None:
 
 def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
     """
-    Бэкап JSON прямо в тот же чат.
-    Обновлённая версия: бот проверяет существование сообщения через copy_message.
+    Бэкап JSON прямо в тот же чат:
+    - если сообщения ещё не было → отправляем и запоминаем message_id;
+    - если сообщение есть → пробуем обновить через edit_message_media;
+    - если edit_message_media по ЛЮБОЙ причине падает → считаем старое
+      сообщение невалидным и создаём новое.
     """
     try:
         meta = _load_chat_backup_meta()
         msg_key = f"msg_chat_{chat_id}"
-        ts_key  = f"timestamp_chat_{chat_id}"
+        ts_key = f"timestamp_chat_{chat_id}"
 
         path = chat_json_file(chat_id)
-        _save_json(path, payload)   # обновляем файл на диске
 
-        # =====================================================
-        # 0) Если у нас уже есть сообщение — проверяем, живо ли оно
-        # =====================================================
+        # всегда обновляем файл на диске
+        _save_json(path, payload)
+
+        # 1) пробуем обновить существующее сообщение
         if msg_key in meta:
-            old_msg_id = meta[msg_key]
-
-            try:
-                # ПРОВЕРКА СУЩЕСТВОВАНИЯ
-                # Пользователь копирования не увидит — мы удалим сразу же
-                temp = bot.copy_message(chat_id, chat_id, old_msg_id)
-                bot.delete_message(chat_id, temp.message_id)
-
-            except Exception as e:
-                # ----> Сообщения нет, оно УДАЛЕНО
-                log_info(f"Backup message for chat {chat_id} is deleted: {e}")
-
-                # удаляем запись о старом сообщении
-                meta.pop(msg_key, None)
-                meta.pop(ts_key, None)
-                _save_chat_backup_meta(meta)
-
-                # создаём новый файл
-                with open(path, "rb") as f:
-                    msg = bot.send_document(
-                        chat_id,
-                        f,
-                        caption=f"🧾 Backup JSON чата {chat_id}"
-                    )
-                meta[msg_key] = msg.message_id
-                meta[ts_key] = now_local().isoformat(timespec="seconds")
-                _save_chat_backup_meta(meta)
-                return
-
-            # =====================================================
-            # 1) Если сообщение существует — обновляем его
-            # =====================================================
             try:
                 with open(path, "rb") as f:
                     bot.edit_message_media(
                         chat_id=chat_id,
-                        message_id=old_msg_id,
+                        message_id=meta[msg_key],
                         media=InputMediaDocument(f)
                     )
                 meta[ts_key] = now_local().isoformat(timespec="seconds")
                 _save_chat_backup_meta(meta)
                 return
             except Exception as e:
-                # Если обновление упало — создаём новое
-                log_error(f"backup_json_to_same_chat/edit failed: {e}")
+                # любая ошибка редактирования → сбрасываем мету, дальше создаём новое
+                log_error(f"backup_json_to_same_chat/edit {chat_id}: {e}")
                 meta.pop(msg_key, None)
                 meta.pop(ts_key, None)
                 _save_chat_backup_meta(meta)
 
-        # =====================================================
-        # 2) Нет старого сообщения → создаём файл первый раз
-        # =====================================================
+        # 2) если старого сообщения нет или оно невалидно → создаём новое
         with open(path, "rb") as f:
             msg = bot.send_document(
                 chat_id,
@@ -317,8 +286,9 @@ def backup_json_to_same_chat(chat_id: int, payload: dict) -> None:
         _save_chat_backup_meta(meta)
 
     except Exception as e:
-        log_error(f"backup_json_to_same_chat({chat_id}): {e}")                        
-#🟡🟡🟡🟡🟡🟡🟡🟡
+        log_error(f"backup_json_to_same_chat({chat_id}): {e}")
+       
+        #🟡🟡🟡🟡🟡🟡🟡🟡
 # ==========================================================
 # SECTION 5 — Per-chat storage helpers
 # ==========================================================
@@ -2739,12 +2709,11 @@ def handle_document(msg):
     1) ВСЕ документы обновляют info/known_chats
     2) Если restore_mode == True → используется как файл восстановления
     3) Если restore_mode == False → обычная пересылка документа
+       (кроме служебных backup-файлов, которые бот шлёт сам себе)
     """
     global restore_mode, data
 
     chat_id = msg.chat.id
-    update_chat_info_from_message(msg)
-
     file = msg.document
     fname = (file.file_name or "").lower()
 
@@ -2845,8 +2814,19 @@ def handle_document(msg):
         send_and_auto_delete(chat_id, f"⚠️ Формат не поддерживается: {fname}")
         return
 
-    # --------- ВЕТКА ПЕРЕСЫЛКИ (restore_mode == False)  -----------
+    # --------- ОТБРОС СЛУЖЕБНЫХ BACKUP-ФАЙЛОВ -----------
+    backup_json_name = os.path.basename(chat_json_file(chat_id)).lower()
+    backup_csv_name = os.path.basename(chat_csv_file(chat_id)).lower()
+    if fname in (backup_json_name, backup_csv_name):
+        # Это наш собственный backup-файл в этот же чат.
+        # Не обновляем по нему chat_info и не запускаем пересылку/бэкапы,
+        # иначе получим рекурсивные сохранения и множественные сообщения.
+        return
 
+    # --------- ОБНОВЛЯЕМ CHAT_INFO ТОЛЬКО ДЛЯ "ОБЫЧНЫХ" ДОКУМЕНТОВ ---------
+    update_chat_info_from_message(msg)
+
+    # --------- ВЕТКА ПЕРЕСЫЛКИ (restore_mode == False)  -----------
     try:
         try:
             BOT_ID = bot.get_me().id
@@ -2876,6 +2856,7 @@ def handle_document(msg):
 
     except Exception as e:
         log_error(f"handle_document error: {e}")
+        
 # ==========================================================
 # SECTION 18.5 — Edited messages: direct correction of records
 # ==========================================================
