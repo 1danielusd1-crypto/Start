@@ -56,7 +56,7 @@ PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
-VERSION = "Code_ 022.9.11 🎈с4-15/18/20"
+VERSION = "Code_ 022.9.11 🎈с4-15/18/2✅0"
 
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
