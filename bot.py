@@ -1,18 +1,3 @@
-#2️⃣💢бекап
-#bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
-# Code_022.9.11 флаг✅
-#==========================================================
-
-# 🧭 Description: Code_022.1
-#  • Full finance UI: day window, edit menu, /prev /next /view, 31-day calendar, reports
-#  • Per-chat storage: data_<chat_id>.json, data_<chat_id>.csv, csv_meta_<chat_id>.json
-#  • Backup & restore via Google Drive + backup Telegram channel
-#  • Anonymous message forwarding between chats (forward_rules, owner-configurable)
-#  • Finance mode must be enabled per chat via /поехали
-#  • Keep-alive, webhook/Flask, daily window scheduler, auto backups
-# ==========================================================
-
-#🟠🟠🟠🟠🟠🟠🟠🟠🟠🟠
 # ========== SECTION 1 — Imports & basic config ==========
 import os
 import io
@@ -25,7 +10,6 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-
 import requests
 import telebot
 from telebot import types
@@ -36,15 +20,11 @@ from telebot.types import (
     InputMediaAudio
 )
 from flask import Flask, request
-
 # --- Google Drive ---
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-
-#⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️
 # ========== SECTION 2 — Environment & globals ==========
-
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OWNER_ID = os.getenv("OWNER_ID", "").strip()
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
@@ -94,37 +74,25 @@ app = Flask(__name__)
 
 # main in-memory store
 data = {}
-
 # chats where finance mode is enabled
 finance_active_chats = set()
 
-# ==========================================================
 # SECTION 3 — Helpers (time, logging)
-# ==========================================================
-
 def log_info(msg: str):
     logger.info(msg)
-
-
 def log_error(msg: str):
     logger.error(msg)
-
-
 def get_tz():
     """Return local timezone, with fallback to UTC-3."""
     try:
         return ZoneInfo(DEFAULT_TZ)
     except Exception:
         return timezone(timedelta(hours=-3))
-
-
 def now_local():
     return datetime.now(get_tz())
 
-
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
-
 
 # ==========================================================
 # SECTION 4 — JSON/CSV helpers
@@ -274,7 +242,7 @@ def send_backup_to_chat(chat_id: int) -> None:
         if not fobj:
             return
 
-        try:=
+        try:
             bot.edit_message_media(
                 chat_id=chat_id,
                 message_id=msg_id,
@@ -303,8 +271,6 @@ def send_backup_to_chat(chat_id: int) -> None:
 
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
-
-
 
 def default_data():
     return {
