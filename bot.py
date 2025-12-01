@@ -55,7 +55,6 @@ backup_flags = {
 # ==========================================================
 # RESTORE MODE FLAG
 # ==========================================================
-
 # В этом режиме пересылка документов полностью отключается,
 # и бот использует документы ТОЛЬКО для восстановления data.json / data_<chat>.json / csv_meta / CSV.
 restore_mode = False
@@ -147,7 +146,6 @@ def _load_chat_backup_meta() -> dict:
         log_error(f"_load_chat_backup_meta: {e}")
         return {}
 
-
 def _save_chat_backup_meta(meta: dict) -> None:
     """Сохранение meta-файла в ТОТ ЖЕ каталог, где лежит бот."""
     try:
@@ -156,7 +154,6 @@ def _save_chat_backup_meta(meta: dict) -> None:
         log_info("chat_backup_meta.json updated")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
-
 
 # === Backup JSON to the same chat ===
 def send_backup_to_chat(chat_id: int) -> None:
@@ -184,8 +181,12 @@ def send_backup_to_chat(chat_id: int) -> None:
         json_path = chat_json_file(chat_id)
         if not os.path.exists(json_path):
             log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
+            try:
+                if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                    bot.send_message(chat_id, f"[DEBUG] JSON NOT FOUND: {json_path}")
+            except:
+                pass
             return
-
         # 2) загрузка meta-файла
         meta = _load_chat_backup_meta()
         msg_key = f"msg_chat_{chat_id}"
@@ -227,6 +228,11 @@ def send_backup_to_chat(chat_id: int) -> None:
 
         # === 4) ЕСЛИ СООБЩЕНИЕ ЕЩЁ НИКОГДА НЕ СОЗДАВАЛОСЬ ===
         if not msg_id or msg_id == "None":
+            try:
+                if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                    bot.send_message(chat_id, "[DEBUG] creating NEW backup message")
+            except:
+                pass
             fobj = _open_file()
             if not fobj:
                 return
@@ -241,7 +247,11 @@ def send_backup_to_chat(chat_id: int) -> None:
         fobj = _open_file()
         if not fobj:
             return
-
+        try:
+            if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                bot.send_message(chat_id, "[DEBUG] editing EXISTING backup")
+        except:
+            pass
         try:
             bot.edit_message_media(
                 chat_id=chat_id,
@@ -256,7 +266,11 @@ def send_backup_to_chat(chat_id: int) -> None:
 
         except Exception as e:
             log_error(f"send_backup_to_chat edit FAILED for {chat_id}: {e}")
-
+            try:
+                if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                    bot.send_message(chat_id, "[DEBUG] EDIT FAILED → creating NEW backup")
+            except:
+                pass
         # === 6) ЕСЛИ edit НЕ УДАЛСЯ → создаём НОВОЕ сообщение ===
         fobj = _open_file()
         if not fobj:
@@ -271,7 +285,26 @@ def send_backup_to_chat(chat_id: int) -> None:
 
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
+        
+    # ===== DEBUG: Start of backup =====
+    try:
+        if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            bot.send_message(chat_id, f"[DEBUG] START send_backup_to_chat({chat_id})")
+    except Exception as e:
+        log_error(f"DEBUG send msg failed: {e}")
 
+    # ===== DEBUG: read meta info =====
+    try:
+        if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            meta_dbg = _load_chat_backup_meta()
+            msg_key_dbg = f"msg_chat_{chat_id}"
+            ts_key_dbg = f"timestamp_chat_{chat_id}"
+            bot.send_message(
+                chat_id,
+                f"[DEBUG] META LOADED: msg_id={meta_dbg.get(msg_key_dbg)} | ts={meta_dbg.get(ts_key_dbg)}"
+            )
+    except Exception as e:
+        log_error(f"DEBUG meta read failed: {e}")
 def default_data():
     return {
         "overall_balance": 0,
