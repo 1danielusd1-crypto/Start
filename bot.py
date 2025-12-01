@@ -1,4 +1,18 @@
-#3
+#2️⃣💢бекап
+#bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
+# Code_022.9.11 флаг✅
+#==========================================================
+
+# 🧭 Description: Code_022.1
+#  • Full finance UI: day window, edit menu, /prev /next /view, 31-day calendar, reports
+#  • Per-chat storage: data_<chat_id>.json, data_<chat_id>.csv, csv_meta_<chat_id>.json
+#  • Backup & restore via Google Drive + backup Telegram channel
+#  • Anonymous message forwarding between chats (forward_rules, owner-configurable)
+#  • Finance mode must be enabled per chat via /поехали
+#  • Keep-alive, webhook/Flask, daily window scheduler, auto backups
+# ==========================================================
+
+#🟠🟠🟠🟠🟠🟠🟠🟠🟠🟠
 # ========== SECTION 1 — Imports & basic config ==========
 import os
 import io
@@ -11,6 +25,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
 import requests
 import telebot
 from telebot import types
@@ -21,11 +36,15 @@ from telebot.types import (
     InputMediaAudio
 )
 from flask import Flask, request
+
 # --- Google Drive ---
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
+
+#⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️⚫️
 # ========== SECTION 2 — Environment & globals ==========
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OWNER_ID = os.getenv("OWNER_ID", "").strip()
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
@@ -56,6 +75,7 @@ backup_flags = {
 # ==========================================================
 # RESTORE MODE FLAG
 # ==========================================================
+
 # В этом режиме пересылка документов полностью отключается,
 # и бот использует документы ТОЛЬКО для восстановления data.json / data_<chat>.json / csv_meta / CSV.
 restore_mode = False
@@ -74,25 +94,37 @@ app = Flask(__name__)
 
 # main in-memory store
 data = {}
+
 # chats where finance mode is enabled
 finance_active_chats = set()
 
+# ==========================================================
 # SECTION 3 — Helpers (time, logging)
+# ==========================================================
+
 def log_info(msg: str):
     logger.info(msg)
+
+
 def log_error(msg: str):
     logger.error(msg)
+
+
 def get_tz():
     """Return local timezone, with fallback to UTC-3."""
     try:
         return ZoneInfo(DEFAULT_TZ)
     except Exception:
         return timezone(timedelta(hours=-3))
+
+
 def now_local():
     return datetime.now(get_tz())
 
+
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
+
 
 # ==========================================================
 # SECTION 4 — JSON/CSV helpers
@@ -147,6 +179,7 @@ def _load_chat_backup_meta() -> dict:
         log_error(f"_load_chat_backup_meta: {e}")
         return {}
 
+
 def _save_chat_backup_meta(meta: dict) -> None:
     """Сохранение meta-файла в ТОТ ЖЕ каталог, где лежит бот."""
     try:
@@ -156,24 +189,26 @@ def _save_chat_backup_meta(meta: dict) -> None:
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
 
+
 # === Backup JSON to the same chat ===
 def send_backup_to_chat(chat_id: int) -> None:
     """
     Универсальный авто-бэкап JSON прямо в чате.
-    Работает одинаково для владельца, личных чатов, групп и каналов.
+    Работает одинаково для владельца, групп, каналов, всех чатов.
+
     Логика:
-    • создаём / обновляем data_<chat_id>.json
-    • читаем chat_backup_meta.json
-    • если старое сообщение есть → обновляем через edit_message_media
-    • если нет → создаём новое
-    • meta-файл всегда хранится в рабочем каталоге
+    • гарантируем актуальный data_<chat_id>.json
+    • читаем meta-файл chat_backup_meta.json
+    • если есть msg_id → edit_message_media()
+    • если нет / не найдено → отправляем новое сообщение
+    • обновляем meta-файл в рабочей директории (Render-friendly)
     """
 
     try:
         if not chat_id:
             return
 
-        # 1) гарантируем, что JSON перезаписан
+        # Обновляем JSON для чата
         try:
             save_chat_json(chat_id)
         except Exception as e:
@@ -184,11 +219,10 @@ def send_backup_to_chat(chat_id: int) -> None:
             log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
             return
 
-        # 2) загрузка meta-файла
+        # Загрузка meta-файла
         meta = _load_chat_backup_meta()
         msg_key = f"msg_chat_{chat_id}"
         ts_key = f"timestamp_chat_{chat_id}"
-        msg_id = meta.get(msg_key)
 
         chat_title = _get_chat_title_for_backup(chat_id)
         caption = (
@@ -196,8 +230,8 @@ def send_backup_to_chat(chat_id: int) -> None:
             f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # 3) функция открытия файла
         def _open_file() -> io.BytesIO | None:
+            """Чтение JSON в BytesIO с правильным именем файла."""
             try:
                 with open(json_path, "rb") as f:
                     data_bytes = f.read()
@@ -223,39 +257,32 @@ def send_backup_to_chat(chat_id: int) -> None:
             buf.name = file_name
             return buf
 
-        # === 4) ЕСЛИ СООБЩЕНИЕ ЕЩЁ НИКОГДА НЕ СОЗДАВАЛОСЬ ===
-        if not msg_id or msg_id == "None":
+        msg_id = meta.get(msg_key)
+
+        # === Попытка обновления существующего сообщения ===
+        if msg_id:
             fobj = _open_file()
             if not fobj:
                 return
-            sent = bot.send_document(chat_id, fobj, caption=caption)
-            meta[msg_key] = sent.message_id
-            meta[ts_key] = now_local().isoformat(timespec="seconds")
-            _save_chat_backup_meta(meta)
-            log_info(f"Chat backup CREATED for chat {chat_id}")
-            return
 
-        # === 5) ПРОБУЕМ ОБНОВИТЬ СУЩЕСТВУЮЩЕЕ СООБЩЕНИЕ ===
-        fobj = _open_file()
-        if not fobj:
-            return
+            try:
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=telebot.types.InputMediaDocument(fobj, caption=caption)
+                )
+                log_info(f"Chat backup UPDATED in chat {chat_id}")
 
-        try:
-            bot.edit_message_media(
-                chat_id=chat_id,
-                message_id=msg_id,
-                media=telebot.types.InputMediaDocument(fobj, caption=caption)
-            )
-            meta[ts_key] = now_local().isoformat(timespec="seconds")
-            _save_chat_backup_meta(meta)
+                # Сохраняем timestamp
+                meta[ts_key] = now_local().isoformat(timespec="seconds")
+                _save_chat_backup_meta(meta)
+                return
 
-            log_info(f"Chat backup UPDATED for chat {chat_id}")
-            return
+            except Exception as e:
+                # сообщение удалено / не найдено — создаём заново
+                log_error(f"send_backup_to_chat edit FAILED in {chat_id}: {e}")
 
-        except Exception as e:
-            log_error(f"send_backup_to_chat edit FAILED for {chat_id}: {e}")
-
-        # === 6) ЕСЛИ edit НЕ УДАЛСЯ → создаём НОВОЕ сообщение ===
+        # === ИЛИ создаём новое сообщение ===
         fobj = _open_file()
         if not fobj:
             return
@@ -263,12 +290,14 @@ def send_backup_to_chat(chat_id: int) -> None:
         sent = bot.send_document(chat_id, fobj, caption=caption)
         meta[msg_key] = sent.message_id
         meta[ts_key] = now_local().isoformat(timespec="seconds")
-        _save_chat_backup_meta(meta)
 
-        log_info(f"Chat backup RE-CREATED (fallback) for chat {chat_id}")
+        _save_chat_backup_meta(meta)
+        log_info(f"Chat backup CREATED in chat {chat_id}")
 
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
+
+
 
 def default_data():
     return {
@@ -771,6 +800,25 @@ def _get_chat_title_for_backup(chat_id: int) -> str:
     except Exception as e:
         log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
     return f"chat_{chat_id}"
+    
+def _get_chat_title_for_backup(chat_id: int) -> str:
+    """
+    Берём название чата из store["info"], чтобы подписывать бэкап.
+    """
+    try:
+        store = get_chat_store(chat_id)
+        info = store.get("info", {})
+        title = info.get("title")
+        if title:
+            return title
+    except Exception as e:
+        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
+    return f"chat_{chat_id}"
+
+
+
+        
+            
 
 def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_title: str = None):
     """Helper to send or update a file in BACKUP_CHAT_ID with csv_meta tracking.
@@ -2663,7 +2711,13 @@ def cmd_csv(msg):
         with open(per_csv, "rb") as f:
             sent = bot.send_document(chat_id, f, caption="📂 CSV этого чата")
 
-    
+    if OWNER_ID and chat_id == int(OWNER_ID):
+        meta = _load_csv_meta()
+        if sent and getattr(sent, "document", None):
+            meta["file_id_csv"] = sent.document.file_id
+        meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
+        _save_csv_meta(meta)
+
     send_backup_to_channel(chat_id)
 
 
@@ -3064,7 +3118,7 @@ def handle_text(msg):
                 save_chat_json(chat_id)
                 export_global_csv(data)
                 send_backup_to_channel(chat_id)
-                send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
+                #send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
 
                 store["edit_wait"] = None
                 save_data(data)
