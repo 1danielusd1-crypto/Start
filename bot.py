@@ -1229,7 +1229,7 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
 
     # ОДНА общая кнопка "Пересылка" для обоих режимов
     #if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        kb.row(
+    kb.row(
             types.InlineKeyboardButton("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu")
         )
     kb.row(
