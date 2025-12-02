@@ -937,8 +937,8 @@ def send_backup_to_channel(chat_id: int):
         # 2) per-chat JSON / CSV
         json_path = chat_json_file(chat_id)
         csv_path = chat_csv_file(chat_id)
-        send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
-        send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
+        #send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
+        #send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
         # 3) при желании — глобальные файлы (можно закомментировать, если не нужно)
         #send_backup_to_channel_for_file(DATA_FILE, "global_data", "ALL_CHATS")
         #send_backup_to_channel_for_file(CSV_FILE, "global_csv", "ALL_CHATS")
@@ -3126,7 +3126,7 @@ def handle_text(msg):
                 save_data(data)
                 save_chat_json(chat_id)
                 export_global_csv(data)
-                send_backup_to_channel(chat_id)
+                #send_backup_to_channel(chat_id)
                 #send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
 
                 store["edit_wait"] = None
