@@ -871,6 +871,15 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
                 log_info(f"Channel file updated: {base_path}")
             except Exception as e:
                 log_error(f"edit_message_media {base_path}: {e}")
+
+                # 💥 Пытаемся удалить старое "мертвое" сообщение,
+                # чтобы в канале не копились дубликаты
+                try:
+                    bot.delete_message(int(BACKUP_CHAT_ID), meta[msg_key])
+                except Exception as del_e:
+                    log_error(f"delete_message {base_path}: {del_e}")
+
+                # Отправляем новый документ и запоминаем его message_id
                 fobj = _open_for_telegram()
                 if not fobj:
                     return
