@@ -831,10 +831,12 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
     if not os.path.exists(base_path):
         log_error(f"send_backup_to_channel_for_file: {base_path} not found")
         return
+
     try:
         meta = _load_csv_meta()
         msg_key = f"msg_{meta_key_prefix}"
         ts_key = f"timestamp_{meta_key_prefix}"
+
         base_name = os.path.basename(base_path)
         name_without_ext, dot, ext = base_name.partition(".")
         safe_title = _safe_chat_title_for_filename(chat_title)
@@ -844,7 +846,9 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
                 file_name += f".{ext}"
         else:
             file_name = base_name
+
         caption = f"📦 {file_name} — {now_local().strftime('%Y-%m-%d %H:%M')}"
+
         def _open_for_telegram() -> io.BytesIO | None:
             if not os.path.exists(base_path):
                 log_error(f"send_backup_to_channel_for_file: {base_path} not found")
@@ -858,7 +862,9 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
             buf.name = file_name
             buf.seek(0)
             return buf
+
         if meta.get(msg_key):
+            # уже есть сообщение в канале — пробуем обновить
             try:
                 fobj = _open_for_telegram()
                 if not fobj:
@@ -872,30 +878,32 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
             except Exception as e:
                 log_error(f"edit_message_media {base_path}: {e}")
 
-                # 💥 Пытаемся удалить старое "мертвое" сообщение,
-                # чтобы в канале не копились дубликаты
+                # ❗ если обновить не получилось — старое сообщение скорее всего "мертвое"
+                # пробуем его удалить, чтобы не плодить дублей
                 try:
                     bot.delete_message(int(BACKUP_CHAT_ID), meta[msg_key])
                 except Exception as del_e:
                     log_error(f"delete_message {base_path}: {del_e}")
 
-                # Отправляем новый документ и запоминаем его message_id
+                # шлём новое сообщение с файлом и запоминаем новый message_id
                 fobj = _open_for_telegram()
                 if not fobj:
                     return
                 sent = bot.send_document(int(BACKUP_CHAT_ID), fobj, caption=caption)
                 meta[msg_key] = sent.message_id
         else:
+            # первого сообщения ещё не было — создаём
             fobj = _open_for_telegram()
             if not fobj:
                 return
             sent = bot.send_document(int(BACKUP_CHAT_ID), fobj, caption=caption)
             meta[msg_key] = sent.message_id
+
         meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_csv_meta(meta)
     except Exception as e:
         log_error(f"send_backup_to_channel_for_file({base_path}): {e}")
-
+        
 def send_backup_to_channel(chat_id: int):
     """
     Общий бэкап файлов чата в BACKUP_CHAT_ID.
@@ -905,7 +913,6 @@ def send_backup_to_channel(chat_id: int):
     • обновляет/создаёт:
         - data_<chat_id>.json
         - data_<chat_id>.csv
-        - при желании глобальные data.json / data.csv
     """
     try:
         if not BACKUP_CHAT_ID:
@@ -913,16 +920,20 @@ def send_backup_to_channel(chat_id: int):
         if not backup_flags.get("channel", True):
             log_info("send_backup_to_channel: channel backup disabled by flag.")
             return
+
         try:
             backup_chat_id = int(BACKUP_CHAT_ID)
         except Exception:
             log_error("send_backup_to_channel: BACKUP_CHAT_ID не является числом.")
             return
+
         # гарантируем свежие файлы
         save_chat_json(chat_id)
         export_global_csv(data)
         save_data(data)
+
         chat_title = _get_chat_title_for_backup(chat_id)
+
         # 1) один раз отправляем emoji chat_id в канал бэкапов
         if chat_id not in backup_channel_notified_chats:
             try:
@@ -934,20 +945,20 @@ def send_backup_to_channel(chat_id: int):
                     f"send_backup_to_channel: не удалось отправить emoji chat_id "
                     f"в канал: {e}"
                 )
-        # 2) per-chat JSON / CSV
+
+        # 2) только per-chat JSON / CSV — без global data.json / data.csv
         json_path = chat_json_file(chat_id)
         csv_path = chat_csv_file(chat_id)
-        #send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
-        #send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
-        # 3) при желании — глобальные файлы (можно закомментировать, если не нужно)
-        #send_backup_to_channel_for_file(DATA_FILE, "global_data", "ALL_CHATS")
-        #send_backup_to_channel_for_file(CSV_FILE, "global_csv", "ALL_CHATS")
+        send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
+        send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
+
+        # 3) глобальные файлы НЕ отправляем в канал, чтобы не было лишнего .csv
+        # send_backup_to_channel_for_file(DATA_FILE, "global_data", "ALL_CHATS")
+        # send_backup_to_channel_for_file(CSV_FILE, "global_csv", "ALL_CHATS")
+
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
-        
 
-
-        
 #🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢
 # ==========================================================
 # SECTION 9 — Forward rules persistence (owner file)
