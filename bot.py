@@ -726,9 +726,9 @@ def send_backup_to_channel(chat_id: int):
 
     try:
         # ensure per-chat files are fresh
-        save_chat_json(chat_id)
+        #save_chat_json(chat_id)
         send_backup_to_channel_for_file(chat_json_file(chat_id), f"json_chat_{chat_id}")
-        send_backup_to_channel_for_file(chat_csv_file(chat_id), f"csv_chat_{chat_id}")
+        #send_backup_to_channel_for_file(chat_csv_file(chat_id), f"csv_chat_{chat_id}")
 
         # optional: update global CSV snapshot
         export_global_csv(data)
@@ -1841,10 +1841,10 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: int, new_note: str
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
     
     #update_or_send_day_window(chat_id)
-    save_data(data)
+    #save_data(data)
     save_chat_json(chat_id)
-    export_global_csv(data)
-    send_backup_to_channel(chat_id)
+    #export_global_csv(data)
+    #send_backup_to_channel(chat_id)
 
 
 def delete_record_in_chat(chat_id: int, rid: int):
@@ -1865,10 +1865,10 @@ def delete_record_in_chat(chat_id: int, rid: int):
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
     #update_or_send_day_window(chat_id)
-    save_data(data)
+    #save_data(data)
     save_chat_json(chat_id)
-    export_global_csv(data)
-    send_backup_to_channel(chat_id)
+    #export_global_csv(data)
+    #send_backup_to_channel(chat_id)
 
 # ==========================================================
 # SECTION 14 — Active window system (версия код-010)
@@ -2207,7 +2207,7 @@ def cmd_csv(msg):
         return
 
     export_global_csv(data)
-    save_chat_json(chat_id)
+    save_chat_json(chat_id)#2
 
     per_csv = chat_csv_file(chat_id)
     sent = None
@@ -2225,7 +2225,7 @@ def cmd_csv(msg):
         meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
         _save_csv_meta(meta)
 
-    send_backup_to_channel(chat_id)
+    #2send_backup_to_channel(chat_id)
 
 
 @bot.message_handler(commands=["json"])
@@ -2354,7 +2354,7 @@ def update_chat_info_from_message(msg):
         }
         save_chat_json(int(OWNER_ID))
 
-    save_chat_json(chat_id)
+    #save_chat_json(chat_id)
 
 # ==========================================================
 # DEBOUNCE — запуск логики через 3 секунды тишины
@@ -2377,9 +2377,9 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 3.0):
         data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
 
         # === 3. Сохранения ===
-        save_data(data)
+        #save_data(data)
         save_chat_json(chat_id)
-        export_global_csv(data)
+        #export_global_csv(data)
         send_backup_to_channel(chat_id)
 
         # === 4. Создаём НОВОЕ окно и удаляем старое ===
@@ -2511,9 +2511,9 @@ def handle_text(msg):
 
                 data["overall_balance"] = sum(x["amount"] for x in data["records"])
 
-                save_data(data)
+                #save_data(data)
                 save_chat_json(chat_id)
-                export_global_csv(data)
+                #export_global_csv(data)
                 send_backup_to_channel(chat_id)
 
                 store["edit_wait"] = None
