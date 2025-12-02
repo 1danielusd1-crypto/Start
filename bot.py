@@ -931,8 +931,8 @@ def send_backup_to_channel(chat_id: int):
         send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
         send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
         # 3) при желании — глобальные файлы (можно закомментировать, если не нужно)
-        send_backup_to_channel_for_file(DATA_FILE, "global_data", "ALL_CHATS")
-        send_backup_to_channel_for_file(CSV_FILE, "global_csv", "ALL_CHATS")
+        #send_backup_to_channel_for_file(DATA_FILE, "global_data", "ALL_CHATS")
+        #send_backup_to_channel_for_file(CSV_FILE, "global_csv", "ALL_CHATS")
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
         
