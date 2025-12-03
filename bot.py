@@ -3092,17 +3092,19 @@ def force_backup_to_chat(chat_id: int):
     except Exception as e:
         log_error(f"force_backup_to_chat({chat_id}): {e}")
 def force_new_day_window(chat_id: int, day_key: str):
+    old_mid = get_active_window_id(chat_id, day_key)
+
     txt, _ = render_day_window(chat_id, day_key)
     kb = build_main_keyboard(day_key, chat_id)
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
 
-    sent = bot.send_message(
-        chat_id,
-        txt,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
     set_active_window_id(chat_id, day_key, sent.message_id)
-    
+
+    if old_mid:
+        try:
+            bot.delete_message(chat_id, old_mid)
+        except Exception:
+            pass    
 @bot.message_handler(content_types=["text"])
 def handle_text(msg):
     try:
