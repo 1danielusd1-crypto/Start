@@ -188,7 +188,22 @@ def _save_chat_backup_meta(meta: dict) -> None:
         log_info("chat_backup_meta.json updated")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
+def make_backup_filename(chat_id: int, base_name: str) -> str:
+    """
+    Создаёт имя файла: <base>_<username/title/chatid>.ext
+    """
+    name_no_ext, dot, ext = base_name.partition(".")
+    suffix = get_chat_name_for_filename(chat_id)
 
+    if suffix:
+        filename = f"{name_no_ext}_{suffix}"
+    else:
+        filename = name_no_ext
+
+    if dot:
+        filename += f".{ext}"
+
+    return filename
 
 # === Backup JSON to the same chat ===
 def send_backup_to_chat(chat_id: int) -> None:
@@ -258,7 +273,7 @@ def send_backup_to_chat(chat_id: int) -> None:
                 file_name += f".{ext}"
 
             buf = io.BytesIO(data_bytes)
-            buf.name = file_name
+            buf.name = make_backup_filename(chat_id, os.path.basename(json_path))
             return buf
             
         msg_id = meta.get(msg_key)
@@ -890,7 +905,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         name_without_ext, dot, ext = base_name.partition(".")
         safe_title = _safe_chat_title_for_filename(chat_title)
         if safe_title:
-            file_name = f"{name_without_ext}_{safe_title}"
+            file_name = make_backup_filename(chat_id, base_name)
             if dot:  # было расширение
                 file_name += f".{ext}"
         else:
@@ -908,7 +923,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
                 log_error(f"send_backup_to_channel_for_file: {base_path} is empty, skip")
                 return None
             buf = io.BytesIO(data_bytes)
-            buf.name = file_name
+            buf.name = make_backup_filename(chat_id, os.path.basename(json_path))
             buf.seek(0)
             return buf
 
@@ -3104,7 +3119,7 @@ def force_backup_to_chat(chat_id: int, day_key: str = None):
 
         # имя backup-файла по дате/юзернейму
         filename = generate_backup_filename(chat_id, day_key)
-        buf.name = filename
+        buf.name = make_backup_filename(chat_id, os.path.basename(json_path))
 
         # =============== 1) ПРОБУЕМ ОБНОВИТЬ СТАРЫЙ BACKUP ===============
         if old_mid:
