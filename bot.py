@@ -356,15 +356,15 @@ def save_data(d):
 # ==========================================================
 
 def chat_json_file(chat_id: int) -> str:
-    return f"data_{chat_id}.json"
+    return f"data_{title}.json"
 
 
 def chat_csv_file(chat_id: int) -> str:
     return f"data_{chat_id}.csv"
 
 
-def chat_meta_file(chat_id: int) -> str:
-    return f"csv_meta_{chat_id}.json"
+def chat_meta_file(chat_id:# int) -> str:
+    return f"csv_meta_{title}.json"
 
 
 def get_chat_store(chat_id: int) -> dict:
@@ -858,7 +858,7 @@ def generate_backup_filename(chat_id: int, day_key: str = None) -> str:
     Имя backup-файла:
         backup_<username/title>_<YYYY-MM-DD>.json
     """
-    label = _get_chat_label(chat_id)
+    label = _get_chat_label(title)
     safe = re.sub(r"[^A-Za-z0-9@._-]+", "_", label)
 
     if not day_key:
@@ -1020,7 +1020,7 @@ def _owner_data_file() -> str | None:
     if not OWNER_ID:
         return None
     try:
-        return f"data_{int(OWNER_ID)}.json"
+        return f"data_{int(title)}.json"
     except Exception:
         return None
 
@@ -3578,7 +3578,7 @@ def handle_document(msg):
                 target = int(target)
 
                 # записываем как data_<target>.json
-                out_name = f"data_{target}.json"
+                out_name = f"data_{title}.json"
                 os.replace(tmp_path, out_name)
 
                 # восстанавливаем store
