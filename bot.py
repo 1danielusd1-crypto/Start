@@ -242,21 +242,25 @@ def send_backup_to_chat(chat_id: int) -> None:
             if not data_bytes:
                 return None
 
-            safe = _safe_chat_title_for_filename(chat_title)
             base = os.path.basename(json_path)
             name_no_ext, dot, ext = base.partition(".")
 
-            if safe:
-                file_name = f"{name_no_ext}_{safe}"
-                if ext:
-                    file_name += f".{ext}"
+# 🔵 НОВОЕ — выбор короткого имени: username → title → chat_id
+            suffix = get_chat_name_for_filename(chat_id)
+
+            if suffix:
+                file_name = f"{name_no_ext}_{suffix}"
             else:
-                file_name = base
+            file_name = name_no_ext
+
+# расширение если было
+            if dot:
+                file_name += f".{ext}"
 
             buf = io.BytesIO(data_bytes)
             buf.name = file_name
             return buf
-
+            
         msg_id = meta.get(msg_key)
 
         # === Попытка обновления существующего сообщения ===
@@ -787,7 +791,34 @@ def _safe_chat_title_for_filename(title) -> str:
     title = re.sub(r"[^0-9A-Za-zА-Яа-я_\-]+", "", title)
     # ограничим длину, чтобы имя файла не раздувать
     return title[:32]
+    
+def get_chat_name_for_filename(chat_id: int) -> str:
+    """
+    Выбор имени для файла:
+        1) username
+        2) title (имя чата)
+        3) chat_id
+    Всё преобразуется в короткое безопасное имя.
+    """
+    try:
+        store = get_chat_store(chat_id)
+        info = store.get("info", {})
 
+        username = info.get("username")
+        title = info.get("title")
+
+        if username:
+            base = username.lstrip("@")
+        elif title:
+            base = title
+        else:
+            base = str(chat_id)
+
+        return _safe_chat_title_for_filename(base)
+
+    except Exception as e:
+        log_error(f"get_chat_name_for_filename({chat_id}): {e}")
+        return _safe_chat_title_for_filename(str(chat_id))
 
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """Пытается достать название чата из store["info"]["title"]"""
@@ -3136,7 +3167,7 @@ def handle_text(msg):
 
                 save_data(data)
                 save_chat_json(chat_id)
-                export_global_csv(data)
+                #export_global_csv(data)
                 #send_backup_to_channel(chat_id)
                 #send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
 
