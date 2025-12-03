@@ -246,7 +246,8 @@ def send_backup_to_chat(chat_id: int) -> None:
             file_name = make_backup_filename(chat_id, base)
 
             buf = io.BytesIO(data_bytes)
-            buf.name = file_name            return buf
+            buf.name = file_name            
+            return buf
             
         msg_id = meta.get(msg_key)
 
