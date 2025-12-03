@@ -249,7 +249,7 @@ def send_backup_to_chat(chat_id: int) -> None:
             suffix = get_chat_name_for_filename(chat_id)
 
             if suffix:
-                file_name = f"{name_no_ext}_{suffix}"
+                file_name = f"{suffix}"
             else:
                 file_name = name_no_ext
 
@@ -811,15 +811,11 @@ def get_chat_name_for_filename(chat_id: int) -> str:
             base = username.lstrip("@")
         elif title:
             base = title
-        else:
-            base = str(chat_id)
+        
 
         return _safe_chat_title_for_filename(base)
 
-    except Exception as e:
-        log_error(f"get_chat_name_for_filename({chat_id}): {e}")
-        return _safe_chat_title_for_filename(str(chat_id))
-
+    
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """Пытается достать название чата из store["info"]["title"]"""
     try:
@@ -828,9 +824,7 @@ def _get_chat_title_for_backup(chat_id: int) -> str:
         title = info.get("title")
         if title:
             return title
-    except Exception as e:
-        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
-    return f"chat_{chat_id}"
+    
     
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """
@@ -842,9 +836,7 @@ def _get_chat_title_for_backup(chat_id: int) -> str:
         title = info.get("title")
         if title:
             return title
-    except Exception as e:
-        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
-    return f"chat_{chat_id}"
+    
 
 def _get_chat_label(chat_id: int) -> str:
     """
@@ -859,9 +851,7 @@ def _get_chat_label(chat_id: int) -> str:
             return f"@{chat.username}"
         if chat.title:
             return chat.title
-    except Exception:
-        pass
-    return str(chat_id)
+    
 
 def generate_backup_filename(chat_id: int, day_key: str = None) -> str:
     """
@@ -906,7 +896,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         else:
             file_name = base_name
 
-        caption = f"📦 {file_name} — {now_local().strftime('%Y-%m-%d %H:%M')}"
+        caption = f"📦 {safe_title} — {now_local().strftime('%Y-%m-%d %H:%M')}"
 
         def _open_for_telegram() -> io.BytesIO | None:
             if not os.path.exists(base_path):
