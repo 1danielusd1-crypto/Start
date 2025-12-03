@@ -3050,9 +3050,13 @@ def force_backup_to_chat(chat_id: int):
     try:
         save_chat_json(chat_id)
         json_path = chat_json_file(chat_id)
+
         if not os.path.exists(json_path):
             log_error(f"force_backup_to_chat: {json_path} missing")
             return
+
+        meta = _load_chat_backup_meta()
+        old_mid = meta.get(f"msg_chat_{chat_id}")
 
         chat_title = _get_chat_title_for_backup(chat_id)
         caption = (
@@ -3063,14 +3067,24 @@ def force_backup_to_chat(chat_id: int):
         with open(json_path, "rb") as f:
             buf = io.BytesIO(f.read())
             if not buf.getbuffer().nbytes:
-                log_error("force_backup_to_chat: empty JSON file")
+                log_error("force_backup_to_chat: empty JSON")
                 return
             buf.name = os.path.basename(json_path)
 
-        sent = bot.send_document(chat_id, buf, caption=caption)
+        if old_mid:
+            try:
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=old_mid,
+                    media=telebot.types.InputMediaDocument(buf),
+                    caption=caption
+                )
+                return
+            except Exception as e:
+                log_error(f"force_backup_to_chat: edit failed: {e}")
 
-        # обновляем meta
-        meta = _load_chat_backup_meta()
+        # если edit не удался → создаём новое сообщение
+        sent = bot.send_document(chat_id, buf, caption=caption)
         meta[f"msg_chat_{chat_id}"] = sent.message_id
         meta[f"timestamp_chat_{chat_id}"] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
