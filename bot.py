@@ -3137,7 +3137,7 @@ def handle_text(msg):
                 save_data(data)
                 save_chat_json(chat_id)
                 export_global_csv(data)
-                send_backup_to_channel(chat_id)
+                #send_backup_to_channel(chat_id)
                 #send_backup_to_chat(chat_id)  # ← ДОБАВЬ ЭТО
 
                 store["edit_wait"] = None
@@ -3434,26 +3434,53 @@ def handle_document(msg):
             return
 
         # 3) per-chat JSON data_<chat>.json
-        if fname.startswith("data_") and fname.endswith(".json"):
+        # ==========================================================
+        # UNIVERSAL JSON RESTORE — принимает ЛЮБОЕ имя файла .json
+        # Определяет chat_id только по содержимому файла
+        # ==========================================================
+        if fname.endswith(".json"):
             try:
-                target = int(fname.replace("data_", "").replace(".json", ""))
-            except:
-                send_and_auto_delete(chat_id, "❌ Невозможно определить chat_id из имени файла.")
-                return
-
-            try:
-                os.replace(tmp_path, fname)
-                store = _load_json(fname, {})
-                if not store:
-                    send_and_auto_delete(chat_id, "❌ Файл повреждён или пуст.")
+                # читаем файл
+                try:
+                    file_info = bot.get_file(file.file_id)
+                    raw = bot.download_file(file_info.file_path)
+                except Exception as e:
+                    send_and_auto_delete(chat_id, f"❌ Ошибка скачивания файла: {e}")
                     return
 
+                tmp_path = f"restore_{chat_id}_{fname}"
+                with open(tmp_path, "wb") as f:
+                    f.write(raw)
+
+                # грузим JSON внутри
+                payload = _load_json(tmp_path, None)
+                if not payload or not isinstance(payload, dict):
+                    send_and_auto_delete(chat_id, "❌ JSON повреждён или пуст.")
+                    return
+
+                # ИЩЕМ chat_id ВНУТРИ ФАЙЛА
+                target = payload.get("chat_id")
+                if not target:
+                    send_and_auto_delete(
+                        chat_id,
+                        "❌ В JSON нет поля chat_id — не могу определить чат!"
+                    )
+                    return
+
+                target = int(target)
+
+                # записываем как data_<target>.json
+                out_name = f"data_{target}.json"
+                os.replace(tmp_path, out_name)
+
+                # восстанавливаем store
+                store = payload
                 store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
 
                 data.setdefault("chats", {})[str(target)] = store
                 finance_active_chats.add(target)
 
-                # пересобираем глобальные records и overall_balance
+                # пересобираем глобальные records
                 all_recs = []
                 for cid, s in data.get("chats", {}).items():
                     all_recs.extend(s.get("records", []))
@@ -3462,19 +3489,20 @@ def handle_document(msg):
 
                 save_data(data)
                 save_chat_json(target)
-
                 update_or_send_day_window(target, today_key())
 
                 restore_mode = False
 
                 send_and_auto_delete(
                     chat_id,
-                    f"🟢 Чат {target} восстановлен.\n"
+                    f"🟢 Чат {target} восстановлен из файла '{fname}'.\n"
                     f"Записей: {len(store.get('records', []))}\n"
                     f"Баланс: {store['balance']}"
                 )
+
             except Exception as e:
-                send_and_auto_delete(chat_id, f"❌ Ошибка: {e}")
+                send_and_auto_delete(chat_id, f"❌ Ошибка восстановления JSON: {e}")
+
             return
 
         # 4) per-chat CSV
