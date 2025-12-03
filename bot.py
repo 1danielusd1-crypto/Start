@@ -351,7 +351,9 @@ def chat_csv_file(chat_id: int) -> str:
     return f"data_{chat_id}.csv"
 
 
-def chat_meta_file(chat_id:# int) -> str:
+#def chat_meta_file(chat_id:# int) -> str:
+#def chat_meta_file(chat_id) -> str:
+def chat_meta_file(chat_id: int) -> str:
     return f"csv_meta_{title}.json"
 
 
