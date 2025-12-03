@@ -188,22 +188,7 @@ def _save_chat_backup_meta(meta: dict) -> None:
         log_info("chat_backup_meta.json updated")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
-def make_backup_filename(chat_id: int, base_name: str) -> str:
-    """
-    Создаёт имя файла: <base>_<username/title/chatid>.ext
-    """
-    name_no_ext, dot, ext = base_name.partition(".")
-    suffix = get_chat_name_for_filename(chat_id)
 
-    if suffix:
-        filename = f"{name_no_ext}_{suffix}"
-    else:
-        filename = name_no_ext
-
-    if dot:
-        filename += f".{ext}"
-
-    return filename
 
 # === Backup JSON to the same chat ===
 def send_backup_to_chat(chat_id: int) -> None:
@@ -258,23 +243,10 @@ def send_backup_to_chat(chat_id: int) -> None:
                 return None
 
             base = os.path.basename(json_path)
-            name_no_ext, dot, ext = base.partition(".")
-
-# 🔵 НОВОЕ — выбор короткого имени: username → title → chat_id
-            suffix = get_chat_name_for_filename(chat_id)
-
-            if suffix:
-                file_name = f"{suffix}"
-            else:
-                file_name = name_no_ext
-
-# расширение если было
-            if dot:
-                file_name += f".{ext}"
+            file_name = make_backup_filename(chat_id, base)
 
             buf = io.BytesIO(data_bytes)
-            buf.name = make_backup_filename(chat_id, os.path.basename(json_path))
-            return buf
+            buf.name = file_name            return buf
             
         msg_id = meta.get(msg_key)
 
@@ -829,7 +801,26 @@ def get_chat_name_for_filename(chat_id: int) -> str:
         
 
         return _safe_chat_title_for_filename(base)
+# ==========================================================
+# NEW — Унифицированный генератор имени файла бэкапа
+# ==========================================================
+def make_backup_filename(chat_id: int, base_name: str) -> str:
+    """
+    Создаёт имя файла вида:
+       data_<chatid>_<username/title/chatid>.json
+    """
+    name_no_ext, dot, ext = base_name.partition(".")
+    suffix = get_chat_name_for_filename(chat_id)
 
+    if suffix:
+        filename = f"{name_no_ext}_{suffix}"
+    else:
+        filename = name_no_ext
+
+    if dot:
+        filename += f".{ext}"
+
+    return filename
     
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """Пытается достать название чата из store["info"]["title"]"""
@@ -884,7 +875,7 @@ def generate_backup_filename(chat_id: int, day_key: str = None) -> str:
         
             
 
-def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_title: str = None):
+def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_id: int, chat_title: str = None):
     """Helper to send or update a file in BACKUP_CHAT_ID with csv_meta tracking.
     Добавлено:
     • если передан chat_title — он включается в имя файла, которое видит Telegram
@@ -902,15 +893,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         ts_key = f"timestamp_{meta_key_prefix}"
 
         base_name = os.path.basename(base_path)
-        name_without_ext, dot, ext = base_name.partition(".")
-        safe_title = _safe_chat_title_for_filename(chat_title)
-        if safe_title:
-            file_name = make_backup_filename(chat_id, base_name)
-            if dot:  # было расширение
-                file_name += f".{ext}"
-        else:
-            file_name = base_name
-
+        file_name = make_backup_filename(chat_id, base_name)
         caption = f"📦 {safe_title} — {now_local().strftime('%Y-%m-%d %H:%M')}"
 
         def _open_for_telegram() -> io.BytesIO | None:
@@ -1013,7 +996,7 @@ def send_backup_to_channel(chat_id: int):
         # 2) только per-chat JSON / CSV — без global data.json / data.csv
         json_path = chat_json_file(chat_id)
         csv_path = chat_csv_file(chat_id)
-        send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
+        send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_id, chat_title)
         send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
 
         # 3) глобальные файлы НЕ отправляем в канал, чтобы не было лишнего .csv
