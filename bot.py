@@ -846,8 +846,36 @@ def _get_chat_title_for_backup(chat_id: int) -> str:
         log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
     return f"chat_{chat_id}"
 
+def _get_chat_label(chat_id: int) -> str:
+    """
+    Возвращает удобное имя чата:
+      • @username — если есть
+      • title     — если есть
+      • chat_id   — иначе
+    """
+    try:
+        chat = bot.get_chat(chat_id)
+        if chat.username:
+            return f"@{chat.username}"
+        if chat.title:
+            return chat.title
+    except Exception:
+        pass
+    return str(chat_id)
 
+def generate_backup_filename(chat_id: int, day_key: str = None) -> str:
+    """
+    Имя backup-файла:
+        backup_<username/title>_<YYYY-MM-DD>.json
+    """
+    label = _get_chat_label(chat_id)
+    safe = re.sub(r"[^A-Za-z0-9@._-]+", "_", label)
 
+    if not day_key:
+        day_key = now_local().strftime("%Y-%m-%d")
+
+    safe_day = day_key.replace("/", "-")
+    return f"backup_{safe}_{safe_day}.json"    
         
             
 
@@ -1204,11 +1232,14 @@ def forward_media_group_anon(source_chat_id: int, messages: list, targets: list[
 # ==========================================================
 
 def render_day_window(chat_id: int, day_key: str):
+    filename = generate_backup_filename(chat_id, day_key)
+    header = f"📎 Бэкап файла: {filename}"
     store = get_chat_store(chat_id)
     recs = store.get("daily_records", {}).get(day_key, [])
     lines = []
 
-    lines.append(f"📅 <b>{day_key}</b>")
+    text = f"{header}\n\n"
+    #lines.append(f"📅 <b>{day_key}</b>")
     lines.append("")
 
     total_income = 0.0   # сумма всех приходов (>= 0)
@@ -2569,7 +2600,7 @@ def cmd_restore(msg):
         "📥 Режим восстановления включён.\n"
         "Теперь отправьте файл:\n"
         "• data.json\n"
-        "• data_<chat_id>.json\n"
+        "• backup_<username_or_title>.json\n"
         "• csv_meta.json\n"
         "• data_<chat>.csv\n\n"
         "Пересылка документов временно отключена."
@@ -3016,7 +3047,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
         _safe("backup_to_channel", lambda: send_backup_to_channel(chat_id))
 
         # 5. Бэкап в чат — ВСЕГДА создаём заново, даже если edit не работает
-        _safe("backup_to_chat", lambda: force_backup_to_chat(chat_id))
+        _safe("backup_to_chat", lambda: force_backup_to_chat(chat_id, day_key))
 
         # 6. Пересоздание окна дня
         _safe("update_day_window", lambda: force_new_day_window(chat_id, day_key))
@@ -3046,7 +3077,16 @@ def rebuild_global_records():
         all_recs.extend(st.get("records", []))
     data["records"] = all_recs
     data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
-def force_backup_to_chat(chat_id: int):
+
+def force_backup_to_chat(chat_id: int, day_key: str = None):
+    """
+    • Обновляет старый backup-файл через edit_message_media.
+    • Если обновить не получилось — создаёт новый.
+    • Показывает красивое имя чата.
+    • Если старый backup уже был — добавляет '✅'.
+    • Имя файла: backup_<username/title>_<YYYY-MM-DD>.json
+    """
+
     try:
         save_chat_json(chat_id)
         json_path = chat_json_file(chat_id)
@@ -3055,42 +3095,57 @@ def force_backup_to_chat(chat_id: int):
             log_error(f"force_backup_to_chat: {json_path} missing")
             return
 
+        # мета старого backup
         meta = _load_chat_backup_meta()
         old_mid = meta.get(f"msg_chat_{chat_id}")
 
-        chat_title = _get_chat_title_for_backup(chat_id)
+        chat_label = _get_chat_label(chat_id)
+        updated_mark = " ✅" if old_mid else ""
+
         caption = (
-            f"🧾 Авто-бэкап JSON чата: {chat_title}\n"
+            f"🧾 Бэкап чата: {chat_label}{updated_mark}\n"
             f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
+        # читаем файл
         with open(json_path, "rb") as f:
-            buf = io.BytesIO(f.read())
-            if not buf.getbuffer().nbytes:
-                log_error("force_backup_to_chat: empty JSON")
-                return
-            buf.name = os.path.basename(json_path)
+            file_bytes = f.read()
+        buf = io.BytesIO(file_bytes)
 
+        # имя backup-файла по дате/юзернейму
+        filename = generate_backup_filename(chat_id, day_key)
+        buf.name = filename
+
+        # =============== 1) ПРОБУЕМ ОБНОВИТЬ СТАРЫЙ BACKUP ===============
         if old_mid:
             try:
                 bot.edit_message_media(
                     chat_id=chat_id,
                     message_id=old_mid,
                     media=telebot.types.InputMediaDocument(buf),
+                )
+                bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=old_mid,
                     caption=caption
                 )
+
+                meta[f"timestamp_chat_{chat_id}"] = now_local().isoformat(timespec="seconds")
+                _save_chat_backup_meta(meta)
                 return
             except Exception as e:
-                log_error(f"force_backup_to_chat: edit failed: {e}")
+                log_error(f"force_backup_to_chat(edit failed): {e}")
 
-        # если edit не удался → создаём новое сообщение
+        # =============== 2) ЕСЛИ НЕТ СТАРОГО BACKUP → СОЗДАЁМ НОВЫЙ ===============
         sent = bot.send_document(chat_id, buf, caption=caption)
+
         meta[f"msg_chat_{chat_id}"] = sent.message_id
         meta[f"timestamp_chat_{chat_id}"] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
 
     except Exception as e:
         log_error(f"force_backup_to_chat({chat_id}): {e}")
+        
 def force_new_day_window(chat_id: int, day_key: str):
     old_mid = get_active_window_id(chat_id, day_key)
 
