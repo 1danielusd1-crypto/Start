@@ -1,4 +1,4 @@
-#2️⃣💢бекап
+#2️⃣🟢3️⃣
 #bot.send_message(chat_id, f"❌ Ошибка суммы: {text}\nПродолжаю расчёт…")
 # Code_022.9.11 флаг✅
 #==========================================================
@@ -243,10 +243,20 @@ def send_backup_to_chat(chat_id: int) -> None:
                 return None
 
             base = os.path.basename(json_path)
-            file_name = make_backup_filename(chat_id, base)
+            name_no_ext, dot, ext = base.partition(".")
+
+            suffix = get_chat_name_for_filename(chat_id)
+
+            if suffix:
+                file_name = suffix
+            else:
+                file_name = name_no_ext
+
+            if dot:
+                file_name += f".{ext}"
 
             buf = io.BytesIO(data_bytes)
-            buf.name = file_name            
+            buf.name = file_name
             return buf
             
         msg_id = meta.get(msg_key)
@@ -344,13 +354,14 @@ def save_data(d):
 # ==========================================================
 
 def chat_json_file(chat_id: int) -> str:
-    """data_<chatid>.json"""
     return f"data_{chat_id}.json"
+
+
 def chat_csv_file(chat_id: int) -> str:
-    """data_<chatid>.csv"""
     return f"data_{chat_id}.csv"
+
+
 def chat_meta_file(chat_id: int) -> str:
-    """csv_meta_<chatid>.json"""
     return f"csv_meta_{chat_id}.json"
 
 
@@ -783,8 +794,9 @@ def get_chat_name_for_filename(chat_id: int) -> str:
     """
     Выбор имени для файла:
         1) username
-        2) title
+        2) title (имя чата)
         3) chat_id
+    Всё преобразуется в короткое безопасное имя.
     """
     try:
         store = get_chat_store(chat_id)
@@ -801,34 +813,22 @@ def get_chat_name_for_filename(chat_id: int) -> str:
             base = str(chat_id)
 
         return _safe_chat_title_for_filename(base)
-    except:
-        return str(chat_id)
 
+    except Exception as e:
+        log_error(f"get_chat_name_for_filename({chat_id}): {e}")
+        return _safe_chat_title_for_filename(str(chat_id))
 
-def make_backup_filename(chat_id: int, base_name: str) -> str:
-    """
-    Создаёт имя файла:
-       data_<chatid>_<username/title/chatid>.json
-    """
-    name_no_ext, dot, ext = base_name.partition(".")
-    suffix = get_chat_name_for_filename(chat_id)
-
-    filename = f"{name_no_ext}_{suffix}"
-
-    if ext:
-        filename += f".{ext}"
-
-    return filename
-    
 def _get_chat_title_for_backup(chat_id: int) -> str:
-    """Название чата для подписи бэкапа"""
+    """Пытается достать название чата из store["info"]["title"]"""
     try:
-        store = get_chat_store(chat_id)
+        store = data.get("chats", {}).get(str(chat_id), {}) if isinstance(data, dict) else {}
         info = store.get("info", {})
-        return info.get("title") or f"Чат {chat_id}"
-    except:
-        return f"Чат {chat_id}"
-    
+        title = info.get("title")
+        if title:
+            return title
+    except Exception as e:
+        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
+    return f"chat_{chat_id}"
     
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """
@@ -840,33 +840,16 @@ def _get_chat_title_for_backup(chat_id: int) -> str:
         title = info.get("title")
         if title:
             return title
-    
+    except Exception as e:
+        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
+    return f"chat_{chat_id}"
 
-def _get_chat_label(chat_id: int) -> str:
-    """Имя чата для текста"""
-    try:
-        chat = bot.get_chat(chat_id)
-        if chat.username:
-            return f"@{chat.username}"
-        if chat.title:
-            return chat.title
-    except:
-        pass
-    return str(chat_id)
 
-def generate_backup_filename(chat_id: int, day_key: str = None) -> str:
-    """
-    backup_<username/title/chatid>_<YYYY-MM-DD>.json
-    """
-    label = get_chat_name_for_filename(chat_id)
-    if not day_key:
-        day_key = now_local().strftime("%Y-%m-%d")
 
-    safe_day = day_key.replace("/", "-")
-    return f"backup_{label}_{safe_day}.json"      
+        
             
 
-def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_id: int, chat_title: str = None):
+def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_title: str = None):
     """Helper to send or update a file in BACKUP_CHAT_ID with csv_meta tracking.
     Добавлено:
     • если передан chat_title — он включается в имя файла, которое видит Telegram
@@ -884,8 +867,17 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_i
         ts_key = f"timestamp_{meta_key_prefix}"
 
         base_name = os.path.basename(base_path)
-        file_name = make_backup_filename(chat_id, base_name)
-        caption = f"📦 {safe_title} — {now_local().strftime('%Y-%m-%d %H:%M')}"
+        name_without_ext, dot, ext = base_name.partition(".")
+        safe_title = _safe_chat_title_for_filename(chat_title)
+
+        if safe_title:
+            file_name = safe_title
+            if dot:  # было расширение
+                file_name += f".{ext}"
+        else:
+            file_name = base_name
+
+        caption = f"📦 {file_name} — {now_local().strftime('%Y-%m-%d %H:%M')}"
 
         def _open_for_telegram() -> io.BytesIO | None:
             if not os.path.exists(base_path):
@@ -897,7 +889,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_i
                 log_error(f"send_backup_to_channel_for_file: {base_path} is empty, skip")
                 return None
             buf = io.BytesIO(data_bytes)
-            buf.name = make_backup_filename(chat_id, os.path.basename(json_path))
+            buf.name = file_name
             buf.seek(0)
             return buf
 
@@ -987,7 +979,7 @@ def send_backup_to_channel(chat_id: int):
         # 2) только per-chat JSON / CSV — без global data.json / data.csv
         json_path = chat_json_file(chat_id)
         csv_path = chat_csv_file(chat_id)
-        send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_id, chat_title)
+        send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
         send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
 
         # 3) глобальные файлы НЕ отправляем в канал, чтобы не было лишнего .csv
@@ -1009,7 +1001,7 @@ def _owner_data_file() -> str | None:
     if not OWNER_ID:
         return None
     try:
-        return f"data_{int(title)}.json"
+        return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
 
@@ -1211,14 +1203,11 @@ def forward_media_group_anon(source_chat_id: int, messages: list, targets: list[
 # ==========================================================
 
 def render_day_window(chat_id: int, day_key: str):
-    filename = generate_backup_filename(chat_id, day_key)
-    header = f"📎 Бэкап файла: {filename}"
     store = get_chat_store(chat_id)
     recs = store.get("daily_records", {}).get(day_key, [])
     lines = []
 
-    text = f"{header}\n\n"
-    #lines.append(f"📅 <b>{day_key}</b>")
+    lines.append(f"📅 <b>{day_key}</b>")
     lines.append("")
 
     total_income = 0.0   # сумма всех приходов (>= 0)
@@ -2579,7 +2568,7 @@ def cmd_restore(msg):
         "📥 Режим восстановления включён.\n"
         "Теперь отправьте файл:\n"
         "• data.json\n"
-        "• backup_<username_or_title>.json\n"
+        "• data_<chat_id>.json\n"
         "• csv_meta.json\n"
         "• data_<chat>.csv\n\n"
         "Пересылка документов временно отключена."
@@ -3026,7 +3015,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
         _safe("backup_to_channel", lambda: send_backup_to_channel(chat_id))
 
         # 5. Бэкап в чат — ВСЕГДА создаём заново, даже если edit не работает
-        _safe("backup_to_chat", lambda: force_backup_to_chat(chat_id, day_key))
+        _safe("backup_to_chat", lambda: force_backup_to_chat(chat_id))
 
         # 6. Пересоздание окна дня
         _safe("update_day_window", lambda: force_new_day_window(chat_id, day_key))
@@ -3056,16 +3045,7 @@ def rebuild_global_records():
         all_recs.extend(st.get("records", []))
     data["records"] = all_recs
     data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
-
-def force_backup_to_chat(chat_id: int, day_key: str = None):
-    """
-    • Обновляет старый backup-файл через edit_message_media.
-    • Если обновить не получилось — создаёт новый.
-    • Показывает красивое имя чата.
-    • Если старый backup уже был — добавляет '✅'.
-    • Имя файла: backup_<username/title>_<YYYY-MM-DD>.json
-    """
-
+def force_backup_to_chat(chat_id: int):
     try:
         save_chat_json(chat_id)
         json_path = chat_json_file(chat_id)
@@ -3074,57 +3054,57 @@ def force_backup_to_chat(chat_id: int, day_key: str = None):
             log_error(f"force_backup_to_chat: {json_path} missing")
             return
 
-        # мета старого backup
         meta = _load_chat_backup_meta()
         old_mid = meta.get(f"msg_chat_{chat_id}")
 
-        chat_label = _get_chat_label(chat_id)
-        updated_mark = " ✅" if old_mid else ""
-
+        chat_title = _get_chat_title_for_backup(chat_id)
         caption = (
-            f"🧾 Бэкап чата: {chat_label}{updated_mark}\n"
+            f"🧾 Авто-бэкап JSON чата: {chat_title}\n"
             f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # читаем файл
         with open(json_path, "rb") as f:
-            file_bytes = f.read()
-        buf = io.BytesIO(file_bytes)
+            data = f.read()
+            if not data:
+                log_error("force_backup_to_chat: empty JSON")
+                return
 
-        # имя backup-файла по дате/юзернейму
-        filename = generate_backup_filename(chat_id, day_key)
-        buf.name = make_backup_filename(chat_id, os.path.basename(json_path))
+            base = os.path.basename(json_path)
+            name_no_ext, dot, ext = base.partition(".")
 
-        # =============== 1) ПРОБУЕМ ОБНОВИТЬ СТАРЫЙ BACKUP ===============
+            suffix = get_chat_name_for_filename(chat_id)
+
+            if suffix:
+                file_name = suffix
+            else:
+                file_name = name_no_ext
+
+            if dot:
+                file_name += f".{ext}"
+
+            buf = io.BytesIO(data)
+            buf.name = file_name
+
         if old_mid:
             try:
                 bot.edit_message_media(
                     chat_id=chat_id,
                     message_id=old_mid,
                     media=telebot.types.InputMediaDocument(buf),
-                )
-                bot.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=old_mid,
                     caption=caption
                 )
-
-                meta[f"timestamp_chat_{chat_id}"] = now_local().isoformat(timespec="seconds")
-                _save_chat_backup_meta(meta)
                 return
             except Exception as e:
-                log_error(f"force_backup_to_chat(edit failed): {e}")
+                log_error(f"force_backup_to_chat: edit failed: {e}")
 
-        # =============== 2) ЕСЛИ НЕТ СТАРОГО BACKUP → СОЗДАЁМ НОВЫЙ ===============
+        # если edit не удался → создаём новое сообщение
         sent = bot.send_document(chat_id, buf, caption=caption)
-
         meta[f"msg_chat_{chat_id}"] = sent.message_id
         meta[f"timestamp_chat_{chat_id}"] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
 
     except Exception as e:
         log_error(f"force_backup_to_chat({chat_id}): {e}")
-        
 def force_new_day_window(chat_id: int, day_key: str):
     old_mid = get_active_window_id(chat_id, day_key)
 
@@ -3567,7 +3547,7 @@ def handle_document(msg):
                 target = int(target)
 
                 # записываем как data_<target>.json
-                out_name = f"data_{title}.json"
+                out_name = f"data_{target}.json"
                 os.replace(tmp_path, out_name)
 
                 # восстанавливаем store
