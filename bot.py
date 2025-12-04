@@ -124,7 +124,42 @@ def now_local():
 
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
+# ==========================================================
+# SECTION X — Display helpers (замена ID на имя/username)
+# ==========================================================
 
+def get_chat_display_name(chat_id: int) -> str:
+    """
+    Возвращает отображаемое имя чата для вывода:
+      • @username
+      • title
+      • чат <id>
+    """
+    try:
+        store = get_chat_store(chat_id)
+        info = store.get("info", {})
+        username = info.get("username")
+        title = info.get("title")
+        if username:
+            return f"@{username}"
+        if title:
+            return title
+        return f"чат {chat_id}"
+    except Exception:
+        return f"чат {chat_id}"
+
+
+def get_owner_display_name() -> str:
+    """
+    Имя владельца: username → title → 'владелец'.
+    """
+    try:
+        if OWNER_ID:
+            oid = int(OWNER_ID)
+            return get_chat_display_name(oid)
+    except:
+        pass
+    return "владелец"
 
 # ==========================================================
 # SECTION 4 — JSON/CSV helpers
@@ -1475,7 +1510,7 @@ def build_forward_source_menu():
     known = owner_store.get("known_chats", {})
 
     for cid, ch in known.items():
-        title = ch.get("title") or f"Чат {cid}"
+        title = get_chat_display_name(int(cid))
         kb.row(
             types.InlineKeyboardButton(
                 title,
@@ -1512,7 +1547,7 @@ def build_forward_target_menu(src_id: int):
         if int_cid == src_id:
             continue
 
-        title = ch.get("title") or f"Чат {cid}"
+            title = get_chat_display_name(int(cid))
         kb.row(
             types.InlineKeyboardButton(
                 title,
@@ -1899,7 +1934,7 @@ def on_callback(call):
             # OWNER — расширенный вывод
             lines = []
             info = store.get("info", {})
-            title = info.get("title") or f"Чат {chat_id}"
+            title = get_chat_display_name(chat_id)
 
             lines.append("💰 <b>Общий итог (для владельца)</b>")
             lines.append("")
@@ -1919,7 +1954,7 @@ def on_callback(call):
                 if cid_int == chat_id:
                     continue
                 info2 = st.get("info", {})
-                title2 = info2.get("title") or f"Чат {cid_int}"
+                title2 = get_chat_display_name(cid_int)
                 other_lines.append(f"   • {title2}: {fmt_num(bal)}")
 
             if other_lines:
@@ -2446,7 +2481,7 @@ def refresh_total_message_if_any(chat_id: int):
             # Владелец видит все чаты
             lines = []
             info = store.get("info", {})
-            title = info.get("title") or f"Чат {chat_id}"
+            title = get_chat_display_name(chat_id)
 
             lines.append("💰 <b>Общий итог (для владельца)</b>")
             lines.append("")
@@ -2466,7 +2501,7 @@ def refresh_total_message_if_any(chat_id: int):
                 if cid_int == chat_id:
                     continue
                 info2 = st.get("info", {})
-                title2 = info2.get("title") or f"Чат {cid_int}"
+                title2 = get_chat_display_name(cid_int)
                 other_lines.append(f"   • {title2}: {fmt_num(bal)}")
 
             if other_lines:
@@ -2691,7 +2726,7 @@ def cmd_csv_all(chat_id: int):
             bot.send_document(
                 chat_id,
                 f,
-                caption=f"📂 Общий CSV всех операций чата {chat_id}"
+                f"📂 Общий CSV всех операций чата {get_chat_display_name(chat_id)}"
             )
     except Exception as e:
         log_error(f"cmd_csv_all: {e}")
@@ -2729,7 +2764,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
         upload_to_gdrive(tmp_name)
 
         with open(tmp_name, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}")
+            bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}"
     except Exception as e:
         log_error(f"cmd_csv_day: {e}")
     finally:
@@ -2783,7 +2818,7 @@ def cmd_json(msg):
 
     if os.path.exists(p):
         with open(p, "rb") as f:
-            bot.send_document(chat_id, f, caption="🧾 JSON этого чата")
+            bot.send_document(chat_id, f, caption=f"🧾 JSON — {get_chat_display_name(chat_id)}")
     else:
         send_info(chat_id, "Файл JSON ещё не создан.")
 
@@ -3790,11 +3825,7 @@ def main():
         if owner_id:
             try:
                 # 1) текст "Бот запущен"
-                bot.send_message(
-                    owner_id,
-                    f"✅ Бот запущен (версия {VERSION}).\n"
-                    f"Восстановление: {'OK' if restored else 'пропущено'}"
-                )
+                bot.send_message(owner_id, f"✅ Запущен для {get_owner_display_name()}\nВерсия: {VERSION}")
 
                 # 2) сразу же первый бэкап JSON в чат владельца
                 #send_backup_to_chat_self(owner_id)
