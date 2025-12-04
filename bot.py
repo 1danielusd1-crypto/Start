@@ -124,42 +124,7 @@ def now_local():
 
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
-# ==========================================================
-# SECTION X — Display helpers (замена ID на имя/username)
-# ==========================================================
 
-def get_chat_display_name(chat_id: int) -> str:
-    """
-    Возвращает отображаемое имя чата для вывода:
-      • @username
-      • title
-      • чат <id>
-    """
-    try:
-        store = get_chat_store(chat_id)
-        info = store.get("info", {})
-        username = info.get("username")
-        title = info.get("title")
-        if username:
-            return f"@{username}"
-        if title:
-            return title
-        return f"чат {chat_id}"
-    except Exception:
-        return f"чат {chat_id}"
-
-
-def get_owner_display_name() -> str:
-    """
-    Имя владельца: username → title → 'владелец'.
-    """
-    try:
-        if OWNER_ID:
-            oid = int(OWNER_ID)
-            return get_chat_display_name(oid)
-    except:
-        pass
-    return "владелец"
 
 # ==========================================================
 # SECTION 4 — JSON/CSV helpers
@@ -280,13 +245,15 @@ def send_backup_to_chat(chat_id: int) -> None:
             base = os.path.basename(json_path)
             name_no_ext, dot, ext = base.partition(".")
 
+# 🔵 НОВОЕ — выбор короткого имени: username → title → chat_id
             suffix = get_chat_name_for_filename(chat_id)
 
             if suffix:
-                file_name = suffix
+                file_name = f"{name_no_ext}_{suffix}"
             else:
                 file_name = name_no_ext
 
+# расширение если было
             if dot:
                 file_name += f".{ext}"
 
@@ -904,9 +871,8 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         base_name = os.path.basename(base_path)
         name_without_ext, dot, ext = base_name.partition(".")
         safe_title = _safe_chat_title_for_filename(chat_title)
-
         if safe_title:
-            file_name = safe_title
+            file_name = f"{name_without_ext}_{safe_title}"
             if dot:  # было расширение
                 file_name += f".{ext}"
         else:
@@ -1510,7 +1476,7 @@ def build_forward_source_menu():
     known = owner_store.get("known_chats", {})
 
     for cid, ch in known.items():
-        title = get_chat_display_name(int(cid))
+        title = ch.get("title") or f"Чат {cid}"
         kb.row(
             types.InlineKeyboardButton(
                 title,
@@ -1547,7 +1513,7 @@ def build_forward_target_menu(src_id: int):
         if int_cid == src_id:
             continue
 
-            title = get_chat_display_name(int(cid))
+        title = ch.get("title") or f"Чат {cid}"
         kb.row(
             types.InlineKeyboardButton(
                 title,
@@ -1934,7 +1900,7 @@ def on_callback(call):
             # OWNER — расширенный вывод
             lines = []
             info = store.get("info", {})
-            title = get_chat_display_name(chat_id)
+            title = info.get("title") or f"Чат {chat_id}"
 
             lines.append("💰 <b>Общий итог (для владельца)</b>")
             lines.append("")
@@ -1954,7 +1920,7 @@ def on_callback(call):
                 if cid_int == chat_id:
                     continue
                 info2 = st.get("info", {})
-                title2 = get_chat_display_name(cid_int)
+                title2 = info2.get("title") or f"Чат {cid_int}"
                 other_lines.append(f"   • {title2}: {fmt_num(bal)}")
 
             if other_lines:
@@ -2481,7 +2447,7 @@ def refresh_total_message_if_any(chat_id: int):
             # Владелец видит все чаты
             lines = []
             info = store.get("info", {})
-            title = get_chat_display_name(chat_id)
+            title = info.get("title") or f"Чат {chat_id}"
 
             lines.append("💰 <b>Общий итог (для владельца)</b>")
             lines.append("")
@@ -2501,7 +2467,7 @@ def refresh_total_message_if_any(chat_id: int):
                 if cid_int == chat_id:
                     continue
                 info2 = st.get("info", {})
-                title2 = get_chat_display_name(cid_int)
+                title2 = info2.get("title") or f"Чат {cid_int}"
                 other_lines.append(f"   • {title2}: {fmt_num(bal)}")
 
             if other_lines:
@@ -2726,7 +2692,7 @@ def cmd_csv_all(chat_id: int):
             bot.send_document(
                 chat_id,
                 f,
-                f"📂 Общий CSV всех операций чата {get_chat_display_name(chat_id)}"
+                caption=f"📂 Общий CSV всех операций чата {chat_id}"
             )
     except Exception as e:
         log_error(f"cmd_csv_all: {e}")
@@ -2818,7 +2784,7 @@ def cmd_json(msg):
 
     if os.path.exists(p):
         with open(p, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"🧾 JSON — {get_chat_display_name(chat_id)}")
+            bot.send_document(chat_id, f, caption="🧾 JSON этого чата")
     else:
         send_info(chat_id, "Файл JSON ещё не создан.")
 
@@ -3099,26 +3065,11 @@ def force_backup_to_chat(chat_id: int):
         )
 
         with open(json_path, "rb") as f:
-            data = f.read()
-            if not data:
+            buf = io.BytesIO(f.read())
+            if not buf.getbuffer().nbytes:
                 log_error("force_backup_to_chat: empty JSON")
                 return
-
-            base = os.path.basename(json_path)
-            name_no_ext, dot, ext = base.partition(".")
-
-            suffix = get_chat_name_for_filename(chat_id)
-
-            if suffix:
-                file_name = suffix
-            else:
-                file_name = name_no_ext
-
-            if dot:
-                file_name += f".{ext}"
-
-            buf = io.BytesIO(data)
-            buf.name = file_name
+            buf.name = os.path.basename(json_path)
 
         if old_mid:
             try:
@@ -3825,7 +3776,11 @@ def main():
         if owner_id:
             try:
                 # 1) текст "Бот запущен"
-                bot.send_message(owner_id, f"✅ Запущен для {get_owner_display_name()}\nВерсия: {VERSION}")
+                bot.send_message(
+                    owner_id,
+                    f"✅ Бот запущен (версия {VERSION}).\n"
+                    f"Восстановление: {'OK' if restored else 'пропущено'}"
+                )
 
                 # 2) сразу же первый бэкап JSON в чат владельца
                 #send_backup_to_chat_self(owner_id)
