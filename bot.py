@@ -2764,7 +2764,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
         upload_to_gdrive(tmp_name)
 
         with open(tmp_name, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}"
+            bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}")
     except Exception as e:
         log_error(f"cmd_csv_day: {e}")
     finally:
