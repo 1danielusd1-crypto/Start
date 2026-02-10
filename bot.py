@@ -25,11 +25,11 @@ from telebot.types import InputMediaDocument
 # -----------------------------
 BOT_TOKEN = os.getenv("B_T")
 #OWNER_ID = "8592220081"
-APP_URL = "https://fo-1.onrender.com"
-WEBHOOK_URL = "https://fo-1.onrender.com"  # если дальше в коде используется отдельная переменная вебхука
+APP_URL = "https://start-3bfb.onrender.com"
+WEBHOOK_URL = "https://start-3bfb.onrender.com"  # если дальше в коде используется отдельная переменная вебхука
 PORT = 5000
 
-BACKUP_CHAT_ID = "-1003291414261"
+BACKUP_CHAT_ID = "-1003340340395"
 
 #BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
