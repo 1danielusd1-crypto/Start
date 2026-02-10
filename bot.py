@@ -3210,7 +3210,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             )
             _safe(
                 "backup_to_chat",
-                lambda: force_backup_to_chat(chat_id)
+                lambda: send_backup_to_chat(chat_id)
             )
 
         # 3️⃣ Бэкап в канал (для всех)
