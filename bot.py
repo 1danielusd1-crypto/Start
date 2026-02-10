@@ -177,25 +177,27 @@ def _save_chat_backup_meta(meta: dict) -> None:
         log_info("chat_backup_meta.json updated")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
+
 def send_backup_to_chat(chat_id: int) -> None:
     """
-    Универсальный авто-бэкап JSON прямо в чате.
-    Работает одинаково для владельца, групп, каналов, всех чатов.
+    Универсальный авто-бэкап JSON прямо в чате (ОДНО сообщение обновляется).
     Логика:
     • гарантируем актуальный data_<chat_id>.json
     • читаем meta-файл chat_backup_meta.json
     • если есть msg_id → edit_message_media()
     • если нет / не найдено → отправляем новое сообщение
-    • обновляем meta-файл в рабочей директории (Render-friendly)
-    • при смене дня (после 00:00) создаётся НОВОЕ сообщение с файлом
+    • при смене дня — создаём НОВОЕ сообщение (старое остаётся архивом)
     """
     try:
         if not chat_id:
             return
+
+        # 1) сохраняем актуальный json чата
         try:
             save_chat_json(chat_id)
         except Exception as e:
             log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
+
         json_path = chat_json_file(chat_id)
         if not os.path.exists(json_path):
             log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
@@ -211,55 +213,62 @@ def send_backup_to_chat(chat_id: int) -> None:
             f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # 🔄 Новый файл после смены дня
+        # 2) если новый день — создаём новый документ
         last_ts = meta.get(ts_key)
         msg_id = meta.get(msg_key)
         if msg_id and last_ts:
             try:
                 prev_dt = datetime.fromisoformat(last_ts)
                 if prev_dt.date() != now_local().date():
-                    # Новый день — старое сообщение оставляем как архив, создаём новое
                     msg_id = None
             except Exception as e:
                 log_error(f"send_backup_to_chat: bad timestamp for chat {chat_id}: {e}")
 
         def _open_file() -> io.BytesIO | None:
-            """Чтение JSON в BytesIO с правильным именем файла."""
             try:
                 with open(json_path, "rb") as f:
                     data_bytes = f.read()
             except Exception as e:
                 log_error(f"send_backup_to_chat open({json_path}): {e}")
                 return None
+
             if not data_bytes:
+                log_error("send_backup_to_chat: JSON is empty")
                 return None
+
             base = os.path.basename(json_path)
             name_no_ext, dot, ext = base.partition(".")
             suffix = get_chat_name_for_filename(chat_id)
-            if suffix:
-                file_name = suffix
-            else:
-                file_name = name_no_ext
+            file_name = suffix if suffix else name_no_ext
             if dot:
                 file_name += f".{ext}"
+
             buf = io.BytesIO(data_bytes)
             buf.name = file_name
+            buf.seek(0)
             return buf
-            #🟢🟢🟢🟢
+
+        # 3) пробуем обновить существующее сообщение
         if msg_id:
             fobj = _open_file()
             if not fobj:
                 return
             try:
-                
-                log_info(f"Chat backup UPDATED in chat {chat_id}")
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=types.InputMediaDocument(media=fobj, caption=caption)
+                )
                 meta[ts_key] = now_local().isoformat(timespec="seconds")
                 _save_chat_backup_meta(meta)
-                set_active_window_id(chat_id, day_key, mid)
+                log_info(f"Chat backup UPDATED in chat {chat_id}")
                 return
             except Exception as e:
                 log_error(f"send_backup_to_chat edit FAILED in {chat_id}: {e}")
+                # если сообщение удалили/нельзя обновить — пойдём в отправку нового
+                msg_id = None
 
+        # 4) отправляем новый документ
         fobj = _open_file()
         if not fobj:
             return
@@ -268,8 +277,10 @@ def send_backup_to_chat(chat_id: int) -> None:
         meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
         log_info(f"Chat backup CREATED in chat {chat_id}")
+
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
+        
 def default_data():
     return {
         "overall_balance": 0,
