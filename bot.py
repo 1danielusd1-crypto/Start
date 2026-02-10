@@ -170,6 +170,7 @@ def _load_chat_backup_meta() -> dict:
     except Exception as e:
         log_error(f"_load_chat_backup_meta: {e}")
         return {}
+🌏🌏🌏🌏
 def _save_chat_backup_meta(meta: dict) -> None:
     """Сохранение meta-файла в ТОТ ЖЕ каталог, где лежит бот."""
     try:
@@ -178,6 +179,7 @@ def _save_chat_backup_meta(meta: dict) -> None:
         log_info("chat_backup_meta.json updated")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
+🌏🌏🌏🌏
 def send_backup_to_chat(chat_id: int) -> None:
     """
     Универсальный авто-бэкап JSON прямо в чате.
@@ -193,10 +195,12 @@ def send_backup_to_chat(chat_id: int) -> None:
     try:
         if not chat_id:
             return
+
         try:
             save_chat_json(chat_id)
         except Exception as e:
             log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
+
         json_path = chat_json_file(chat_id)
         if not os.path.exists(json_path):
             log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
@@ -219,7 +223,6 @@ def send_backup_to_chat(chat_id: int) -> None:
             try:
                 prev_dt = datetime.fromisoformat(last_ts)
                 if prev_dt.date() != now_local().date():
-                    # Новый день — старое сообщение оставляем как архив, создаём новое
                     msg_id = None
             except Exception as e:
                 log_error(f"send_backup_to_chat: bad timestamp for chat {chat_id}: {e}")
@@ -232,35 +235,48 @@ def send_backup_to_chat(chat_id: int) -> None:
             except Exception as e:
                 log_error(f"send_backup_to_chat open({json_path}): {e}")
                 return None
+
             if not data_bytes:
                 return None
+
             base = os.path.basename(json_path)
             name_no_ext, dot, ext = base.partition(".")
             suffix = get_chat_name_for_filename(chat_id)
-            if suffix:
-                file_name = suffix
-            else:
-                file_name = name_no_ext
+            file_name = suffix if suffix else name_no_ext
             if dot:
                 file_name += f".{ext}"
+
             buf = io.BytesIO(data_bytes)
             buf.name = file_name
             return buf
-            #🟢🟢🟢🟢
+
+        # ───────────────
+        # 🔄 ОБНОВЛЯЕМ
+        # ───────────────
         if msg_id:
             fobj = _open_file()
             if not fobj:
                 return
             try:
-                
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=types.InputMediaDocument(
+                        media=fobj,
+                        caption=caption
+                    )
+                )
                 log_info(f"Chat backup UPDATED in chat {chat_id}")
                 meta[ts_key] = now_local().isoformat(timespec="seconds")
                 _save_chat_backup_meta(meta)
-                set_active_window_id(chat_id, day_key, mid)
                 return
             except Exception as e:
                 log_error(f"send_backup_to_chat edit FAILED in {chat_id}: {e}")
+                msg_id = None  # упадём в отправку нового
 
+        # ───────────────
+        # ➕ ОТПРАВЛЯЕМ НОВЫЙ
+        # ───────────────
         fobj = _open_file()
         if not fobj:
             return
@@ -269,8 +285,10 @@ def send_backup_to_chat(chat_id: int) -> None:
         meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
         log_info(f"Chat backup CREATED in chat {chat_id}")
+
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
+🌏🌏🌏🌏🌏
 def default_data():
     return {
         "overall_balance": 0,
@@ -3166,7 +3184,9 @@ def update_chat_info_from_message(msg):
         }
         save_chat_json(int(OWNER_ID))
     save_chat_json(chat_id)
+
 _finalize_timers = {}
+
 def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
     def _safe(action_name, func):
         """
@@ -3186,38 +3206,20 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
         _safe("save_data", lambda: save_data(data))
         _safe("export_global_csv", lambda: export_global_csv(data))
 
-        # 2️⃣ Окно дня + бэкап
+        # 2️⃣ Окно дня + бэкап (НЕ СОЗДАЁМ НОВОЕ ОКНО, А ОБНОВЛЯЕМ)
         if OWNER_ID and str(chat_id) == str(OWNER_ID):
-            _safe(
-                "owner_backup_window",
-                lambda: backup_window_for_owner(chat_id, day_key, None)
-            )
+            _safe("owner_backup_window", lambda: backup_window_for_owner(chat_id, day_key, None))
         else:
-            _safe(
-                "force_new_day_window",
-                lambda: force_new_day_window(chat_id, day_key)
-            )
-            _safe(
-                "backup_to_chat",
-                lambda: force_backup_to_chat(chat_id)
-            )
+            _safe("update_day_window", lambda: update_or_send_day_window(chat_id, day_key))
+            _safe("backup_to_chat", lambda: send_backup_to_chat(chat_id))
 
         # 3️⃣ Бэкап в канал (для всех)
-        _safe(
-            "backup_to_channel",
-            lambda: send_backup_to_channel(chat_id)
-        )
+        _safe("backup_to_channel", lambda: send_backup_to_channel(chat_id))
 
         # 4️⃣ Итоги
-        _safe(
-            "refresh_total_chat",
-            lambda: refresh_total_message_if_any(chat_id)
-        )
+        _safe("refresh_total_chat", lambda: refresh_total_message_if_any(chat_id))
         if OWNER_ID and str(chat_id) != str(OWNER_ID):
-            _safe(
-                "refresh_total_owner",
-                lambda: refresh_total_message_if_any(int(OWNER_ID))
-            )
+            _safe("refresh_total_owner", lambda: refresh_total_message_if_any(int(OWNER_ID)))
 
     t_prev = _finalize_timers.get(chat_id)
     if t_prev and t_prev.is_alive():
@@ -3225,9 +3227,11 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             t_prev.cancel()
         except Exception:
             pass
+
     t = threading.Timer(delay, _job)
     _finalize_timers[chat_id] = t
     t.start()
+    
 def recalc_balance(chat_id: int):
     store = get_chat_store(chat_id)
     store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
