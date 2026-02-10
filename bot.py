@@ -170,7 +170,7 @@ def _load_chat_backup_meta() -> dict:
     except Exception as e:
         log_error(f"_load_chat_backup_meta: {e}")
         return {}
-🌏🌏🌏🌏
+#🌏
 def _save_chat_backup_meta(meta: dict) -> None:
     """Сохранение meta-файла в ТОТ ЖЕ каталог, где лежит бот."""
     try:
@@ -179,7 +179,7 @@ def _save_chat_backup_meta(meta: dict) -> None:
         log_info("chat_backup_meta.json updated")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
-🌏🌏🌏🌏
+#🌏
 def send_backup_to_chat(chat_id: int) -> None:
     """
     Универсальный авто-бэкап JSON прямо в чате.
@@ -288,7 +288,7 @@ def send_backup_to_chat(chat_id: int) -> None:
 
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
-🌏🌏🌏🌏🌏
+#🌏
 def default_data():
     return {
         "overall_balance": 0,
