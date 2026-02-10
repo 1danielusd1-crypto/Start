@@ -2710,7 +2710,7 @@ def cmd_start(msg):
     # 🔹 УДАЛЯЕМ СТАРОЕ ОСНОВНОЕ ОКНО
     
 # 🔥 ЖЁСТКО: забываем старый message_id
-    set_active_window_id(chat_id, day_key, None)
+  #  set_active_window_id(chat_id, day_key, None)
     # 🔹 OWNER-логика — без изменений
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         backup_window_for_owner(chat_id, day_key, None)
@@ -3194,8 +3194,8 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             )
         else:
             _safe(
-                "force_new_day_window",
-                lambda: force_new_day_window(chat_id, day_key)
+                "update_day_window",
+                lambda: update_or_send_day_window(chat_id, day_key)
             )
             _safe(
                 "backup_to_chat",
@@ -3394,16 +3394,7 @@ def force_new_day_window(chat_id: int, day_key: str):
         backup_window_for_owner(chat_id, day_key)
         return
 
-    old_mid = get_active_window_id(chat_id, day_key)
-    txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
-    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-    set_active_window_id(chat_id, day_key, sent.message_id)
-    if old_mid:
-        try:
-            bot.delete_message(chat_id, old_mid)
-        except Exception:
-            pass
+    update_or_send_day_window(chat_id, day_key)
 #@bot.message_handler(content_types=["text"])
 def reset_chat_data(chat_id: int):
     """
