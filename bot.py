@@ -31,6 +31,7 @@ PORT = 5000
 
 BACKUP_CHAT_ID = "-1003340340395"
 
+
 #BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
 #BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
@@ -40,7 +41,7 @@ GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID", "").strip()
 #PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "Code_FINAL_🎈_v1"
+VERSION = "Code_FINAL_NAVFIX_v1"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
@@ -177,27 +178,25 @@ def _save_chat_backup_meta(meta: dict) -> None:
         log_info("chat_backup_meta.json updated")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
-
 def send_backup_to_chat(chat_id: int) -> None:
     """
-    Универсальный авто-бэкап JSON прямо в чате (ОДНО сообщение обновляется).
+    Универсальный авто-бэкап JSON прямо в чате.
+    Работает одинаково для владельца, групп, каналов, всех чатов.
     Логика:
     • гарантируем актуальный data_<chat_id>.json
     • читаем meta-файл chat_backup_meta.json
     • если есть msg_id → edit_message_media()
     • если нет / не найдено → отправляем новое сообщение
-    • при смене дня — создаём НОВОЕ сообщение (старое остаётся архивом)
+    • обновляем meta-файл в рабочей директории (Render-friendly)
+    • при смене дня (после 00:00) создаётся НОВОЕ сообщение с файлом
     """
     try:
         if not chat_id:
             return
-
-        # 1) сохраняем актуальный json чата
         try:
             save_chat_json(chat_id)
         except Exception as e:
             log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
-
         json_path = chat_json_file(chat_id)
         if not os.path.exists(json_path):
             log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
@@ -213,62 +212,55 @@ def send_backup_to_chat(chat_id: int) -> None:
             f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # 2) если новый день — создаём новый документ
+        # 🔄 Новый файл после смены дня
         last_ts = meta.get(ts_key)
         msg_id = meta.get(msg_key)
         if msg_id and last_ts:
             try:
                 prev_dt = datetime.fromisoformat(last_ts)
                 if prev_dt.date() != now_local().date():
+                    # Новый день — старое сообщение оставляем как архив, создаём новое
                     msg_id = None
             except Exception as e:
                 log_error(f"send_backup_to_chat: bad timestamp for chat {chat_id}: {e}")
 
         def _open_file() -> io.BytesIO | None:
+            """Чтение JSON в BytesIO с правильным именем файла."""
             try:
                 with open(json_path, "rb") as f:
                     data_bytes = f.read()
             except Exception as e:
                 log_error(f"send_backup_to_chat open({json_path}): {e}")
                 return None
-
             if not data_bytes:
-                log_error("send_backup_to_chat: JSON is empty")
                 return None
-
             base = os.path.basename(json_path)
             name_no_ext, dot, ext = base.partition(".")
             suffix = get_chat_name_for_filename(chat_id)
-            file_name = suffix if suffix else name_no_ext
+            if suffix:
+                file_name = suffix
+            else:
+                file_name = name_no_ext
             if dot:
                 file_name += f".{ext}"
-
             buf = io.BytesIO(data_bytes)
             buf.name = file_name
-            buf.seek(0)
             return buf
-
-        # 3) пробуем обновить существующее сообщение
+            #🟢🟢🟢🟢
         if msg_id:
             fobj = _open_file()
             if not fobj:
                 return
             try:
-                bot.edit_message_media(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    media=types.InputMediaDocument(media=fobj, caption=caption)
-                )
+                
+                log_info(f"Chat backup UPDATED in chat {chat_id}")
                 meta[ts_key] = now_local().isoformat(timespec="seconds")
                 _save_chat_backup_meta(meta)
-                log_info(f"Chat backup UPDATED in chat {chat_id}")
+                set_active_window_id(chat_id, day_key, mid)
                 return
             except Exception as e:
                 log_error(f"send_backup_to_chat edit FAILED in {chat_id}: {e}")
-                # если сообщение удалили/нельзя обновить — пойдём в отправку нового
-                msg_id = None
 
-        # 4) отправляем новый документ
         fobj = _open_file()
         if not fobj:
             return
@@ -277,10 +269,8 @@ def send_backup_to_chat(chat_id: int) -> None:
         meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
         log_info(f"Chat backup CREATED in chat {chat_id}")
-
     except Exception as e:
         log_error(f"send_backup_to_chat({chat_id}): {e}")
-        
 def default_data():
     return {
         "overall_balance": 0,
@@ -1699,127 +1689,126 @@ def build_week_thu_keyboard(start_key: str):
         types.InlineKeyboardButton("➡️", callback_data=f"wthu:{start_key}:next"),
     )
     return kb
+
 def handle_categories_callback(call, data_str: str) -> bool:
     """UI: 12 месяцев → 4 недели → отчёт по статьям. Возвращает True если обработано."""
     chat_id = call.message.chat.id
-    store = get_chat_store(chat_id)
-    settings = store.setdefault("settings", {})
-    show_list = settings.get("cat_show_list", True)
-
-    # toggle списка операций
-    if data_str.startswith("cat_toggle:"):
-        settings["cat_show_list"] = not show_list
-        save_chat_json(chat_id)
-        data_str = data_str.split(":", 1)[1]
-        show_list = settings.get("cat_show_list", True)
-
-    # закрыть окно статей
-    if data_str == "cat_close":
-        mid = store.get("categories_msg_id")
+    # ─────────────────────────────
+    # ЧТ–СР НЕДЕЛЯ
+    # ─────────────────────────────
+    if data_str=="cat_close":
+        store=get_chat_store(chat_id)
+        mid=store.get("categories_msg_id")
         if mid:
-            try: bot.delete_message(chat_id, mid)
+            try: bot.delete_message(chat_id,mid)
             except Exception: pass
-        store["categories_msg_id"] = None
+        store["categories_msg_id"]=None
         save_chat_json(chat_id)
         return True
-
-    # приоритет: Сегодня → Чт–Ср
-    if data_str == "cat_today":
-        return handle_categories_callback(call, f"cat_wthu:{today_key()}")
-
-    # ───────── ЧТ–СР ─────────
     if data_str.startswith("cat_wthu:"):
         ref = data_str.split(":", 1)[1] or today_key()
+        store = get_chat_store(chat_id)
+
         start_key = week_start_thursday(ref)
         start, end = week_bounds_thu_wed(start_key)
+
         store["current_week_thu"] = start_key
         save_data(data)
 
         cats = calc_categories_for_period(store, start, end)
+
         lines = [
             "📦 Расходы по статьям",
             f"🗓 {fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)",
             ""
         ]
 
-        if cats:
-            for cat, amt in sorted(cats.items()):
-                lines.append(f"{cat}: {fmt_num_plain(amt)}")
-                if show_list:
-                    for d,a,n in collect_items_for_category(store, start, end, cat):
-                        lines.append(f"  • {fmt_date_ddmmyy(d)}: {fmt_num_plain(a)} {(n or '').strip()}")
-        else:
+        if not cats:
             lines.append("Нет расходов за период.")
-
+        else:
+            for cat, amt in sorted(cats.items()):
+                   # 📋 список операций по статье (ЧТ–СР)
+                lines.append(f"{cat}: {fmt_num_plain(amt)}")
+                for day_i, amt_i, note_i in collect_items_for_category(store, start, end, cat):
+                    lines.append(f"  • {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {(note_i or '').strip()}")
         kb = types.InlineKeyboardMarkup()
-        prev_k = (datetime.strptime(start_key,"%Y-%m-%d")-timedelta(days=7)).strftime("%Y-%m-%d")
-        next_k = (datetime.strptime(start_key,"%Y-%m-%d")+timedelta(days=7)).strftime("%Y-%m-%d")
+        prev_k = (datetime.strptime(start_key, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        next_k = (datetime.strptime(start_key, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+
         kb.row(
-            types.InlineKeyboardButton("⬅️ Чт–Ср",callback_data=f"cat_wthu:{prev_k}"),
-            types.InlineKeyboardButton("📅 Сегодня",callback_data="cat_today"),
-            types.InlineKeyboardButton("Чт–Ср ➡️",callback_data=f"cat_wthu:{next_k}")
+            types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_wthu:{prev_k}"),
+            types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"),
+            types.InlineKeyboardButton("Чт-Ср ➡️", callback_data=f"cat_wthu:{next_k}")
         )
+        
         kb.row(
             types.InlineKeyboardButton("⬜ с Пн по Вскр",callback_data=f"cat_wk:{week_start_monday(today_key())}"),
             types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"),
-            types.InlineKeyboardButton("📆 Выбор недели",callback_data="cat_months")
+            types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
         )
-        kb.row(types.InlineKeyboardButton(
-            "🙈 Скрыть список" if show_list else "📋 Показать список",
-            callback_data=f"cat_toggle:{data_str}"
-        ))
-        send_or_edit_categories_window(chat_id,"\n".join(lines),reply_markup=kb)
+        #kb.row(types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"))
+        send_or_edit_categories_window(chat_id, "\n".join(lines), reply_markup=kb)
         return True
+    # Быстрый переход: текущая неделя (сегодня)
+    if data_str == "cat_today":
+        start = week_start_monday(today_key())
+        return handle_categories_callback(call, f"cat_wk:{start}")
 
-    # ───────── ПН–ВС ─────────
+    # Навигация по неделям: start=понедельник недели (YYYY-MM-DD)
     if data_str.startswith("cat_wk:"):
-        start = data_str.split(":",1)[1].strip() or week_start_monday(today_key())
+        start = data_str.split(":", 1)[1].strip()
+        if not start:
+            start = week_start_monday(today_key())
         start, end = week_bounds_from_start(start)
+        store = get_chat_store(chat_id)
         cats = calc_categories_for_period(store, start, end)
+
         lines = [
             "📦 Расходы по статьям",
-            f"🗓 {fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн–Вс)",
+            f"🗓 {fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн - Вскр)",
             ""
         ]
 
-        if cats:
+        if not cats:
+            lines.append("Нет данных по статьям за этот период.")
+        else:
             keys = list(cats.keys())
             if "ПРОДУКТЫ" in keys:
                 keys.remove("ПРОДУКТЫ")
                 keys = ["ПРОДУКТЫ"] + sorted(keys)
             else:
                 keys = sorted(keys)
+
             for cat in keys:
                 lines.append(f"{cat}: {fmt_num_plain(cats[cat])}")
-                if cat=="ПРОДУКТЫ" and show_list:
-                    for d,a,n in collect_items_for_category(store,start,end,"ПРОДУКТЫ"):
-                        lines.append(f"  • {fmt_date_ddmmyy(d)}: {fmt_num_plain(a)} {(n or '').strip()}")
-        else:
-            lines.append("Нет данных по статьям за этот период.")
+                if cat == "ПРОДУКТЫ":
+                    items = collect_items_for_category(store, start, end, "ПРОДУКТЫ")
+                    if items:
+                        for day_i, amt_i, note_i in items:
+                            note_i = (note_i or "").strip()
+                            lines.append(f"  • {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {note_i}")
 
         kb = types.InlineKeyboardMarkup()
-        prev_s = (datetime.strptime(start,"%Y-%m-%d")-timedelta(days=7)).strftime("%Y-%m-%d")
-        next_s = (datetime.strptime(start,"%Y-%m-%d")+timedelta(days=7)).strftime("%Y-%m-%d")
+        try:
+            prev_start = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+            next_start = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+        except Exception:
+            prev_start = start
+            next_start = start
         kb.row(
-            types.InlineKeyboardButton("⬅️ Неделя",callback_data=f"cat_wk:{prev_s}"),
-            types.InlineKeyboardButton("📅 Сегодня",callback_data="cat_today"),
-            types.InlineKeyboardButton("Неделя ➡️",callback_data=f"cat_wk:{next_s}")
+            types.InlineKeyboardButton("⬅️ Неделя", callback_data=f"cat_wk:{prev_start}"),
+            types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"),
+            types.InlineKeyboardButton("Неделя ➡️", callback_data=f"cat_wk:{next_start}"))
+     
+        kb.row(types.InlineKeyboardButton("🟦 с Чт по Ср", callback_data=f"cat_wthu:{start}"),
+                types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"),
+                types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
         )
-        kb.row(
-            types.InlineKeyboardButton("🟦 с Чт по Ср",callback_data=f"cat_wthu:{start}"),
-            types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"),
-            types.InlineKeyboardButton("📆 Выбор недели",callback_data="cat_months")
-        )
-        kb.row(types.InlineKeyboardButton(
-            "🙈 Скрыть список" if show_list else "📋 Показать список",
-            callback_data=f"cat_toggle:{data_str}"
-        ))
-        send_or_edit_categories_window(chat_id,"\n".join(lines),reply_markup=kb)
+       # kb.row(types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months"))
+        #kb.row(types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"))
+        send_or_edit_categories_window(chat_id, "\n".join(lines), reply_markup=kb)
+        
         return True
-
-    #return False
-
-    #return False
 
     if data_str == "cat_months":
         kb = types.InlineKeyboardMarkup(row_width=3)
@@ -2721,7 +2710,7 @@ def cmd_start(msg):
     # 🔹 УДАЛЯЕМ СТАРОЕ ОСНОВНОЕ ОКНО
     
 # 🔥 ЖЁСТКО: забываем старый message_id
-  #  set_active_window_id(chat_id, day_key, None)
+    set_active_window_id(chat_id, day_key, None)
     # 🔹 OWNER-логика — без изменений
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         backup_window_for_owner(chat_id, day_key, None)
@@ -3205,12 +3194,12 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             )
         else:
             _safe(
-                "update_day_window",
-                lambda: update_or_send_day_window(chat_id, day_key)
+                "force_new_day_window",
+                lambda: force_new_day_window(chat_id, day_key)
             )
             _safe(
                 "backup_to_chat",
-                lambda: send_backup_to_chat(chat_id)
+                lambda: force_backup_to_chat(chat_id)
             )
 
         # 3️⃣ Бэкап в канал (для всех)
@@ -3405,7 +3394,16 @@ def force_new_day_window(chat_id: int, day_key: str):
         backup_window_for_owner(chat_id, day_key)
         return
 
-    update_or_send_day_window(chat_id, day_key)
+    old_mid = get_active_window_id(chat_id, day_key)
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
+    if old_mid:
+        try:
+            bot.delete_message(chat_id, old_mid)
+        except Exception:
+            pass
 #@bot.message_handler(content_types=["text"])
 def reset_chat_data(chat_id: int):
     """
@@ -3735,7 +3733,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"😂 Бот запущен (версия {VERSION}).\n"
+                    f"✅ Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
