@@ -2600,6 +2600,7 @@ def delete_active_window_if_exists(chat_id: int, day_key: str):
     if day_key in aw:
         del aw[day_key]
     save_data(data)
+#🌏
 def update_or_send_day_window(chat_id: int, day_key: str):
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         backup_window_for_owner(chat_id, day_key)
@@ -2607,21 +2608,39 @@ def update_or_send_day_window(chat_id: int, day_key: str):
 
     txt, _ = render_day_window(chat_id, day_key)
     kb = build_main_keyboard(day_key, chat_id)
-    mid = get_active_window_id(chat_id, day_key)
-    if mid:
+
+    old_mid = get_active_window_id(chat_id, day_key)
+
+    # 1. Сначала обновляем текущее окно, если оно есть
+    if old_mid:
         try:
             bot.edit_message_text(
                 txt,
                 chat_id=chat_id,
-                message_id=mid,
+                message_id=old_mid,
                 reply_markup=kb,
                 parse_mode="HTML"
             )
-            return
-        except:
+        except Exception:
             pass
-    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+
+    # 2. Создаём новое окно
+    sent = bot.send_message(
+        chat_id,
+        txt,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
     set_active_window_id(chat_id, day_key, sent.message_id)
+
+    # 3. Удаляем предыдущее окно
+    if old_mid:
+        try:
+            bot.delete_message(chat_id, old_mid)
+        except Exception:
+            pass
+#🌏
 def is_finance_mode(chat_id: int) -> bool:
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         return True
