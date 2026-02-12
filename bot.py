@@ -3225,12 +3225,13 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
         _safe("save_data", lambda: save_data(data))
         _safe("export_global_csv", lambda: export_global_csv(data))
 
-        # 2️⃣ Окно дня + бэкап (НЕ СОЗДАЁМ НОВОЕ ОКНО, А ОБНОВЛЯЕМ)
+        # 2️⃣ Окно дня — единая логика как у OWNER (редактирование активного)
         if OWNER_ID and str(chat_id) == str(OWNER_ID):
             _safe("owner_backup_window", lambda: backup_window_for_owner(chat_id, day_key, None))
         else:
-            _safe("update_day_window", lambda: update_or_send_day_window(chat_id, day_key))
-            _safe("backup_to_chat", lambda: send_backup_to_chat(chat_id))
+            _safe("chat_day_window", lambda: force_new_day_window(chat_id, day_key))       
+    #        _safe("update_day_window", lambda: update_or_send_day_window(chat_id, day_key))
+        #    _safe("backup_to_chat", lambda: send_backup_to_chat(chat_id))
 
         # 3️⃣ Бэкап в канал (для всех)
         _safe("backup_to_channel", lambda: send_backup_to_channel(chat_id))
