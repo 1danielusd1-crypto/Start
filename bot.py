@@ -2611,7 +2611,7 @@ def update_or_send_day_window(chat_id: int, day_key: str):
 
     old_mid = get_active_window_id(chat_id, day_key)
 
-    # 1. Сначала обновляем текущее окно, если оно есть
+    # 1. Если окно уже есть → просто обновляем
     if old_mid:
         try:
             bot.edit_message_text(
@@ -2621,10 +2621,11 @@ def update_or_send_day_window(chat_id: int, day_key: str):
                 reply_markup=kb,
                 parse_mode="HTML"
             )
+            return  # 🔴 ВАЖНО: выходим, не создаём новое окно
         except Exception:
             pass
 
-    # 2. Создаём новое окно
+    # 2. Если окна нет → создаём
     sent = bot.send_message(
         chat_id,
         txt,
@@ -2633,13 +2634,7 @@ def update_or_send_day_window(chat_id: int, day_key: str):
     )
 
     set_active_window_id(chat_id, day_key, sent.message_id)
-
-    # 3. Удаляем предыдущее окно
-    if old_mid:
-        try:
-            bot.delete_message(chat_id, old_mid)
-        except Exception:
-            pass
+    
 #🌏
 def is_finance_mode(chat_id: int) -> bool:
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
