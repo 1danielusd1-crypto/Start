@@ -83,7 +83,13 @@ def now_local():
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
 
-
+def fmt_num(v):
+    if isinstance(v, float):
+        if v.is_integer():
+            return str(int(v))   # 100.0 → 100
+        return str(v)            # 12.5 → 12.5
+    return str(v)
+    
 def fmt_date_ddmmyy(day_key: str) -> str:
     """YYYY-MM-DD -> DD.MM.YY"""
     try:
