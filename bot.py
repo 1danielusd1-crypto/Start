@@ -2611,7 +2611,7 @@ def update_or_send_day_window(chat_id: int, day_key: str):
 
     old_mid = get_active_window_id(chat_id, day_key)
 
-    # 1. Если окно уже есть → просто обновляем
+    # 1. Пытаемся обновить
     if old_mid:
         try:
             bot.edit_message_text(
@@ -2621,11 +2621,22 @@ def update_or_send_day_window(chat_id: int, day_key: str):
                 reply_markup=kb,
                 parse_mode="HTML"
             )
-            return  # 🔴 ВАЖНО: выходим, не создаём новое окно
-        except Exception:
-            pass
+            return  # ✅ обновили — всё ок
 
-    # 2. Если окна нет → создаём
+        except Exception as e:
+            err = str(e).lower()
+
+            # ⚠️ Если текст не изменился — это не ошибка
+            if "message is not modified" in err:
+                return
+
+            # ❗ Любая другая ошибка → удаляем старое окно
+            try:
+                bot.delete_message(chat_id, old_mid)
+            except:
+                pass
+
+    # 2. Создаём новое окно
     sent = bot.send_message(
         chat_id,
         txt,
@@ -2633,8 +2644,15 @@ def update_or_send_day_window(chat_id: int, day_key: str):
         parse_mode="HTML"
     )
 
+    # 3. Обновляем ID
     set_active_window_id(chat_id, day_key, sent.message_id)
-    
+
+    # 4. На всякий случай удаляем старое (если вдруг осталось)
+    if old_mid and old_mid != sent.message_id:
+        try:
+            bot.delete_message(chat_id, old_mid)
+        except:
+            pass    
 #🌏
 def is_finance_mode(chat_id: int) -> bool:
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
