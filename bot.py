@@ -19,7 +19,10 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from telebot.types import InputMediaDocument
+from collections import defaultdict
+import threading
 
+window_locks = defaultdict(threading.Lock)
 # -----------------------------
 # ⚙️ Конфигурация (жёстко прописанные значения для Render)
 # -----------------------------
@@ -2606,53 +2609,59 @@ def update_or_send_day_window(chat_id: int, day_key: str):
         backup_window_for_owner(chat_id, day_key)
         return
 
-    txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
+    lock = window_locks[(chat_id, day_key)]
 
-    old_mid = get_active_window_id(chat_id, day_key)
+    with lock:
+        txt, _ = render_day_window(chat_id, day_key)
+        kb = build_main_keyboard(day_key, chat_id)
 
-    # 1. Пытаемся обновить
-    if old_mid:
-        try:
-            bot.edit_message_text(
-                txt,
-                chat_id=chat_id,
-                message_id=old_mid,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-            return  # ✅ обновили — всё ок
+        old_mid = get_active_window_id(chat_id, day_key)
 
-        except Exception as e:
-            err = str(e).lower()
+        # -----------------------------
+        # 1. Пытаемся обновить текущее
+        # -----------------------------
+        if old_mid:
+            try:
+                bot.edit_message_text(
+                    txt,
+                    chat_id=chat_id,
+                    message_id=old_mid,
+                    reply_markup=kb,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                err = str(e).lower()
 
-            # ⚠️ Если текст не изменился — это не ошибка
-            if "message is not modified" in err:
-                return
+                # если просто не изменился — ок
+                if "message is not modified" not in err:
+                    try:
+                        bot.delete_message(chat_id, old_mid)
+                        old_mid = None
+                    except:
+                        old_mid = None
 
-            # ❗ Любая другая ошибка → удаляем старое окно
+        # -----------------------------
+        # 2. Создаём новое окно
+        # -----------------------------
+        sent = bot.send_message(
+            chat_id,
+            txt,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+
+        new_mid = sent.message_id
+
+        set_active_window_id(chat_id, day_key, new_mid)
+
+        # -----------------------------
+        # 3. Удаляем старое окно
+        # -----------------------------
+        if old_mid and old_mid != new_mid:
             try:
                 bot.delete_message(chat_id, old_mid)
             except:
-                pass
-
-    # 2. Создаём новое окно
-    sent = bot.send_message(
-        chat_id,
-        txt,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
-    # 3. Обновляем ID
-    set_active_window_id(chat_id, day_key, sent.message_id)
-
-    # 4. На всякий случай удаляем старое (если вдруг осталось)
-    if old_mid and old_mid != sent.message_id:
-        try:
-            bot.delete_message(chat_id, old_mid)
-        except:
-            pass    
+                pass   
 #🌏
 def is_finance_mode(chat_id: int) -> bool:
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
