@@ -84,11 +84,13 @@ def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
 
 def fmt_num(v):
-    if isinstance(v, float):
+    try:
+        v = float(v)
         if v.is_integer():
-            return str(int(v))   # 100.0 → 100
-        return str(v)            # 12.5 → 12.5
-    return str(v)
+            return str(int(v))
+        return str(v)
+    except:
+        return str(v)
     
 def fmt_date_ddmmyy(day_key: str) -> str:
     """YYYY-MM-DD -> DD.MM.YY"""
@@ -419,7 +421,7 @@ def save_chat_json(chat_id: int):
                         r.get("id"),
                         r.get("short_id"),
                         r.get("timestamp"),
-                        r.fmt_num(r.get("amount")),
+                        fmt_num(r.get("amount")),
                         r.get("note"),
                         r.get("owner"),
                         dk,
