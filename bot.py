@@ -3048,6 +3048,7 @@ def cmd_view(msg):
     parts = (msg.text or "").split()
     if len(parts) < 2:
         send_info(chat_id, "Использование: /view YYYY-MM-DD")
+        delete_message_later(chat_id, msg.message_id, 15)
         return
     day_key = parts[1]
     try:
