@@ -2528,6 +2528,7 @@ def on_callback(call):
             return
         if cmd == "pick_date":
             bot.send_message(chat_id, "Введите дату:\n/view YYYY-MM-DD")
+            delete_message_later(chat_id, msg.message_id, 15)
             return
         if cmd == "cancel_edit":
             store = get_chat_store(chat_id)
