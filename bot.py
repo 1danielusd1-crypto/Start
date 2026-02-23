@@ -3144,6 +3144,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
     day_recs = store.get("daily_records", {}).get(day_key, [])
     if not day_recs:
         send_info(chat_id, "Нет записей за этот день.")
+        delete_message_later(chat_id, msg.message_id, 15)
         return
     tmp_name = f"data_{chat_id}_{day_key}.csv"
     try:
