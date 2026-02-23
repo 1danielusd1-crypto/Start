@@ -1395,6 +1395,25 @@ def build_main_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
     )
     return kb
+def build_csv_menu(day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+
+    kb.add(
+        types.InlineKeyboardButton("📅 За день", callback_data=f"d:{day_key}:csv_day"),
+        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"d:{day_key}:csv_week")
+    )
+    kb.add(
+        types.InlineKeyboardButton("📆 За месяц", callback_data=f"d:{day_key}:csv_month"),
+        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"d:{day_key}:csv_wedthu")
+    )
+    kb.add(
+        types.InlineKeyboardButton("📂 Всё время", callback_data=f"d:{day_key}:csv_all_real")
+    )
+    kb.add(
+        types.InlineKeyboardButton("⬅️ Назад", callback_data=f"d:{day_key}:menu")
+    )
+
+    return kb
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
     """
     Календарь на 31 день.
@@ -1438,6 +1457,27 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
         )
     )
     return kb
+
+def build_csv_menu(day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+
+    kb.add(
+        types.InlineKeyboardButton("📅 За день", callback_data=f"d:{day_key}:csv_day"),
+        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"d:{day_key}:csv_week")
+    )
+    kb.add(
+        types.InlineKeyboardButton("📆 За месяц", callback_data=f"d:{day_key}:csv_month"),
+        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"d:{day_key}:csv_wedthu")
+    )
+    kb.add(
+        types.InlineKeyboardButton("📂 Всё время", callback_data=f"d:{day_key}:csv_all_real")
+    )
+    kb.add(
+        types.InlineKeyboardButton("⬅️ Назад", callback_data=f"d:{day_key}:open")
+    )
+
+    return kb
+
 def build_edit_menu_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.row(
@@ -2290,10 +2330,31 @@ def on_callback(call):
                 safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
             return
         if cmd == "csv_all":
-            cmd_csv_all(chat_id)
+            kb = build_csv_menu(day_key)
+            safe_edit(
+                bot,
+                call,
+                "📂 Выберите период CSV:",
+                reply_markup=kb
+            )
             return
         if cmd == "csv_day":
             cmd_csv_day(chat_id, day_key)
+            return
+        if cmd == "csv_all_real":
+            cmd_csv_all(chat_id)
+            return
+
+        if cmd == "csv_week":
+            send_csv_week(chat_id, day_key)
+            return
+
+        if cmd == "csv_month":
+            send_csv_month(chat_id, day_key)
+            return
+
+        if cmd == "csv_wedthu":
+            send_csv_wedthu(chat_id, day_key)
             return
         if cmd == "reset":
             if not require_finance(chat_id):
@@ -2483,6 +2544,102 @@ def on_callback(call):
     except Exception as e:
         log_error(f"on_callback error: {e}")
         #🐳🐳🐳🐳🐳🐳🐳🐳
+def send_csv_week(chat_id: int, day_key: str):
+    try:
+        store = get_chat_store(chat_id)
+
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+        start = base - timedelta(days=6)
+
+        rows = []
+
+        for i in range(7):
+            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            for r in store.get("daily_records", {}).get(d, []):
+                rows.append((d, r["amount"], r.get("note", "")))
+
+        if not rows:
+            send_info(chat_id, "Нет данных за неделю")
+            return
+
+        tmp = f"week_{chat_id}.csv"
+
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "amount", "note"])
+            w.writerows(rows)
+
+        with open(tmp, "rb") as f:
+            bot.send_document(chat_id, f, caption="🗓 CSV за неделю")
+
+    except Exception as e:
+        log_error(f"send_csv_week: {e}")
+def send_csv_month(chat_id: int, day_key: str):
+    try:
+        store = get_chat_store(chat_id)
+
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+        start = base.replace(day=1)
+
+        rows = []
+
+        for d, recs in store.get("daily_records", {}).items():
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            if dt >= start and dt <= base:
+                for r in recs:
+                    rows.append((d, r["amount"], r.get("note", "")))
+
+        if not rows:
+            send_info(chat_id, "Нет данных за месяц")
+            return
+
+        tmp = f"month_{chat_id}.csv"
+
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "amount", "note"])
+            w.writerows(rows)
+
+        with open(tmp, "rb") as f:
+            bot.send_document(chat_id, f, caption="📆 CSV за месяц")
+
+    except Exception as e:
+        log_error(f"send_csv_month: {e}")
+def send_csv_wedthu(chat_id: int, day_key: str):
+    try:
+        store = get_chat_store(chat_id)
+
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+
+        while base.weekday() != 2:
+            base -= timedelta(days=1)
+
+        start = base
+
+        rows = []
+
+        for i in range(2):
+            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            for r in store.get("daily_records", {}).get(d, []):
+                rows.append((d, r["amount"], r.get("note", "")))
+
+        if not rows:
+            send_info(chat_id, "Нет данных Ср–Чт")
+            return
+
+        tmp = f"wedthu_{chat_id}.csv"
+
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "amount", "note"])
+            w.writerows(rows)
+
+        with open(tmp, "rb") as f:
+            bot.send_document(chat_id, f, caption="📊 CSV Ср–Чт")
+
+    except Exception as e:
+        log_error(f"send_csv_wedthu: {e}")
+
 def add_record_to_chat(
     chat_id: int,
     amount: float,
