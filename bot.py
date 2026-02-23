@@ -2527,8 +2527,14 @@ def on_callback(call):
             send_and_auto_delete(chat_id, f"Все связи с {tgt} удалены.")
             return
         if cmd == "pick_date":
-            bot.send_message(chat_id, "Введите дату:\n/view YYYY-MM-DD")
-            delete_message_later(chat_id, msg.message_id, 15)
+            msg = bot.send_message(chat_id, "Введите дату:\n/view YYYY-MM-DD")
+
+            store = get_chat_store(chat_id)
+            store["wait_date_msg_id"] = msg.message_id
+            save_data(data)
+
+            delete_message_later(chat_id, msg.message_id, 30)
+
             return
         if cmd == "cancel_edit":
             store = get_chat_store(chat_id)
@@ -3041,6 +3047,19 @@ def cmd_ping(msg):
     send_info(msg.chat.id, "PONG — бот работает 🟢")
 @bot.message_handler(commands=["view"])
 def cmd_view(msg):
+    chat_id = message.chat.id
+
+    store = get_chat_store(chat_id)
+
+    msg_id = store.get("wait_date_msg_id")
+    if msg_id:
+        try:
+            bot.delete_message(chat_id, msg_id)
+        except:
+            pass
+
+        store["wait_date_msg_id"] = None
+        save_data(data)
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
