@@ -153,6 +153,108 @@ def _save_json(path: str, obj):
         log_error(f"JSON save error {path}: {e}")
 def _load_csv_meta():
     return _load_json(CSV_META_FILE, {})
+def _save_csv_meta(meta: dict):
+    try:
+        _save_json(CSV_META_FILE, meta)
+        log_info("csv_meta.json updated")
+    except Exception as e:
+        log_error(f"_save_csv_meta: {e}")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CHAT_BACKUP_META_FILE = os.path.join(BASE_DIR, "chat_backup_meta.json")
+log_info(f"chat_backup_meta.json PATH = {CHAT_BACKUP_META_FILE}")
+
+        try:
+            save_chat_json(chat_id)
+        except Exception as e:
+            log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
+
+        json_path = chat_json_file(chat_id)
+        if not os.path.exists(json_path):
+            log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
+            return
+
+        meta = _load_chat_backup_meta()
+        msg_key = f"msg_chat_{chat_id}"
+        ts_key = f"timestamp_chat_{chat_id}"
+
+        chat_title = _get_chat_title_for_backup(chat_id)
+        caption = (
+            f"🧾 Авто-бэкап JSON чата: {chat_title}\n"
+            f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        # 🔄 Новый файл после смены дня
+        last_ts = meta.get(ts_key)
+        msg_id = meta.get(msg_key)
+        if msg_id and last_ts:
+            try:
+                prev_dt = datetime.fromisoformat(last_ts)
+                if prev_dt.date() != now_local().date():
+                    msg_id = None
+            except Exception as e:
+                log_error(f"send_backup_to_chat: bad timestamp for chat {chat_id}: {e}")
+
+        def _open_file() -> io.BytesIO | None:
+            """Чтение JSON в BytesIO с правильным именем файла."""
+            try:
+                with open(json_path, "rb") as f:
+                    data_bytes = f.read()
+            except Exception as e:
+                log_error(f"send_backup_to_chat open({json_path}): {e}")
+                return None
+
+            if not data_bytes:
+                return None
+
+            base = os.path.basename(json_path)
+            name_no_ext, dot, ext = base.partition(".")
+            suffix = get_chat_name_for_filename(chat_id)
+            file_name = suffix if suffix else name_no_ext
+            if dot:
+                file_name += f".{ext}"
+
+            buf = io.BytesIO(data_bytes)
+            buf.name = file_name
+            return buf
+
+        # ───────────────
+        # 🔄 ОБНОВЛЯЕМ
+        # ───────────────
+        if msg_id:
+            fobj = _open_file()
+            if not fobj:
+                return
+            try:
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=types.InputMediaDocument(
+                        media=fobj,
+                        caption=caption
+                    )
+                )
+                log_info(f"Chat backup UPDATED in chat {chat_id}")
+                meta[ts_key] = now_local().isoformat(timespec="seconds")
+                _save_chat_backup_meta(meta)
+                return
+            except Exception as e:
+                log_error(f"send_backup_to_chat edit FAILED in {chat_id}: {e}")
+                msg_id = None  # упадём в отправку нового
+
+        # ───────────────
+        # ➕ ОТПРАВЛЯЕМ НОВЫЙ
+        # ───────────────
+        fobj = _open_file()
+        if not fobj:
+            return
+        sent = bot.send_document(chat_id, fobj, caption=caption)
+        meta[msg_key] = sent.message_id
+        meta[ts_key] = now_local().isoformat(timespec="seconds")
+        _save_chat_backup_meta(meta)
+        log_info(f"Chat backup CREATED in chat {chat_id}")
+
+    except Exception as e:
+        log_error(f"send_backup_to_chat({chat_id}): {e}")
 #🌏
 def default_data():
     return {
@@ -608,6 +710,7 @@ def handle_finance_text(msg):
     """
     Обработка обычного текстового ввода:
     - авто-добавление (если включено)
+    - добавление через кнопку "➕ Добавить"
     - редактирование записи
     """
     if msg.content_type != "text":
@@ -1208,6 +1311,7 @@ def render_day_window(chat_id: int, day_key: str):
 def build_main_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     kb.row(
+        types.InlineKeyboardButton("➕ Добавить", callback_data=f"d:{day_key}:add"),
         types.InlineKeyboardButton("📋 Меню", callback_data=f"d:{day_key}:menu")
     )
     kb.row(
@@ -2576,12 +2680,6 @@ def send_info(chat_id: int, text: str):
     send_and_auto_delete(chat_id, text, 10)
                 
 @bot.message_handler(commands=["ok"])
-def ok_cmd(message):
-    chat_id = message.chat.id
-    store = get_chat_store(chat_id)
-    store['edit_wait'] = {'type': 'amount', 'target': 'chat'}
-    save_data()
-    bot.send_message(chat_id, '💰 Введите сумму\nПример: 100 или -50')
 def cmd_enable_finance(msg):
     chat_id = msg.chat.id
     # ❌ OWNER — команда не нужна
@@ -2970,6 +3068,7 @@ def cmd_autoadd_info(msg):
         f"{'ВКЛЮЧЕНО ✅' if new_state else 'ВЫКЛЮЧЕНО ❌'}\n\n"
         "Использование:\n"
         "• ВКЛ → каждое сообщение с суммой записывается автоматически\n"
+        "• ВЫКЛ → работает только через кнопку «Добавить»",
         12
     )
 def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
