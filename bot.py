@@ -3726,5 +3726,6 @@ def main():
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
     app.run(host="0.0.0.0", port=PORT)
+    
 if __name__ == "__main__":
     main()
