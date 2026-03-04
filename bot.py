@@ -163,29 +163,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHAT_BACKUP_META_FILE = os.path.join(BASE_DIR, "chat_backup_meta.json")
 log_info(f"chat_backup_meta.json PATH = {CHAT_BACKUP_META_FILE}")
 
-        try:
-            save_chat_json(chat_id)
-        except Exception as e:
-            log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
-
-        json_path = chat_json_file(chat_id)
-        if not os.path.exists(json_path):
-            log_error(f"send_backup_to_chat: {json_path} NOT FOUND")
-            return
-
-        meta = _load_chat_backup_meta()
-        msg_key = f"msg_chat_{chat_id}"
-        ts_key = f"timestamp_chat_{chat_id}"
-
-        chat_title = _get_chat_title_for_backup(chat_id)
-        caption = (
-            f"🧾 Авто-бэкап JSON чата: {chat_title}\n"
-            f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-
-        # 🔄 Новый файл после смены дня
-        last_ts = meta.get(ts_key)
-        msg_id = meta.get(msg_key)
+        
         if msg_id and last_ts:
             try:
                 prev_dt = datetime.fromisoformat(last_ts)
