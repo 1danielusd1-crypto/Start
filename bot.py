@@ -710,7 +710,6 @@ def handle_finance_text(msg):
     """
     Обработка обычного текстового ввода:
     - авто-добавление (если включено)
-    - добавление через кнопку "➕ Добавить"
     - редактирование записи
     """
     if msg.content_type != "text":
@@ -1311,7 +1310,6 @@ def render_day_window(chat_id: int, day_key: str):
 def build_main_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     kb.row(
-        types.InlineKeyboardButton("➕ Добавить", callback_data=f"d:{day_key}:add"),
         types.InlineKeyboardButton("📋 Меню", callback_data=f"d:{day_key}:menu")
     )
     kb.row(
@@ -2680,6 +2678,12 @@ def send_info(chat_id: int, text: str):
     send_and_auto_delete(chat_id, text, 10)
                 
 @bot.message_handler(commands=["ok"])
+def ok_cmd(message):
+    chat_id = message.chat.id
+    store = get_chat_store(chat_id)
+    store['edit_wait'] = {'type': 'amount', 'target': 'chat'}
+    save_data()
+    bot.send_message(chat_id, '💰 Введите сумму\nПример: 100 или -50')
 def cmd_enable_finance(msg):
     chat_id = msg.chat.id
     # ❌ OWNER — команда не нужна
@@ -3068,7 +3072,6 @@ def cmd_autoadd_info(msg):
         f"{'ВКЛЮЧЕНО ✅' if new_state else 'ВЫКЛЮЧЕНО ❌'}\n\n"
         "Использование:\n"
         "• ВКЛ → каждое сообщение с суммой записывается автоматически\n"
-        "• ВЫКЛ → работает только через кнопку «Добавить»",
         12
     )
 def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
