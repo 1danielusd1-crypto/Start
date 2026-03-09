@@ -994,17 +994,7 @@ def _safe_chat_title_for_filename(title) -> str:
     title = title.replace(" ", "_")
     title = re.sub(r"[^0-9A-Za-zА-Яа-я_\-]+", "", title)
     return title[:32]
-def _get_chat_title_for_backup(chat_id: int) -> str:
-    """Пытается достать название чата из store["info"]["title"]"""
-    try:
-        store = data.get("chats", {}).get(str(chat_id), {}) if isinstance(data, dict) else {}
-        info = store.get("info", {})
-        title = info.get("title")
-        if title:
-            return title
-    except Exception as e:
-        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
-    return f"chat_{chat_id}"
+
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """
     Берём название чата из store["info"], чтобы подписывать бэкап.
