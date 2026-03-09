@@ -788,64 +788,6 @@ def handle_finance_text(msg):
         schedule_finalize(chat_id, day_key)
         return
       
-def handle_finance_edit(msg):
-    chat_id = msg.chat.id
-    text = msg.text or msg.caption
-    if not text:
-        return False
-
-    store = get_chat_store(chat_id)
-    records = store.get("records", [])
-    target = None
-
-    #for r in records:
-    for r in records:
-        if (
-            r.get("source_msg_id") == msg.message_id
-            or r.get("origin_msg_id") == msg.message_id
-            or r.get("msg_id") == msg.message_id
-        ):
-            target = r
-            break
-        
-    if not target:
-        log_info(f"[EDIT-FIN] record not found for msg_id={msg.message_id}")
-        return False
-
-    try:
-        amount, note = split_amount_and_note(text)
-
-        # 🔥 ВАЖНО: если исходная запись была расходом — сохраняем знак
-        #raw = text.strip()
-        #explicit_plus = raw.startswith("+")
-        #if target.get("amount", 0) < 0 and amount > 0:
-            #amount = -amount
-
-    except Exception:
-        log_info("[EDIT-FIN] bad format, ignored")
-        return True  # edit перехвачен, но данных нет
-
-    # обновляем ОСНОВНУЮ запись
-    target["amount"] = amount
-    target["note"] = note
-    #target["timestamp"] = now_local().isoformat(timespec="seconds")
-
-    # 🔥 ОБЯЗАТЕЛЬНО: обновляем daily_records
-    for day, arr in store.get("daily_records", {}).items():
-        for r in arr:
-            if r.get("id") == target.get("id"):
-                r.update(target)
-
-    # пересчитываем баланс сразу
-    store["balance"] = sum(r["amount"] for r in store.get("records", []))
-
-    log_info(
-        f"[EDIT-FIN] updated record R{target['id']} "
-        f"amount={amount} note={note}"
-    )
-    day_key = target.get("day_key") or today_key()
-    update_or_send_day_window(chat_id, day_key)
-    return True
     #🍕🍕🍕к🍕
 def _get_drive_service():
     if not GOOGLE_SERVICE_ACCOUNT_JSON or not GDRIVE_FOLDER_ID:
@@ -903,52 +845,8 @@ def upload_to_gdrive(path: str, mime_type: str = None, description: str | None =
             log_info(f"GDrive: created {fname}, id={created.get('id')}")
     except Exception as e:
         log_error(f"upload_to_gdrive({path}): {e}")
-def download_from_gdrive(filename: str, dest_path: str) -> bool:
-    service = _get_drive_service()
-    if service is None:
-        return False
-    try:
-        res = service.files().list(
-            q=f"name = '{filename}' and '{GDRIVE_FOLDER_ID}' in parents and trashed = false",
-            spaces="drive",
-            fields="files(id, name, mimeType, size)",
-        ).execute()
-        items = res.get("files", [])
-        if not items:
-            log_info(f"GDrive: {filename} not found")
-            return False
-        file_id = items[0]["id"]
-        request = service.files().get_media(fileId=file_id)
-        fh = io.FileIO(dest_path, "wb")
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        log_info(f"GDrive: downloaded {filename} -> {dest_path}")
-        return True
-    except Exception as e:
-        log_error(f"download_from_gdrive({filename}): {e}")
-        return False
-def restore_from_gdrive_if_needed() -> bool:
-    """
-    If local DATA_FILE/CSV_FILE/CSV_META_FILE are missing,
-    try to restore them from Google Drive.
-    """
-    restored_any = False
-    if not os.path.exists(DATA_FILE):
-        if download_from_gdrive(os.path.basename(DATA_FILE), DATA_FILE):
-            restored_any = True
-    if not os.path.exists(CSV_FILE):
-        if download_from_gdrive(os.path.basename(CSV_FILE), CSV_FILE):
-            restored_any = True
-    if not os.path.exists(CSV_META_FILE):
-        if download_from_gdrive(os.path.basename(CSV_META_FILE), CSV_META_FILE):
-            restored_any = True
-    if restored_any:
-        log_info("Data restored from Google Drive.")
-    else:
-        log_info("GDrive restore: nothing to restore.")
-    return restored_any
+
+
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel)."""
     try:
@@ -1138,59 +1036,8 @@ def send_backup_to_channel(chat_id: int):
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
 #⏏️⏏️⏏️⏏️⏏️⏏️
-def _owner_data_file() -> str | None:
-    """
-    Файл владельца, где хранится forward_rules.
-    """
-    if not OWNER_ID:
-        return None
-    try:
-        return f"data_{int(OWNER_ID)}.json"
-    except Exception:
-        return None
-def load_forward_rules():
-    """
-    Загружает forward_rules из файла владельца.
-    Поддерживает старый формат (списки) и новый (словарь).
-    """
-    try:
-        path = _owner_data_file()
-        if not path or not os.path.exists(path):
-            return {}
-        payload = _load_json(path, {}) or {}
-        fr = payload.get("forward_rules", {})
-        upgraded = {}
-        for src, value in fr.items():
-            if isinstance(value, list):
-                upgraded[src] = {}
-                for dst in value:
-                    upgraded[src][dst] = "oneway_to"
-            elif isinstance(value, dict):
-                upgraded[src] = value
-            else:
-                continue
-        return upgraded
-    except Exception as e:
-        log_error(f"load_forward_rules: {e}")
-        return {}
-def persist_forward_rules_to_owner():
-    """
-    Сохраняет forward_rules (в НОВОМ формате) только в data_OWNER.json.
-    """
-    try:
-        path = _owner_data_file()
-        if not path:
-            return
-        payload = {}
-        if os.path.exists(path):
-            payload = _load_json(path, {})
-            if not isinstance(payload, dict):
-                payload = {}
-        payload["forward_rules"] = data.get("forward_rules", {})
-        _save_json(path, payload)
-        log_info(f"forward_rules persisted to {path}")
-    except Exception as e:
-        log_error(f"persist_forward_rules_to_owner: {e}")
+
+
         
 def resolve_forward_targets(source_chat_id: int):
     fr = data.get("forward_rules", {})
@@ -3333,7 +3180,7 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
                     media=media,
                     reply_markup=kb
                 )
-                set_active_window_id(chat_id, day_key, mid)
+                #set_active_window_id(chat_id, day_key, mid)
                 return
             except Exception as e:
                 log_error(f"backup_window_for_owner: edit_message_media failed: {e}")
@@ -3346,7 +3193,7 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
                         reply_markup=kb,
                         parse_mode="HTML"
                     )
-                    set_active_window_id(chat_id, day_key, mid)
+                    #set_active_window_id(chat_id, day_key, mid)
                     return
                 except Exception as e2:
                     log_error(f"backup_window_for_owner: edit_caption failed: {e2}")
