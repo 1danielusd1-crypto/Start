@@ -1,4 +1,4 @@
-#норм ок последн со старта
+# норм ок последн со старта ммм
 import os
 import io
 import json
@@ -8,19 +8,22 @@ import html
 import logging
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
 import requests
 import telebot
 from telebot import types
+from telebot.types import InputMediaDocument
 
 from flask import Flask, request
+
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-from telebot.types import InputMediaDocument
+
 from collections import defaultdict
-import threading
 
 window_locks = defaultdict(threading.Lock)
 # -----------------------------
@@ -773,42 +776,6 @@ def handle_finance_text(msg):
     store = get_chat_store(chat_id)
     wait = store.get("edit_wait")
 
-    if wait and wait.get("type") == "edit":
-        rid = wait.get("rid")
-        day_key = wait.get("day_key", today_key())
-
-        try:
-            amount, note = split_amount_and_note(text)
-        except Exception:
-            send_and_auto_delete(chat_id, "❌ Не удалось разобрать сумму.")
-            return
-
-        update_record_in_chat(chat_id, rid, amount, note)
-        store["edit_wait"] = None
-        save_data(data)
-        schedule_finalize(chat_id, day_key)
-        return
-
-    if wait and wait.get("type") == "add":
-        day_key = wait.get("day_key", today_key())
-
-        try:
-            amount, note = split_amount_and_note(text)
-        except Exception:
-            send_and_auto_delete(chat_id, "❌ Не удалось разобрать сумму.")
-            return
-
-        add_record_to_chat(
-            chat_id,
-            amount,
-            note,
-            msg.from_user.id,
-            source_msg=msg
-        )
-        store["edit_wait"] = None
-        save_data(data)
-        schedule_finalize(chat_id, day_key)
-        return
 
     settings = store.get("settings", {})
     if settings.get("auto_add") and looks_like_amount(text):
@@ -1374,7 +1341,6 @@ def render_day_window(chat_id: int, day_key: str):
 def build_main_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     kb.row(
-        types.InlineKeyboardButton("➕ Добавить", callback_data=f"d:{day_key}:add"),
         types.InlineKeyboardButton("📋 Меню", callback_data=f"d:{day_key}:menu")
     )
     kb.row(
@@ -2342,16 +2308,7 @@ def on_callback(call):
             save_data(data)
             send_info(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
             return
-        if cmd == "add":
-            store["edit_wait"] = {"type": "add", "day_key": day_key}
-            save_data(data)
-            send_and_auto_delete(
-                chat_id,
-                "Введите сумму и комментарий (пример: +500 кафе)",
-                15
-            )
-            schedule_cancel_wait(chat_id, 15)
-            return
+
         if cmd == "edit_list":
             day_recs = store.get("daily_records", {}).get(day_key, [])
             if not day_recs:
@@ -2786,10 +2743,14 @@ def update_or_send_day_window(chat_id: int, day_key: str):
         )
         set_active_window_id(chat_id, day_key, sent.message_id)
 #🌏
-def is_finance_mode(chat_id: int) -> bool:
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
+def is_finance_mode(chat_id):
+
+    store = get_chat_store(chat_id)
+
+    if str(chat_id) == str(OWNER_ID):
         return True
-    return chat_id in finance_active_chats
+
+    return store.get("finance_mode", False)
 
 def set_finance_mode(chat_id: int, enabled: bool):
     if enabled:
@@ -2862,23 +2823,22 @@ def send_info(chat_id: int, text: str):
     send_and_auto_delete(chat_id, text, 10)
                 
 @bot.message_handler(commands=["ok"])
-def cmd_enable_finance(msg):
-    chat_id = msg.chat.id
-    # ❌ OWNER — команда не нужна
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        delete_message_later(chat_id, msg.message_id, 5)
-        send_and_auto_delete(
-            chat_id,
-            "ℹ️ Для владельца финансовый режим и авто-добавление включены всегда.",
-            10
-        )
-        return
-    delete_message_later(chat_id, msg.message_id, 15)
+def cmd_ok(msg):
 
-    set_finance_mode(chat_id, True)
+    chat_id = msg.chat.id
+    store = get_chat_store(chat_id)
+
+    store["finance_mode"] = True
+    store["current_view_day"] = today_key()
+
     save_data(data)
 
-    send_info(chat_id, "🚀 Финансовый режим включён!\nОтправьте /start")
+    schedule_finalize(chat_id, today_key())
+
+    bot.send_message(
+        chat_id,
+        "✅ Финансовый режим включён"
+    )
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     chat_id = msg.chat.id
