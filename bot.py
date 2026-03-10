@@ -434,7 +434,10 @@ def save_chat_json(chat_id: int):
         log_info(f"Per-chat files saved for chat {chat_id}")
     except Exception as e:
         log_error(f"save_chat_json({chat_id}): {e}")
-        
+def persist_chat_state(chat_id: int):
+    save_data(data)
+    save_chat_json(chat_id)
+    export_global_csv(data)        
 def restore_from_json(chat_id: int, path: str):
     """
     Восстановление из JSON.
@@ -2700,16 +2703,8 @@ def update_record_in_chat(
                 r.update(found)
 
     store["balance"] = sum(x["amount"] for x in store["records"])
-    data["records"] = [x if x["id"] != rid else found for x in data["records"]]
-    data["overall_balance"] = sum(x["amount"] for x in data["records"])
-
-    save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
-    #send_backup_to_channel(chat_id)
-
-    if not skip_chat_backup:
-        send_backup_to_chat(chat_id)
+    rebuild_global_records()
+    persist_chat_state(chat_id)
         
 def delete_record_in_chat(chat_id: int, rid: int):
     store = get_chat_store(chat_id)
@@ -2726,14 +2721,8 @@ def delete_record_in_chat(chat_id: int, rid: int):
     renumber_chat_records(chat_id)
     store["balance"] = sum(x["amount"] for x in store["records"])
 
-    data["records"] = [x for x in data["records"] if x["id"] != rid]
-    data["overall_balance"] = sum(x["amount"] for x in data["records"])
-
-    save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
-    #send_backup_to_channel(chat_id)
-    #send_backup_to_chat(chat_id)
+    rebuild_global_records()
+    persist_chat_state(chat_id)
 
 def renumber_chat_records(chat_id: int):
     """
@@ -2768,13 +2757,15 @@ def get_active_window_id(chat_id: int, day_key: str):
     aw = get_or_create_active_windows(chat_id)
     return aw.get(day_key)
 def delete_active_window_if_exists(chat_id: int, day_key: str):
-    mid = message_id_override or get_active_window_id(chat_id, day_key)
+    mid = get_active_window_id(chat_id, day_key)
     if not mid:
         return
+
     try:
         bot.delete_message(chat_id, mid)
-    except:
+    except Exception:
         pass
+
     aw = get_or_create_active_windows(chat_id)
     if day_key in aw:
         del aw[day_key]
@@ -2790,15 +2781,14 @@ def update_or_send_day_window(chat_id: int, day_key: str):
     with lock:
         txt, _ = render_day_window(chat_id, day_key)
         kb = build_main_keyboard(day_key, chat_id)
+        old_mid = get_active_window_id(chat_id, day_key)
 
-        mid = get_active_window_id(chat_id, day_key)
-
-        if mid:
+        if old_mid:
             try:
                 bot.edit_message_text(
                     txt,
                     chat_id=chat_id,
-                    message_id=mid,
+                    message_id=old_mid,
                     reply_markup=kb,
                     parse_mode="HTML"
                 )
@@ -2808,7 +2798,7 @@ def update_or_send_day_window(chat_id: int, day_key: str):
                 if "message is not modified" in err:
                     return
                 try:
-                    bot.delete_message(chat_id, mid)
+                    bot.delete_message(chat_id, old_mid)
                 except Exception:
                     pass
 
@@ -2818,7 +2808,7 @@ def update_or_send_day_window(chat_id: int, day_key: str):
             reply_markup=kb,
             parse_mode="HTML"
         )
-        set_active_window_id(chat_id, day_key, sent.message_id) 
+        set_active_window_id(chat_id, day_key, sent.message_id)
 #🌏
 def is_finance_mode(chat_id: int) -> bool:
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -3035,17 +3025,15 @@ def cmd_view(msg):
     chat_id = msg.chat.id
 
     store = get_chat_store(chat_id)
-
     msg_id = store.get("wait_date_msg_id")
     if msg_id:
         try:
             bot.delete_message(chat_id, msg_id)
-        except:
+        except Exception:
             pass
-
         store["wait_date_msg_id"] = None
         save_data(data)
-    chat_id = msg.chat.id
+
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
@@ -3400,8 +3388,6 @@ def update_chat_info_from_message(msg):
 
 _finalize_timers = {}
 
-_finalize_timers = {}
-
 def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
     def _safe(action_name, func):
         try:
@@ -3413,9 +3399,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
     def _job():
         _safe("recalc_balance", lambda: recalc_balance(chat_id))
         _safe("rebuild_global_records", rebuild_global_records)
-        _safe("save_chat_json", lambda: save_chat_json(chat_id))
-        _safe("save_data", lambda: save_data(data))
-        _safe("export_global_csv", lambda: export_global_csv(data))
+        _safe("persist_chat_state", lambda: persist_chat_state(chat_id))
 
         if OWNER_ID and str(chat_id) == str(OWNER_ID):
             _safe(
