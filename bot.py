@@ -756,8 +756,8 @@ def on_any_message(msg):
 def handle_finance_text(msg):
     """
     Обработка обычного текстового ввода:
-    - авто-добавление (если включено)
-    - добавление через кнопку "➕ Добавить"
+    - авто-добавление
+    - добавление через кнопку
     - редактирование записи
     """
     if msg.content_type != "text":
@@ -767,16 +767,12 @@ def handle_finance_text(msg):
     text = (msg.text or "").strip()
     if not text:
         return
-
-    # ❌ если фин-режим выключен — выходим
     if not is_finance_mode(chat_id):
         return
 
     store = get_chat_store(chat_id)
-
-    # ✏️ режим редактирования записи
-    # ✏️ режим редактирования записи
     wait = store.get("edit_wait")
+
     if wait and wait.get("type") == "edit":
         rid = wait.get("rid")
         day_key = wait.get("day_key", today_key())
@@ -787,15 +783,50 @@ def handle_finance_text(msg):
             send_and_auto_delete(chat_id, "❌ Не удалось разобрать сумму.")
             return
 
-        # 🔥 ВАЖНО: редактирование НЕ должно создавать новую запись
-        # Обновляем существующую запись, порядок не меняется
         update_record_in_chat(chat_id, rid, amount, note)
+        store["edit_wait"] = None
+        save_data(data)
+        schedule_finalize(chat_id, day_key)
+        return
 
-store["edit_wait"] = None
-save_data(data)
+    if wait and wait.get("type") == "add":
+        day_key = wait.get("day_key", today_key())
 
-schedule_finalize(chat_id, day_key)
-return
+        try:
+            amount, note = split_amount_and_note(text)
+        except Exception:
+            send_and_auto_delete(chat_id, "❌ Не удалось разобрать сумму.")
+            return
+
+        add_record_to_chat(
+            chat_id,
+            amount,
+            note,
+            msg.from_user.id,
+            source_msg=msg
+        )
+        store["edit_wait"] = None
+        save_data(data)
+        schedule_finalize(chat_id, day_key)
+        return
+
+    settings = store.get("settings", {})
+    if settings.get("auto_add") and looks_like_amount(text):
+        try:
+            amount, note = split_amount_and_note(text)
+        except Exception:
+            return
+
+        add_record_to_chat(
+            chat_id,
+            amount,
+            note,
+            msg.from_user.id,
+            source_msg=msg
+        )
+        day_key = store.get("current_view_day", today_key())
+        schedule_finalize(chat_id, day_key)
+        return
 
     # ➕ режим добавления через кнопку
     if wait and wait.get("type") == "add":
@@ -2439,12 +2470,13 @@ def on_callback(call):
             schedule_cancel_edit(chat_id, sent.message_id, delay=30)
 
             return
-if cmd.startswith("del_rec_"):
-    rid = int(cmd.split("_")[-1])
-    delete_record_in_chat(chat_id, rid)
-    schedule_finalize(chat_id, day_key)
-    send_and_auto_delete(chat_id, f"🗑 Запись R{rid} удалена.", 10)
-    return
+        if cmd.startswith("del_rec_"):
+            rid = int(cmd.split("_")[-1])
+            delete_record_in_chat(chat_id, rid)
+            schedule_finalize(chat_id, day_key)
+            send_and_auto_delete(chat_id, f"🗑 Запись R{rid} удалена.", 10)
+            return
+
         if cmd == "forward_menu":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 bot.send_message(chat_id, "Меню доступно только владельцу.")
@@ -2650,6 +2682,7 @@ def add_record_to_chat(
 ):
     store = get_chat_store(chat_id)
     rid = store.get("next_id", 1)
+    day_key = store.get("current_view_day", today_key())
 
     rec = {
         "id": rid,
@@ -2661,21 +2694,17 @@ def add_record_to_chat(
         "owner": owner,
         "msg_id": source_msg.message_id if source_msg else None,
         "origin_msg_id": source_msg.message_id if source_msg else None,
+        "day_key": day_key,
     }
 
     store.setdefault("records", []).append(rec)
-    store.setdefault("daily_records", {}).setdefault(today_key(), []).append(rec)
+    store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
 
     store["next_id"] = rid + 1
     store["balance"] = sum(r["amount"] for r in store["records"])
 
-    data.setdefault("records", []).append(rec)
-    data["overall_balance"] = sum(r["amount"] for r in data["records"])
-
-    save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
-    #send_backup_to_channel(chat_id)
+    rebuild_global_records()
+    persist_chat_state(chat_id)
     
 def update_record_in_chat(
     chat_id: int,
@@ -3137,7 +3166,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
     day_recs = store.get("daily_records", {}).get(day_key, [])
     if not day_recs:
         send_info(chat_id, "Нет записей за этот день.")
-        delete_message_later(chat_id, msg.message_id, 15)
+        #delete_message_later(chat_id, msg.message_id, 15)
         return
     tmp_name = f"data_{chat_id}_{day_key}.csv"
     try:
