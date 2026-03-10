@@ -2096,7 +2096,7 @@ def on_callback(call):
                     reply_markup=kb
                 )
                 return
-                        if data_str.startswith("fw_finpair:"):
+            if data_str.startswith("fw_finpair:"):
                 parts = data_str.split(":")
                 if len(parts) != 4:
                     return
