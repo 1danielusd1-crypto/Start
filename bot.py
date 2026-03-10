@@ -788,12 +788,11 @@ def handle_finance_text(msg):
         # Обновляем существующую запись, порядок не меняется
         update_record_in_chat(chat_id, rid, amount, note)
 
-        store["edit_wait"] = None
-        save_data(data)
+store["edit_wait"] = None
+save_data(data)
 
-        update_or_send_day_window(chat_id, day_key)
-        schedule_finalize(chat_id, day_key)
-        return
+schedule_finalize(chat_id, day_key)
+return
 
     # ➕ режим добавления через кнопку
     if wait and wait.get("type") == "add":
@@ -811,11 +810,10 @@ def handle_finance_text(msg):
             msg.from_user.id,
             source_msg=msg
         )
-        store["edit_wait"] = None
-        save_data(data)
-        update_or_send_day_window(chat_id, day_key)
-        schedule_finalize(chat_id, day_key)
-        return
+store["edit_wait"] = None
+save_data(data)
+schedule_finalize(chat_id, day_key)
+return
 
     # ⚙️ авто-добавление
     settings = store.get("settings", {})
@@ -826,11 +824,10 @@ def handle_finance_text(msg):
             return
 
         #add_record_to_chat(chat_id, amount, note, msg.from_user.id)
-        add_record_to_chat(chat_id, amount, note, msg.from_user.id, source_msg=msg)
-        day_key = store.get("current_view_day", today_key())
-        update_or_send_day_window(chat_id, day_key)
-        schedule_finalize(chat_id, day_key)
-        return
+add_record_to_chat(chat_id, amount, note, msg.from_user.id, source_msg=msg)
+day_key = store.get("current_view_day", today_key())
+schedule_finalize(chat_id, day_key)
+return
       
 def handle_finance_edit(msg):
     chat_id = msg.chat.id
@@ -2439,18 +2436,12 @@ def on_callback(call):
             schedule_cancel_edit(chat_id, sent.message_id, delay=30)
 
             return
-        if cmd.startswith("del_rec_"):
-            rid = int(cmd.split("_")[-1])
-            delete_record_in_chat(chat_id, rid)
-            update_or_send_day_window(chat_id, day_key)
-            refresh_total_message_if_any(chat_id)
-            if OWNER_ID and str(chat_id) != str(OWNER_ID):
-                try:
-                    refresh_total_message_if_any(int(OWNER_ID))
-                except Exception:
-                    pass
-            send_and_auto_delete(chat_id, f"🗑 Запись R{rid} удалена.", 10)
-            return
+if cmd.startswith("del_rec_"):
+    rid = int(cmd.split("_")[-1])
+    delete_record_in_chat(chat_id, rid)
+    schedule_finalize(chat_id, day_key)
+    send_and_auto_delete(chat_id, f"🗑 Запись R{rid} удалена.", 10)
+    return
         if cmd == "forward_menu":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 bot.send_message(chat_id, "Меню доступно только владельцу.")
@@ -2664,7 +2655,6 @@ def add_record_to_chat(
         "amount": amount,
         "note": note,
         "source_msg_id": source_msg.message_id if source_msg else None,
-        #"source_msg_id": msg.message_id,
         "owner": owner,
         "msg_id": source_msg.message_id if source_msg else None,
         "origin_msg_id": source_msg.message_id if source_msg else None,
@@ -2682,17 +2672,25 @@ def add_record_to_chat(
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
-    send_backup_to_channel(chat_id)
+    #send_backup_to_channel(chat_id)
     
-def update_record_in_chat(chat_id: int, rid: int, new_amount: float, new_note: str, skip_chat_backup: bool = False):
+def update_record_in_chat(
+    chat_id: int,
+    rid: int,
+    new_amount: float,
+    new_note: str,
+    skip_chat_backup: bool = False
+):
     store = get_chat_store(chat_id)
     found = None
+
     for r in store.get("records", []):
         if r["id"] == rid:
             r["amount"] = new_amount
             r["note"] = new_note
             found = r
             break
+
     if not found:
         return
 
@@ -2708,29 +2706,35 @@ def update_record_in_chat(chat_id: int, rid: int, new_amount: float, new_note: s
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
-    send_backup_to_channel(chat_id)
+    #send_backup_to_channel(chat_id)
 
     if not skip_chat_backup:
         send_backup_to_chat(chat_id)
         
 def delete_record_in_chat(chat_id: int, rid: int):
     store = get_chat_store(chat_id)
+
     store["records"] = [x for x in store["records"] if x["id"] != rid]
+
     for day, arr in list(store.get("daily_records", {}).items()):
         arr2 = [x for x in arr if x["id"] != rid]
         if arr2:
             store["daily_records"][day] = arr2
         else:
             del store["daily_records"][day]
+
     renumber_chat_records(chat_id)
     store["balance"] = sum(x["amount"] for x in store["records"])
+
     data["records"] = [x for x in data["records"] if x["id"] != rid]
     data["overall_balance"] = sum(x["amount"] for x in data["records"])
+
     save_data(data)
     save_chat_json(chat_id)
     export_global_csv(data)
-    send_backup_to_channel(chat_id)
-    send_backup_to_chat(chat_id)
+    #send_backup_to_channel(chat_id)
+    #send_backup_to_chat(chat_id)
+
 def renumber_chat_records(chat_id: int):
     """
     Перенумеровывает записи в чате по реальному порядку:
@@ -2787,53 +2791,34 @@ def update_or_send_day_window(chat_id: int, day_key: str):
         txt, _ = render_day_window(chat_id, day_key)
         kb = build_main_keyboard(day_key, chat_id)
 
-        old_mid = get_active_window_id(chat_id, day_key)
+        mid = get_active_window_id(chat_id, day_key)
 
-        # -----------------------------
-        # 1. Пытаемся обновить текущее
-        # -----------------------------
-        if old_mid:
+        if mid:
             try:
                 bot.edit_message_text(
                     txt,
                     chat_id=chat_id,
-                    message_id=old_mid,
+                    message_id=mid,
                     reply_markup=kb,
                     parse_mode="HTML"
                 )
+                return
             except Exception as e:
                 err = str(e).lower()
+                if "message is not modified" in err:
+                    return
+                try:
+                    bot.delete_message(chat_id, mid)
+                except Exception:
+                    pass
 
-                # если просто не изменился — ок
-                if "message is not modified" not in err:
-                    try:
-                        bot.delete_message(chat_id, old_mid)
-                        old_mid = None
-                    except:
-                        old_mid = None
-
-        # -----------------------------
-        # 2. Создаём новое окно
-        # -----------------------------
         sent = bot.send_message(
             chat_id,
             txt,
             reply_markup=kb,
             parse_mode="HTML"
         )
-
-        new_mid = sent.message_id
-
-        set_active_window_id(chat_id, day_key, new_mid)
-
-        # -----------------------------
-        # 3. Удаляем старое окно
-        # -----------------------------
-        if old_mid and old_mid != new_mid:
-            try:
-                bot.delete_message(chat_id, old_mid)
-            except:
-                pass   
+        set_active_window_id(chat_id, day_key, sent.message_id) 
 #🌏
 def is_finance_mode(chat_id: int) -> bool:
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -3047,7 +3032,7 @@ def cmd_ping(msg):
     send_info(msg.chat.id, "PONG — бот работает 🟢")
 @bot.message_handler(commands=["view"])
 def cmd_view(msg):
-    chat_id = message.chat.id
+    chat_id = msg.chat.id
 
     store = get_chat_store(chat_id)
 
@@ -3415,11 +3400,10 @@ def update_chat_info_from_message(msg):
 
 _finalize_timers = {}
 
+_finalize_timers = {}
+
 def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
     def _safe(action_name, func):
-        """
-        Безопасный вызов: любая ошибка — логируем и продолжаем выполнение.
-        """
         try:
             return func()
         except Exception as e:
@@ -3427,28 +3411,42 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             return None
 
     def _job():
-        # 1️⃣ Внутренний перерасчёт и сохранение
         _safe("recalc_balance", lambda: recalc_balance(chat_id))
         _safe("rebuild_global_records", rebuild_global_records)
         _safe("save_chat_json", lambda: save_chat_json(chat_id))
         _safe("save_data", lambda: save_data(data))
         _safe("export_global_csv", lambda: export_global_csv(data))
 
-        # 2️⃣ Окно дня — единая логика как у OWNER (редактирование активного)
         if OWNER_ID and str(chat_id) == str(OWNER_ID):
-            _safe("owner_backup_window", lambda: backup_window_for_owner(chat_id, day_key, None))
+            _safe(
+                "owner_backup_window",
+                lambda: backup_window_for_owner(chat_id, day_key, None)
+            )
         else:
-            _safe("chat_day_window", lambda: force_new_day_window(chat_id, day_key))       
-    #        _safe("update_day_window", lambda: update_or_send_day_window(chat_id, day_key))
-        #    _safe("backup_to_chat", lambda: send_backup_to_chat(chat_id))
+            _safe(
+                "update_day_window",
+                lambda: update_or_send_day_window(chat_id, day_key)
+            )
+            _safe(
+                "backup_to_chat",
+                lambda: send_backup_to_chat(chat_id)
+            )
 
-        # 3️⃣ Бэкап в канал (для всех)
-        _safe("backup_to_channel", lambda: send_backup_to_channel(chat_id))
+        _safe(
+            "backup_to_channel",
+            lambda: send_backup_to_channel(chat_id)
+        )
 
-        # 4️⃣ Итоги
-        _safe("refresh_total_chat", lambda: refresh_total_message_if_any(chat_id))
+        _safe(
+            "refresh_total_chat",
+            lambda: refresh_total_message_if_any(chat_id)
+        )
+
         if OWNER_ID and str(chat_id) != str(OWNER_ID):
-            _safe("refresh_total_owner", lambda: refresh_total_message_if_any(int(OWNER_ID)))
+            _safe(
+                "refresh_total_owner",
+                lambda: refresh_total_message_if_any(int(OWNER_ID))
+            )
 
     t_prev = _finalize_timers.get(chat_id)
     if t_prev and t_prev.is_alive():
