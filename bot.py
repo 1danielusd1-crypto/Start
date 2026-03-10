@@ -19,9 +19,6 @@ from telebot.types import InputMediaDocument
 
 from flask import Flask, request
 
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
 
 from collections import defaultdict
 
@@ -41,8 +38,7 @@ BACKUP_CHAT_ID = "-1003340340395"
 #BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
 #BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip() для
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID", "").strip()
+
 #APP_URL = os.getenv("APP_URL", "").strip()
 #PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
@@ -56,7 +52,6 @@ CSV_META_FILE = "csv_meta.json"
 forward_map = {}
 # (src_chat_id, src_msg_id) -> [(dst_chat_id, dst_msg_id)]
 backup_flags = {
-    "drive": True,
     "channel": True,
 }
 restore_mode = None
@@ -859,108 +854,7 @@ def handle_finance_edit(msg):
     update_or_send_day_window(chat_id, day_key)
     return True
     #🍕🍕🍕к🍕
-def _get_drive_service():
-    if not GOOGLE_SERVICE_ACCOUNT_JSON or not GDRIVE_FOLDER_ID:
-        return None
-    try:
-        info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-        creds = service_account.Credentials.from_service_account_info(
-            info,
-            scopes=["https://www.googleapis.com/auth/drive"]
-        )
-        service = build("drive", "v3", credentials=creds)
-        return service
-    except Exception as e:
-        log_error(f"Drive service error: {e}")
-        return None
-def upload_to_gdrive(path: str, mime_type: str = None, description: str | None = None):
-    flags = backup_flags or {}
-    if not flags.get("drive", True):
-        log_info("GDrive backup disabled (drive flag = False).")
-        return
-    service = _get_drive_service()
-    if service is None:
-        return
-    if not os.path.exists(path):
-        log_error(f"upload_to_gdrive: file not found {path}")
-        return
-    fname = os.path.basename(path)
-    file_metadata = {
-        "name": fname,
-        "parents": [GDRIVE_FOLDER_ID],
-        "description": description or "",
-    }
-    media = MediaFileUpload(path, mimetype=mime_type, resumable=True)
-    try:
-        existing = service.files().list(
-            q=f"name = '{fname}' and '{GDRIVE_FOLDER_ID}' in parents and trashed = false",
-            spaces="drive",
-            fields="files(id, name)",
-        ).execute()
-        items = existing.get("files", [])
-        if items:
-            file_id = items[0]["id"]
-            service.files().update(
-                fileId=file_id,
-                media_body=media,
-                body={"description": description or ""},
-            ).execute()
-            log_info(f"GDrive: updated {fname}, id={file_id}")
-        else:
-            created = service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields="id"
-            ).execute()
-            log_info(f"GDrive: created {fname}, id={created.get('id')}")
-    except Exception as e:
-        log_error(f"upload_to_gdrive({path}): {e}")
-def download_from_gdrive(filename: str, dest_path: str) -> bool:
-    service = _get_drive_service()
-    if service is None:
-        return False
-    try:
-        res = service.files().list(
-            q=f"name = '{filename}' and '{GDRIVE_FOLDER_ID}' in parents and trashed = false",
-            spaces="drive",
-            fields="files(id, name, mimeType, size)",
-        ).execute()
-        items = res.get("files", [])
-        if not items:
-            log_info(f"GDrive: {filename} not found")
-            return False
-        file_id = items[0]["id"]
-        request = service.files().get_media(fileId=file_id)
-        fh = io.FileIO(dest_path, "wb")
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        log_info(f"GDrive: downloaded {filename} -> {dest_path}")
-        return True
-    except Exception as e:
-        log_error(f"download_from_gdrive({filename}): {e}")
-        return False
-def restore_from_gdrive_if_needed() -> bool:
-    """
-    If local DATA_FILE/CSV_FILE/CSV_META_FILE are missing,
-    try to restore them from Google Drive.
-    """
-    restored_any = False
-    if not os.path.exists(DATA_FILE):
-        if download_from_gdrive(os.path.basename(DATA_FILE), DATA_FILE):
-            restored_any = True
-    if not os.path.exists(CSV_FILE):
-        if download_from_gdrive(os.path.basename(CSV_FILE), CSV_FILE):
-            restored_any = True
-    if not os.path.exists(CSV_META_FILE):
-        if download_from_gdrive(os.path.basename(CSV_META_FILE), CSV_META_FILE):
-            restored_any = True
-    if restored_any:
-        log_info("Data restored from Google Drive.")
-    else:
-        log_info("GDrive restore: nothing to restore.")
-    return restored_any
+
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel)."""
     try:
@@ -2251,10 +2145,10 @@ def on_callback(call):
                 "/reset — обнулить данные чата (с подтверждением)\n"
                 "/stopforward — отключить пересылку\n"
                 "/ping — проверка, жив ли бот\n"
-                "/backup_gdrive_on / _off — включить/выключить GDrive\n"
+               
                 "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
                 "/restore / /restore_off — режим восстановления JSON/CSV\n"
-                "/autoadd_info — режим авто-добавления по суммам\n"
+                
                 "/help — эта справка\n"
             )
             kb = types.InlineKeyboardMarkup()
@@ -3169,20 +3063,6 @@ def cmd_stopforward(msg):
         return
     clear_forward_all()
     send_info(chat_id, "Пересылка полностью отключена.")
-    delete_message_later(chat_id, msg.message_id, 15)
-@bot.message_handler(commands=["backup_gdrive_on"])
-def cmd_on_drive(msg):
-    chat_id = msg.chat.id
-    backup_flags["drive"] = True
-    save_data(data)
-    send_info(chat_id, "☁️ Бэкап в Google Drive включён")
-    delete_message_later(chat_id, msg.message_id, 15)
-@bot.message_handler(commands=["backup_gdrive_off"])
-def cmd_off_drive(msg):
-    chat_id = msg.chat.id
-    backup_flags["drive"] = False
-    save_data(data)
-    send_info(chat_id, "☁️ Бэкап в Google Drive выключен")
     delete_message_later(chat_id, msg.message_id, 15)
 @bot.message_handler(commands=["backup_channel_on"])
 def cmd_on_channel(msg):
