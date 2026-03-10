@@ -308,6 +308,7 @@ def default_data():
         "backup_flags": {"drive": True, "channel": True},
         "finance_active_chats": {},
         "forward_rules": {},
+        "forward_finance": {},
     }
 def load_data():
     d = _load_json(DATA_FILE, default_data())
@@ -854,7 +855,45 @@ def handle_finance_edit(msg):
     update_or_send_day_window(chat_id, day_key)
     return True
     #🍕🍕🍕к🍕
+def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0):
+    if not text:
+        return
+    if not is_finance_mode(dst_chat_id):
+        return
+    if not looks_like_amount(text):
+        return
 
+    try:
+        amount, note = split_amount_and_note(text)
+    except Exception:
+        return
+
+    store = get_chat_store(dst_chat_id)
+    existing = None
+
+    for r in store.get("records", []):
+        if (
+            r.get("source_msg_id") == dst_msg_id
+            or r.get("origin_msg_id") == dst_msg_id
+            or r.get("msg_id") == dst_msg_id
+        ):
+            existing = r
+            break
+
+    if existing:
+        update_record_in_chat(dst_chat_id, existing["id"], amount, note)
+    else:
+        shadow_msg = type("ForwardShadowMsg", (), {"message_id": dst_msg_id})()
+        add_record_to_chat(
+            dst_chat_id,
+            amount,
+            note,
+            owner,
+            source_msg=shadow_msg
+        )
+
+    day_key = store.get("current_view_day", today_key())
+    schedule_finalize(dst_chat_id, day_key)
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel)."""
     try:
@@ -1089,16 +1128,20 @@ def _owner_data_file() -> str | None:
         return None
 def load_forward_rules():
     """
-    Загружает forward_rules из файла владельца.
+    Загружает forward_rules и forward_finance из файла владельца.
     Поддерживает старый формат (списки) и новый (словарь).
     """
     try:
         path = _owner_data_file()
         if not path or not os.path.exists(path):
+            data["forward_finance"] = {}
             return {}
+
         payload = _load_json(path, {}) or {}
+
         fr = payload.get("forward_rules", {})
         upgraded = {}
+
         for src, value in fr.items():
             if isinstance(value, list):
                 upgraded[src] = {}
@@ -1108,70 +1151,131 @@ def load_forward_rules():
                 upgraded[src] = value
             else:
                 continue
+
+        ff = payload.get("forward_finance", {})
+        if isinstance(ff, dict):
+            data["forward_finance"] = ff
+        else:
+            data["forward_finance"] = {}
+
         return upgraded
+
     except Exception as e:
         log_error(f"load_forward_rules: {e}")
+        data["forward_finance"] = {}
         return {}
 def persist_forward_rules_to_owner():
     """
-    Сохраняет forward_rules (в НОВОМ формате) только в data_OWNER.json.
+    Сохраняет forward_rules и forward_finance только в data_OWNER.json.
     """
     try:
         path = _owner_data_file()
         if not path:
             return
+
         payload = {}
         if os.path.exists(path):
             payload = _load_json(path, {})
             if not isinstance(payload, dict):
                 payload = {}
+
         payload["forward_rules"] = data.get("forward_rules", {})
+        payload["forward_finance"] = data.get("forward_finance", {})
+
         _save_json(path, payload)
         log_info(f"forward_rules persisted to {path}")
+
     except Exception as e:
         log_error(f"persist_forward_rules_to_owner: {e}")
         
 def resolve_forward_targets(source_chat_id: int):
     fr = data.get("forward_rules", {})
+    ff = data.get("forward_finance", {})
     src = str(source_chat_id)
+
     if src not in fr:
         return []
+
     out = []
     for dst, mode in fr[src].items():
         try:
-            out.append((int(dst), mode))
-        except:
+            out.append((
+                int(dst),
+                mode,
+                bool(ff.get(src, {}).get(dst, False))
+            ))
+        except Exception:
             continue
+
     return out
 def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     fr = data.setdefault("forward_rules", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
+
     fr.setdefault(src, {})[dst] = mode
+
+    persist_forward_rules_to_owner()
     save_data(data)
+
 def remove_forward_link(src_chat_id: int, dst_chat_id: int):
     fr = data.get("forward_rules", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
+
     if src in fr and dst in fr[src]:
         del fr[src][dst]
     if src in fr and not fr[src]:
         del fr[src]
+
+    remove_forward_finance(src_chat_id, dst_chat_id)
+    persist_forward_rules_to_owner()
     save_data(data)
 def clear_forward_all():
     """Полностью отключает всю пересылку."""
     data["forward_rules"] = {}
+    data["forward_finance"] = {}
+    persist_forward_rules_to_owner()
+    save_data(data)
+
+def get_forward_finance(src_chat_id: int, dst_chat_id: int) -> bool:
+    ff = data.setdefault("forward_finance", {})
+    return bool(ff.get(str(src_chat_id), {}).get(str(dst_chat_id), False))
+
+def set_forward_finance(src_chat_id: int, dst_chat_id: int, enabled: bool):
+    ff = data.setdefault("forward_finance", {})
+    src = str(src_chat_id)
+    dst = str(dst_chat_id)
+
+    ff.setdefault(src, {})[dst] = bool(enabled)
+
+    persist_forward_rules_to_owner()
+    save_data(data)
+
+def remove_forward_finance(src_chat_id: int, dst_chat_id: int):
+    ff = data.setdefault("forward_finance", {})
+    src = str(src_chat_id)
+    dst = str(dst_chat_id)
+
+    if src in ff and dst in ff[src]:
+        del ff[src][dst]
+    if src in ff and not ff[src]:
+        del ff[src]
+
     persist_forward_rules_to_owner()
     save_data(data)
     
 
 def forward_any_message(source_chat_id: int, msg):
     try:
+        if getattr(getattr(msg, "from_user", None), "is_bot", False):
+            return
+
         targets = resolve_forward_targets(source_chat_id)
         if not targets:
             return
 
-        for dst, mode in targets:
+        for dst, mode, finance_enabled in targets:
             sent = bot.copy_message(
                 dst,
                 source_chat_id,
@@ -1182,6 +1286,20 @@ def forward_any_message(source_chat_id: int, msg):
             forward_map.setdefault(key, []).append(
                 (dst, sent.message_id)
             )
+
+            text_for_finance = (msg.text or msg.caption or "").strip()
+
+            if finance_enabled and text_for_finance and is_finance_mode(dst):
+                try:
+                    owner_id = msg.from_user.id if msg.from_user else 0
+                    sync_forwarded_finance_message(
+                        dst,
+                        sent.message_id,
+                        text_for_finance,
+                        owner_id
+                    )
+                except Exception as e:
+                    log_error(f"forward_any_message finance sync {source_chat_id}->{dst}: {e}")
 
     except Exception as e:
         log_error(f"forward_any_message fatal: {e}")
@@ -1399,10 +1517,15 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
         ➡️ owner → target
         ⬅️ target → owner
         ↔️ двусторонняя
+        💰 учёт фин. значений в обе стороны
         ❌ удалить
         🔙 назад
     """
     kb = types.InlineKeyboardMarkup(row_width=1)
+
+    ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_chat) else "ВЫКЛ ❌"
+    ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, owner_chat) else "ВЫКЛ ❌"
+
     kb.row(
         types.InlineKeyboardButton(
             f"➡️ В одну сторону (от {owner_chat} → {target_chat})",
@@ -1419,6 +1542,18 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
         types.InlineKeyboardButton(
             "↔️ Двусторонняя пересылка",
             callback_data=f"d:{day_key}:fw_two_{target_chat}"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            f"💰 Учёт {owner_chat} → {target_chat}: {ab_fin}",
+            callback_data=f"d:{day_key}:fw_fin_ab_{target_chat}"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            f"💰 Учёт {target_chat} → {owner_chat}: {ba_fin}",
+            callback_data=f"d:{day_key}:fw_fin_ba_{target_chat}"
         )
     )
     kb.row(
@@ -1486,14 +1621,13 @@ def build_forward_target_menu(src_id: int):
     return kb
 def build_forward_mode_menu(A: int, B: int):
     """
-    Меню выбора режима пересылки между чатами A и B:
-        ➡️ A → B
-        ⬅️ B → A
-        ↔️ двусторонняя
-        ❌ удалить связь
-        🔙 назад (к выбору B)
+    Меню выбора режима пересылки между чатами A и B.
     """
     kb = types.InlineKeyboardMarkup()
+
+    ab_fin = "ВКЛ ✅" if get_forward_finance(A, B) else "ВЫКЛ ❌"
+    ba_fin = "ВКЛ ✅" if get_forward_finance(B, A) else "ВЫКЛ ❌"
+
     kb.row(
         types.InlineKeyboardButton(
             f"➡️ {A} → {B}",
@@ -1510,6 +1644,18 @@ def build_forward_mode_menu(A: int, B: int):
         types.InlineKeyboardButton(
             f"↔️ {A} ⇄ {B}",
             callback_data=f"fw_mode:{A}:{B}:two"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            f"💰 Учёт {A} → {B}: {ab_fin}",
+            callback_data=f"fw_finpair:{A}:{B}:ab"
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            f"💰 Учёт {B} → {A}: {ba_fin}",
+            callback_data=f"fw_finpair:{A}:{B}:ba"
         )
     )
     kb.row(
@@ -1950,6 +2096,32 @@ def on_callback(call):
                     reply_markup=kb
                 )
                 return
+                        if data_str.startswith("fw_finpair:"):
+                parts = data_str.split(":")
+                if len(parts) != 4:
+                    return
+
+                _, A_str, B_str, which = parts
+
+                try:
+                    A = int(A_str)
+                    B = int(B_str)
+                except Exception:
+                    return
+
+                if which == "ab":
+                    set_forward_finance(A, B, not get_forward_finance(A, B))
+                elif which == "ba":
+                    set_forward_finance(B, A, not get_forward_finance(B, A))
+
+                kb = build_forward_mode_menu(A, B)
+                safe_edit(
+                    bot,
+                    call,
+                    f"Настройка пересылки: {A} ⇄ {B}",
+                    reply_markup=kb
+                )
+                return    
             if data_str.startswith("fw_mode:"):
                 parts = data_str.split(":")
                 if len(parts) != 4:
@@ -2324,6 +2496,33 @@ def on_callback(call):
             return
         if cmd.startswith("fw_cfg_"):
             tgt = int(cmd.split("_")[-1])
+            kb = build_forward_direction_menu(day_key, chat_id, tgt)
+            safe_edit(
+                bot,
+                call,
+                f"Настройка пересылки для чата {tgt}:",
+                reply_markup=kb
+            )
+            return
+                if cmd.startswith("fw_fin_ab_"):
+            tgt = int(cmd.split("_")[-1])
+
+            set_forward_finance(chat_id, tgt, not get_forward_finance(chat_id, tgt))
+
+            kb = build_forward_direction_menu(day_key, chat_id, tgt)
+            safe_edit(
+                bot,
+                call,
+                f"Настройка пересылки для чата {tgt}:",
+                reply_markup=kb
+            )
+            return
+
+        if cmd.startswith("fw_fin_ba_"):
+            tgt = int(cmd.split("_")[-1])
+
+            set_forward_finance(tgt, chat_id, not get_forward_finance(tgt, chat_id))
+
             kb = build_forward_direction_menu(day_key, chat_id, tgt)
             safe_edit(
                 bot,
@@ -3682,12 +3881,15 @@ def on_edited_message(msg):
         return
 
     for dst_chat_id, dst_msg_id in list(links):
+        updated = False
+
         try:
             bot.edit_message_text(
                 text,
                 chat_id=dst_chat_id,
                 message_id=dst_msg_id
             )
+            updated = True
         except Exception:
             try:
                 bot.edit_message_caption(
@@ -3695,8 +3897,21 @@ def on_edited_message(msg):
                     chat_id=dst_chat_id,
                     message_id=dst_msg_id
                 )
+                updated = True
             except Exception as e:
                 log_error(f"edit forward failed {dst_chat_id}:{dst_msg_id}: {e}")
+
+        if updated and get_forward_finance(chat_id, dst_chat_id):
+            try:
+                owner_id = msg.from_user.id if msg.from_user else 0
+                sync_forwarded_finance_message(
+                    dst_chat_id,
+                    dst_msg_id,
+                    text,
+                    owner_id
+                )
+            except Exception as e:
+                log_error(f"edit forward finance sync {dst_chat_id}:{dst_msg_id}: {e}")
                                             
 def start_keep_alive_thread():
     t = threading.Thread(target=keep_alive_task, daemon=True)
