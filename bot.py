@@ -2828,7 +2828,7 @@ def cmd_help(msg):
         "/reset — обнулить данные чата (с подтверждением)\n"
         "/stopforward — отключить пересылку\n"
         "/ping — проверка, жив ли бот\n"
-        "/backup_gdrive_on / _off — включить/выключить GDrive\n"
+       
         "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
         "/restore / /restore_off — режим восстановления JSON/CSV\n"
         "/autoadd_info — режим авто-добавления по суммам\n"
@@ -2991,7 +2991,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
                     r.get("owner"),
                     day_key,
                 ])
-        upload_to_gdrive(tmp_name)
+        #upload_to_gdrive(tmp_name)
         with open(tmp_name, "rb") as f:
             bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}")
     except Exception as e:
@@ -3015,7 +3015,7 @@ def cmd_csv(msg):
     per_csv = chat_csv_file(chat_id)
     sent = None
     if os.path.exists(per_csv):
-        upload_to_gdrive(per_csv)
+        #upload_to_gdrive(per_csv)
         with open(per_csv, "rb") as f:
             sent = bot.send_document(chat_id, f, caption="📂 CSV этого чата")
     if OWNER_ID and chat_id == int(OWNER_ID):
@@ -3752,7 +3752,7 @@ def set_webhook():
         
 def main():
     global data
-    restored = restore_from_gdrive_if_needed()
+    #restored = restore_from_gdrive_if_needed()
     data = load_data()
     data["forward_rules"] = load_forward_rules()
     # ✅ OWNER — всегда активен
