@@ -356,6 +356,7 @@ def chat_csv_file(chat_id: int) -> str:
     return f"data_{chat_id}.csv"
 def chat_meta_file(chat_id: int) -> str:
     return f"csv_meta_{chat_id}.json"
+    
 def get_chat_store(chat_id: int) -> dict:
     """
     Хранилище данных одного чата.
@@ -375,16 +376,24 @@ def get_chat_store(chat_id: int) -> dict:
             "edit_wait": None,
             "edit_target": None,
             "current_view_day": today_key(),
+            "finance_mode": False,
             "settings": {
-                "auto_add": False
+                "auto_add": True
             },
         }
     )
+
+    store.setdefault("settings", {}).setdefault("auto_add", True)
+    store.setdefault("finance_mode", False)
+
     # ✅ OWNER — авто-добавление всегда включено
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         store["settings"]["auto_add"] = True
+        store["finance_mode"] = True
+
     if "known_chats" not in store:
         store["known_chats"] = {}
+
     return store
 def save_chat_json(chat_id: int):
     """
@@ -760,8 +769,6 @@ def handle_finance_text(msg):
     """
     Обработка обычного текстового ввода:
     - авто-добавление
-    - добавление через кнопку
-    - редактирование записи
     """
     if msg.content_type != "text":
         return
@@ -774,11 +781,9 @@ def handle_finance_text(msg):
         return
 
     store = get_chat_store(chat_id)
-    wait = store.get("edit_wait")
-
-
     settings = store.get("settings", {})
-    if settings.get("auto_add") and looks_like_amount(text):
+
+    if settings.get("auto_add", True) and looks_like_amount(text):
         try:
             amount, note = split_amount_and_note(text)
         except Exception:
@@ -2753,9 +2758,11 @@ def is_finance_mode(chat_id):
     return store.get("finance_mode", False)
 
 def set_finance_mode(chat_id: int, enabled: bool):
+    store = get_chat_store(chat_id)
+    store["finance_mode"] = bool(enabled)
+
     if enabled:
         finance_active_chats.add(chat_id)
-        
     else:
         finance_active_chats.discard(chat_id)
 def require_finance(chat_id: int) -> bool:
@@ -2764,7 +2771,7 @@ def require_finance(chat_id: int) -> bool:
     Если нет — показываем подсказку /поехали.
     """
     if not is_finance_mode(chat_id):
-        send_and_auto_delete(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /поехали")
+        send_and_auto_delete(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /ok")
         return False
     return True
 def refresh_total_message_if_any(chat_id: int):
@@ -2824,15 +2831,14 @@ def send_info(chat_id: int, text: str):
                 
 @bot.message_handler(commands=["ok"])
 def cmd_ok(msg):
-
     chat_id = msg.chat.id
     store = get_chat_store(chat_id)
 
-    store["finance_mode"] = True
+    set_finance_mode(chat_id, True)
     store["current_view_day"] = today_key()
+    store.setdefault("settings", {})["auto_add"] = True
 
     save_data(data)
-
     schedule_finalize(chat_id, today_key())
 
     bot.send_message(
@@ -3192,6 +3198,7 @@ def cmd_off_channel(msg):
     save_data(data)
     send_info(chat_id, "📡 Бэкап в канал выключен")
     delete_message_later(chat_id, msg.message_id, 15)
+    
 @bot.message_handler(commands=["autoadd_info", "autoadd.info"])
 def cmd_autoadd_info(msg):
     chat_id = msg.chat.id
@@ -3211,10 +3218,11 @@ def cmd_autoadd_info(msg):
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
 
-    current = settings.get("auto_add", False)
+    current = settings.get("auto_add", True)
     new_state = not current
     settings["auto_add"] = new_state
 
+    save_data(data)
     save_chat_json(chat_id)
 
     send_and_auto_delete(
@@ -3223,7 +3231,7 @@ def cmd_autoadd_info(msg):
         f"{'ВКЛЮЧЕНО ✅' if new_state else 'ВЫКЛЮЧЕНО ❌'}\n\n"
         "Использование:\n"
         "• ВКЛ → каждое сообщение с суммой записывается автоматически\n"
-        "• ВЫКЛ → работает только через кнопку «Добавить»",
+        "• ВЫКЛ → сообщения с суммами не записываются",
         12
     )
 def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
@@ -3253,37 +3261,38 @@ def delete_message_later(chat_id: int, message_id: int, delay: int = 10):
     except Exception as e:
         log_error(f"delete_message_later: {e}")
 _edit_cancel_timers = {}
+        
 def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
     """
-    Через delay секунд:
-      • отменяет режим добавления записи (edit_wait.type == 'add')
-      • сбрасывает флаг reset_wait (если ещё висит)
+    Через delay секунд сбрасывает флаг reset_wait,
+    если он всё ещё активен.
     """
     def _job():
         try:
             store = get_chat_store(chat_id)
             changed = False
-            wait = store.get("edit_wait")
-            if wait and wait.get("type") == "add":
-                store["edit_wait"] = None
-                changed = True
+
             if store.get("reset_wait", False):
                 store["reset_wait"] = False
                 store["reset_time"] = 0
                 changed = True
+
             if changed:
                 save_data(data)
         except Exception as e:
             log_error(f"schedule_cancel_wait job: {e}")
+
     prev = _edit_cancel_timers.get(chat_id)
     if prev and prev.is_alive():
         try:
             prev.cancel()
         except Exception:
             pass
+
     t = threading.Timer(delay, _job)
     _edit_cancel_timers[chat_id] = t
     t.start()
+    
 def schedule_cancel_edit(chat_id: int, message_id: int, delay: int = 30):
     def _job():
         try:
