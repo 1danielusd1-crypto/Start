@@ -2504,7 +2504,7 @@ def on_callback(call):
                 reply_markup=kb
             )
             return
-                if cmd.startswith("fw_fin_ab_"):
+        if cmd.startswith("fw_fin_ab_"):
             tgt = int(cmd.split("_")[-1])
 
             set_forward_finance(chat_id, tgt, not get_forward_finance(chat_id, tgt))
