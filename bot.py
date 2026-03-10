@@ -827,41 +827,6 @@ def handle_finance_text(msg):
         day_key = store.get("current_view_day", today_key())
         schedule_finalize(chat_id, day_key)
         return
-
-    # ➕ режим добавления через кнопку
-    if wait and wait.get("type") == "add":
-        day_key = wait.get("day_key", today_key())
-        try:
-            amount, note = split_amount_and_note(text)
-        except Exception:
-            send_and_auto_delete(chat_id, "❌ Не удалось разобрать сумму.")
-            return
-
-        add_record_to_chat(
-            chat_id,
-            amount,
-            note,
-            msg.from_user.id,
-            source_msg=msg
-        )
-store["edit_wait"] = None
-save_data(data)
-schedule_finalize(chat_id, day_key)
-return
-
-    # ⚙️ авто-добавление
-    settings = store.get("settings", {})
-    if settings.get("auto_add") and looks_like_amount(text):
-        try:
-            amount, note = split_amount_and_note(text)
-        except Exception:
-            return
-
-        #add_record_to_chat(chat_id, amount, note, msg.from_user.id)
-add_record_to_chat(chat_id, amount, note, msg.from_user.id, source_msg=msg)
-day_key = store.get("current_view_day", today_key())
-schedule_finalize(chat_id, day_key)
-return
       
 def handle_finance_edit(msg):
     chat_id = msg.chat.id
@@ -1426,25 +1391,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
     )
     return kb
-def build_csv_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
 
-    kb.add(
-        types.InlineKeyboardButton("📅 За день", callback_data=f"d:{day_key}:csv_day"),
-        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"d:{day_key}:csv_week")
-    )
-    kb.add(
-        types.InlineKeyboardButton("📆 За месяц", callback_data=f"d:{day_key}:csv_month"),
-        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"d:{day_key}:csv_wedthu")
-    )
-    kb.add(
-        types.InlineKeyboardButton("📂 Всё время", callback_data=f"d:{day_key}:csv_all_real")
-    )
-    kb.add(
-        types.InlineKeyboardButton("⬅️ Назад", callback_data=f"d:{day_key}:menu")
-    )
-
-    return kb
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
     """
     Календарь на 31 день.
