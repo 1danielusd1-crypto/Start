@@ -675,37 +675,7 @@ def looks_like_amount(text):
         "sticker", "location", "venue", "contact"
     ]
 )
-def on_any_message(msg):
-    chat_id = msg.chat.id
 
-    # ✅ OWNER — гарантируем включённый финансовый режим
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        finance_active_chats.add(chat_id)
-
-    # ✅ 1️⃣ ВСЕГДА регистрируем чат
-    try:
-        update_chat_info_from_message(msg)
-    except Exception:
-        pass
-
-    # 🔒 restore_mode — только блокируем финансы, НЕ пересылку
-    if restore_mode is not None and restore_mode == chat_id:
-        return
-        #if msg.content_type != "document":
-            # ⚠️ финансы запрещены
-            #pass
-        # ❗ НО пересылка РАЗРЕШЕНА
-
-    # 2️⃣ ФИНАНСЫ — ТОЛЬКО если включены
-    if msg.content_type == "text":
-        try:
-            if is_finance_mode(chat_id):
-                handle_finance_text(msg)
-        except Exception as e:
-            log_error(f"handle_finance_text error: {e}")
-
-    # 3️⃣ ПЕРЕСЫЛКА — ВСЕГДА
-    forward_any_message(chat_id, msg)
 def handle_finance_text(msg):
     """
     Обработка обычного текстового ввода:
@@ -1644,13 +1614,6 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
     store["categories_msg_id"] = sent.message_id
     save_chat_json(chat_id)
 
-def build_week_thu_keyboard(start_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.row(
-        types.InlineKeyboardButton("⬅️", callback_data=f"wthu:{start_key}:prev"),
-        types.InlineKeyboardButton("➡️", callback_data=f"wthu:{start_key}:next"),
-    )
-    return kb
 
 def handle_categories_callback(call, data_str: str) -> bool:
     """UI: 12 месяцев → 4 недели → отчёт по статьям. Возвращает True если обработано."""
@@ -1870,14 +1833,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
     return False
     
 def render_week_thu_wed_report(chat_id: int):
-    store = get_chat_store(chat_id)
-
-    ref_day = store.get("current_week_thu", today_key())
-    start_key = week_start_thursday(ref_day)
-    start, end = week_bounds_thu_wed(start_key)
-
-    store["current_week_thu"] = start_key
-    save_data(data)
+    
 
     cats = calc_categories_for_period(store, start, end)
 
@@ -2532,18 +2488,7 @@ def set_active_window_id(chat_id: int, day_key: str, message_id: int):
 def get_active_window_id(chat_id: int, day_key: str):
     aw = get_or_create_active_windows(chat_id)
     return aw.get(day_key)
-def delete_active_window_if_exists(chat_id: int, day_key: str):
-    mid = message_id_override or get_active_window_id(chat_id, day_key)
-    if not mid:
-        return
-    try:
-        bot.delete_message(chat_id, mid)
-    except:
-        pass
-    aw = get_or_create_active_windows(chat_id)
-    if day_key in aw:
-        del aw[day_key]
-    save_data(data)
+
 #🌏
 def update_or_send_day_window(chat_id: int, day_key: str):
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
