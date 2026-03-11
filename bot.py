@@ -1521,45 +1521,51 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
         ❌ удалить
         🔙 назад
     """
+    owner_store = get_chat_store(owner_chat)
+    known = owner_store.get("known_chats", {})
+
+    owner_title = known.get(str(owner_chat), {}).get("title", str(owner_chat))
+    target_title = known.get(str(target_chat), {}).get("title", str(target_chat))
+    
     kb = types.InlineKeyboardMarkup(row_width=1)
 
-    ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_chat) else "ВЫКЛ ❌"
-    ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, owner_chat) else "ВЫКЛ ❌"
+    ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_title) else "ВЫКЛ ❌"
+    ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, target_title) else "ВЫКЛ ❌"
 
     kb.row(
         types.InlineKeyboardButton(
-            f"➡️ (от {owner_chat} → {target_chat})",
-            callback_data=f"d:{day_key}:fw_one_{target_chat}"
+            f"➡️ (от {owner_chat} → {target_title})",
+            callback_data=f"d:{day_key}:fw_one_{target_title}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"⬅️ ({target_chat} → {owner_chat})",
+            f"⬅️ ({target_title} → {owner_chat})",
             callback_data=f"d:{day_key}:fw_rev_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
             "↔️ ",
-            callback_data=f"d:{day_key}:fw_two_{target_chat}"
+            callback_data=f"d:{day_key}:fw_two_{target_title}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"💰 {ab_fin} Учёт {owner_chat} → {target_chat}",
-            callback_data=f"d:{day_key}:fw_fin_ab_{target_chat}"
+            f"💰 {ab_fin} Учёт {owner_chat} → {target_title}",
+            callback_data=f"d:{day_key}:fw_fin_ab_{target_title}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"💰 {ba_fin} Учёт {target_chat} → {owner_chat}",
-            callback_data=f"d:{day_key}:fw_fin_ba_{target_chat}"
+            f"💰 {ba_fin} Учёт {target_title} → {owner_chat}",
+            callback_data=f"d:{day_key}:fw_fin_ba_{target_title}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
             "❌ Удалить все связи",
-            callback_data=f"d:{day_key}:fw_del_{target_chat}"
+            callback_data=f"d:{day_key}:fw_del_{target_title}"
         )
     )
     kb.row(
