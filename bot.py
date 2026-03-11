@@ -1525,24 +1525,22 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
 
     ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_chat) else "ВЫКЛ ❌"
     ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, owner_chat) else "ВЫКЛ ❌"
-    ab_fw = "ВКЛ ✅" if get_forward(owner_chat, target_chat) else "ВЫКЛ ❌"
-    ba_fw = "ВКЛ ✅" if get_forward(target_chat, owner_chat) else "ВЫКЛ ❌"
-    tt_fw = "ВКЛ ✅" if get_forward(target_chat, owner_chat) else "ВЫКЛ ❌"
+
     kb.row(
         types.InlineKeyboardButton(
-            f"➡️{ab_fw} (от {owner_chat} → {target_chat})",
+            f"➡️ (от {owner_chat} → {target_chat})",
             callback_data=f"d:{day_key}:fw_one_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"⬅️{ba_fw} ({target_chat} → {owner_chat})",
+            f"⬅️ ({target_chat} → {owner_chat})",
             callback_data=f"d:{day_key}:fw_rev_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            "↔️{tt_fw} ",
+            "↔️ ",
             callback_data=f"d:{day_key}:fw_two_{target_chat}"
         )
     )
@@ -1629,27 +1627,22 @@ def build_forward_mode_menu(A: int, B: int):
 
     ab_fin = "ВКЛ ✅" if get_forward_finance(A, B) else "ВЫКЛ ❌"
     ba_fin = "ВКЛ ✅" if get_forward_finance(B, A) else "ВЫКЛ ❌"
-    ab_fin = "ВКЛ ✅" if get_forward_finance(B, A)  else "ВЫКЛ ❌"
-    ba_fin = "ВКЛ ✅" if get_forward_finance(B, A)  else "ВЫКЛ ❌"
-    ab_fw = "ВКЛ ✅" if get_forward(A, B)  else "ВЫКЛ ❌"
-    ba_fw = "ВКЛ ✅" if get_forward(B, A) else "ВЫКЛ ❌"
-    tt_fw = "ВКЛ ✅" if get_forward(B, A)  else "ВЫКЛ ❌"
 
     kb.row(
         types.InlineKeyboardButton(
-            f"➡️{ab_fw} {A} → {B}",
+            f"➡️ {A} → {B}",
             callback_data=f"fw_mode:{A}:{B}:to"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"⬅️{ba_fw} {B} → {A}",
+            f"⬅️ {B} → {A}",
             callback_data=f"fw_mode:{A}:{B}:from"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"↔️{tt_fw} {A} ⇄ {B}",
+            f"↔️ {A} ⇄ {B}",
             callback_data=f"fw_mode:{A}:{B}:two"
         )
     )
