@@ -1528,19 +1528,19 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
 
     kb.row(
         types.InlineKeyboardButton(
-            f"➡️ В одну сторону (от {owner_chat} → {target_chat})",
+            f"➡️(от {owner_chat} → {target_chat})",
             callback_data=f"d:{day_key}:fw_one_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"⬅️ В обратную ({target_chat} → {owner_chat})",
+            f"⬅️({target_chat} → {owner_chat})",
             callback_data=f"d:{day_key}:fw_rev_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            "↔️ Двусторонняя пересылка",
+            "↔️",
             callback_data=f"d:{day_key}:fw_two_{target_chat}"
         )
     )
