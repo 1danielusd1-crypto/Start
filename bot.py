@@ -1546,13 +1546,13 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"💰 Учёт {owner_chat} → {target_chat}: {ab_fin}",
+            f"💰 {ab_fin} Учёт {owner_chat} → {target_chat}",
             callback_data=f"d:{day_key}:fw_fin_ab_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"💰 Учёт {target_chat} → {owner_chat}: {ba_fin}",
+            f"💰 {ba_fin} Учёт {target_chat} → {owner_chat}",
             callback_data=f"d:{day_key}:fw_fin_ba_{target_chat}"
         )
     )
