@@ -1530,36 +1530,36 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
     kb = types.InlineKeyboardMarkup(row_width=1)
 
     ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_title) else "ВЫКЛ ❌"
-    ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, target_title) else "ВЫКЛ ❌"
+    ba_fin = "ВКЛ ✅" if get_forward_finance(target_title, owner_chat) else "ВЫКЛ ❌"
 
     kb.row(
         types.InlineKeyboardButton(
-            f"➡️ (от {owner_chat} → {target_title})",
+            f"➡️ {ab_icon} {owner_title} → {target_title}",
             callback_data=f"d:{day_key}:fw_one_{target_title}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"⬅️ {ba_arrow} {target_title} → {owner_title}",
+            f"⬅️ {ba_icon} {target_title} → {owner_title}",
             callback_data=f"d:{day_key}:fw_rev_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"↔️ {two_arrow} {owner_title} ⇄ {target_title}",
+            f"↔️ {two_icon} {owner_title} ⇄ {target_title}",
             callback_data=f"d:{day_key}:fw_two_{target_title}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
             f"💰 {ab_fin} Учёт {owner_chat} → {target_title}",
-            callback_data=f"d:{day_key}:fw_fin_ab_{target_title}"
+            callback_data=f"d:{day_key}:fw_fin_ab_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
             f"💰 {ba_fin} Учёт {target_title} → {owner_chat}",
-            callback_data=f"d:{day_key}:fw_fin_ba_{target_title}"
+            callback_data=f"d:{day_key}:fw_fin_ba_{target_chat}"
         )
     )
     kb.row(
@@ -1630,32 +1630,32 @@ def build_forward_mode_menu(A: int, B: int):
     Меню выбора режима пересылки между чатами A и B.
     """
     kb = types.InlineKeyboardMarkup()
+    
     fr = data.get("forward_rules", {})
-
-    mode_ab = fr.get(str(A), {}).get(str(B))
-    mode_ba = fr.get(str(B), {}).get(str(A))
-
-    ab_on = "✅" if mode_ab else ""
-    ba_on = "✅" if mode_ba else ""
-    two_on = "✅" if (mode_ab and mode_ba) else ""    
+    ab_link = str(B) in fr.get(str(A), {})
+    ba_link = str(A) in fr.get(str(B), {})
+    ab_icon = "✅" if ab_link else ""
+    ba_icon = "✅" if ba_link else ""
+    two_icon = "✅" if ab_link and ba_link else ""  
+    
     ab_fin = "ВКЛ ✅" if get_forward_finance(A, B) else "ВЫКЛ ❌"
     ba_fin = "ВКЛ ✅" if get_forward_finance(B, A) else "ВЫКЛ ❌"
 
     kb.row(
         types.InlineKeyboardButton(
-            f"➡️ {ab_on}{A} → {B}",
+            f"➡️  {ab_icon} {A} → {B}",
             callback_data=f"fw_mode:{A}:{B}:to"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"⬅️ {ba_on}{B} → {A}",
+            f"⬅️ {ba_icon} {B} → {A}",
             callback_data=f"fw_mode:{A}:{B}:from"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"↔️{two_on} {A} ⇄ {B}",
+            f"↔️{two_icon} {A} ⇄ {B}",
             callback_data=f"fw_mode:{A}:{B}:two"
         )
     )
@@ -2470,14 +2470,14 @@ def on_callback(call):
                 bot.send_message(chat_id, "Меню доступно только владельцу.")
                 return
             kb = types.InlineKeyboardMarkup(row_width=1)
+            
             fr = data.get("forward_rules", {})
+            ab_link = str(target_chat) in fr.get(str(owner_chat), {})
+            ba_link = str(owner_chat) in fr.get(str(target_chat), {})
+            ab_icon = "✅" if ab_link else ""
+            ba_icon = "✅" if ba_link else ""
+            two_icon = "✅" if ab_link and ba_link else ""
 
-            mode_ab = fr.get(str(owner_chat), {}).get(str(target_chat))
-            mode_ba = fr.get(str(target_chat), {}).get(str(owner_chat))
-
-            ab_arrow = "✅" if mode_ab else ""
-            ba_arrow = "✅" if mode_ba else ""
-            two_arrow = "✅" if (mode_ab and mode_ba) else ""
             kb.row(
                 types.InlineKeyboardButton(
                     "📨 По чатам (старый режим)",
