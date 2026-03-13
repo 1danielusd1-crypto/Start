@@ -766,6 +766,39 @@ def handle_finance_text(msg):
     Обработка обычного текстового ввода:
     - авто-добавление
     """
+# режим редактирования записи
+    if store.get("edit_wait"):
+        try:
+            amount, note = split_amount_and_note(text)
+        except Exception:
+            bot.send_message(chat_id, "Неверный формат.")
+            return
+    
+        rid = store.get("edit_target")
+    
+        for r in store.get("records", []):
+            if r["id"] == rid:
+                r["amount"] = amount
+                r["note"] = note
+    
+        for day, arr in store.get("daily_records", {}).items():
+            for r in arr:
+                if r["id"] == rid:
+                    r["amount"] = amount
+                    r["note"] = note
+    
+        store["edit_wait"] = False
+        store["edit_target"] = None
+    
+        store["balance"] = sum(r["amount"] for r in store.get("records", []))
+    
+        save_data(data)
+    
+        update_or_send_day_window(chat_id, day_key)
+    
+        bot.send_message(chat_id, "✅ Запись обновлена")
+    
+        return
     if msg.content_type != "text":
         return
 
@@ -1385,11 +1418,22 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
     if chat_id is not None:
         store = get_chat_store(chat_id)
         daily = store.get("daily_records", {})
-    start_day = center_day - timedelta(days=15)
-    for week in range(0, 32, 4):
+    start_day = center_day.replace(day=1)
+    # количество дней в месяце
+    if center_day.month == 12:
+        next_month = center_day.replace(year=center_day.year + 1, month=1, day=1)
+    else:
+        next_month = center_day.replace(month=center_day.month + 1, day=1)
+    
+    days_in_month = (next_month - timedelta(days=1)).day
+    for week in range(0, days_in_month, 4):
         row = []
         for d in range(4):
-            day = start_day + timedelta(days=week + d)
+            day_index = week + d
+            if day_index >= days_in_month:
+                continue
+            
+            day = start_day + timedelta(days=day_index)
             label = day.strftime("%d.%m")
             key = day.strftime("%Y-%m-%d")
             if daily.get(key):
@@ -1401,14 +1445,17 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
                 )
             )
         kb.row(*row)
+    prev_month = (center_day.replace(day=1) - timedelta(days=1)).replace(day=1)
+    next_month = (center_day.replace(day=28) + timedelta(days=4)).replace(day=1)
+    
     kb.row(
         types.InlineKeyboardButton(
-            "⬅️ −31",
-            callback_data=f"c:{(center_day - timedelta(days=31)).strftime('%Y-%m-%d')}"
+            "⬅️ Месяц",
+            callback_data=f"c:{prev_month.strftime('%Y-%m-%d')}"
         ),
         types.InlineKeyboardButton(
-            "➡️ +31",
-            callback_data=f"c:{(center_day + timedelta(days=31)).strftime('%Y-%m-%d')}"
+            "➡️ Месяц",
+            callback_data=f"c:{next_month.strftime('%Y-%m-%d')}"
         )
     )
     kb.row(
@@ -2168,9 +2215,11 @@ def on_callback(call):
             center = data_str[2:]
             try:
                 center_dt = datetime.strptime(center, "%Y-%m-%d")
-            except ValueError:
-                return
+            except Exception:
+                center_dt = now_local()
+        
             kb = build_calendar_keyboard(center_dt, chat_id)
+        
             try:
                 bot.edit_message_reply_markup(
                     chat_id=chat_id,
@@ -2179,6 +2228,7 @@ def on_callback(call):
                 )
             except Exception:
                 pass
+        
             return
         if not data_str.startswith("d:"):
             return
@@ -2427,7 +2477,20 @@ def on_callback(call):
                 #parse_mode="HTML"
             )
             return
-            
+        if cmd.startswith("edit_rec_"):
+            rid = int(cmd.split("_")[-1])
+        
+            store["edit_wait"] = True
+            store["edit_target"] = rid
+            store["edit_day"] = day_key
+        
+            save_data(data)
+        
+            bot.send_message(
+                chat_id,
+                "✏️ Отправьте новое значение записи\n\nПример:\n-500 продукты"
+            )
+            return 
         if cmd.startswith("edit_rec_"):
             rid = int(cmd.split("_")[-1])
 
