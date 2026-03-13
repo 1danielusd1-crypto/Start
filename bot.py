@@ -2477,20 +2477,7 @@ def on_callback(call):
                 #parse_mode="HTML"
             )
             return
-        if cmd.startswith("edit_rec_"):
-            rid = int(cmd.split("_")[-1])
-        
-            store["edit_wait"] = True
-            store["edit_target"] = rid
-            store["edit_day"] = day_key
-        
-            save_data(data)
-        
-            bot.send_message(
-                chat_id,
-                "✏️ Отправьте новое значение записи\n\nПример:\n-500 продукты"
-            )
-            return 
+
         if cmd.startswith("edit_rec_"):
             rid = int(cmd.split("_")[-1])
 
@@ -4053,6 +4040,7 @@ def set_webhook():
         
 def main():
     global data
+    restored = False
     #restored = restore_from_gdrive_if_needed()
     data = load_data()
     data["forward_rules"] = load_forward_rules()
@@ -4065,6 +4053,7 @@ def main():
     log_info(f"Данные загружены. Версия бота: {VERSION}")
     set_webhook()
     start_keep_alive_thread()
+    owner_id = None
     if OWNER_ID:
         try:
             owner_id = int(OWNER_ID)
