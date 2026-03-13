@@ -1529,13 +1529,13 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
     
     kb = types.InlineKeyboardMarkup(row_width=1)
 
-    ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_title) else "ВЫКЛ ❌"
-    ba_fin = "ВКЛ ✅" if get_forward_finance(target_title, owner_chat) else "ВЫКЛ ❌"
+    ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_chat) else "ВЫКЛ ❌"
+    ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, owner_chat) else "ВЫКЛ ❌"
 
     kb.row(
         types.InlineKeyboardButton(
             f"➡️ {ab_icon} {owner_title} → {target_title}",
-            callback_data=f"d:{day_key}:fw_one_{target_title}"
+            callback_data=f"d:{day_key}:fw_one_{target_chat}"
         )
     )
     kb.row(
@@ -1547,25 +1547,25 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
     kb.row(
         types.InlineKeyboardButton(
             f"↔️ {two_icon} {owner_title} ⇄ {target_title}",
-            callback_data=f"d:{day_key}:fw_two_{target_title}"
+            callback_data=f"d:{day_key}:fw_two_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"💰 {ab_fin} Учёт {owner_chat} → {target_title}",
+            f"💰 {ab_fin} Учёт {owner_title} → {target_title}",
             callback_data=f"d:{day_key}:fw_fin_ab_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"💰 {ba_fin} Учёт {target_title} → {owner_chat}",
+            f"💰 {ba_fin} Учёт {target_title} → {owner_title}",
             callback_data=f"d:{day_key}:fw_fin_ba_{target_chat}"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
             "❌ Удалить все связи",
-            callback_data=f"d:{day_key}:fw_del_{target_title}"
+            callback_data=f"d:{day_key}:fw_del_{target_chat}"
         )
     )
     kb.row(
