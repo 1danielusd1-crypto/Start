@@ -766,39 +766,7 @@ def handle_finance_text(msg):
     Обработка обычного текстового ввода:
     - авто-добавление
     """
-# режим редактирования записи
-    if store.get("edit_wait"):
-        try:
-            amount, note = split_amount_and_note(text)
-        except Exception:
-            bot.send_message(chat_id, "Неверный формат.")
-            return
-    
-        rid = store.get("edit_target")
-    
-        for r in store.get("records", []):
-            if r["id"] == rid:
-                r["amount"] = amount
-                r["note"] = note
-    
-        for day, arr in store.get("daily_records", {}).items():
-            for r in arr:
-                if r["id"] == rid:
-                    r["amount"] = amount
-                    r["note"] = note
-    
-        store["edit_wait"] = False
-        store["edit_target"] = None
-    
-        store["balance"] = sum(r["amount"] for r in store.get("records", []))
-    
-        save_data(data)
-    
-        update_or_send_day_window(chat_id, day_key)
-    
-        bot.send_message(chat_id, "✅ Запись обновлена")
-    
-        return
+
     if msg.content_type != "text":
         return
 
