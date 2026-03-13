@@ -1529,6 +1529,15 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
     
     kb = types.InlineKeyboardMarkup(row_width=1)
 
+    fr = data.get("forward_rules", {})
+    
+    ab_link = str(target_chat) in fr.get(str(owner_chat), {})
+    ba_link = str(owner_chat) in fr.get(str(target_chat), {})
+    
+    ab_icon = "✅" if ab_link else ""
+    ba_icon = "✅" if ba_link else ""
+    two_icon = "✅" if ab_link and ba_link else ""
+
     ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_chat) else "ВЫКЛ ❌"
     ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, owner_chat) else "ВЫКЛ ❌"
 
