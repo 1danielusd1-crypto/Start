@@ -3860,7 +3860,23 @@ def handle_document(msg):
                 pass
 
         return
+@bot.edited_message_handler(
+    content_types=["text", "photo", "video", "document"]
+)
+def on_edited_message(msg):
 
+    chat_id = msg.chat.id
+
+    try:
+        edited = handle_finance_edit(msg)
+
+        if edited:
+            store = get_chat_store(chat_id)
+            day_key = store.get("current_view_day", today_key())
+            update_or_send_day_window(chat_id, day_key)
+
+    except Exception as e:
+        log_error(f"edit handler error: {e}")
     # ==================================================
     # 🟢 ОБЫЧНЫЙ РЕЖИМ — ПЕРЕСЫЛКА
     # ==================================================
