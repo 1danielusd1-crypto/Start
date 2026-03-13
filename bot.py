@@ -2470,13 +2470,6 @@ def on_callback(call):
                 bot.send_message(chat_id, "Меню доступно только владельцу.")
                 return
             kb = types.InlineKeyboardMarkup(row_width=1)
-            
-            fr = data.get("forward_rules", {})
-            ab_link = str(target_chat) in fr.get(str(owner_chat), {})
-            ba_link = str(owner_chat) in fr.get(str(target_chat), {})
-            ab_icon = "✅" if ab_link else ""
-            ba_icon = "✅" if ba_link else ""
-            two_icon = "✅" if ab_link and ba_link else ""
 
             kb.row(
                 types.InlineKeyboardButton(
