@@ -764,6 +764,7 @@ def on_any_message(msg):
 def handle_finance_text(msg):
     """
     Обработка обычного текстового ввода:
+    - редактирование записи через меню
     - авто-добавление
     """
 
@@ -778,8 +779,57 @@ def handle_finance_text(msg):
         return
 
     store = get_chat_store(chat_id)
+
+    # ==================================================
+    # ✏️ РЕЖИМ РЕДАКТИРОВАНИЯ ЗАПИСИ ЧЕРЕЗ МЕНЮ БОТА
+    # ==================================================
+    if store.get("edit_wait"):
+        edit = store.get("edit_wait") or {}
+        rid = edit.get("rid")
+        day_key = edit.get("day_key") or store.get("current_view_day") or today_key()
+
+        try:
+            amount, note = split_amount_and_note(text)
+        except Exception:
+            bot.send_message(chat_id, "❌ Неверный формат. Введите сумму и текст, например: -500 продукты")
+            return
+
+        found = None
+
+        for r in store.get("records", []):
+            if r.get("id") == rid:
+                r["amount"] = amount
+                r["note"] = note
+                found = r
+                break
+
+        if not found:
+            store["edit_wait"] = None
+            save_data(data)
+            bot.send_message(chat_id, "❌ Запись для редактирования не найдена.")
+            return
+
+        for day, arr in store.get("daily_records", {}).items():
+            for r in arr:
+                if r.get("id") == rid:
+                    r.update(found)
+
+        store["edit_wait"] = None
+        store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+
+        rebuild_global_records()
+        persist_chat_state(chat_id)
+        save_data(data)
+
+        update_or_send_day_window(chat_id, day_key)
+        bot.send_message(chat_id, f"✅ Запись R{rid} обновлена")
+        return
+
     settings = store.get("settings", {})
 
+    # ==================================================
+    # ➕ ОБЫЧНОЕ АВТО-ДОБАВЛЕНИЕ
+    # ==================================================
     if settings.get("auto_add", True) and looks_like_amount(text):
         try:
             amount, note = split_amount_and_note(text)
@@ -3418,14 +3468,32 @@ def schedule_cancel_edit(chat_id: int, message_id: int, delay: int = 30):
         try:
             store = get_chat_store(chat_id)
             if store.get("edit_wait"):
+                edit = store.get("edit_wait") or {}
+                rid = edit.get("rid")
+                day_key = edit.get("day_key") or store.get("current_view_day") or today_key()
+        
+                try:
+                    amount, note = split_amount_and_note(text)
+                except Exception:
+                    bot.send_message(chat_id, "❌ Неверный формат. Введите сумму и текст, например: -500 продукты")
+                    return
+        
+                rec = next((r for r in store.get("records", []) if r.get("id") == rid), None)
+                if not rec:
+                    store["edit_wait"] = None
+                    save_data(data)
+                    bot.send_message(chat_id, "❌ Запись для редактирования не найдена.")
+                    return
+        
+                update_record_in_chat(chat_id, rid, amount, note)
+        
+                store = get_chat_store(chat_id)
                 store["edit_wait"] = None
                 save_data(data)
-            try:
-                bot.delete_message(chat_id, message_id)
-            except Exception:
-                pass
-        except Exception as e:
-            log_error(f"schedule_cancel_edit: {e}")
+        
+                update_or_send_day_window(chat_id, day_key)
+                bot.send_message(chat_id, f"✅ Запись R{rid} обновлена")
+                return
 
     t = threading.Timer(delay, _job)
     t.start()
