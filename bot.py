@@ -761,13 +761,12 @@ def on_any_message(msg):
 
     # 3️⃣ ПЕРЕСЫЛКА — ВСЕГДА
     forward_any_message(chat_id, msg)
-    
 def handle_finance_text(msg):
     """
     Обработка обычного текстового ввода:
-    - редактирование записи через меню "Редактировать запись"
-    - авто-добавление новой записи
+    - авто-добавление
     """
+
     if msg.content_type != "text":
         return
 
@@ -779,52 +778,6 @@ def handle_finance_text(msg):
         return
 
     store = get_chat_store(chat_id)
-
-    # ==================================================
-    # ✏️ РЕЖИМ РЕДАКТИРОВАНИЯ ЗАПИСИ
-    # ==================================================
-    edit_wait = store.get("edit_wait")
-    if edit_wait:
-        try:
-            amount, note = split_amount_and_note(text)
-        except Exception:
-            bot.send_message(chat_id, "Неверный формат.")
-            return
-
-        rid = edit_wait.get("rid")
-        day_key = edit_wait.get("day_key") or store.get("current_view_day") or today_key()
-
-        updated = False
-
-        for r in store.get("records", []):
-            if r.get("id") == rid:
-                r["amount"] = amount
-                r["note"] = note
-                updated = True
-                break
-
-        for day, arr in store.get("daily_records", {}).items():
-            for r in arr:
-                if r.get("id") == rid:
-                    r["amount"] = amount
-                    r["note"] = note
-
-        store["edit_wait"] = None
-        store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
-
-        save_data(data)
-        schedule_finalize(chat_id, day_key)
-
-        if updated:
-            bot.send_message(chat_id, "✅ Запись обновлена")
-        else:
-            bot.send_message(chat_id, "❌ Запись для редактирования не найдена")
-
-        return
-
-    # ==================================================
-    # ➕ ОБЫЧНОЕ ДОБАВЛЕНИЕ НОВОЙ ЗАПИСИ
-    # ==================================================
     settings = store.get("settings", {})
 
     if settings.get("auto_add", True) and looks_like_amount(text):
@@ -840,14 +793,13 @@ def handle_finance_text(msg):
             msg.from_user.id,
             source_msg=msg
         )
-
         day_key = store.get("current_view_day", today_key())
         schedule_finalize(chat_id, day_key)
-        return     
-        
+        return
+      
 def handle_finance_edit(msg):
     chat_id = msg.chat.id
-    text = (msg.text or msg.caption or "").strip()
+    text = msg.text or msg.caption
     if not text:
         return False
 
@@ -855,6 +807,7 @@ def handle_finance_edit(msg):
     records = store.get("records", [])
     target = None
 
+    #for r in records:
     for r in records:
         if (
             r.get("source_msg_id") == msg.message_id
@@ -863,36 +816,44 @@ def handle_finance_edit(msg):
         ):
             target = r
             break
-
+        
     if not target:
         log_info(f"[EDIT-FIN] record not found for msg_id={msg.message_id}")
         return False
 
     try:
         amount, note = split_amount_and_note(text)
+
+        # 🔥 ВАЖНО: если исходная запись была расходом — сохраняем знак
+        #raw = text.strip()
+        #explicit_plus = raw.startswith("+")
+        #if target.get("amount", 0) < 0 and amount > 0:
+            #amount = -amount
+
     except Exception:
         log_info("[EDIT-FIN] bad format, ignored")
-        return True
+        return True  # edit перехвачен, но данных нет
 
+    # обновляем ОСНОВНУЮ запись
     target["amount"] = amount
     target["note"] = note
+    #target["timestamp"] = now_local().isoformat(timespec="seconds")
 
+    # 🔥 ОБЯЗАТЕЛЬНО: обновляем daily_records
     for day, arr in store.get("daily_records", {}).items():
         for r in arr:
             if r.get("id") == target.get("id"):
-                r["amount"] = amount
-                r["note"] = note
+                r.update(target)
 
-    store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
-    save_data(data)
+    # пересчитываем баланс сразу
+    store["balance"] = sum(r["amount"] for r in store.get("records", []))
 
     log_info(
         f"[EDIT-FIN] updated record R{target['id']} "
         f"amount={amount} note={note}"
     )
-
-    day_key = target.get("day_key") or store.get("current_view_day") or today_key()
-    schedule_finalize(chat_id, day_key)
+    day_key = target.get("day_key") or today_key()
+    update_or_send_day_window(chat_id, day_key)
     return True
     #🍕🍕🍕к🍕
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0):
@@ -3900,24 +3861,73 @@ def handle_document(msg):
 
         return
 @bot.edited_message_handler(
+    content_types=["text", "photo", "video", "document"]
+)
+def on_edited_message(msg):
+
+    chat_id = msg.chat.id
+
+    try:
+        edited = handle_finance_edit(msg)
+
+        if edited:
+            store = get_chat_store(chat_id)
+            day_key = store.get("current_view_day", today_key())
+            update_or_send_day_window(chat_id, day_key)
+
+    except Exception as e:
+        log_error(f"edit handler error: {e}")
+    # ==================================================
+    # 🟢 ОБЫЧНЫЙ РЕЖИМ — ПЕРЕСЫЛКА
+    # ==================================================
+    forward_any_message(chat_id, msg)
+                                    
+def cleanup_forward_links(chat_id: int):
+    """
+    Удаляет все связи пересылки для чата.
+    ОБЯЗАТЕЛЬНО вызывать при reset / restore.
+    """
+    for key in list(forward_map.keys()):
+        if key[0] == chat_id:
+            del forward_map[key]
+            
+KEEP_ALIVE_SEND_TO_OWNER = False
+def keep_alive_task():
+    while True:
+        try:
+            if APP_URL:
+                try:
+                    resp = requests.get(APP_URL, timeout=10)
+                    log_info(f"Keep-alive ping -> {resp.status_code}")
+                except Exception as e:
+                    log_error(f"Keep-alive self error: {e}")
+            if KEEP_ALIVE_SEND_TO_OWNER and OWNER_ID:
+                try:
+                    pass
+                except Exception as e:
+                    log_error(f"Keep-alive notify error: {e}")
+        except Exception as e:
+            log_error(f"Keep-alive loop error: {e}")
+        time.sleep(max(10, KEEP_ALIVE_INTERVAL_SECONDS))
+        
+@bot.edited_message_handler(
     content_types=["text", "photo", "video", "document", "audio"]
 )
 def on_edited_message(msg):
     chat_id = msg.chat.id
 
-    # ==================================================
-    # 🔴 ФИНАНСЫ: редактирование существующей записи
-    # ==================================================
+    # 🔴 ФИНАНСЫ — БЕЗ РЕЖИМОВ
     try:
         edited = handle_finance_edit(msg)
+        if edited:
+            store = get_chat_store(chat_id)
+            day_key = store.get("current_view_day") or today_key()
+            log_info(f"[EDIT-FIN] finalize day_key={day_key}")
+            schedule_finalize(chat_id, day_key)
     except Exception as e:
         log_error(f"[EDIT-FIN] failed: {e}")
-        edited = False
 
-    # ==================================================
-    # 🟢 ПЕРЕСЫЛКА: обновляем уже пересланные сообщения,
-    # а не создаём новые
-    # ==================================================
+    # 🟢 ПЕРЕСЫЛКА — НЕ ТРОГАЕМ
     key = (chat_id, msg.message_id)
     links = forward_map.get(key)
     if not links:
