@@ -1685,13 +1685,13 @@ def build_forward_mode_menu(A: int, B: int):
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"💰 Учёт {A} → {B}: {ab_fin}",
+            f"💰{ab_fin} Учёт {A} → {B}",
             callback_data=f"fw_finpair:{A}:{B}:ab"
         )
     )
     kb.row(
         types.InlineKeyboardButton(
-            f"💰 Учёт {B} → {A}: {ba_fin}",
+            f"💰{ba_fin} Учёт {B} → {A}",
             callback_data=f"fw_finpair:{A}:{B}:ba"
         )
     )
