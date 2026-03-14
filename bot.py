@@ -3495,8 +3495,7 @@ def schedule_cancel_edit(chat_id: int, message_id: int, delay: int = 30):
                 bot.send_message(chat_id, f"✅ Запись R{rid} обновлена")
                 return
 
-    t = threading.Timer(delay, _job)
-    t.start()
+
 def update_chat_info_from_message(msg):
     """
     Обновляет информацию о чате при каждом сообщении.
