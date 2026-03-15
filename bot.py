@@ -791,6 +791,12 @@ def on_any_message(msg):
                 for dk, arr in store.get("daily_records", {}).items():
                     for r in arr:
                         if r.get("id") == rid:
+                target["amount"] = amount
+                target["note"] = note
+
+                for dk, arr in store.get("daily_records", {}).items():
+                    for r in arr:
+                        if r.get("id") == rid:
                             r["amount"] = amount
                             r["note"] = note
 
@@ -798,6 +804,7 @@ def on_any_message(msg):
                 store["edit_wait"] = None
                 save_data(data)
 
+                sync_forward_edit_from_record(chat_id, target)
                 update_or_send_day_window(chat_id, day_key)
                 send_and_auto_delete(
                     chat_id,
@@ -917,6 +924,80 @@ def handle_finance_edit(msg):
     update_or_send_day_window(chat_id, day_key)
     return True
     #🍕🍕🍕к🍕
+def sync_forward_edit_from_record(src_chat_id: int, record: dict):
+    """
+    Обновляет уже пересланные сообщения в связанных чатах
+    после редактирования записи через режим edit_wait ("тап изменить").
+
+    Ничего не ломает:
+    - работает только если у записи есть исходный message_id
+    - не отправляет новые сообщения
+    - только пытается edit существующих
+    """
+    try:
+        if not record:
+            return
+
+        src_msg_id = (
+            record.get("source_msg_id")
+            or record.get("origin_msg_id")
+            or record.get("msg_id")
+        )
+        if not src_msg_id:
+            return
+
+        links = forward_map.get((src_chat_id, src_msg_id))
+        if not links:
+            return
+
+        amount = record.get("amount", 0)
+        note = record.get("note", "") or ""
+        text = f"{fmt_num(amount)}"
+        if note:
+            text += f" {note}"
+
+        owner_id = record.get("owner", 0)
+
+        for dst_chat_id, dst_msg_id in list(links):
+            updated = False
+
+            try:
+                bot.edit_message_text(
+                    text,
+                    chat_id=dst_chat_id,
+                    message_id=dst_msg_id
+                )
+                updated = True
+            except Exception:
+                try:
+                    bot.edit_message_caption(
+                        caption=text,
+                        chat_id=dst_chat_id,
+                        message_id=dst_msg_id
+                    )
+                    updated = True
+                except Exception as e:
+                    log_error(
+                        f"sync_forward_edit_from_record edit failed "
+                        f"{src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}: {e}"
+                    )
+
+            if updated and get_forward_finance(src_chat_id, dst_chat_id):
+                try:
+                    sync_forwarded_finance_message(
+                        dst_chat_id,
+                        dst_msg_id,
+                        text,
+                        owner_id
+                    )
+                except Exception as e:
+                    log_error(
+                        f"sync_forward_edit_from_record finance sync failed "
+                        f"{dst_chat_id}:{dst_msg_id}: {e}"
+                    )
+
+    except Exception as e:
+        log_error(f"sync_forward_edit_from_record: {e}")
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0):
     if not text:
         return
