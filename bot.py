@@ -750,7 +750,68 @@ def on_any_message(msg):
             # ⚠️ финансы запрещены
             #pass
         # ❗ НО пересылка РАЗРЕШЕНА
+    # ✏️ РЕЖИМ РЕДАКТИРОВАНИЯ ЗАПИСИ ЧЕРЕЗ НОВОЕ СООБЩЕНИЕ
+    if msg.content_type == "text":
+        try:
+            store = get_chat_store(chat_id)
+            edit_wait = store.get("edit_wait")
 
+            if edit_wait and edit_wait.get("type") == "edit":
+                text = (msg.text or "").strip()
+                if not text:
+                    return
+
+                try:
+                    amount, note = split_amount_and_note(text)
+                except Exception:
+                    send_and_auto_delete(
+                        chat_id,
+                        "❌ Неверный формат.\nПример: 1500 продукты",
+                        10
+                    )
+                    return
+
+                rid = edit_wait.get("rid")
+                day_key = edit_wait.get("day_key") or store.get("current_view_day") or today_key()
+
+                target = next(
+                    (r for r in store.get("records", []) if r.get("id") == rid),
+                    None
+                )
+
+                if not target:
+                    store["edit_wait"] = None
+                    save_data(data)
+                    send_and_auto_delete(chat_id, "❌ Запись для редактирования не найдена.", 10)
+                    return
+
+                target["amount"] = amount
+                target["note"] = note
+
+                for dk, arr in store.get("daily_records", {}).items():
+                    for r in arr:
+                        if r.get("id") == rid:
+                            r["amount"] = amount
+                            r["note"] = note
+
+                store["balance"] = sum(r["amount"] for r in store.get("records", []))
+                store["edit_wait"] = None
+                save_data(data)
+
+                update_or_send_day_window(chat_id, day_key)
+                send_and_auto_delete(
+                    chat_id,
+                    f"✅ Запись R{rid} обновлена: {fmt_num(amount)} {note}",
+                    10
+                )
+                try:
+                    bot.delete_message(chat_id, msg.message_id)
+                except Exception:
+                    pass
+                return
+
+        except Exception as e:
+            log_error(f"edit_wait handler error: {e}")
     # 2️⃣ ФИНАНСЫ — ТОЛЬКО если включены
     if msg.content_type == "text":
         try:
@@ -2427,7 +2488,7 @@ def on_callback(call):
                 return
             kb2 = types.InlineKeyboardMarkup(row_width=3)
             for r in day_recs:
-                lbl = f"{r['short_id']} {fmt_num(r['amount'])} — {r.get('note','')}"
+                lbl = f" {fmt_num(r['amount'])} — {r.get('note','')}" #{r['short_id']} 
                 rid = r["id"]
                 kb2.row(
                     types.InlineKeyboardButton(lbl, callback_data="none"),
