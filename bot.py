@@ -2488,7 +2488,7 @@ def on_callback(call):
                 return
             kb2 = types.InlineKeyboardMarkup(row_width=3)
             for r in day_recs:
-                lbl = f" {fmt_num(r['amount'])} — {r.get('note','')}" #{r['short_id']} 
+                lbl = f" {fmt_num(r['amount'])}" # — {r.get('note','')}" #{r['short_id']} 
                 rid = r["id"]
                 kb2.row(
                     types.InlineKeyboardButton(lbl, callback_data="none"),
