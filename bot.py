@@ -2397,7 +2397,7 @@ def on_callback(call):
             return
         if cmd == "report":
             lines = build_day_report_lines(chat_id)
-            bot.send_message(chat_id, "\n".join(lines))
+            bot.send_message(chat_id, "<pre>" + html.escape("\n".join(lines)) + "</pre>", parse_mode="HTML")
             return
         if cmd == "total":
             chat_bal = store.get("balance", 0)
