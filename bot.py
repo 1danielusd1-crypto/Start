@@ -1609,9 +1609,9 @@ def build_month_report_text(chat_id: int, month_key: str = None):
 
         lines.append(
             f"{date_str} - "
-            f"{str(fmt_num_plain(total_expense)):>7} - "
-            f"{str(fmt_num_plain(total_income)):>7} - "
-            f"{str(fmt_num_plain(day_balance)):>7}"
+            f"{int(total_expense):>7} - "
+            f"{int(total_income):>7} - "
+            f"{int(day_balance):>7}"
         )
 
     if not has_any:
