@@ -97,8 +97,78 @@ def fmt_date_ddmmyy(day_key: str) -> str:
         return d.strftime("%d.%m.%y")
     except Exception:
         return str(day_key)
+def fmt_num_compact(v) -> str:
+    """
+    Число без .0, с минусом при необходимости.
+    """
+    try:
+        v = float(v)
+        if v.is_integer():
+            return str(int(v))
+        s = f"{v:.2f}".rstrip("0").rstrip(".")
+        return s
+    except Exception:
+        return str(v)
 
-def week_start_monday(day_key: str) -> str:
+
+def center_text(text: str, width: int) -> str:
+    """
+    Центрирование строки в фиксированной ширине.
+    Если строка длиннее width — обрезаем слева/справа не трогаем,
+    возвращаем как есть.
+    """
+    text = str(text)
+    if len(text) >= width:
+        return text
+    pad = width - len(text)
+    left = pad // 2
+    right = pad - left
+    return (" " * left) + text + (" " * right)
+
+
+def build_day_report_lines(chat_id: int) -> list[str]:
+    """
+    Красивый отчёт по дням:
+    Дата    - Расход - Приход - Остаток
+    где каждая числовая колонка фиксированной ширины 7 символов.
+    """
+    store = get_chat_store(chat_id)
+    daily = store.get("daily_records", {}) or {}
+
+    lines = []
+    lines.append("Отчёт:")
+    lines.append(
+        f"{'Дата':<8}-"
+        f"{center_text('Расход', 7)}-"
+        f"{center_text('Приход', 7)}-"
+        f"{center_text('Остаток', 7)}"
+    )
+
+    running_balance = 0.0
+
+    for dk in sorted(daily.keys()):
+        recs = daily.get(dk, []) or []
+
+        expense = 0.0
+        income = 0.0
+
+        for r in recs:
+            amt = float(r.get("amount", 0) or 0)
+            if amt < 0:
+                expense += abs(amt)
+            else:
+                income += amt
+
+        running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
+
+        date_txt = fmt_date_ddmmyy(dk)
+        exp_txt = center_text(fmt_num_compact(expense), 7)
+        inc_txt = center_text(fmt_num_compact(income), 7)
+        bal_txt = center_text(fmt_num_compact(running_balance), 7)
+
+        lines.append(f"{date_txt}-{exp_txt}-{inc_txt}-{bal_txt}")
+
+    return linesdef week_start_monday(day_key: str) -> str:
     """Возвращает YYYY-MM-DD (понедельник недели) для day_key"""
     try:
         d = datetime.strptime(day_key, "%Y-%m-%d").date()
@@ -2325,10 +2395,7 @@ def on_callback(call):
             )
             return
         if cmd == "report":
-            lines = ["📊 Отчёт:"]
-            for dk, recs in sorted(store.get("daily_records", {}).items()):
-                s = sum(r["amount"] for r in recs)
-                lines.append(f"{dk}: {fmt_num(s)}")
+            lines = build_day_report_lines(chat_id)
             bot.send_message(chat_id, "\n".join(lines))
             return
         if cmd == "total":
@@ -3242,11 +3309,8 @@ def cmd_report(msg):
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
-    store = get_chat_store(chat_id)
-    lines = ["📊 Отчёт:"]
-    for dk, recs in sorted(store.get("daily_records", {}).items()):
-        day_sum = sum(r["amount"] for r in recs)
-        lines.append(f"{dk}: {fmt_num(day_sum)}")
+
+    lines = build_day_report_lines(chat_id)
     send_info(chat_id, "\n".join(lines))
 def cmd_csv_all(chat_id: int):
     """
