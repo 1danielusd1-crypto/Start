@@ -1511,7 +1511,113 @@ def build_main_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
     )
     return kb
+def build_report_keyboard(month_key: str):
+    """
+    month_key: YYYY-MM
+    """
+    kb = types.InlineKeyboardMarkup(row_width=4)
 
+    try:
+        dt = datetime.strptime(month_key + "-01", "%Y-%m-%d")
+    except Exception:
+        dt = now_local().replace(day=1)
+
+    prev_month = (dt.replace(day=1) - timedelta(days=1)).replace(day=1)
+    next_month = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+    kb.row(
+        types.InlineKeyboardButton(
+            "⬅️ Пред. месяц",
+            callback_data=f"rep:{prev_month.strftime('%Y-%m')}"
+        ),
+        types.InlineKeyboardButton(
+            "📅 Сегодня",
+            callback_data="rep_today"
+        ),
+        types.InlineKeyboardButton(
+            "❌ Закрыть",
+            callback_data="rep_close"
+        ),
+        types.InlineKeyboardButton(
+            "След. месяц ➡️",
+            callback_data=f"rep:{next_month.strftime('%Y-%m')}"
+        )
+    )
+    return kb
+
+
+def build_month_report_text(chat_id: int, month_key: str = None):
+    """
+    Отчёт за месяц в виде:
+    дата - расход - приход - остаток
+
+    Формат:
+    16.03.26 -    1234 -       0 -   45210
+
+    Каждое числовое поле — ширина 7, выравнивание вправо.
+    """
+    store = get_chat_store(chat_id)
+    daily = store.get("daily_records", {})
+
+    if not month_key:
+        month_key = now_local().strftime("%Y-%m")
+
+    try:
+        month_dt = datetime.strptime(month_key + "-01", "%Y-%m-%d")
+    except Exception:
+        month_dt = now_local().replace(day=1)
+        month_key = month_dt.strftime("%Y-%m")
+
+    year = month_dt.year
+    month = month_dt.month
+
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1)
+    else:
+        next_month = datetime(year, month + 1, 1)
+
+    days_in_month = (next_month - timedelta(days=1)).day
+
+    lines = []
+    lines.append(f"ОТЧЁТ ЗА {month_dt.strftime('%m.%Y')}")
+    lines.append("")
+    lines.append("Дата     - Расход  - Приход  - Остаток")
+    lines.append("")
+
+    has_any = False
+
+    for day in range(1, days_in_month + 1):
+        day_key = f"{year}-{month:02d}-{day:02d}"
+        recs = daily.get(day_key, [])
+
+        total_expense = 0
+        total_income = 0
+
+        for r in recs:
+            amt = r.get("amount", 0)
+            if amt < 0:
+                total_expense += -amt
+            else:
+                total_income += amt
+
+        day_balance = calc_day_balance(store, day_key)
+
+
+
+        has_any = True
+        date_str = datetime.strptime(day_key, "%Y-%m-%d").strftime("%d.%m.%y")
+
+        lines.append(
+            f"{date_str} - "
+            f"{str(fmt_num_plain(total_expense)):>7} - "
+            f"{str(fmt_num_plain(total_income)):>7} - "
+            f"{str(fmt_num_plain(day_balance)):>7}"
+        )
+
+    if not has_any:
+        lines.append("Нет данных за этот месяц.")
+
+    return "<pre>" + html.escape("\n".join(lines)) + "</pre>", month_key
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
     """
     Календарь на 31 день.
@@ -1920,7 +2026,40 @@ def build_week_thu_keyboard(start_key: str):
         types.InlineKeyboardButton("➡️", callback_data=f"wthu:{start_key}:next"),
     )
     return kb
+def open_report_window(chat_id: int, month_key: str = None, message_id: int = None):
+    """
+    Открывает или обновляет отдельное окно отчёта.
+    """
+    text, month_key = build_month_report_text(chat_id, month_key)
+    kb = build_report_keyboard(month_key)
 
+    store = get_chat_store(chat_id)
+
+    if message_id:
+        try:
+            bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            store["report_window_id"] = message_id
+            store["report_month"] = month_key
+            save_data(data)
+            return
+        except Exception as e:
+            log_error(f"open_report_window edit failed: {e}")
+
+    sent = bot.send_message(
+        chat_id,
+        text,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    store["report_window_id"] = sent.message_id
+    store["report_month"] = month_key
+    save_data(data)
 def handle_categories_callback(call, data_str: str) -> bool:
     """UI: 12 месяцев → 4 недели → отчёт по статьям. Возвращает True если обработано."""
     chat_id = call.message.chat.id
@@ -2180,7 +2319,26 @@ def on_callback(call):
             update_chat_info_from_message(call.message)
         except Exception:
             pass
-
+        if data_str == "rep_today":
+            open_report_window(chat_id, now_local().strftime("%Y-%m"), call.message.message_id)
+            return
+    
+        if data_str == "rep_close":
+            try:
+                bot.delete_message(chat_id, call.message.message_id)
+            except Exception as e:
+                log_error(f"rep_close delete failed: {e}")
+            store = get_chat_store(chat_id)
+            if store.get("report_window_id") == call.message.message_id:
+                store["report_window_id"] = None
+                store["report_month"] = None
+                save_data(data)
+            return
+    
+        if data_str.startswith("rep:"):
+            month_key = data_str.split(":", 1)[1].strip()
+            open_report_window(chat_id, month_key, call.message.message_id)
+            return
         if data_str == "cat_months" or data_str.startswith("cat_"):
             if handle_categories_callback(call, data_str):
                 return
@@ -2396,8 +2554,11 @@ def on_callback(call):
             )
             return
         if cmd == "report":
-            lines = build_day_report_lines(chat_id)
-            bot.send_message(chat_id, "<pre>" + html.escape("\n".join(lines)) + "</pre>", parse_mode="HTML")
+            try:
+                month_key = datetime.strptime(day_key, "%Y-%m-%d").strftime("%Y-%m")
+            except Exception:
+                month_key = now_local().strftime("%Y-%m")
+            open_report_window(chat_id, month_key)
             return
         if cmd == "total":
             chat_bal = store.get("balance", 0)
@@ -3310,6 +3471,9 @@ def cmd_report(msg):
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
+
+    month_key = now_local().strftime("%Y-%m")
+    open_report_window(chat_id, month_key)
 
     lines = build_day_report_lines(chat_id)
     send_info(chat_id, "\n".join(lines))
