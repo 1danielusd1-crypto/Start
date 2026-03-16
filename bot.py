@@ -126,47 +126,59 @@ def center_text(text: str, width: int) -> str:
     return (" " * left) + text + (" " * right)
 
 
-def build_day_report_lines(chat_id: int) -> list[str]:
+def build_day_report_lines(chat_id: int, month_key: str = None):
     """
-    Красивый отчёт по дням:
-    Дата    - Расход - Приход - Остаток
-    где каждая числовая колонка фиксированной ширины 7 символов.
+    Отчёт по дням за месяц.
+    Формат строки:
+    DD.MM.YY - <значение>
+    где значение занимает 7 символов и выровнено по правому краю.
     """
     store = get_chat_store(chat_id)
-    daily = store.get("daily_records", {}) or {}
+    daily = store.get("daily_records", {})
+
+    if month_key:
+        try:
+            month_dt = datetime.strptime(month_key, "%Y-%m-%d")
+        except Exception:
+            month_dt = now_local()
+    else:
+        month_dt = now_local()
+
+    month_start = month_dt.replace(day=1)
+
+    if month_start.month == 12:
+        next_month = month_start.replace(year=month_start.year + 1, month=1, day=1)
+    else:
+        next_month = month_start.replace(month=month_start.month + 1, day=1)
+
+    days_in_month = (next_month - timedelta(days=1)).day
 
     lines = []
-    lines.append("Отчёт:")
-    lines.append(
-        f"{'Дата':<8}-"
-        f"{center_text('Расход', 7)}-"
-        f"{center_text('Приход', 7)}-"
-        f"{center_text('Остаток', 7)}"
-    )
+    lines.append(f"📊 Отчёт за {month_start.strftime('%m.%Y')}")
+    lines.append("")
 
-    running_balance = 0.0
+    total_month = 0
 
-    for dk in sorted(daily.keys()):
-        recs = daily.get(dk, []) or []
+    for day in range(1, days_in_month + 1):
+        d = month_start.replace(day=day)
+        day_key = d.strftime("%Y-%m-%d")
+        date_txt = d.strftime("%d.%m.%y")
 
-        expense = 0.0
-        income = 0.0
-
+        recs = daily.get(day_key, [])
+        day_total = 0
         for r in recs:
-            amt = float(r.get("amount", 0) or 0)
-            if amt < 0:
-                expense += abs(amt)
-            else:
-                income += amt
+            try:
+                day_total += float(r.get("amount", 0))
+            except Exception:
+                pass
 
-        running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
+        total_month += day_total
 
-        date_txt = fmt_date_ddmmyy(dk)
-        exp_txt = center_text(fmt_num_compact(expense), 7)
-        inc_txt = center_text(fmt_num_compact(income), 7)
-        bal_txt = center_text(fmt_num_compact(running_balance), 7)
+        value_txt = fmt_num(day_total)
+        lines.append(f"{date_txt} - {value_txt:>7}")
 
-        lines.append(f"{date_txt}-{exp_txt}-{inc_txt}-{bal_txt}")
+    lines.append("")
+    lines.append(f"Итого   - {fmt_num(total_month):>7}")
 
     return lines
 def week_start_monday(day_key: str) -> str:
