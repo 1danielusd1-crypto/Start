@@ -109,138 +109,64 @@ def fmt_num_compact(v) -> str:
         return s
     except Exception:
         return str(v)
-        
-def fmt_report_cell(v, width: int = 7) -> str:
+
+
+def center_text(text: str, width: int) -> str:
     """
-    Формат числа для окна отчёта:
-    - число без .0
-    - выравнивание по правому краю
-    - фиксированная ширина поля
+    Центрирование строки в фиксированной ширине.
+    Если строка длиннее width — обрезаем слева/справа не трогаем,
+    возвращаем как есть.
     """
-    s = fmt_num_compact(v)
-    if len(s) > width:
-        return s[-width:]
-    return f"{s:>{width}}"
+    text = str(text)
+    if len(text) >= width:
+        return text
+    pad = width - len(text)
+    left = pad // 2
+    right = pad - left
+    return (" " * left) + text + (" " * right)
 
 
-def month_bounds(day_key: str):
+def build_day_report_lines(chat_id: int) -> list[str]:
     """
-    YYYY-MM-DD -> (start_key, end_key) для месяца этой даты
-    """
-    try:
-        d = datetime.strptime(day_key, "%Y-%m-%d")
-    except Exception:
-        d = now_local()
-
-    start = d.replace(day=1)
-    if d.month == 12:
-        next_month = d.replace(year=d.year + 1, month=1, day=1)
-    else:
-        next_month = d.replace(month=d.month + 1, day=1)
-
-    end = next_month - timedelta(days=1)
-    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-
-
-def send_or_edit_report_window(chat_id, text, reply_markup=None, parse_mode=None):
-    """
-    Отдельное окно для отчёта по дням (одно сообщение на чат).
-    """
-    store = get_chat_store(chat_id)
-    mid = store.get("report_msg_id")
-
-    if mid:
-        try:
-            bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=mid,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode
-            )
-            return
-        except Exception:
-            pass
-
-    sent = bot.send_message(
-        chat_id,
-        text,
-        reply_markup=reply_markup,
-        parse_mode=parse_mode
-    )
-    store["report_msg_id"] = sent.message_id
-    save_data(data)
-
-
-def close_report_window(chat_id):
-    store = get_chat_store(chat_id)
-    mid = store.get("report_msg_id")
-    if mid:
-        try:
-            bot.delete_message(chat_id, mid)
-        except Exception:
-            pass
-        store["report_msg_id"] = None
-        save_data(data)
-
-def build_day_report_lines(chat_id: int, month_day_key: str | None = None) -> list[str]:
-    """
-    Отчёт по дням за месяц:
-    Дата - Расход - Приход - Остаток
-
-    Формат:
-    15.03.26 -     120 -      50 -     -70
-
-    - дата в формате dd.mm.yy
-    - у каждой числовой колонки фиксированная ширина 7
-    - числа выровнены по правому краю
-    - остаток = итог именно этого дня, НЕ нарастающий
+    Красивый отчёт по дням:
+    Дата    - Расход - Приход - Остаток
+    где каждая числовая колонка фиксированной ширины 7 символов.
     """
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {}) or {}
 
-    if month_day_key is None:
-        month_day_key = today_key()
-
-    month_start, month_end = month_bounds(month_day_key)
-
     lines = []
-    lines.append("📊 Отчёт")
-    lines.append(f"🗓 {fmt_date_ddmmyy(month_start)} - {fmt_date_ddmmyy(month_end)}")
-    lines.append("")
+    lines.append("Отчёт:")
     lines.append(
-        f"{'Дата':<8} - {'Расход':>7} - {'Приход':>7} - {'Остаток':>7}"
+        f"{'Дата':<8}-"
+        f"{center_text('Расход', 7)}-"
+        f"{center_text('Приход', 7)}-"
+        f"{center_text('Остаток', 7)}"
     )
 
-    for dk in sorted(daily.keys()):
-        if not (month_start <= dk <= month_end):
-            continue
+    running_balance = 0.0
 
+    for dk in sorted(daily.keys()):
         recs = daily.get(dk, []) or []
-        if not recs:
-            continue
 
         expense = 0.0
         income = 0.0
-        day_balance = 0.0
 
         for r in recs:
             amt = float(r.get("amount", 0) or 0)
-            day_balance += amt
             if amt < 0:
                 expense += abs(amt)
             else:
                 income += amt
 
+        running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
+
         date_txt = fmt_date_ddmmyy(dk)
-        exp_txt = fmt_report_cell(expense, 7)
-        inc_txt = fmt_report_cell(income, 7)
-        bal_txt = fmt_report_cell(day_balance, 7)
+        exp_txt = center_text(fmt_num_compact(expense), 7)
+        inc_txt = center_text(fmt_num_compact(income), 7)
+        bal_txt = center_text(fmt_num_compact(running_balance), 7)
 
-        lines.append(f"{date_txt:<8} - {exp_txt} - {inc_txt} - {bal_txt}")
-
-    if len(lines) == 4:
-        lines.append("Нет данных за этот месяц.")
+        lines.append(f"{date_txt}-{exp_txt}-{inc_txt}-{bal_txt}")
 
     return lines
 def week_start_monday(day_key: str) -> str:
@@ -1566,7 +1492,6 @@ def render_day_window(chat_id: int, day_key: str):
     lines.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}")
     total = total_income - total_expense
     return "\n".join(lines), total
-    
 def build_main_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     kb.row(
@@ -1644,26 +1569,7 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
         )
     )
     return kb
-def build_report_keyboard(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=4)
 
-    try:
-        d = datetime.strptime(day_key, "%Y-%m-%d")
-    except Exception:
-        d = now_local()
-
-    cur_month_start = d.replace(day=1)
-
-    prev_month_day = (cur_month_start - timedelta(days=1)).replace(day=1).strftime("%Y-%m-%d")
-    next_month_day = (cur_month_start.replace(day=28) + timedelta(days=4)).replace(day=1).strftime("%Y-%m-%d")
-
-    kb.row(
-        types.InlineKeyboardButton("⬅️ Пред. месяц", callback_data=f"report:{prev_month_day}"),
-        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"report:{today_key()}"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="report:close"),
-        types.InlineKeyboardButton("След. месяц ➡️", callback_data=f"report:{next_month_day}")
-    )
-    return kb
 def build_csv_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
 
@@ -2319,34 +2225,6 @@ def on_callback(call):
                     reply_markup=kb
                 )
                 return
-            if data_str == "report:close":
-                try:
-                    bot.answer_callback_query(call.id)
-                except Exception:
-                    pass
-                close_report_window(chat_id)
-                return True
-        
-            if data_str.startswith("report:"):
-                try:
-                    bot.answer_callback_query(call.id)
-                except Exception:
-                    pass
-        
-                day_key = data_str.split(":", 1)[1].strip()
-                if not day_key:
-                    day_key = today_key()
-        
-                lines = build_day_report_lines(chat_id, day_key)
-                kb = build_report_keyboard(day_key)
-        
-                send_or_edit_report_window(
-                    chat_id,
-                    f"<pre>{html.escape(chr(10).join(lines))}</pre>",
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-                return True
             if data_str.startswith("fw_back_tgt:"):
                 try:
                     A = int(data_str.split(":", 1)[1])
@@ -2859,22 +2737,6 @@ def on_callback(call):
 
             delete_message_later(chat_id, msg.message_id, 30)
 
-            return
-        if cmd == "report":
-            try:
-                bot.answer_callback_query(call.id)
-            except Exception:
-                pass
-
-            lines = build_day_report_lines(chat_id, day_key)
-            kb = build_report_keyboard(day_key)
-
-            send_or_edit_report_window(
-                chat_id,
-                f"<pre>{html.escape(chr(10).join(lines))}</pre>",
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
             return
         if cmd == "cancel_edit":
             store = get_chat_store(chat_id)
@@ -3442,7 +3304,6 @@ def cmd_balance(msg):
     store = get_chat_store(chat_id)
     bal = store.get("balance", 0)
     send_info(chat_id, f"💰 Баланс: {fmt_num(bal)}")
-    
 @bot.message_handler(commands=["report"])
 def cmd_report(msg):
     chat_id = msg.chat.id
@@ -3450,16 +3311,8 @@ def cmd_report(msg):
     if not require_finance(chat_id):
         return
 
-    day_key = today_key()
-    lines = build_day_report_lines(chat_id, day_key)
-    kb = build_report_keyboard(day_key)
-
-    send_or_edit_report_window(
-        chat_id,
-        f"<pre>{html.escape(chr(10).join(lines))}</pre>",
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
+    lines = build_day_report_lines(chat_id)
+    send_info(chat_id, "\n".join(lines))
 def cmd_csv_all(chat_id: int):
     """
     Общий CSV этого чата (все дни этого чата).
