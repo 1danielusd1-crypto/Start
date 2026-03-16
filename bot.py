@@ -168,7 +168,8 @@ def build_day_report_lines(chat_id: int) -> list[str]:
 
         lines.append(f"{date_txt}-{exp_txt}-{inc_txt}-{bal_txt}")
 
-    return linesdef week_start_monday(day_key: str) -> str:
+    return lines
+def week_start_monday(day_key: str) -> str:
     """Возвращает YYYY-MM-DD (понедельник недели) для day_key"""
     try:
         d = datetime.strptime(day_key, "%Y-%m-%d").date()
