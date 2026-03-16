@@ -90,55 +90,13 @@ def fmt_num(v):
     except:
         return str(v)
     
-def build_day_report_text(chat_id: int) -> str:
-    """
-    Отчёт по дням:
-    Дата - Расход - Приход - Остаток
-    Числовые колонки шириной 7 символов, выравнивание по правому краю.
-    """
-    store = get_chat_store(chat_id)
-    daily_records = store.get("daily_records", {}) or {}
-
-    col_w = 7
-    lines = []
-
-    lines.append(
-        f"{'Дата':<8} - {'Расход':>{col_w}} - {'Приход':>{col_w}} - {'Остаток':>{col_w}}"
-    )
-
-    running_balance = 0.0
-
-    for dk in sorted(daily_records.keys()):
-        recs = daily_records.get(dk, []) or []
-
-        expense = 0.0
-        income = 0.0
-        day_delta = 0.0
-
-        for r in recs:
-            try:
-                amt = float(r.get("amount", 0) or 0)
-            except Exception:
-                amt = 0.0
-
-            day_delta += amt
-
-            if amt < 0:
-                expense += abs(amt)
-            elif amt > 0:
-                income += amt
-
-        running_balance += day_delta
-
-        date_txt = fmt_date_ddmmyy(dk)
-        exp_txt = f"{fmt_num_compact(expense):>{col_w}}"
-        inc_txt = f"{fmt_num_compact(income):>{col_w}}"
-        bal_txt = f"{fmt_num_compact(running_balance):>{col_w}}"
-
-        lines.append(f"{date_txt} - {exp_txt} - {inc_txt} - {bal_txt}")
-
-    body = "\n".join(lines)
-    return "Отчёт:\n<pre>" + html.escape(body) + "</pre>"
+def fmt_date_ddmmyy(day_key: str) -> str:
+    """YYYY-MM-DD -> DD.MM.YY"""
+    try:
+        d = datetime.strptime(day_key, "%Y-%m-%d")
+        return d.strftime("%d.%m.%y")
+    except Exception:
+        return str(day_key)
 def fmt_num_compact(v) -> str:
     """
     Число без .0, с минусом при необходимости.
