@@ -1525,24 +1525,39 @@ def build_report_keyboard(month_key: str):
     prev_month = (dt.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
 
-    kb.row(
+    current_month = now_local().strftime("%Y-%m")
+    
+    buttons = [
         types.InlineKeyboardButton(
             "⬅️ Пред. месяц",
             callback_data=f"rep:{prev_month.strftime('%Y-%m')}"
-        ),
-        types.InlineKeyboardButton(
-            "📅 Сегодня",
-            callback_data="rep_today"
-        ),
+        )
+    ]
+    
+    # показываем кнопку "Сегодня" ТОЛЬКО если это не текущий месяц
+    if month_key != current_month:
+        buttons.append(
+            types.InlineKeyboardButton(
+                "📅 Сегодня",
+                callback_data="rep_today"
+            )
+        )
+    
+    buttons.append(
         types.InlineKeyboardButton(
             "❌ Закрыть",
             callback_data="rep_close"
-        ),
+        )
+    )
+    
+    buttons.append(
         types.InlineKeyboardButton(
             "След. месяц ➡️",
             callback_data=f"rep:{next_month.strftime('%Y-%m')}"
         )
     )
+    
+    kb.row(*buttons)
     return kb
 
 
@@ -1706,7 +1721,7 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("📅 CSV за день", callback_data=f"d:{day_key}:csv_day"),
         types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset")
     )
-    kb.row(types.InlineKeyboardButton("📊 Статьи расходов",callback_data="cat_today"))
+    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data=f"d:{day_key}:close_info"))
 
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         kb.row(
@@ -2303,7 +2318,12 @@ def render_week_thu_wed_report(chat_id: int):
 
     return "\n".join(lines), start_key
 #🟡🟡🟡🟡🟡
-@bot.callback_query_handler(func=lambda c: True)
+@bot.callback_query_handler(func=lambda c: c.data.endswith(":close_info"))
+def close_info(call):
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
 
 def on_callback(call):
     try:
@@ -2914,6 +2934,7 @@ def on_callback(call):
     except Exception as e:
         log_error(f"on_callback error: {e}")
         #🐳🐳🐳🐳🐳🐳🐳🐳
+
 def send_csv_week(chat_id: int, day_key: str):
     try:
         store = get_chat_store(chat_id)
