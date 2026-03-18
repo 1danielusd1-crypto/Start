@@ -500,7 +500,7 @@ def save_chat_json(chat_id: int):
                         r.get("id"),
                         r.get("short_id"),
                         r.get("timestamp"),
-                        fmt_num(r.get("amount")),
+                        fmt_num_compact(r.get("amount")),
                         r.get("note"),
                         r.get("owner"),
                         dk,
@@ -1028,23 +1028,17 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
     day_key = store.get("current_view_day", today_key())
     schedule_finalize(dst_chat_id, day_key)
 def export_global_csv(d: dict):
-    """Legacy global CSV with all chats (for backup channel)."""
     try:
         with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
+            w.writerow(["date", "amount", "note"])  # Простой заголовок
             for cid, cdata in d.get("chats", {}).items():
                 for dk, records in cdata.get("daily_records", {}).items():
                     for r in records:
                         w.writerow([
-                            cid,
-                            r.get("id"),
-                            r.get("short_id"),
-                            r.get("timestamp"),
-                            fmt_num(r.get("amount")),
-                            r.get("note"),
-                            r.get("owner"),
-                            dk,
+                            dk,  # дата
+                            fmt_num_compact(r.get("amount")),  # сумма без .0
+                            r.get("note", "")  # описание
                         ])
     except Exception as e:
         log_error(f"export_global_csv: {e}")
