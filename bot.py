@@ -489,21 +489,21 @@ def save_chat_json(chat_id: int):
         _save_json(chat_path_json, payload)
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow([""short_id", "day_key", "amount", "note"])
+            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
             daily = store.get("daily_records", {})
             for dk in sorted(daily.keys()):
                 recs = daily.get(dk, [])
                 recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
                 for r in recs_sorted:
                     w.writerow([
-                        
-                        
+                        chat_id,
+                        r.get("id"),
                         r.get("short_id"),
-                        r.get("dk"),
-                        fmt_num(r.get("amount")),
+                        r.get("timestamp"),
+                        fmt_num_compact(r.get("amount")),
                         r.get("note"),
-                        
-                        
+                        r.get("owner"),
+                        dk,
                     ])
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
@@ -1041,7 +1041,7 @@ def export_global_csv(d: dict):
                             r.get("id"),
                             r.get("short_id"),
                             r.get("timestamp"),
-                            fmt_num(r.get("amount")),
+                            fmt_num_compact(r.get("amount")),
                             r.get("note"),
                             r.get("owner"),
                             dk,
