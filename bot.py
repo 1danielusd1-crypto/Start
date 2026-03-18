@@ -489,18 +489,21 @@ def save_chat_json(chat_id: int):
         _save_json(chat_path_json, payload)
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            # ✅ Простой заголовок
-            w.writerow(["date", "amount", "note"])
+            w.writerow([""short_id", "day_key", "amount", "note"])
             daily = store.get("daily_records", {})
             for dk in sorted(daily.keys()):
                 recs = daily.get(dk, [])
                 recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
                 for r in recs_sorted:
-                    # ✅ Пишем только 3 колонки: дата, сумма, описание
                     w.writerow([
-                        dk,  # дата
-                        fmt_num_compact(r.get("amount")),  # сумма без .0
-                        r.get("note", "")  # описание
+                        
+                        
+                        r.get("short_id"),
+                        r.get("dk"),
+                        fmt_num(r.get("amount")),
+                        r.get("note"),
+                        
+                        
                     ])
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
@@ -1025,17 +1028,23 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
     day_key = store.get("current_view_day", today_key())
     schedule_finalize(dst_chat_id, day_key)
 def export_global_csv(d: dict):
+    """Legacy global CSV with all chats (for backup channel)."""
     try:
         with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["date", "amount", "note"])  # Простой заголовок
+            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
             for cid, cdata in d.get("chats", {}).items():
                 for dk, records in cdata.get("daily_records", {}).items():
                     for r in records:
                         w.writerow([
-                            dk,  # дата
-                            fmt_num_compact(r.get("amount")),  # сумма без .0
-                            r.get("note", "")  # описание
+                            cid,
+                            r.get("id"),
+                            r.get("short_id"),
+                            r.get("timestamp"),
+                            fmt_num(r.get("amount")),
+                            r.get("note"),
+                            r.get("owner"),
+                            dk,
                         ])
     except Exception as e:
         log_error(f"export_global_csv: {e}")
@@ -1502,7 +1511,6 @@ def build_main_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
     )
     return kb
-    
 def build_report_keyboard(month_key: str):
     """
     month_key: YYYY-MM
@@ -1513,44 +1521,28 @@ def build_report_keyboard(month_key: str):
         dt = datetime.strptime(month_key + "-01", "%Y-%m-%d")
     except Exception:
         dt = now_local().replace(day=1)
-        month_key = dt.strftime("%Y-%m")
-
-    current_month = now_local().strftime("%Y-%m")
 
     prev_month = (dt.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
 
-    row = [
+    kb.row(
         types.InlineKeyboardButton(
             "⬅️ Пред. месяц",
             callback_data=f"rep:{prev_month.strftime('%Y-%m')}"
-        )
-    ]
-
-    # Показываем "Сегодня" только если открыт НЕ текущий месяц
-    if month_key != current_month:
-        row.append(
-            types.InlineKeyboardButton(
-                "📅 Сегодня",
-                callback_data="rep_today"
-            )
-        )
-
-    row.append(
+        ),
+        types.InlineKeyboardButton(
+            "📅 Сегодня",
+            callback_data="rep_today"
+        ),
         types.InlineKeyboardButton(
             "❌ Закрыть",
             callback_data="rep_close"
-        )
-    )
-
-    row.append(
+        ),
         types.InlineKeyboardButton(
             "След. месяц ➡️",
             callback_data=f"rep:{next_month.strftime('%Y-%m')}"
         )
     )
-
-    kb.row(*row)
     return kb
 
 
@@ -2330,7 +2322,7 @@ def on_callback(call):
         if data_str == "rep_today":
             open_report_window(chat_id, now_local().strftime("%Y-%m"), call.message.message_id)
             return
-
+    
         if data_str == "rep_close":
             try:
                 bot.delete_message(chat_id, call.message.message_id)
@@ -2498,12 +2490,7 @@ def on_callback(call):
                 )
             except Exception:
                 pass
-            return
-        if data_str == "info_close":
-            try:
-                bot.delete_message(chat_id, call.message.message_id)
-            except Exception as e:
-                log_error(f"info_close delete failed: {e}")
+        
             return
         if not data_str.startswith("d:"):
             return
@@ -2671,7 +2658,7 @@ def on_callback(call):
                 "/help — эта справка\n"
             )
             kb = types.InlineKeyboardMarkup()
-            kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
+            kb.row(types.InlineKeyboardButton("📦 Расходы по статьям", callback_data="cat_months"))
             bot.send_message(chat_id, info_text, reply_markup=kb)
             return
         if cmd in ("edit_menu", "menu"):
@@ -3036,7 +3023,7 @@ def add_record_to_chat(
 
     rec = {
         "id": rid,
-        "short_id": "",
+        "short_id": f"R{rid}",
         "timestamp": now_local().isoformat(timespec="seconds"),
         "amount": amount,
         "note": note,
@@ -3052,7 +3039,7 @@ def add_record_to_chat(
 
     store["next_id"] = rid + 1
     store["balance"] = sum(r["amount"] for r in store["records"])
-    rebuild_month_short_ids(chat_id)
+
     rebuild_global_records()
     persist_chat_state(chat_id)
     
@@ -3105,15 +3092,13 @@ def delete_record_in_chat(chat_id: int, rid: int):
 
 def renumber_chat_records(chat_id: int):
     """
-    Перенумеровывает внутренние id по реальному порядку:
+    Перенумеровывает записи в чате по реальному порядку:
       • сортируем по day_key и timestamp
-      • id = 1,2,3... по всему чату
-      • short_id = R1,R2,... заново в каждом месяце
+      • присваиваем ID: 1,2,3... и short_id: R1,R2,...
       • обновляем store["records"] и next_id
     """
     store = get_chat_store(chat_id)
-    daily = store.get("daily_records", {}) or {}
-
+    daily = store.get("daily_records", {})
     all_recs = []
     for dk in sorted(daily.keys()):
         recs = daily.get(dk, [])
@@ -3121,18 +3106,13 @@ def renumber_chat_records(chat_id: int):
         daily[dk] = recs_sorted
         for r in recs_sorted:
             all_recs.append(r)
-
-    # внутренний id — общий по чату
     new_id = 1
     for r in all_recs:
         r["id"] = new_id
+        r["short_id"] = f"R{new_id}"
         new_id += 1
-
     store["records"] = list(all_recs)
     store["next_id"] = new_id
-
-    # short_id — отдельно по месяцам
-    rebuild_month_short_ids(chat_id)
 def get_or_create_active_windows(chat_id: int) -> dict:
     return data.setdefault("active_messages", {}).setdefault(str(chat_id), {})
 def set_active_window_id(chat_id: int, day_key: str, message_id: int):
@@ -3842,36 +3822,6 @@ def calc_day_balance(store: dict, day_key: str) -> float:
 
     return total
 # ✅ ДО СЮДА ↑↑↑
-def rebuild_month_short_ids(chat_id: int):
-    """
-    Пересчитывает short_id как месячную нумерацию:
-    в каждом месяце заново R1, R2, R3...
-    Внутренний id НЕ трогаем.
-    """
-    store = get_chat_store(chat_id)
-    daily = store.get("daily_records", {}) or {}
-
-    month_counters = {}
-
-    for dk in sorted(daily.keys()):
-        month_key = dk[:7]  # YYYY-MM
-        if month_key not in month_counters:
-            month_counters[month_key] = 1
-
-        recs = sorted(daily.get(dk, []), key=lambda r: r.get("timestamp", ""))
-        daily[dk] = recs
-
-        for r in recs:
-            r["short_id"] = f"R{month_counters[month_key]}"
-            month_counters[month_key] += 1
-
-    # синхронизируем store["records"] по id
-    by_id = {}
-    for dk in daily:
-        for r in daily[dk]:
-            by_id[r["id"]] = r
-
-    store["records"] = [by_id[r["id"]] for r in sorted(by_id.values(), key=lambda x: x["id"])]
 def rebuild_global_records():
     all_recs = []
     for cid, st in data.get("chats", {}).items():
