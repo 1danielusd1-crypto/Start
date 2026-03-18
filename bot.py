@@ -489,21 +489,18 @@ def save_chat_json(chat_id: int):
         _save_json(chat_path_json, payload)
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
+            # ✅ Простой заголовок
+            w.writerow(["date", "amount", "note"])
             daily = store.get("daily_records", {})
             for dk in sorted(daily.keys()):
                 recs = daily.get(dk, [])
                 recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
                 for r in recs_sorted:
+                    # ✅ Пишем только 3 колонки: дата, сумма, описание
                     w.writerow([
-                        chat_id,
-                        r.get("id"),
-                        r.get("short_id"),
-                        r.get("timestamp"),
-                        fmt_num_compact(r.get("amount")),
-                        r.get("note"),
-                        r.get("owner"),
-                        dk,
+                        dk,  # дата
+                        fmt_num_compact(r.get("amount")),  # сумма без .0
+                        r.get("note", "")  # описание
                     ])
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
