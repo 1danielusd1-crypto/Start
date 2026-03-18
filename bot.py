@@ -489,21 +489,16 @@ def save_chat_json(chat_id: int):
         _save_json(chat_path_json, payload)
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
+            w.writerow(["date", "amount", "note"])  # Простой заголовок
             daily = store.get("daily_records", {})
             for dk in sorted(daily.keys()):
                 recs = daily.get(dk, [])
                 recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
                 for r in recs_sorted:
                     w.writerow([
-                        chat_id,
-                        r.get("id"),
-                        r.get("short_id"),
-                        r.get("timestamp"),
-                        fmt_num_compact(r.get("amount")),
-                        r.get("note"),
-                        r.get("owner"),
-                        dk,
+                        dk,  # дата
+                        fmt_num_compact(r.get("amount")),  # сумма без .0
+                        r.get("note", "")  # описание
                     ])
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
@@ -1032,19 +1027,14 @@ def export_global_csv(d: dict):
     try:
         with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
+            w.writerow(["date", "amount", "note"])  # Простой заголовок
             for cid, cdata in d.get("chats", {}).items():
                 for dk, records in cdata.get("daily_records", {}).items():
                     for r in records:
                         w.writerow([
-                            cid,
-                            r.get("id"),
-                            r.get("short_id"),
-                            r.get("timestamp"),
-                            fmt_num_compact(r.get("amount")),
-                            r.get("note"),
-                            r.get("owner"),
-                            dk,
+                            dk,  # дата
+                            fmt_num_compact(r.get("amount")),  # сумма без .0
+                            r.get("note", "")  # описание
                         ])
     except Exception as e:
         log_error(f"export_global_csv: {e}")
