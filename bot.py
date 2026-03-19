@@ -1,4 +1,4 @@
-# норм ок последн со старта ммм
+# 
 import os
 import io
 import json
