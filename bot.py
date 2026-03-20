@@ -138,10 +138,10 @@ def build_day_report_lines(chat_id: int) -> list[str]:
     lines = []
     lines.append("Отчёт:")
     lines.append(
-        f"{'Дата':<8}-"
-        f"{center_text('Расход', 7)}-"
-        f"{center_text('Приход', 7)}-"
-        f"{center_text('Остаток', 7)}"
+        f"{'Дата':<8}"
+        f"{center_text('Расход',7)}"
+        f"{center_text('Приход',7)}"
+        f"{center_text('Остаток',7)}"
     )
 
     running_balance = 0.0
