@@ -1593,7 +1593,7 @@ def build_month_report_text(chat_id: int, month_key: str = None):
     has_any = False
 
     for day in range(1, days_in_month + 1):
-        day_key = f"{year}{month:02d}{day:02d}"
+        day_key = f"{year}-{month:02d}-{day:02d}"
         recs = daily.get(day_key, [])
 
         total_expense = 0
