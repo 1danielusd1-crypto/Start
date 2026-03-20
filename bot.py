@@ -162,9 +162,9 @@ def build_day_report_lines(chat_id: int) -> list[str]:
         running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
 
         date_txt = fmt_date_ddmmyy(dk)
-        exp_txt = center_text(fmt_num_compact(expense), 7)
-        inc_txt = center_text(fmt_num_compact(income), 7)
-        bal_txt = center_text(fmt_num_compact(running_balance), 7)
+        exp_txt = fmt_num_compact(expense).rjust(7)
+        inc_txt = fmt_num_compact(income).rjust(7)
+        bal_txt = fmt_num_compact(running_balance).rjust(7)
 
         lines.append(f"{date_txt}{exp_txt}{inc_txt}{bal_txt}")
 
