@@ -166,7 +166,7 @@ def build_day_report_lines(chat_id: int) -> list[str]:
         inc_txt = center_text(fmt_num_compact(income), 7)
         bal_txt = center_text(fmt_num_compact(running_balance), 7)
 
-        lines.append(f"{date_txt}-{exp_txt}-{inc_txt}-{bal_txt}")
+        lines.append(f"{date_txt}{exp_txt}{inc_txt}{bal_txt}")
 
     return lines
 def week_start_monday(day_key: str) -> str:
