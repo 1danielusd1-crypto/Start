@@ -3054,34 +3054,39 @@ def add_record_to_chat(
     rebuild_global_records()
     persist_chat_state(chat_id)
     
-def update_record_in_chat(
+def add_record_to_chat(
     chat_id: int,
-    rid: int,
-    new_amount: float,
-    new_note: str,
-    skip_chat_backup: bool = False
+    amount: float,
+    note: str,
+    owner: int,
+    source_msg=None
 ):
     store = get_chat_store(chat_id)
-    found = None
+    rid = store.get("next_id", 1)
+    day_key = store.get("current_view_day", today_key())
 
-    for r in store.get("records", []):
-        if r["id"] == rid:
-            r["amount"] = new_amount
-            r["note"] = new_note
-            found = r
-            break
+    rec = {
+        "id": rid,
+        "short_id": "",
+        "timestamp": now_local().isoformat(timespec="seconds"),
+        "amount": amount,
+        "note": note,
+        "source_msg_id": source_msg.message_id if source_msg else None,
+        "owner": owner,
+        "msg_id": source_msg.message_id if source_msg else None,
+        "origin_msg_id": source_msg.message_id if source_msg else None,
+        "day_key": day_key,
+    }
 
-    if not found:
-        return
+    store.setdefault("records", []).append(rec)
+    store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
 
-    for day, arr in store.get("daily_records", {}).items():
-        for r in arr:
-            if r["id"] == rid:
-                r.update(found)
+    store["next_id"] = rid + 1
+    store["balance"] = sum(r["amount"] for r in store["records"])
 
-    store["balance"] = sum(x["amount"] for x in store["records"])
+    rebuild_month_short_ids(chat_id)
     rebuild_global_records()
-    persist_chat_state(chat_id)
+    # ВАЖНО: никаких persist_chat_state() здесь больше нет
         
 def delete_record_in_chat(chat_id: int, rid: int):
     store = get_chat_store(chat_id)
@@ -3097,9 +3102,7 @@ def delete_record_in_chat(chat_id: int, rid: int):
 
     renumber_chat_records(chat_id)
     store["balance"] = sum(x["amount"] for x in store["records"])
-
     rebuild_global_records()
-    persist_chat_state(chat_id)
 
 def renumber_chat_records(chat_id: int):
     """
@@ -3726,47 +3729,77 @@ def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
     _edit_cancel_timers[chat_id] = t
     t.start()
     
-def schedule_cancel_edit(chat_id: int, message_id: int, delay: int = 30):
-    def _job():
-        try:
-            store = get_chat_store(chat_id)
-            if store.get("edit_wait"):
-                store["edit_wait"] = None
-                save_data(data)
-            try:
-                bot.delete_message(chat_id, message_id)
-            except Exception:
-                pass
-        except Exception as e:
-            log_error(f"schedule_cancel_edit: {e}")
-
-    t = threading.Timer(delay, _job)
-    t.start()
 def update_chat_info_from_message(msg):
     """
-    Обновляет информацию о чате при каждом сообщении.
-    Хранится в: store["info"] и store["known_chats"] (для OWNER).
+    Обновляет информацию о чате в памяти.
+    На диск пишем только если реально что-то изменилось.
     """
     chat_id = msg.chat.id
     store = get_chat_store(chat_id)
     info = store.setdefault("info", {})
-    info["title"] = msg.chat.title or info.get("title") or f"Чат {chat_id}"
-    info["username"] = msg.chat.username or info.get("username")
-    info["type"] = msg.chat.type
+
+    changed = False
+
+    new_title = msg.chat.title or info.get("title") or f"Чат {chat_id}"
+    new_username = msg.chat.username or info.get("username")
+    new_type = msg.chat.type
+
+    if info.get("title") != new_title:
+        info["title"] = new_title
+        changed = True
+
+    if info.get("username") != new_username:
+        info["username"] = new_username
+        changed = True
+
+    if info.get("type") != new_type:
+        info["type"] = new_type
+        changed = True
+
     if OWNER_ID and str(chat_id) != str(OWNER_ID):
         owner_store = get_chat_store(int(OWNER_ID))
         kc = owner_store.setdefault("known_chats", {})
-        kc[str(chat_id)] = {
+
+        new_known = {
             "title": info["title"],
             "username": info["username"],
             "type": info["type"],
         }
-        save_chat_json(int(OWNER_ID))
-    save_chat_json(chat_id)
 
+        if kc.get(str(chat_id)) != new_known:
+            kc[str(chat_id)] = new_known
+            changed = True
+
+    if changed:
+        save_data(data)
 _finalize_timers = {}
+_backup_timers = {}
 
-def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
+def schedule_backup_flush(chat_id: int, delay: float = 8.0):
+    def _job():
+        try:
+            # один раз сохраняем тяжелые файлы
+            save_chat_json(chat_id)
+            export_global_csv(data)
+
+            # потом отправляем бэкапы
+            send_backup_to_chat(chat_id)
+            send_backup_to_channel(chat_id)
+        except Exception as e:
+            log_error(f"schedule_backup_flush({chat_id}): {e}")
+
+    prev = _backup_timers.get(chat_id)
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(delay, _job)
+    _backup_timers[chat_id] = t
+    t.start()
+    
+def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.8):
     def _safe(action_name, func):
         try:
             return func()
@@ -3775,10 +3808,11 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
             return None
 
     def _job():
+        # 1) быстрые операции в памяти
         _safe("recalc_balance", lambda: recalc_balance(chat_id))
         _safe("rebuild_global_records", rebuild_global_records)
-        _safe("persist_chat_state", lambda: persist_chat_state(chat_id))
 
+        # 2) быстрое обновление интерфейса
         if OWNER_ID and str(chat_id) == str(OWNER_ID):
             _safe(
                 "owner_backup_window",
@@ -3789,15 +3823,6 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
                 "update_day_window",
                 lambda: update_or_send_day_window(chat_id, day_key)
             )
-            _safe(
-                "backup_to_chat",
-                lambda: send_backup_to_chat(chat_id)
-            )
-
-        _safe(
-            "backup_to_channel",
-            lambda: send_backup_to_channel(chat_id)
-        )
 
         _safe(
             "refresh_total_chat",
@@ -3809,6 +3834,15 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 2.0):
                 "refresh_total_owner",
                 lambda: refresh_total_message_if_any(int(OWNER_ID))
             )
+
+        # 3) легкое сохранение основной базы
+        _safe("save_data", lambda: save_data(data))
+
+        # 4) тяжелые JSON/CSV/отправки — отдельно, с дебаунсом
+        _safe(
+            "schedule_backup_flush",
+            lambda: schedule_backup_flush(chat_id, 8.0)
+        )
 
     t_prev = _finalize_timers.get(chat_id)
     if t_prev and t_prev.is_alive():
