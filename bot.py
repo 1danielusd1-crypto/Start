@@ -1,4 +1,4 @@
-#:
+# норм ок последн со старта ммм
 import os
 import io
 import json
@@ -138,10 +138,10 @@ def build_day_report_lines(chat_id: int) -> list[str]:
     lines = []
     lines.append("Отчёт:")
     lines.append(
-        f"{'Дата':<8}"
-        f"{center_text('Расход',7)}"
-        f"{center_text('Приход',7)}"
-        f"{center_text('Остаток',7)}"
+        f"{'Дата':<8}-"
+        f"{center_text('Расход', 7)}-"
+        f"{center_text('Приход', 7)}-"
+        f"{center_text('Остаток', 7)}"
     )
 
     running_balance = 0.0
@@ -162,11 +162,11 @@ def build_day_report_lines(chat_id: int) -> list[str]:
         running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
 
         date_txt = fmt_date_ddmmyy(dk)
-        exp_txt = fmt_num_compact(expense).rjust(7)
-        inc_txt = fmt_num_compact(income).rjust(7)
-        bal_txt = fmt_num_compact(running_balance).rjust(7)
+        exp_txt = center_text(fmt_num_compact(expense), 7)
+        inc_txt = center_text(fmt_num_compact(income), 7)
+        bal_txt = center_text(fmt_num_compact(running_balance), 7)
 
-        lines.append(f"{date_txt}{exp_txt}{inc_txt}{bal_txt}")
+        lines.append(f"{date_txt}-{exp_txt}-{inc_txt}-{bal_txt}")
 
     return lines
 def week_start_monday(day_key: str) -> str:
@@ -1614,9 +1614,9 @@ def build_month_report_text(chat_id: int, month_key: str = None):
         date_str = datetime.strptime(day_key, "%Y-%m-%d").strftime("%d.%m.%y")
 
         lines.append(
-            f"{date_str}|"
-            f"{int(total_expense):>7}|"
-            f"{int(total_income):>7}|"
+            f"{date_str} - "
+            f"{int(total_expense):>7} - "
+            f"{int(total_income):>7} - "
             f"{int(day_balance):>7}"
         )
 
