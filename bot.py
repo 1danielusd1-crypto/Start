@@ -81,6 +81,17 @@ def now_local():
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
 
+DAY_WINDOW_MAX_RECORDS = 35
+DAY_WINDOW_MAX_CHARS = 3500
+
+def day_key_from_message(msg=None) -> str:
+    try:
+        if msg and getattr(msg, "date", None):
+            return datetime.fromtimestamp(msg.date, tz=get_tz()).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return today_key()
+
 def fmt_num(v):
     try:
         v = float(v)
@@ -913,17 +924,19 @@ def handle_finance_text(msg):
         except Exception:
             return
 
+        entry_day = day_key_from_message(msg)
+
         add_record_to_chat(
             chat_id,
             amount,
             note,
             msg.from_user.id,
-            source_msg=msg
+            source_msg=msg,
+            day_key=entry_day
         )
-        day_key = store.get("current_view_day", today_key())
-        schedule_finalize(chat_id, day_key)
+        schedule_finalize(chat_id, entry_day)
         return
-      
+
 def handle_finance_edit(msg):
     chat_id = msg.chat.id
     text = msg.text or msg.caption
@@ -1008,8 +1021,16 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             existing = r
             break
 
+    entry_day = today_key()
+
     if existing:
-        update_record_in_chat(dst_chat_id, existing["id"], amount, note)
+        # обновляем запись прямо на месте, без смены дня
+        existing["amount"] = amount
+        existing["note"] = note
+        entry_day = existing.get("day_key") or entry_day
+        rebuild_month_short_ids(dst_chat_id)
+        rebuild_global_records()
+        store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
     else:
         shadow_msg = type("ForwardShadowMsg", (), {"message_id": dst_msg_id})()
         add_record_to_chat(
@@ -1017,11 +1038,12 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             amount,
             note,
             owner,
-            source_msg=shadow_msg
+            source_msg=shadow_msg,
+            day_key=entry_day
         )
 
-    day_key = store.get("current_view_day", today_key())
-    schedule_finalize(dst_chat_id, day_key)
+    schedule_finalize(dst_chat_id, entry_day)
+
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel)."""
     try:
@@ -1444,44 +1466,75 @@ def forward_any_message(source_chat_id: int, msg):
 def render_day_window(chat_id: int, day_key: str):
     store = get_chat_store(chat_id)
     recs = store.get("daily_records", {}).get(day_key, [])
-    lines = []
+
     d = datetime.strptime(day_key, "%Y-%m-%d")
     wd = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"][d.weekday()]
+
     t = now_local()
     td = t.strftime("%Y-%m-%d")
     yd = (t - timedelta(days=1)).strftime("%Y-%m-%d")
     tm = (t + timedelta(days=1)).strftime("%Y-%m-%d")
+
     tag = "сегодня" if day_key == td else "вчера" if day_key == yd else "завтра" if day_key == tm else ""
     dk = fmt_date_ddmmyy(day_key)
     label = f"{dk} ({tag}, {wd})" if tag else f"{dk} ({wd})"
-    lines.append(f"📅 {label}")
-    lines.append("")
+
+    header = [f"📅 {label}", ""]
     total_income = 0.0
     total_expense = 0.0
+
     recs_sorted = sorted(recs, key=lambda x: x.get("timestamp"))
+    all_record_lines = []
+
     for r in recs_sorted:
-        amt = r["amount"]
+        amt = float(r.get("amount", 0) or 0)
         if amt >= 0:
             total_income += amt
         else:
             total_expense += -amt
+
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
-        lines.append(f"{sid} {fmt_num(amt)} {note}")
-    if not recs_sorted:
-        lines.append("Нет записей за этот день.")
-    lines.append("")
-    if recs_sorted:
-        lines.append(f"📉 Расход за день: {fmt_num(-total_expense) if total_expense else fmt_num(0)}")
-        lines.append(f"📈 Приход за день: {fmt_num(total_income) if total_income else fmt_num(0)}")
-    
+        all_record_lines.append(f"{sid} {fmt_num(amt)} {note}")
+
     day_balance = calc_day_balance(store, day_key)
-    lines.append(f"📆 Остаток на конец дня: {fmt_num(day_balance)}")
-    
     bal_chat = store.get("balance", 0)
-    lines.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}")
+
+    footer = [""]
+    if recs_sorted:
+        footer.append(f"📉 Расход за день: {fmt_num(-total_expense) if total_expense else fmt_num(0)}")
+        footer.append(f"📈 Приход за день: {fmt_num(total_income) if total_income else fmt_num(0)}")
+    footer.append(f"📆 Остаток на конец дня: {fmt_num(day_balance)}")
+    footer.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}")
+
     total = total_income - total_expense
-    return "\n".join(lines), total
+
+    if not all_record_lines:
+        return "\n".join(header + ["Нет записей за этот день."] + footer), total
+
+    hidden = 0
+    visible = list(all_record_lines)
+
+    if len(visible) > DAY_WINDOW_MAX_RECORDS:
+        hidden = len(visible) - DAY_WINDOW_MAX_RECORDS
+        visible = visible[-DAY_WINDOW_MAX_RECORDS:]
+
+    while True:
+        prefix = []
+        if hidden > 0:
+            prefix = [f"… скрыто ранних записей: {hidden}", ""]
+
+        text = "\n".join(header + prefix + visible + footer)
+
+        if len(text) <= DAY_WINDOW_MAX_CHARS:
+            return text, total
+
+        if len(visible) <= 5:
+            return text[:DAY_WINDOW_MAX_CHARS], total
+
+        hidden += 1
+        visible = visible[1:]
+
 def build_main_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     kb.row(
@@ -3026,44 +3079,14 @@ def add_record_to_chat(
     amount: float,
     note: str,
     owner: int,
-    source_msg=None
+    source_msg=None,
+    day_key=None
 ):
     store = get_chat_store(chat_id)
     rid = store.get("next_id", 1)
-    day_key = store.get("current_view_day", today_key())
 
-    rec = {
-        "id": rid,
-        "short_id": "",
-        "timestamp": now_local().isoformat(timespec="seconds"),
-        "amount": amount,
-        "note": note,
-        "source_msg_id": source_msg.message_id if source_msg else None,
-        "owner": owner,
-        "msg_id": source_msg.message_id if source_msg else None,
-        "origin_msg_id": source_msg.message_id if source_msg else None,
-        "day_key": day_key,
-    }
-
-    store.setdefault("records", []).append(rec)
-    store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
-
-    store["next_id"] = rid + 1
-    store["balance"] = sum(r["amount"] for r in store["records"])
-    rebuild_month_short_ids(chat_id)
-    rebuild_global_records()
-    persist_chat_state(chat_id)
-    
-def add_record_to_chat(
-    chat_id: int,
-    amount: float,
-    note: str,
-    owner: int,
-    source_msg=None
-):
-    store = get_chat_store(chat_id)
-    rid = store.get("next_id", 1)
-    day_key = store.get("current_view_day", today_key())
+    if not day_key:
+        day_key = day_key_from_message(source_msg)
 
     rec = {
         "id": rid,
@@ -3086,8 +3109,7 @@ def add_record_to_chat(
 
     rebuild_month_short_ids(chat_id)
     rebuild_global_records()
-    # ВАЖНО: никаких persist_chat_state() здесь больше нет
-        
+
 def delete_record_in_chat(chat_id: int, rid: int):
     store = get_chat_store(chat_id)
 
@@ -3170,6 +3192,9 @@ def update_or_send_day_window(chat_id: int, day_key: str):
         txt, _ = render_day_window(chat_id, day_key)
         kb = build_main_keyboard(day_key, chat_id)
         old_mid = get_active_window_id(chat_id, day_key)
+
+        if len(txt) > 3900:
+            log_error(f"update_or_send_day_window: text too long for {chat_id} {day_key}, len={len(txt)}")
 
         if old_mid:
             try:
@@ -3956,46 +3981,18 @@ def force_backup_to_chat(chat_id: int):
 
 def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
     """
-    Для OWNER_ID: одно сообщение, в котором:
-      • документ JSON (backup)
-      • caption = окно дня (render_day_window)
-      • те же кнопки (build_main_keyboard)
+    Окно дня для владельца без document-caption.
+    JSON-бэкапы отправляются отдельно через schedule_backup_flush().
     """
-    if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-        return
+    lock = window_locks[(chat_id, day_key)]
 
-    # Текст окна и кнопки
-    txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
+    with lock:
+        txt, _ = render_day_window(chat_id, day_key)
+        kb = build_main_keyboard(day_key, chat_id)
 
-    # Обновляем JSON-файл
-    save_chat_json(chat_id)
-    json_path = chat_json_file(chat_id)
-    if not os.path.exists(json_path):
-        log_error(f"backup_window_for_owner: {json_path} missing")
-        return
+        if len(txt) > 3900:
+            log_error(f"backup_window_for_owner: text too long for {chat_id} {day_key}, len={len(txt)}")
 
-    try:
-        with open(json_path, "rb") as f:
-            data_bytes = f.read()
-        if not data_bytes:
-            log_error("backup_window_for_owner: empty JSON")
-            return
-
-        base = os.path.basename(json_path)
-        name_no_ext, dot, ext = base.partition(".")
-        suffix = get_chat_name_for_filename(chat_id)
-        if suffix:
-            file_name = suffix
-        else:
-            file_name = name_no_ext
-        if dot:
-            file_name += f".{ext}"
-
-        buf = io.BytesIO(data_bytes)
-        buf.name = file_name
-
-        # Если кнопка нажата на конкретном сообщении — редактируем именно его
         mid = message_id_override or get_active_window_id(chat_id, day_key)
         if message_id_override:
             try:
@@ -4003,49 +4000,35 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
             except Exception:
                 pass
 
-        # Пытаемся обновить старое окно, если оно есть
         if mid:
             try:
-                media = InputMediaDocument(buf, caption=txt, parse_mode="HTML")
-                bot.edit_message_media(
+                bot.edit_message_text(
+                    txt,
                     chat_id=chat_id,
                     message_id=mid,
-                    media=media,
-                    reply_markup=kb
+                    reply_markup=kb,
+                    parse_mode="HTML"
                 )
                 set_active_window_id(chat_id, day_key, mid)
                 return
             except Exception as e:
-                log_error(f"backup_window_for_owner: edit_message_media failed: {e}")
-                # fallback: пробуем хотя бы caption+кнопки обновить
-                try:
-                    bot.edit_message_caption(
-                        chat_id=chat_id,
-                        message_id=mid,
-                        caption=txt,
-                        reply_markup=kb,
-                        parse_mode="HTML"
-                    )
-                    set_active_window_id(chat_id, day_key, mid)
+                err = str(e).lower()
+                if "message is not modified" in err:
                     return
-                except Exception as e2:
-                    log_error(f"backup_window_for_owner: edit_caption failed: {e2}")
-                    #try:
-                        #bot.delete_message(chat_id, mid)
-                    #except Exception:
-                       # pass
+                log_error(f"backup_window_for_owner edit failed: {e}")
+                try:
+                    bot.delete_message(chat_id, mid)
+                except Exception:
+                    pass
 
-        # Если не получилось отредактировать — создаём новое сообщение
-        sent = bot.send_document(
+        sent = bot.send_message(
             chat_id,
-            buf,
-            caption=txt,
-            reply_markup=kb
+            txt,
+            reply_markup=kb,
+            parse_mode="HTML"
         )
         set_active_window_id(chat_id, day_key, sent.message_id)
-    except Exception as e:
-        log_error(f"backup_window_for_owner({chat_id}, {day_key}): {e}")
-        
+
 def force_new_day_window(chat_id: int, day_key: str):
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         backup_window_for_owner(chat_id, day_key)
