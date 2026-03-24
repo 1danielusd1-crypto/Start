@@ -139,21 +139,15 @@ def center_text(text: str, width: int) -> str:
 
 def build_day_report_lines(chat_id: int) -> list[str]:
     """
-    Красивый отчёт по дням:
-    Дата    - Расход - Приход - Остаток
-    где каждая числовая колонка фиксированной ширины 7 символов.
+    Отчёт по дням без пробелов вокруг разделителей.
+    Формат: Дата|Расход|Приход|Остаток
     """
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {}) or {}
 
     lines = []
     lines.append("Отчёт:")
-    lines.append(
-        f"{'Дата':<8}-"
-        f"{center_text('Расход', 7)}-"
-        f"{center_text('Приход', 7)}-"
-        f"{center_text('Остаток', 7)}"
-    )
+    lines.append("Дата|Расход|Приход|Остаток")
 
     running_balance = 0.0
 
@@ -173,13 +167,14 @@ def build_day_report_lines(chat_id: int) -> list[str]:
         running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
 
         date_txt = fmt_date_ddmmyy(dk)
-        exp_txt = center_text(fmt_num_compact(expense), 7)
-        inc_txt = center_text(fmt_num_compact(income), 7)
-        bal_txt = center_text(fmt_num_compact(running_balance), 7)
+        exp_txt = fmt_num_compact(expense)
+        inc_txt = fmt_num_compact(income)
+        bal_txt = fmt_num_compact(running_balance)
 
-        lines.append(f"{date_txt}-{exp_txt}-{inc_txt}-{bal_txt}")
+        lines.append(f"{date_txt}|{exp_txt}|{inc_txt}|{bal_txt}")
 
     return lines
+
 def week_start_monday(day_key: str) -> str:
     """Возвращает YYYY-MM-DD (понедельник недели) для day_key"""
     try:
@@ -224,6 +219,12 @@ def week_bounds_thu_wed(start_key: str):
         s = now_local().date()
     e = s + timedelta(days=6)
     return s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")
+
+
+def thu_wed_bounds_from_day(day_key: str):
+    """day_key -> (четверг, среда) для соответствующей недели Чт–Ср."""
+    start_key = week_start_thursday(day_key)
+    return week_bounds_thu_wed(start_key)
     
 def _load_json(path: str, default):
     if not os.path.exists(path):
@@ -1708,7 +1709,7 @@ def build_month_report_text(chat_id: int, month_key: str = None):
     lines = []
     lines.append(f"ОТЧЁТ ЗА {month_dt.strftime('%m.%Y')}")
     lines.append("")
-    lines.append("Дата     - Расход  - Приход  - Остаток")
+    lines.append("Дата|Расход|Приход|Остаток")
     lines.append("")
 
     has_any = False
@@ -1735,10 +1736,7 @@ def build_month_report_text(chat_id: int, month_key: str = None):
         date_str = datetime.strptime(day_key, "%Y-%m-%d").strftime("%d.%m.%y")
 
         lines.append(
-            f"{date_str} - "
-            f"{int(total_expense):>7} - "
-            f"{int(total_income):>7} - "
-            f"{int(day_balance):>7}"
+            f"{date_str}|{int(total_expense)}|{int(total_income)}|{int(day_balance)}"
         )
 
     if not has_any:
@@ -1800,7 +1798,9 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
     )
 
     bottom_row = []
-    if back_day_key != today_key():
+    current_month_key = now_local().strftime("%Y-%m")
+    shown_month_key = center_day.strftime("%Y-%m")
+    if shown_month_key != current_month_key or back_day_key != today_key():
         bottom_row.append(
             types.InlineKeyboardButton(
                 "📅 Сегодня",
@@ -1820,11 +1820,14 @@ def build_csv_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
 
     kb.add(
-        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"d:{day_key}:csv_week"),
-        types.InlineKeyboardButton("📆 За месяц", callback_data=f"d:{day_key}:csv_month")
+        types.InlineKeyboardButton("📅 За день", callback_data=f"d:{day_key}:csv_day"),
+        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"d:{day_key}:csv_week")
     )
     kb.add(
-        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"d:{day_key}:csv_wedthu"),
+        types.InlineKeyboardButton("📆 За месяц", callback_data=f"d:{day_key}:csv_month"),
+        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"d:{day_key}:csv_wedthu")
+    )
+    kb.add(
         types.InlineKeyboardButton("📂 Всё время", callback_data=f"d:{day_key}:csv_all_real")
     )
     kb.add(
@@ -2250,13 +2253,13 @@ def handle_categories_callback(call, data_str: str) -> bool:
         next_k = (datetime.strptime(start_key, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
 
         row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_wthu:{prev_k}")]
-        if start_key != thu_wed_bounds_from_day(today_key())[0]:
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
+        if start_key != week_start_thursday(today_key()):
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"cat_wthu:{today_key()}"))
         row.append(types.InlineKeyboardButton("Чт-Ср ➡️", callback_data=f"cat_wthu:{next_k}"))
         kb.row(*row)
         
         kb.row(
-            types.InlineKeyboardButton("⬜ с Пн по Вскр",callback_data=f"cat_wk:{week_start_monday(today_key())}"),
+            types.InlineKeyboardButton("⬜ с Пн по Вскр",callback_data=f"cat_wk:{week_start_monday(start_key)}"),
             types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"),
             types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
         )
