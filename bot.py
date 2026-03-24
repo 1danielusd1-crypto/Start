@@ -43,7 +43,7 @@ OWNER_ID = os.getenv("ID", "").strip()
 #PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "Code 🎈🌏🏝️"
+VERSION = "Code 🎈🌏🏝️🐙"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
@@ -473,6 +473,46 @@ def get_chat_store(chat_id: int) -> dict:
         store["known_chats"] = {}
 
     return store
+
+def collect_forward_menu_chats() -> dict:
+    """
+    Собирает список чатов для меню пересылки:
+    1) из known_chats владельца
+    2) из data["chats"] как резерв
+    """
+    result = {}
+
+    if OWNER_ID:
+        try:
+            owner_store = get_chat_store(int(OWNER_ID))
+            known = owner_store.get("known_chats", {}) or {}
+            for cid, info in known.items():
+                result[str(cid)] = {
+                    "title": info.get("title") or f"Чат {cid}",
+                    "username": info.get("username"),
+                    "type": info.get("type"),
+                }
+        except Exception as e:
+            log_error(f"collect_forward_menu_chats known_chats: {e}")
+
+    try:
+        for cid, store in (data.get("chats", {}) or {}).items():
+            if OWNER_ID and str(cid) == str(OWNER_ID):
+                continue
+
+            info = store.get("info", {}) or {}
+            prev = result.get(str(cid), {})
+
+            result[str(cid)] = {
+                "title": info.get("title") or prev.get("title") or f"Чат {cid}",
+                "username": info.get("username") or prev.get("username"),
+                "type": info.get("type") or prev.get("type"),
+            }
+    except Exception as e:
+        log_error(f"collect_forward_menu_chats data.chats: {e}")
+
+    return result
+
 def save_chat_json(chat_id: int):
     """
     Save per-chat JSON, CSV and META for one chat.
@@ -1792,21 +1832,22 @@ def build_cancel_edit_keyboard(day_key: str):
     return kb
 
 def build_forward_chat_list(day_key: str, chat_id: int):
-    """
-    Меню выбора чата для пересылки.
-    Теперь список берём из known_chats владельца (все чаты, где был бот).
-    """
     kb = types.InlineKeyboardMarkup()
     if not OWNER_ID:
         return kb
-    owner_store = get_chat_store(int(OWNER_ID))
-    known = owner_store.get("known_chats", {})
+
+    known = collect_forward_menu_chats()
     rules = data.get("forward_rules", {})
-    for cid, info in known.items():
+
+    for cid, info in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
         try:
             int_cid = int(cid)
-        except:
+        except Exception:
             continue
+
+        if int_cid == chat_id:
+            continue
+
         title = info.get("title") or f"Чат {cid}"
         cur_mode = rules.get(str(chat_id), {}).get(cid)
         if cur_mode == "oneway_to":
@@ -1816,13 +1857,15 @@ def build_forward_chat_list(day_key: str, chat_id: int):
         elif cur_mode == "twoway":
             label = f"{title} ↔️"
         else:
-            label = f"{title}"
+            label = title
+
         kb.row(
             types.InlineKeyboardButton(
                 label,
                 callback_data=f"d:{day_key}:fw_cfg_{cid}"
             )
         )
+
     kb.row(
         types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
     )
@@ -1837,8 +1880,7 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
         ❌ удалить
         🔙 назад
     """
-    owner_store = get_chat_store(owner_chat)
-    known = owner_store.get("known_chats", {})
+    known = collect_forward_menu_chats()
 
     owner_title = known.get(str(owner_chat), {}).get("title", str(owner_chat))
     target_title = known.get(str(target_chat), {}).get("title", str(target_chat))
@@ -1902,16 +1944,13 @@ def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int
     return kb
     #💰💰💰💰💰💰
 def build_forward_source_menu():
-    """
-    Меню выбора чата A (источник пересылки).
-    Использует known_chats владельца.
-    """
     kb = types.InlineKeyboardMarkup()
     if not OWNER_ID:
         return kb
-    owner_store = get_chat_store(int(OWNER_ID))
-    known = owner_store.get("known_chats", {})
-    for cid, ch in known.items():
+
+    known = collect_forward_menu_chats()
+
+    for cid, ch in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
         title = ch.get("title") or f"Чат {cid}"
         kb.row(
             types.InlineKeyboardButton(
@@ -1919,26 +1958,27 @@ def build_forward_source_menu():
                 callback_data=f"fw_src:{cid}"
             )
         )
+
     kb.row(
         types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root")
     )
     return kb
 def build_forward_target_menu(src_id: int):
-    """
-    Меню выбора чата B (получатель пересылки) для уже выбранного A.
-    """
     kb = types.InlineKeyboardMarkup()
     if not OWNER_ID:
         return kb
-    owner_store = get_chat_store(int(OWNER_ID))
-    known = owner_store.get("known_chats", {})
-    for cid, ch in known.items():
+
+    known = collect_forward_menu_chats()
+
+    for cid, ch in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
         try:
             int_cid = int(cid)
         except Exception:
             continue
+
         if int_cid == src_id:
             continue
+
         title = ch.get("title") or f"Чат {cid}"
         kb.row(
             types.InlineKeyboardButton(
@@ -1946,6 +1986,7 @@ def build_forward_target_menu(src_id: int):
                 callback_data=f"fw_tgt:{src_id}:{cid}"
             )
         )
+
     kb.row(
         types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src")
     )
@@ -3306,6 +3347,11 @@ def send_info(chat_id: int, text: str):
                 
 @bot.message_handler(commands=["ok"])
 def cmd_ok(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     store = get_chat_store(chat_id)
 
@@ -3322,6 +3368,11 @@ def cmd_ok(msg):
     )
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
 
@@ -3352,6 +3403,11 @@ def cmd_start(msg):
     set_active_window_id(chat_id, day_key, sent.message_id)        
 @bot.message_handler(commands=["start_new"])
 def cmd_start_new(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
 
@@ -3389,6 +3445,11 @@ def cmd_start_new(msg):
     set_active_window_id(chat_id, day_key, sent.message_id)
 @bot.message_handler(commands=["help"])
 def cmd_help(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
     if not is_finance_mode(chat_id):
@@ -3419,6 +3480,11 @@ def cmd_help(msg):
     
 @bot.message_handler(commands=["restore"])
 def cmd_restore(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     global restore_mode
     restore_mode = msg.chat.id  # включаем только для текущего чата
     cleanup_forward_links(msg.chat.id)
@@ -3430,15 +3496,30 @@ def cmd_restore(msg):
     
 @bot.message_handler(commands=["restore_off"])
 def cmd_restore_off(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     global restore_mode
     restore_mode = None  # выключаем
     cleanup_forward_links(msg.chat.id)
     send_and_auto_delete(msg.chat.id, "🔒 Режим восстановления выключен.")
 @bot.message_handler(commands=["ping"])
 def cmd_ping(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     send_info(msg.chat.id, "PONG — бот работает 🟢")
 @bot.message_handler(commands=["view"])
 def cmd_view(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
 
     store = get_chat_store(chat_id)
@@ -3474,6 +3555,11 @@ def cmd_view(msg):
         set_active_window_id(chat_id, day_key, sent.message_id)
 @bot.message_handler(commands=["prev"])
 def cmd_prev(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
@@ -3489,6 +3575,11 @@ def cmd_prev(msg):
         set_active_window_id(chat_id, day_key, sent.message_id)
 @bot.message_handler(commands=["next"])
 def cmd_next(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
@@ -3505,6 +3596,11 @@ def cmd_next(msg):
         #❗️❗️❗️❗️❗️❗️❗️❗️
 @bot.message_handler(commands=["balance"])
 def cmd_balance(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
@@ -3514,6 +3610,11 @@ def cmd_balance(msg):
     send_info(chat_id, f"💰 Баланс: {fmt_num(bal)}")
 @bot.message_handler(commands=["report"])
 def cmd_report(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
@@ -3584,6 +3685,11 @@ def cmd_csv_day(chat_id: int, day_key: str):
             pass
 @bot.message_handler(commands=["csv"])
 def cmd_csv(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     """
     Экспортирует CSV текущего чата.
     """
@@ -3608,6 +3714,11 @@ def cmd_csv(msg):
     send_backup_to_channel(chat_id)
 @bot.message_handler(commands=["json"])
 def cmd_json(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
@@ -3621,6 +3732,11 @@ def cmd_json(msg):
         send_info(chat_id, "Файл JSON ещё не создан.")
 @bot.message_handler(commands=["reset"])
 def cmd_reset(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     cleanup_forward_links(chat_id)  # 🔥 ВАЖНО
     if not require_finance(chat_id):
@@ -3637,6 +3753,11 @@ def cmd_reset(msg):
     schedule_cancel_wait(chat_id, 15)
 @bot.message_handler(commands=["stopforward"])
 def cmd_stopforward(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     if str(chat_id) != str(OWNER_ID):
         send_info(chat_id, "Эта команда только для владельца.")
@@ -3662,6 +3783,11 @@ def cmd_off_channel(msg):
     
 @bot.message_handler(commands=["autoadd_info", "autoadd.info"])
 def cmd_autoadd_info(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
     chat_id = msg.chat.id
     delete_message_later(chat_id, msg.message_id, 15)
 
@@ -4250,11 +4376,45 @@ def keep_alive_task():
             log_error(f"Keep-alive loop error: {e}")
         time.sleep(max(10, KEEP_ALIVE_INTERVAL_SECONDS))
         
+@bot.channel_post_handler(content_types=[
+    "text", "photo", "video", "audio",
+    "voice", "video_note", "document",
+    "sticker"
+])
+def on_any_channel_post(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception as e:
+        log_error(f"channel_post update_chat_info failed: {e}")
+
+    try:
+        forward_any_message(msg.chat.id, msg)
+    except Exception as e:
+        log_error(f"channel_post forward failed: {e}")
+
+
+@bot.edited_channel_post_handler(content_types=[
+    "text", "photo", "video", "audio",
+    "voice", "video_note", "document",
+    "sticker"
+])
+def on_edited_channel_post(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception as e:
+        log_error(f"edited_channel_post update_chat_info failed: {e}")
+
+
 @bot.edited_message_handler(
     content_types=["text", "photo", "video", "document", "audio"]
 )
 def on_edited_message(msg):
     chat_id = msg.chat.id
+
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
 
     # 🔴 ФИНАНСЫ — БЕЗ РЕЖИМОВ
     try:
@@ -4387,7 +4547,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🔥Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🔥 🐙 Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
