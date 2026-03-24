@@ -43,7 +43,7 @@ OWNER_ID = os.getenv("ID", "").strip()
 #PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "Code 🐬"
+VERSION = "Code 🎈🌏🏝️🐙"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
@@ -80,18 +80,6 @@ def now_local():
     return datetime.now(get_tz())
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
-
-def is_today_day(day_key: str | None) -> bool:
-    return (day_key or "") == today_key()
-
-def is_today_month(month_key: str | None) -> bool:
-    return (month_key or "") == now_local().strftime("%Y-%m")
-
-def is_today_week_monday(start_key: str | None) -> bool:
-    return (start_key or "") == week_start_monday(today_key())
-
-def is_today_week_thursday(start_key: str | None) -> bool:
-    return (start_key or "") == week_start_thursday(today_key())
 
 DAY_WINDOW_MAX_RECORDS = 35
 DAY_WINDOW_MAX_CHARS = 3500
@@ -872,6 +860,26 @@ def on_any_message(msg):
     except Exception:
         pass
 
+    if msg.content_type == "text":
+        try:
+            store = get_chat_store(chat_id)
+            if store.get("reset_wait"):
+                text_up = (msg.text or "").strip().upper()
+                if text_up == "ДА":
+                    store["reset_wait"] = False
+                    store["reset_time"] = 0
+                    save_data(data)
+                    cleanup_forward_links(chat_id)
+                    reset_chat_data(chat_id)
+                    send_and_auto_delete(chat_id, "✅ Данные чата обнулены.", 10)
+                    try:
+                        bot.delete_message(chat_id, msg.message_id)
+                    except Exception:
+                        pass
+                    return
+        except Exception as e:
+            log_error(f"reset_wait handler error: {e}")
+
     # 🔒 restore_mode — только блокируем финансы, НЕ пересылку
     if restore_mode is not None and restore_mode == chat_id:
         return
@@ -879,28 +887,6 @@ def on_any_message(msg):
             # ⚠️ финансы запрещены
             #pass
         # ❗ НО пересылка РАЗРЕШЕНА
-    # ♻️ ПОДТВЕРЖДЕНИЕ ОБНУЛЕНИЯ
-    if msg.content_type == "text":
-        try:
-            store = get_chat_store(chat_id)
-            if store.get("reset_wait"):
-                answer = (msg.text or "").strip().lower()
-                if answer == "да":
-                    store["reset_wait"] = False
-                    store["reset_time"] = 0
-                    save_data(data)
-                    reset_chat_data(chat_id)
-                    send_and_auto_delete(chat_id, "✅ Данные чата обнулены.", 10)
-                else:
-                    send_and_auto_delete(chat_id, "⚠️ Для подтверждения обнуления напишите ДА", 8)
-                try:
-                    bot.delete_message(chat_id, msg.message_id)
-                except Exception:
-                    pass
-                return
-        except Exception as e:
-            log_error(f"reset_wait handler error: {e}")
-
     # ✏️ РЕЖИМ РЕДАКТИРОВАНИЯ ЗАПИСИ ЧЕРЕЗ НОВОЕ СООБЩЕНИЕ
     if msg.content_type == "text":
         try:
@@ -1618,9 +1604,9 @@ def build_main_keyboard(day_key: str, chat_id=None):
     nav_row = [
         types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"d:{day_key}:prev")
     ]
-    if not is_today_day(day_key):
+    if day_key != today_key():
         nav_row.append(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:today")
+            types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{day_key}:today")
         )
     nav_row.append(
         types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next")
@@ -1636,6 +1622,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
     )
     return kb
+
 def build_report_keyboard(month_key: str):
     """
     month_key: YYYY-MM
@@ -1758,21 +1745,18 @@ def build_month_report_text(chat_id: int, month_key: str = None):
         lines.append("Нет данных за этот месяц.")
 
     return "<pre>" + html.escape("\n".join(lines)) + "</pre>", month_key
-def build_calendar_keyboard(center_day: datetime, chat_id=None, back_day: str | None = None):
+def build_calendar_keyboard(center_day: datetime, chat_id=None):
     """
-    Календарь на месяц.
-    Дни с записями помечаются: 📝 12.03
+    Календарь на 31 день.
+    Дни с записями помечаются точкой: • 12.03
     """
     kb = types.InlineKeyboardMarkup(row_width=4)
     daily = {}
+    back_day_key = today_key()
     if chat_id is not None:
         store = get_chat_store(chat_id)
         daily = store.get("daily_records", {})
-        if not back_day:
-            back_day = store.get("current_view_day", today_key())
-    if not back_day:
-        back_day = center_day.strftime("%Y-%m-%d")
-
+        back_day_key = store.get("current_view_day", today_key())
     start_day = center_day.replace(day=1)
     if center_day.month == 12:
         next_month = center_day.replace(year=center_day.year + 1, month=1, day=1)
@@ -1780,7 +1764,6 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None, back_day: str | 
         next_month = center_day.replace(month=center_day.month + 1, day=1)
 
     days_in_month = (next_month - timedelta(days=1)).day
-
     for week in range(0, days_in_month, 4):
         row = []
         for d in range(4):
@@ -1799,7 +1782,8 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None, back_day: str | 
                     callback_data=f"d:{key}:open"
                 )
             )
-        kb.row(*row)
+        if row:
+            kb.row(*row)
 
     prev_month = (center_day.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (center_day.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -1816,7 +1800,7 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None, back_day: str | 
     )
 
     bottom_row = []
-    if (back_day != today_key()) or (center_day.strftime("%Y-%m") != now_local().strftime("%Y-%m")):
+    if back_day_key != today_key():
         bottom_row.append(
             types.InlineKeyboardButton(
                 "📅 Сегодня",
@@ -1826,11 +1810,12 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None, back_day: str | 
     bottom_row.append(
         types.InlineKeyboardButton(
             "🔙 Назад",
-            callback_data=f"d:{back_day}:back_main"
+            callback_data=f"d:{back_day_key}:back_main"
         )
     )
     kb.row(*bottom_row)
     return kb
+
 def build_csv_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
 
@@ -1847,6 +1832,7 @@ def build_csv_menu(day_key: str):
     )
 
     return kb
+
 def build_edit_menu_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.row(
@@ -1854,10 +1840,9 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("📂 Общий CSV", callback_data=f"d:{day_key}:csv_all")
     )
     kb.row(
-        types.InlineKeyboardButton("📅 CSV за день", callback_data=f"d:{day_key}:csv_day"),
-        types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset")
+        types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset"),
+        types.InlineKeyboardButton("📊 Статьи расходов", callback_data="cat_today")
     )
-    kb.row(types.InlineKeyboardButton("📊 Статьи расходов", callback_data="cat_today"))
 
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         kb.row(
@@ -1865,7 +1850,7 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         )
 
     nav_row = []
-    if not is_today_day(day_key):
+    if day_key != today_key():
         nav_row.append(
             types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open")
         )
@@ -1879,6 +1864,7 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
         types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main")
     )
     return kb
+
 def build_cancel_edit_keyboard(day_key: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(
@@ -2263,13 +2249,11 @@ def handle_categories_callback(call, data_str: str) -> bool:
         prev_k = (datetime.strptime(start_key, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_k = (datetime.strptime(start_key, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
 
-        nav_row = [
-            types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_wthu:{prev_k}")
-        ]
-        if not is_today_week_thursday(start_key):
-            nav_row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
-        nav_row.append(types.InlineKeyboardButton("Чт-Ср ➡️", callback_data=f"cat_wthu:{next_k}"))
-        kb.row(*nav_row)
+        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_wthu:{prev_k}")]
+        if start_key != thu_wed_bounds_from_day(today_key())[0]:
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
+        row.append(types.InlineKeyboardButton("Чт-Ср ➡️", callback_data=f"cat_wthu:{next_k}"))
+        kb.row(*row)
         
         kb.row(
             types.InlineKeyboardButton("⬜ с Пн по Вскр",callback_data=f"cat_wk:{week_start_monday(today_key())}"),
@@ -2325,13 +2309,11 @@ def handle_categories_callback(call, data_str: str) -> bool:
         except Exception:
             prev_start = start
             next_start = start
-        nav_row = [
-            types.InlineKeyboardButton("⬅️ Неделя", callback_data=f"cat_wk:{prev_start}")
-        ]
-        if not is_today_week_monday(start):
-            nav_row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
-        nav_row.append(types.InlineKeyboardButton("Неделя ➡️", callback_data=f"cat_wk:{next_start}"))
-        kb.row(*nav_row)
+        row = [types.InlineKeyboardButton("⬅️ Неделя", callback_data=f"cat_wk:{prev_start}")]
+        if start != week_start_monday(today_key()):
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
+        row.append(types.InlineKeyboardButton("Неделя ➡️", callback_data=f"cat_wk:{next_start}"))
+        kb.row(*row)
      
         kb.row(types.InlineKeyboardButton("🟦 с Чт по Ср", callback_data=f"cat_wthu:{start}"),
                 types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"),
@@ -2369,11 +2351,11 @@ def handle_categories_callback(call, data_str: str) -> bool:
                 f"{a:02d}–{b:02d}",
                 callback_data=f"cat_w:{year}:{month}:{a}:{b}"
             ))
-        nav_row = []
-        if month != now_local().month or year != now_local().year:
-            nav_row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
-        nav_row.append(types.InlineKeyboardButton("🔙 Назад", callback_data="cat_months"))
-        kb.row(*nav_row)
+        row = []
+        if month != now_local().month:
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
+        row.append(types.InlineKeyboardButton("🔙 Назад", callback_data="cat_months"))
+        kb.row(*row)
         safe_edit(bot, call, "📆 Выберите неделю:", reply_markup=kb)
         return True
 
@@ -2643,10 +2625,9 @@ def on_callback(call):
                 center_dt = datetime.strptime(center, "%Y-%m-%d")
             except Exception:
                 center_dt = now_local()
-
-            back_day = get_chat_store(chat_id).get("current_view_day", day_key_from_message(call.message))
-            kb = build_calendar_keyboard(center_dt, chat_id, back_day)
-
+        
+            kb = build_calendar_keyboard(center_dt, chat_id)
+        
             try:
                 bot.edit_message_reply_markup(
                     chat_id=chat_id,
@@ -2716,7 +2697,7 @@ def on_callback(call):
                 cdt = datetime.strptime(day_key, "%Y-%m-%d")
             except Exception:
                 cdt = now_local()
-            kb = build_calendar_keyboard(cdt, chat_id, day_key)
+            kb = build_calendar_keyboard(cdt, chat_id)
             bot.edit_message_reply_markup(
                 chat_id=chat_id,
                 message_id=call.message.message_id,
@@ -2878,11 +2859,10 @@ def on_callback(call):
         if cmd == "reset":
             if not require_finance(chat_id):
                 return
-            cleanup_forward_links(chat_id)
             store["reset_wait"] = True
             store["reset_time"] = time.time()
             save_data(data)
-            send_info(chat_id, "Вы уверены, что хотите обнулить данные? Напишите ДА.")
+            send_and_auto_delete(chat_id, "⚠️ Вы уверены, что хотите обнулить данные? Напишите ДА в течение 15 секунд.", 15)
             schedule_cancel_wait(chat_id, 15)
             return
 
@@ -3805,7 +3785,6 @@ def cmd_reset(msg):
         pass
 
     chat_id = msg.chat.id
-    cleanup_forward_links(chat_id)  # 🔥 ВАЖНО
     if not require_finance(chat_id):
         return
     store = get_chat_store(chat_id)
@@ -3818,6 +3797,7 @@ def cmd_reset(msg):
         15
     )
     schedule_cancel_wait(chat_id, 15)
+
 @bot.message_handler(commands=["stopforward"])
 def cmd_stopforward(msg):
     try:
@@ -4250,8 +4230,8 @@ def reset_chat_data(chat_id: int):
       • бэкап
     """
     try:
-        cleanup_forward_links(chat_id)
         store = get_chat_store(chat_id)
+        cleanup_forward_links(chat_id)
         store["balance"] = 0
         store["records"] = []
         store["daily_records"] = {}
@@ -4617,7 +4597,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🔥 🐙 Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
