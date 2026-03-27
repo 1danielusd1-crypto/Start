@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import requests
 import telebot
 from telebot import types
-from telebot.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo, InputMediaAudio
+from telebot.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo, InputMediaAudio, InputMediaAnimation
 
 from flask import Flask, request
 
@@ -43,7 +43,7 @@ OWNER_ID = os.getenv("ID", "").strip()
 #PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "Code 🐿"
+VERSION = "Code 🎈🌏🏝️🐙"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
@@ -813,6 +813,7 @@ EXPENSE_CATEGORIES = {
     "ОРГТЕХНИКА": ["оргтех", "оргтехника"],
     "СВЯЗЬ": ["тел", "tel", "пополнение"],
     "АВТО": ["авто", "бензин", "билет"],
+    "ПЕРЕВОДЫ": ["переводы", "перевод", "переводчик"],
 }
 
 EXPENSE_CATEGORY_SLUGS = {
@@ -820,6 +821,7 @@ EXPENSE_CATEGORY_SLUGS = {
     "ОРГТЕХНИКА": "org",
     "СВЯЗЬ": "link",
     "АВТО": "auto",
+    "ПЕРЕВОДЫ": "transfers",
 }
 CATEGORY_BY_SLUG = {v: k for k, v in EXPENSE_CATEGORY_SLUGS.items()}
 EXPENSE_CATEGORY_ORDER = [
@@ -827,6 +829,7 @@ EXPENSE_CATEGORY_ORDER = [
     "ОРГТЕХНИКА",
     "СВЯЗЬ",
     "АВТО",
+    "ПЕРЕВОДЫ",
 ]
 
 def resolve_expense_category(note: str):
@@ -1718,9 +1721,151 @@ def delete_forward_copies_for_source(src_chat_id: int, src_msg_id: int):
             bot.delete_message(dst_chat_id, dst_msg_id)
         except Exception as e:
             log_error(f"delete_forward_copies_for_source {src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}: {e}")
+        try:
+            delete_forwarded_finance_record_by_msg_id(dst_chat_id, dst_msg_id)
+        except Exception as e:
+            log_error(f"delete_forwarded_finance_record_by_msg_id {dst_chat_id}:{dst_msg_id}: {e}")
     if key in forward_map:
         del forward_map[key]
         _schedule_persist_forward_state()
+
+
+def is_forward_delete_command(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in ("/del", "/дел")
+
+
+def find_record_by_message_id(chat_id: int, msg_id: int):
+    store = get_chat_store(chat_id)
+    for r in store.get("records", []):
+        if (
+            r.get("source_msg_id") == msg_id
+            or r.get("origin_msg_id") == msg_id
+            or r.get("msg_id") == msg_id
+        ):
+            return r
+    return None
+
+
+def delete_forwarded_finance_record_by_msg_id(chat_id: int, msg_id: int) -> bool:
+    rec = find_record_by_message_id(chat_id, msg_id)
+    if not rec:
+        return False
+    day_key = rec.get("day_key") or today_key()
+    delete_record_in_chat(chat_id, rec["id"])
+    schedule_finalize(chat_id, day_key)
+    return True
+
+
+def rebind_forwarded_finance_record(chat_id: int, old_msg_id: int, new_msg_id: int, text: str, owner: int = 0):
+    store = get_chat_store(chat_id)
+    rec = find_record_by_message_id(chat_id, old_msg_id)
+    if rec:
+        rec["source_msg_id"] = new_msg_id
+        rec["origin_msg_id"] = new_msg_id
+        rec["msg_id"] = new_msg_id
+
+        if text and looks_like_amount(text):
+            try:
+                amount, note = split_amount_and_note(text)
+                rec["amount"] = amount
+                rec["note"] = note
+            except Exception:
+                pass
+
+        rec_id = rec.get("id")
+        for day, arr in store.get("daily_records", {}).items():
+            for item in arr:
+                if item.get("id") == rec_id:
+                    item.update(rec)
+
+        store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+        rebuild_month_short_ids(chat_id)
+        rebuild_global_records()
+        schedule_finalize(chat_id, rec.get("day_key") or today_key())
+        return True
+
+    if text and looks_like_amount(text):
+        sync_forwarded_finance_message(chat_id, new_msg_id, text, owner)
+        return True
+
+    return False
+
+
+def _replace_forward_link_pair(src_chat_id: int, src_msg_id: int, old_dst_chat_id: int, old_dst_msg_id: int, new_dst_chat_id: int, new_dst_msg_id: int):
+    key = (int(src_chat_id), int(src_msg_id))
+    pairs = list(forward_map.get(key, []))
+    updated = []
+    replaced = False
+    for pair in pairs:
+        if int(pair[0]) == int(old_dst_chat_id) and int(pair[1]) == int(old_dst_msg_id):
+            updated.append((int(new_dst_chat_id), int(new_dst_msg_id)))
+            replaced = True
+        else:
+            updated.append(pair)
+    if not replaced:
+        updated.append((int(new_dst_chat_id), int(new_dst_msg_id)))
+    forward_map[key] = updated
+    _schedule_persist_forward_state()
+
+
+def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_msg_id: int, finance_enabled: bool):
+    text = _message_text_for_finance(msg)
+    ct = getattr(msg, "content_type", None)
+    owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
+
+    try:
+        if ct == "text":
+            try:
+                bot.edit_message_text(text, chat_id=dst_chat_id, message_id=dst_msg_id)
+            except Exception as e:
+                err = str(e).lower()
+                if "message is not modified" not in err:
+                    raise
+        elif ct in ("photo", "video", "document", "audio", "animation"):
+            media = _build_input_media_from_message(msg)
+            if not media:
+                raise RuntimeError(f"Unsupported edited media content_type={ct}")
+            try:
+                bot.edit_message_media(media=media, chat_id=dst_chat_id, message_id=dst_msg_id)
+            except Exception as e:
+                err = str(e).lower()
+                if "message is not modified" not in err:
+                    raise
+        elif getattr(msg, "caption", None):
+            try:
+                bot.edit_message_caption(caption=msg.caption, chat_id=dst_chat_id, message_id=dst_msg_id)
+            except Exception as e:
+                err = str(e).lower()
+                if "message is not modified" not in err:
+                    raise
+        else:
+            raise RuntimeError(f"Edited sync unsupported for content_type={ct}")
+
+        if finance_enabled and text and is_finance_mode(dst_chat_id):
+            sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text, owner_id)
+        return dst_msg_id
+
+    except Exception as e:
+        log_error(f"sync_edited_copy_to_target direct edit failed {dst_chat_id}:{dst_msg_id}: {e}")
+
+    try:
+        try:
+            bot.delete_message(dst_chat_id, dst_msg_id)
+        except Exception:
+            pass
+
+        sent_msg = _fallback_send_single(dst_chat_id, msg)
+        new_dst_msg_id = sent_msg.message_id
+        _replace_forward_link_pair(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id, dst_chat_id, new_dst_msg_id)
+
+        if finance_enabled and is_finance_mode(dst_chat_id):
+            rebind_forwarded_finance_record(dst_chat_id, dst_msg_id, new_dst_msg_id, text, owner_id)
+
+        return new_dst_msg_id
+    except Exception as e:
+        _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e)
+        return None
 
 
 def _cleanup_forward_storage_for_chat(chat_id: int):
@@ -1768,6 +1913,8 @@ def _build_input_media_from_message(msg):
         return InputMediaDocument(msg.document.file_id, caption=caption)
     if ct == "audio" and getattr(msg, "audio", None):
         return InputMediaAudio(msg.audio.file_id, caption=caption)
+    if ct == "animation" and getattr(msg, "animation", None):
+        return InputMediaAnimation(msg.animation.file_id, caption=caption)
     return None
 
 
@@ -4805,32 +4952,18 @@ def on_edited_channel_post(msg):
 
 def propagate_edited_to_copies(msg):
     source_chat_id = msg.chat.id
-    text = getattr(msg, "text", None) or getattr(msg, "caption", None)
-    if not text:
-        return
+    text = _message_text_for_finance(msg)
 
     links = get_forward_links(source_chat_id, msg.message_id)
     if not links:
         return
 
     for dst_chat_id, dst_msg_id in links:
-        updated = False
         try:
-            bot.edit_message_text(text, chat_id=dst_chat_id, message_id=dst_msg_id)
-            updated = True
-        except Exception:
-            try:
-                bot.edit_message_caption(caption=text, chat_id=dst_chat_id, message_id=dst_msg_id)
-                updated = True
-            except Exception as e:
-                log_error(f"propagate_edited_to_copies failed {dst_chat_id}:{dst_msg_id}: {e}")
-
-        if updated and get_forward_finance(source_chat_id, dst_chat_id):
-            try:
-                owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
-                sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text, owner_id)
-            except Exception as e:
-                log_error(f"propagate_edited_to_copies finance sync {dst_chat_id}:{dst_msg_id}: {e}")
+            finance_enabled = get_forward_finance(source_chat_id, dst_chat_id)
+            sync_edited_copy_to_target(source_chat_id, msg, dst_chat_id, dst_msg_id, finance_enabled)
+        except Exception as e:
+            log_error(f"propagate_edited_to_copies failed {dst_chat_id}:{dst_msg_id}: {e}")
 
 
 @bot.edited_message_handler(
@@ -4843,6 +4976,14 @@ def on_edited_message(msg):
         update_chat_info_from_message(msg)
     except Exception:
         pass
+
+    edit_text = _message_text_for_finance(msg)
+    if is_forward_delete_command(edit_text):
+        try:
+            delete_forward_copies_for_source(chat_id, msg.message_id)
+        except Exception as e:
+            log_error(f"[EDIT-DEL] failed: {e}")
+        return
 
     # 🔴 ФИНАНСЫ — БЕЗ РЕЖИМОВ
     try:
@@ -4938,7 +5079,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"🐿 Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🔥 🐙 Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
