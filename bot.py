@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import requests
 import telebot
 from telebot import types
-from telebot.types import InputMediaDocument
+from telebot.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo, InputMediaAudio
 
 from flask import Flask, request
 
@@ -43,7 +43,7 @@ OWNER_ID = os.getenv("ID", "").strip()
 #PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "Code 🎈🌏🏝️🐙"
+VERSION = "Code 🐿"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
@@ -55,6 +55,10 @@ backup_flags = {
     "channel": True,
 }
 restore_mode = None
+_media_group_cache = {}
+_media_group_timers = {}
+FORWARD_MEDIA_GROUP_DELAY = 0.8
+_forward_state_timer = None
 #restore_mode = False
 logging.basicConfig(
     level=logging.INFO,
@@ -401,6 +405,7 @@ def default_data():
         "finance_active_chats": {},
         "forward_rules": {},
         "forward_finance": {},
+        "forward_index": {},
     }
 def load_data():
     d = _load_json(DATA_FILE, default_data())
@@ -427,6 +432,11 @@ def load_data():
         except Exception:
             pass
 
+    try:
+        _load_forward_index_from_data(d)
+    except Exception as e:
+        log_error(f"load_data forward_index: {e}")
+
     return d
 def save_data(d):
     fac = {}
@@ -437,6 +447,10 @@ def save_data(d):
         "drive": bool(backup_flags.get("drive", True)),
         "channel": bool(backup_flags.get("channel", True)),
     }
+    try:
+        _persist_forward_index_in_data(d)
+    except Exception as e:
+        log_error(f"save_data forward_index: {e}")
     _save_json(DATA_FILE, d)
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
@@ -986,9 +1000,10 @@ def looks_like_amount(text):
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
-        "text", "photo", "video",
+        "text", "photo", "video", "animation",
         "audio", "voice", "video_note",
-        "sticker", "location", "venue", "contact"
+        "sticker", "location", "venue", "contact",
+        "dice", "poll"
     ]
 )
 def on_any_message(msg):
@@ -1613,14 +1628,281 @@ def remove_forward_finance(src_chat_id: int, dst_chat_id: int):
 
     persist_forward_rules_to_owner()
     save_data(data)
-    
+
+
+def _forward_key(src_chat_id: int, src_msg_id: int) -> str:
+    return f"{int(src_chat_id)}:{int(src_msg_id)}"
+
+
+def _schedule_persist_forward_state(delay: float = 1.2):
+    global _forward_state_timer
+
+    def _job():
+        try:
+            save_data(data)
+        except Exception as e:
+            log_error(f"_schedule_persist_forward_state: {e}")
+
+    prev = _forward_state_timer
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(delay, _job)
+    _forward_state_timer = t
+    t.start()
+
+
+def _persist_forward_index_in_data(d: dict):
+    idx = {}
+    for (src_chat_id, src_msg_id), pairs in forward_map.items():
+        rows = []
+        for pair in pairs:
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                continue
+            dst_chat_id, dst_msg_id = pair[0], pair[1]
+            rows.append({
+                "dst_chat_id": int(dst_chat_id),
+                "dst_msg_id": int(dst_msg_id),
+                "status": "delivered",
+            })
+        if rows:
+            idx[_forward_key(src_chat_id, src_msg_id)] = rows
+    d["forward_index"] = idx
+
+
+def _load_forward_index_from_data(d: dict):
+    forward_map.clear()
+    idx = d.get("forward_index", {}) or {}
+    for key, rows in idx.items():
+        try:
+            src_chat_id_s, src_msg_id_s = str(key).split(":", 1)
+            src_chat_id = int(src_chat_id_s)
+            src_msg_id = int(src_msg_id_s)
+        except Exception:
+            continue
+
+        pairs = []
+        for row in rows or []:
+            try:
+                dst_chat_id = int(row.get("dst_chat_id"))
+                dst_msg_id = int(row.get("dst_msg_id"))
+                pairs.append((dst_chat_id, dst_msg_id))
+            except Exception:
+                continue
+
+        if pairs:
+            forward_map[(src_chat_id, src_msg_id)] = pairs
+
+
+def _store_forward_link(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst_msg_id: int):
+    key = (int(src_chat_id), int(src_msg_id))
+    pair = (int(dst_chat_id), int(dst_msg_id))
+    items = forward_map.setdefault(key, [])
+    if pair not in items:
+        items.append(pair)
+    _schedule_persist_forward_state()
+
+
+def get_forward_links(src_chat_id: int, src_msg_id: int):
+    return list(forward_map.get((int(src_chat_id), int(src_msg_id)), []))
+
+
+def delete_forward_copies_for_source(src_chat_id: int, src_msg_id: int):
+    key = (int(src_chat_id), int(src_msg_id))
+    links = list(forward_map.get(key, []))
+    for dst_chat_id, dst_msg_id in links:
+        try:
+            bot.delete_message(dst_chat_id, dst_msg_id)
+        except Exception as e:
+            log_error(f"delete_forward_copies_for_source {src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}: {e}")
+    if key in forward_map:
+        del forward_map[key]
+        _schedule_persist_forward_state()
+
+
+def _cleanup_forward_storage_for_chat(chat_id: int):
+    chat_id = int(chat_id)
+    for key in list(forward_map.keys()):
+        src_chat_id, _ = key
+        if src_chat_id == chat_id:
+            del forward_map[key]
+            continue
+        pairs = [pair for pair in forward_map.get(key, []) if int(pair[0]) != chat_id]
+        if pairs:
+            forward_map[key] = pairs
+        elif key in forward_map:
+            del forward_map[key]
+    _schedule_persist_forward_state()
+
+
+def _notify_forward_failure(source_chat_id: int, msg_id: int, dst_chat_id: int, err: Exception):
+    text = (
+        f"⚠️ Пересылка не доставлена\n"
+        f"из {source_chat_id}:{msg_id}\n"
+        f"в {dst_chat_id}\n"
+        f"{err}"
+    )
+    log_error(text)
+    if OWNER_ID:
+        try:
+            bot.send_message(int(OWNER_ID), text)
+        except Exception:
+            pass
+
+
+def _message_text_for_finance(msg) -> str:
+    return (getattr(msg, "text", None) or getattr(msg, "caption", None) or "").strip()
+
+
+def _build_input_media_from_message(msg):
+    caption = getattr(msg, "caption", None)
+    ct = getattr(msg, "content_type", None)
+    if ct == "photo" and getattr(msg, "photo", None):
+        return InputMediaPhoto(msg.photo[-1].file_id, caption=caption)
+    if ct == "video" and getattr(msg, "video", None):
+        return InputMediaVideo(msg.video.file_id, caption=caption)
+    if ct == "document" and getattr(msg, "document", None):
+        return InputMediaDocument(msg.document.file_id, caption=caption)
+    if ct == "audio" and getattr(msg, "audio", None):
+        return InputMediaAudio(msg.audio.file_id, caption=caption)
+    return None
+
+
+def _fallback_send_single(dst_chat_id: int, msg):
+    ct = getattr(msg, "content_type", None)
+    if ct == "text":
+        return bot.send_message(dst_chat_id, msg.text or "")
+    if ct == "photo" and getattr(msg, "photo", None):
+        return bot.send_photo(dst_chat_id, msg.photo[-1].file_id, caption=getattr(msg, "caption", None))
+    if ct == "video" and getattr(msg, "video", None):
+        return bot.send_video(dst_chat_id, msg.video.file_id, caption=getattr(msg, "caption", None))
+    if ct == "audio" and getattr(msg, "audio", None):
+        return bot.send_audio(dst_chat_id, msg.audio.file_id, caption=getattr(msg, "caption", None))
+    if ct == "document" and getattr(msg, "document", None):
+        return bot.send_document(dst_chat_id, msg.document.file_id, caption=getattr(msg, "caption", None))
+    if ct == "voice" and getattr(msg, "voice", None):
+        return bot.send_voice(dst_chat_id, msg.voice.file_id, caption=getattr(msg, "caption", None))
+    if ct == "video_note" and getattr(msg, "video_note", None):
+        return bot.send_video_note(dst_chat_id, msg.video_note.file_id)
+    if ct == "sticker" and getattr(msg, "sticker", None):
+        return bot.send_sticker(dst_chat_id, msg.sticker.file_id)
+    if ct == "animation" and getattr(msg, "animation", None):
+        return bot.send_animation(dst_chat_id, msg.animation.file_id, caption=getattr(msg, "caption", None))
+    if ct == "location" and getattr(msg, "location", None):
+        return bot.send_location(dst_chat_id, msg.location.latitude, msg.location.longitude)
+    if ct == "venue" and getattr(msg, "venue", None):
+        return bot.send_venue(dst_chat_id, msg.venue.location.latitude, msg.venue.location.longitude, msg.venue.title, msg.venue.address, foursquare_id=getattr(msg.venue, "foursquare_id", None))
+    if ct == "contact" and getattr(msg, "contact", None):
+        return bot.send_contact(dst_chat_id, msg.contact.phone_number, msg.contact.first_name, last_name=getattr(msg.contact, "last_name", None))
+    if ct == "dice" and getattr(msg, "dice", None):
+        return bot.send_dice(dst_chat_id, emoji=getattr(msg.dice, "emoji", None))
+    if ct == "poll" and getattr(msg, "poll", None):
+        options = [opt.text for opt in getattr(msg.poll, "options", [])]
+        return bot.send_poll(dst_chat_id, msg.poll.question, options, is_anonymous=getattr(msg.poll, "is_anonymous", True), allows_multiple_answers=getattr(msg.poll, "allows_multiple_answers", False), type=getattr(msg.poll, "type", "regular"))
+    raise RuntimeError(f"Unsupported fallback content_type={ct}")
+
+
+def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool):
+    try:
+        sent = bot.copy_message(dst_chat_id, source_chat_id, msg.message_id)
+        dst_msg_id = sent.message_id
+    except Exception as e_copy:
+        try:
+            sent_msg = _fallback_send_single(dst_chat_id, msg)
+            dst_msg_id = sent_msg.message_id
+        except Exception as e_send:
+            _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e_send)
+            return None
+
+    _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
+
+    text_for_finance = _message_text_for_finance(msg)
+    if finance_enabled and text_for_finance and is_finance_mode(dst_chat_id):
+        try:
+            owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
+            sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
+        except Exception as e:
+            log_error(f"_forward_single_to_target finance sync {source_chat_id}->{dst_chat_id}: {e}")
+
+    return dst_msg_id
+
+
+def _flush_media_group_forward(source_chat_id: int, media_group_id: str):
+    cache_key = (int(source_chat_id), str(media_group_id))
+    messages = _media_group_cache.pop(cache_key, [])
+    timer = _media_group_timers.pop(cache_key, None)
+    if timer and timer.is_alive():
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+    if not messages:
+        return
+
+    messages = sorted(messages, key=lambda m: m.message_id)
+    targets = resolve_forward_targets(source_chat_id)
+    if not targets:
+        return
+
+    media = []
+    for msg in messages:
+        item = _build_input_media_from_message(msg)
+        if not item:
+            media = []
+            break
+        media.append(item)
+
+    for dst_chat_id, mode, finance_enabled in targets:
+        sent_ids = []
+        if media:
+            try:
+                sent_group = bot.send_media_group(dst_chat_id, media)
+                sent_ids = [m.message_id for m in sent_group]
+            except Exception as e:
+                log_error(f"_flush_media_group_forward send_media_group failed {source_chat_id}->{dst_chat_id}: {e}")
+
+        if len(sent_ids) == len(messages):
+            for src_msg, dst_msg_id in zip(messages, sent_ids):
+                _store_forward_link(source_chat_id, src_msg.message_id, dst_chat_id, dst_msg_id)
+                text_for_finance = _message_text_for_finance(src_msg)
+                if finance_enabled and text_for_finance and is_finance_mode(dst_chat_id):
+                    try:
+                        owner_id = src_msg.from_user.id if getattr(src_msg, "from_user", None) else 0
+                        sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
+                    except Exception as e:
+                        log_error(f"_flush_media_group_forward finance sync {source_chat_id}->{dst_chat_id}: {e}")
+            continue
+
+        for src_msg in messages:
+            _forward_single_to_target(source_chat_id, src_msg, dst_chat_id, finance_enabled)
+
+
+def _collect_media_group_for_forward(source_chat_id: int, msg):
+    cache_key = (int(source_chat_id), str(msg.media_group_id))
+    bucket = _media_group_cache.setdefault(cache_key, [])
+    if not any(m.message_id == msg.message_id for m in bucket):
+        bucket.append(msg)
+
+    prev = _media_group_timers.get(cache_key)
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(0.8, lambda: _flush_media_group_forward(source_chat_id, msg.media_group_id))
+    _media_group_timers[cache_key] = t
+    t.start()
+
 
 def forward_any_message(source_chat_id: int, msg):
     try:
         if getattr(getattr(msg, "from_user", None), "is_bot", False):
             return
-        # edited_message нельзя пересылать как новое сообщение,
-        # его должен обрабатывать отдельный edited_message_handler
         if getattr(msg, "edit_date", None):
             return
 
@@ -1628,35 +1910,16 @@ def forward_any_message(source_chat_id: int, msg):
         if not targets:
             return
 
-        for dst, mode, finance_enabled in targets:
-            sent = bot.copy_message(
-                dst,
-                source_chat_id,
-                msg.message_id
-            )
+        if getattr(msg, "media_group_id", None) and getattr(msg, "content_type", None) in ("photo", "video", "document", "audio"):
+            _collect_media_group_for_forward(source_chat_id, msg)
+            return
 
-            key = (source_chat_id, msg.message_id)
-            forward_map.setdefault(key, []).append(
-                (dst, sent.message_id)
-            )
-
-            text_for_finance = (msg.text or msg.caption or "").strip()
-
-            if finance_enabled and text_for_finance and is_finance_mode(dst):
-                try:
-                    owner_id = msg.from_user.id if msg.from_user else 0
-                    sync_forwarded_finance_message(
-                        dst,
-                        sent.message_id,
-                        text_for_finance,
-                        owner_id
-                    )
-                except Exception as e:
-                    log_error(f"forward_any_message finance sync {source_chat_id}->{dst}: {e}")
+        for dst_chat_id, mode, finance_enabled in targets:
+            _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
 
     except Exception as e:
         log_error(f"forward_any_message fatal: {e}")
-        
+
 # ===============================
 # UNIVERSAL SAFE FORWARD (ALL TYPES)
 # ===============================
@@ -4474,16 +4737,19 @@ def handle_document(msg):
 
         return
 
-                                    
+    # обычные документы тоже должны пересылаться
+    try:
+        forward_any_message(chat_id, msg)
+    except Exception as e:
+        log_error(f"handle_document forward failed: {e}")
+
+
 def cleanup_forward_links(chat_id: int):
     """
-    Удаляет все связи пересылки для чата.
-    ОБЯЗАТЕЛЬНО вызывать при reset / restore.
+    Удаляет все связи пересылки для чата из памяти и из сохранённого индекса.
     """
-    for key in list(forward_map.keys()):
-        if key[0] == chat_id:
-            del forward_map[key]
-            
+    _cleanup_forward_storage_for_chat(chat_id)
+
 KEEP_ALIVE_SEND_TO_OWNER = False
 def keep_alive_task():
     while True:
@@ -4504,9 +4770,9 @@ def keep_alive_task():
         time.sleep(max(10, KEEP_ALIVE_INTERVAL_SECONDS))
         
 @bot.channel_post_handler(content_types=[
-    "text", "photo", "video", "audio",
+    "text", "photo", "video", "animation", "audio",
     "voice", "video_note", "document",
-    "sticker"
+    "sticker", "location", "venue", "contact", "dice", "poll"
 ])
 def on_any_channel_post(msg):
     try:
@@ -4521,9 +4787,9 @@ def on_any_channel_post(msg):
 
 
 @bot.edited_channel_post_handler(content_types=[
-    "text", "photo", "video", "audio",
+    "text", "photo", "video", "animation", "audio",
     "voice", "video_note", "document",
-    "sticker"
+    "sticker", "location", "venue", "contact", "dice", "poll"
 ])
 def on_edited_channel_post(msg):
     try:
@@ -4531,9 +4797,44 @@ def on_edited_channel_post(msg):
     except Exception as e:
         log_error(f"edited_channel_post update_chat_info failed: {e}")
 
+    try:
+        propagate_edited_to_copies(msg)
+    except Exception as e:
+        log_error(f"edited_channel_post propagate failed: {e}")
+
+
+def propagate_edited_to_copies(msg):
+    source_chat_id = msg.chat.id
+    text = getattr(msg, "text", None) or getattr(msg, "caption", None)
+    if not text:
+        return
+
+    links = get_forward_links(source_chat_id, msg.message_id)
+    if not links:
+        return
+
+    for dst_chat_id, dst_msg_id in links:
+        updated = False
+        try:
+            bot.edit_message_text(text, chat_id=dst_chat_id, message_id=dst_msg_id)
+            updated = True
+        except Exception:
+            try:
+                bot.edit_message_caption(caption=text, chat_id=dst_chat_id, message_id=dst_msg_id)
+                updated = True
+            except Exception as e:
+                log_error(f"propagate_edited_to_copies failed {dst_chat_id}:{dst_msg_id}: {e}")
+
+        if updated and get_forward_finance(source_chat_id, dst_chat_id):
+            try:
+                owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
+                sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text, owner_id)
+            except Exception as e:
+                log_error(f"propagate_edited_to_copies finance sync {dst_chat_id}:{dst_msg_id}: {e}")
+
 
 @bot.edited_message_handler(
-    content_types=["text", "photo", "video", "document", "audio"]
+    content_types=["text", "photo", "video", "animation", "document", "audio", "voice"]
 )
 def on_edited_message(msg):
     chat_id = msg.chat.id
@@ -4554,48 +4855,10 @@ def on_edited_message(msg):
     except Exception as e:
         log_error(f"[EDIT-FIN] failed: {e}")
 
-    # 🟢 ПЕРЕСЫЛКА — НЕ ТРОГАЕМ
-    key = (chat_id, msg.message_id)
-    links = forward_map.get(key)
-    if not links:
-        return
-
-    text = msg.text or msg.caption
-    if not text:
-        return
-
-    for dst_chat_id, dst_msg_id in list(links):
-        updated = False
-
-        try:
-            bot.edit_message_text(
-                text,
-                chat_id=dst_chat_id,
-                message_id=dst_msg_id
-            )
-            updated = True
-        except Exception:
-            try:
-                bot.edit_message_caption(
-                    caption=text,
-                    chat_id=dst_chat_id,
-                    message_id=dst_msg_id
-                )
-                updated = True
-            except Exception as e:
-                log_error(f"edit forward failed {dst_chat_id}:{dst_msg_id}: {e}")
-
-        if updated and get_forward_finance(chat_id, dst_chat_id):
-            try:
-                owner_id = msg.from_user.id if msg.from_user else 0
-                sync_forwarded_finance_message(
-                    dst_chat_id,
-                    dst_msg_id,
-                    text,
-                    owner_id
-                )
-            except Exception as e:
-                log_error(f"edit forward finance sync {dst_chat_id}:{dst_msg_id}: {e}")
+    try:
+        propagate_edited_to_copies(msg)
+    except Exception as e:
+        log_error(f"[EDIT-FWD] failed: {e}")
                                             
 def start_keep_alive_thread():
     t = threading.Thread(target=keep_alive_task, daemon=True)
@@ -4645,6 +4908,7 @@ def set_webhook():
             "callback_query",
             "channel_post",
             "edited_channel_post",
+            "deleted_business_messages",
         ],
     )
     log_info(f"Webhook установлен: {wh_url} (allowed_updates включает edited_message)")
@@ -4674,7 +4938,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🔥 🐙 Бот запущен (версия {VERSION}).\n"
+                    f"🐿 Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
