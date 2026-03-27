@@ -9,13 +9,13 @@ import logging
 import threading
 import time
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
 import telebot
 from telebot import types
-from telebot.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo, InputMediaAudio, InputMediaAnimation
+from telebot.types import InputMediaDocument
 
 from flask import Flask, request
 
@@ -55,10 +55,6 @@ backup_flags = {
     "channel": True,
 }
 restore_mode = None
-_media_group_cache = {}
-_media_group_timers = {}
-FORWARD_MEDIA_GROUP_DELAY = 0.8
-_forward_state_timer = None
 #restore_mode = False
 logging.basicConfig(
     level=logging.INFO,
@@ -96,15 +92,6 @@ def day_key_from_message(msg=None) -> str:
         pass
     return today_key()
 
-def fmt_num(v):
-    try:
-        v = float(v)
-        if v.is_integer():
-            return str(int(v))
-        return str(v)
-    except:
-        return str(v)
-    
 def fmt_date_ddmmyy(day_key: str) -> str:
     """YYYY-MM-DD -> DD.MM.YY"""
     try:
@@ -126,48 +113,17 @@ def fmt_num_compact(v) -> str:
         return str(v)
 
 
-def center_text(text: str, width: int) -> str:
-    """
-    Центрирование строки в фиксированной ширине.
-    Если строка длиннее width — возвращаем как есть.
-    """
-    text = str(text)
-    if len(text) >= width:
-        return text
-    pad = width - len(text)
-    left = pad // 2
-    right = pad - left
-    return (" " * left) + text + (" " * right)
-
-
-def report_cell(value, width: int = 7) -> str:
-    """Числовая ячейка отчёта фиксированной ширины."""
-    s = fmt_num_compact(value)
-    return s.rjust(width) if len(s) < width else s
-
-
-def report_header_cell(label: str, width: int = 7) -> str:
-    """Заголовок ячейки отчёта фиксированной ширины."""
-    return center_text(label, width)
-
-
 def build_day_report_lines(chat_id: int) -> list[str]:
     """
-    Красивый отчёт по дням:
-    Дата    | Расход| Приход|Остаток
-    Числовые колонки фиксированной ширины 7 символов.
+    Отчёт по дням без пробелов вокруг разделителей.
+    Формат: Дата|Расход|Приход|Остаток
     """
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {}) or {}
 
     lines = []
     lines.append("Отчёт:")
-    lines.append(
-        f"{'Дата':<8}|"
-        f"{report_header_cell('Расход', 7)}|"
-        f"{report_header_cell('Приход', 7)}|"
-        f"{report_header_cell('Остаток', 7)}"
-    )
+    lines.append("Дата|Расход|Приход|Остаток")
 
     running_balance = 0.0
 
@@ -187,13 +143,14 @@ def build_day_report_lines(chat_id: int) -> list[str]:
         running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
 
         date_txt = fmt_date_ddmmyy(dk)
-        exp_txt = report_cell(expense, 7)
-        inc_txt = report_cell(income, 7)
-        bal_txt = report_cell(running_balance, 7)
+        exp_txt = fmt_num_compact(expense)
+        inc_txt = fmt_num_compact(income)
+        bal_txt = fmt_num_compact(running_balance)
 
-        lines.append(f"{date_txt:<8}|{exp_txt}|{inc_txt}|{bal_txt}")
+        lines.append(f"{date_txt}|{exp_txt}|{inc_txt}|{bal_txt}")
 
     return lines
+
 def week_start_monday(day_key: str) -> str:
     """Возвращает YYYY-MM-DD (понедельник недели) для day_key"""
     try:
@@ -238,6 +195,12 @@ def week_bounds_thu_wed(start_key: str):
         s = now_local().date()
     e = s + timedelta(days=6)
     return s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")
+
+
+def thu_wed_bounds_from_day(day_key: str):
+    """day_key -> (четверг, среда) для соответствующей недели Чт–Ср."""
+    start_key = week_start_thursday(day_key)
+    return week_bounds_thu_wed(start_key)
     
 def _load_json(path: str, default):
     if not os.path.exists(path):
@@ -405,7 +368,6 @@ def default_data():
         "finance_active_chats": {},
         "forward_rules": {},
         "forward_finance": {},
-        "forward_index": {},
     }
 def load_data():
     d = _load_json(DATA_FILE, default_data())
@@ -432,11 +394,6 @@ def load_data():
         except Exception:
             pass
 
-    try:
-        _load_forward_index_from_data(d)
-    except Exception as e:
-        log_error(f"load_data forward_index: {e}")
-
     return d
 def save_data(d):
     fac = {}
@@ -447,10 +404,6 @@ def save_data(d):
         "drive": bool(backup_flags.get("drive", True)),
         "channel": bool(backup_flags.get("channel", True)),
     }
-    try:
-        _persist_forward_index_in_data(d)
-    except Exception as e:
-        log_error(f"save_data forward_index: {e}")
     _save_json(DATA_FILE, d)
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
@@ -806,38 +759,17 @@ def split_amount_and_note(text: str):
 
 
 # =============================
-# 📦 EXPENSE CATEGORIES
+# 📦 EXPENSE CATEGORIES (v1)
 # =============================
 EXPENSE_CATEGORIES = {
     "ПРОДУКТЫ": ["продукты", "шб", "еда"],
-    "ОРГТЕХНИКА": ["оргтех", "оргтехника"],
-    "СВЯЗЬ": ["тел", "tel", "пополнение"],
-    "АВТО": ["авто", "бензин", "билет"],
-    "ПЕРЕВОДЫ": ["переводы", "перевод", "переводчик"],
 }
-
-EXPENSE_CATEGORY_SLUGS = {
-    "ПРОДУКТЫ": "food",
-    "ОРГТЕХНИКА": "org",
-    "СВЯЗЬ": "link",
-    "АВТО": "auto",
-    "ПЕРЕВОДЫ": "transfers",
-}
-CATEGORY_BY_SLUG = {v: k for k, v in EXPENSE_CATEGORY_SLUGS.items()}
-EXPENSE_CATEGORY_ORDER = [
-    "ПРОДУКТЫ",
-    "ОРГТЕХНИКА",
-    "СВЯЗЬ",
-    "АВТО",
-    "ПЕРЕВОДЫ",
-]
 
 def resolve_expense_category(note: str):
     if not note:
         return None
     n = str(note).lower()
-    for cat in EXPENSE_CATEGORY_ORDER:
-        keywords = EXPENSE_CATEGORIES.get(cat, [])
+    for cat, keywords in EXPENSE_CATEGORIES.items():
         for kw in keywords:
             if kw in n:
                 return cat
@@ -878,122 +810,6 @@ def collect_items_for_category(store: dict, start: str, end: str, category: str)
     return items
 
 
-def get_ordered_category_names(include_all: bool = False, cats: dict | None = None):
-    names = []
-    seen = set()
-    if include_all:
-        for cat in EXPENSE_CATEGORY_ORDER:
-            names.append(cat)
-            seen.add(cat)
-    elif cats:
-        for cat in EXPENSE_CATEGORY_ORDER:
-            if cat in cats:
-                names.append(cat)
-                seen.add(cat)
-        for cat in sorted(cats.keys()):
-            if cat not in seen:
-                names.append(cat)
-                seen.add(cat)
-    return names
-
-
-def summarize_categories(store: dict, start: str, end: str, label: str):
-    cats = calc_categories_for_period(store, start, end)
-    lines = [
-        "📦 Расходы по статьям",
-        f"🗓 {label}",
-        ""
-    ]
-    if not cats:
-        lines.append("Нет данных по статьям за этот период.")
-    else:
-        for cat in get_ordered_category_names(cats=cats):
-            lines.append(f"{cat}: {fmt_num_plain(cats.get(cat, 0))}")
-    return "\n".join(lines), cats
-
-def build_categories_buttons(start: str, end: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    for cat in get_ordered_category_names(include_all=True):
-        slug = EXPENSE_CATEGORY_SLUGS.get(cat)
-        if not slug:
-            continue
-        kb.add(
-            types.InlineKeyboardButton(
-                cat,
-                callback_data=f"cat_show:{start}:{end}:{slug}"
-            )
-        )
-    return kb
-
-
-def build_categories_summary_keyboard(mode: str, start: str, end: str):
-    kb = build_categories_buttons(start, end)
-
-    if mode == "wthu":
-        prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
-        next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_wthu:{prev_key}")]
-        if start != week_start_thursday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
-        row.append(types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=f"cat_wthu:{next_key}"))
-        kb.row(*row)
-        kb.row(
-            types.InlineKeyboardButton(
-                "⬜ Пн–Вс",
-                callback_data=f"cat_wk:{week_start_monday(start)}"
-            ),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
-        )
-    elif mode == "wk":
-        prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
-        next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Пн–Вс", callback_data=f"cat_wk:{prev_key}")]
-        if start != week_start_monday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
-        row.append(types.InlineKeyboardButton("Пн–Вс ➡️", callback_data=f"cat_wk:{next_key}"))
-        kb.row(*row)
-        thu_ref = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
-        kb.row(
-            types.InlineKeyboardButton("🟦 Чт–Ср", callback_data=f"cat_wthu:{thu_ref}"),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
-        )
-    else:
-        kb.row(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
-        )
-
-    kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close"))
-    return kb
-
-
-def build_category_detail_text(store: dict, start: str, end: str, category: str, label: str):
-    items = collect_items_for_category(store, start, end, category)
-    lines = [
-        f"📦 {category}",
-        f"🗓 {label}",
-        ""
-    ]
-
-    total = sum(amt for _, amt, _ in items)
-    lines.append(f"Итого: {fmt_num_plain(total)}")
-    lines.append("")
-
-    if not items:
-        lines.append("Нет операций по этой статье.")
-    else:
-        for day_i, amt_i, note_i in items:
-            note_i = (note_i or "").strip()
-            lines.append(f"• {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {note_i}".rstrip())
-
-    return "\n".join(lines)
-
-def build_category_detail_keyboard(start: str, end: str, back_callback: str):
-    kb = build_categories_buttons(start, end)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=back_callback))
-    kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close"))
-    return kb
-
 def looks_like_amount(text):
     try:
         amount, note = split_amount_and_note(text)
@@ -1003,10 +819,9 @@ def looks_like_amount(text):
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
-        "text", "photo", "video", "animation",
+        "text", "photo", "video",
         "audio", "voice", "video_note",
-        "sticker", "location", "venue", "contact",
-        "dice", "poll"
+        "sticker", "location", "venue", "contact"
     ]
 )
 def on_any_message(msg):
@@ -1631,425 +1446,14 @@ def remove_forward_finance(src_chat_id: int, dst_chat_id: int):
 
     persist_forward_rules_to_owner()
     save_data(data)
-
-
-def _forward_key(src_chat_id: int, src_msg_id: int) -> str:
-    return f"{int(src_chat_id)}:{int(src_msg_id)}"
-
-
-def _schedule_persist_forward_state(delay: float = 1.2):
-    global _forward_state_timer
-
-    def _job():
-        try:
-            save_data(data)
-        except Exception as e:
-            log_error(f"_schedule_persist_forward_state: {e}")
-
-    prev = _forward_state_timer
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-
-    t = threading.Timer(delay, _job)
-    _forward_state_timer = t
-    t.start()
-
-
-def _persist_forward_index_in_data(d: dict):
-    idx = {}
-    for (src_chat_id, src_msg_id), pairs in forward_map.items():
-        rows = []
-        for pair in pairs:
-            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
-                continue
-            dst_chat_id, dst_msg_id = pair[0], pair[1]
-            rows.append({
-                "dst_chat_id": int(dst_chat_id),
-                "dst_msg_id": int(dst_msg_id),
-                "status": "delivered",
-            })
-        if rows:
-            idx[_forward_key(src_chat_id, src_msg_id)] = rows
-    d["forward_index"] = idx
-
-
-def _load_forward_index_from_data(d: dict):
-    forward_map.clear()
-    idx = d.get("forward_index", {}) or {}
-    for key, rows in idx.items():
-        try:
-            src_chat_id_s, src_msg_id_s = str(key).split(":", 1)
-            src_chat_id = int(src_chat_id_s)
-            src_msg_id = int(src_msg_id_s)
-        except Exception:
-            continue
-
-        pairs = []
-        for row in rows or []:
-            try:
-                dst_chat_id = int(row.get("dst_chat_id"))
-                dst_msg_id = int(row.get("dst_msg_id"))
-                pairs.append((dst_chat_id, dst_msg_id))
-            except Exception:
-                continue
-
-        if pairs:
-            forward_map[(src_chat_id, src_msg_id)] = pairs
-
-
-def _store_forward_link(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst_msg_id: int):
-    key = (int(src_chat_id), int(src_msg_id))
-    pair = (int(dst_chat_id), int(dst_msg_id))
-    items = forward_map.setdefault(key, [])
-    if pair not in items:
-        items.append(pair)
-    _schedule_persist_forward_state()
-
-
-def get_forward_links(src_chat_id: int, src_msg_id: int):
-    return list(forward_map.get((int(src_chat_id), int(src_msg_id)), []))
-
-
-def delete_forward_copies_for_source(src_chat_id: int, src_msg_id: int):
-    key = (int(src_chat_id), int(src_msg_id))
-    links = list(forward_map.get(key, []))
-    for dst_chat_id, dst_msg_id in links:
-        try:
-            bot.delete_message(dst_chat_id, dst_msg_id)
-        except Exception as e:
-            log_error(f"delete_forward_copies_for_source {src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}: {e}")
-        try:
-            delete_forwarded_finance_record_by_msg_id(dst_chat_id, dst_msg_id)
-        except Exception as e:
-            log_error(f"delete_forwarded_finance_record_by_msg_id {dst_chat_id}:{dst_msg_id}: {e}")
-    if key in forward_map:
-        del forward_map[key]
-        _schedule_persist_forward_state()
-
-
-def is_forward_delete_command(text: str) -> bool:
-    t = (text or "").strip().lower()
-    return t in ("/del", "/дел")
-
-
-def find_record_by_message_id(chat_id: int, msg_id: int):
-    store = get_chat_store(chat_id)
-    for r in store.get("records", []):
-        if (
-            r.get("source_msg_id") == msg_id
-            or r.get("origin_msg_id") == msg_id
-            or r.get("msg_id") == msg_id
-        ):
-            return r
-    return None
-
-
-def delete_forwarded_finance_record_by_msg_id(chat_id: int, msg_id: int) -> bool:
-    rec = find_record_by_message_id(chat_id, msg_id)
-    if not rec:
-        return False
-    day_key = rec.get("day_key") or today_key()
-    delete_record_in_chat(chat_id, rec["id"])
-    schedule_finalize(chat_id, day_key)
-    return True
-
-
-def rebind_forwarded_finance_record(chat_id: int, old_msg_id: int, new_msg_id: int, text: str, owner: int = 0):
-    store = get_chat_store(chat_id)
-    rec = find_record_by_message_id(chat_id, old_msg_id)
-    if rec:
-        rec["source_msg_id"] = new_msg_id
-        rec["origin_msg_id"] = new_msg_id
-        rec["msg_id"] = new_msg_id
-
-        if text and looks_like_amount(text):
-            try:
-                amount, note = split_amount_and_note(text)
-                rec["amount"] = amount
-                rec["note"] = note
-            except Exception:
-                pass
-
-        rec_id = rec.get("id")
-        for day, arr in store.get("daily_records", {}).items():
-            for item in arr:
-                if item.get("id") == rec_id:
-                    item.update(rec)
-
-        store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
-        rebuild_month_short_ids(chat_id)
-        rebuild_global_records()
-        schedule_finalize(chat_id, rec.get("day_key") or today_key())
-        return True
-
-    if text and looks_like_amount(text):
-        sync_forwarded_finance_message(chat_id, new_msg_id, text, owner)
-        return True
-
-    return False
-
-
-def _replace_forward_link_pair(src_chat_id: int, src_msg_id: int, old_dst_chat_id: int, old_dst_msg_id: int, new_dst_chat_id: int, new_dst_msg_id: int):
-    key = (int(src_chat_id), int(src_msg_id))
-    pairs = list(forward_map.get(key, []))
-    updated = []
-    replaced = False
-    for pair in pairs:
-        if int(pair[0]) == int(old_dst_chat_id) and int(pair[1]) == int(old_dst_msg_id):
-            updated.append((int(new_dst_chat_id), int(new_dst_msg_id)))
-            replaced = True
-        else:
-            updated.append(pair)
-    if not replaced:
-        updated.append((int(new_dst_chat_id), int(new_dst_msg_id)))
-    forward_map[key] = updated
-    _schedule_persist_forward_state()
-
-
-def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_msg_id: int, finance_enabled: bool):
-    text = _message_text_for_finance(msg)
-    ct = getattr(msg, "content_type", None)
-    owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
-
-    try:
-        if ct == "text":
-            try:
-                bot.edit_message_text(text, chat_id=dst_chat_id, message_id=dst_msg_id)
-            except Exception as e:
-                err = str(e).lower()
-                if "message is not modified" not in err:
-                    raise
-        elif ct in ("photo", "video", "document", "audio", "animation"):
-            media = _build_input_media_from_message(msg)
-            if not media:
-                raise RuntimeError(f"Unsupported edited media content_type={ct}")
-            try:
-                bot.edit_message_media(media=media, chat_id=dst_chat_id, message_id=dst_msg_id)
-            except Exception as e:
-                err = str(e).lower()
-                if "message is not modified" not in err:
-                    raise
-        elif getattr(msg, "caption", None):
-            try:
-                bot.edit_message_caption(caption=msg.caption, chat_id=dst_chat_id, message_id=dst_msg_id)
-            except Exception as e:
-                err = str(e).lower()
-                if "message is not modified" not in err:
-                    raise
-        else:
-            raise RuntimeError(f"Edited sync unsupported for content_type={ct}")
-
-        if finance_enabled and text and is_finance_mode(dst_chat_id):
-            sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text, owner_id)
-        return dst_msg_id
-
-    except Exception as e:
-        log_error(f"sync_edited_copy_to_target direct edit failed {dst_chat_id}:{dst_msg_id}: {e}")
-
-    try:
-        try:
-            bot.delete_message(dst_chat_id, dst_msg_id)
-        except Exception:
-            pass
-
-        sent_msg = _fallback_send_single(dst_chat_id, msg)
-        new_dst_msg_id = sent_msg.message_id
-        _replace_forward_link_pair(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id, dst_chat_id, new_dst_msg_id)
-
-        if finance_enabled and is_finance_mode(dst_chat_id):
-            rebind_forwarded_finance_record(dst_chat_id, dst_msg_id, new_dst_msg_id, text, owner_id)
-
-        return new_dst_msg_id
-    except Exception as e:
-        _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e)
-        return None
-
-
-def _cleanup_forward_storage_for_chat(chat_id: int):
-    chat_id = int(chat_id)
-    for key in list(forward_map.keys()):
-        src_chat_id, _ = key
-        if src_chat_id == chat_id:
-            del forward_map[key]
-            continue
-        pairs = [pair for pair in forward_map.get(key, []) if int(pair[0]) != chat_id]
-        if pairs:
-            forward_map[key] = pairs
-        elif key in forward_map:
-            del forward_map[key]
-    _schedule_persist_forward_state()
-
-
-def _notify_forward_failure(source_chat_id: int, msg_id: int, dst_chat_id: int, err: Exception):
-    text = (
-        f"⚠️ Пересылка не доставлена\n"
-        f"из {source_chat_id}:{msg_id}\n"
-        f"в {dst_chat_id}\n"
-        f"{err}"
-    )
-    log_error(text)
-    if OWNER_ID:
-        try:
-            bot.send_message(int(OWNER_ID), text)
-        except Exception:
-            pass
-
-
-def _message_text_for_finance(msg) -> str:
-    return (getattr(msg, "text", None) or getattr(msg, "caption", None) or "").strip()
-
-
-def _build_input_media_from_message(msg):
-    caption = getattr(msg, "caption", None)
-    ct = getattr(msg, "content_type", None)
-    if ct == "photo" and getattr(msg, "photo", None):
-        return InputMediaPhoto(msg.photo[-1].file_id, caption=caption)
-    if ct == "video" and getattr(msg, "video", None):
-        return InputMediaVideo(msg.video.file_id, caption=caption)
-    if ct == "document" and getattr(msg, "document", None):
-        return InputMediaDocument(msg.document.file_id, caption=caption)
-    if ct == "audio" and getattr(msg, "audio", None):
-        return InputMediaAudio(msg.audio.file_id, caption=caption)
-    if ct == "animation" and getattr(msg, "animation", None):
-        return InputMediaAnimation(msg.animation.file_id, caption=caption)
-    return None
-
-
-def _fallback_send_single(dst_chat_id: int, msg):
-    ct = getattr(msg, "content_type", None)
-    if ct == "text":
-        return bot.send_message(dst_chat_id, msg.text or "")
-    if ct == "photo" and getattr(msg, "photo", None):
-        return bot.send_photo(dst_chat_id, msg.photo[-1].file_id, caption=getattr(msg, "caption", None))
-    if ct == "video" and getattr(msg, "video", None):
-        return bot.send_video(dst_chat_id, msg.video.file_id, caption=getattr(msg, "caption", None))
-    if ct == "audio" and getattr(msg, "audio", None):
-        return bot.send_audio(dst_chat_id, msg.audio.file_id, caption=getattr(msg, "caption", None))
-    if ct == "document" and getattr(msg, "document", None):
-        return bot.send_document(dst_chat_id, msg.document.file_id, caption=getattr(msg, "caption", None))
-    if ct == "voice" and getattr(msg, "voice", None):
-        return bot.send_voice(dst_chat_id, msg.voice.file_id, caption=getattr(msg, "caption", None))
-    if ct == "video_note" and getattr(msg, "video_note", None):
-        return bot.send_video_note(dst_chat_id, msg.video_note.file_id)
-    if ct == "sticker" and getattr(msg, "sticker", None):
-        return bot.send_sticker(dst_chat_id, msg.sticker.file_id)
-    if ct == "animation" and getattr(msg, "animation", None):
-        return bot.send_animation(dst_chat_id, msg.animation.file_id, caption=getattr(msg, "caption", None))
-    if ct == "location" and getattr(msg, "location", None):
-        return bot.send_location(dst_chat_id, msg.location.latitude, msg.location.longitude)
-    if ct == "venue" and getattr(msg, "venue", None):
-        return bot.send_venue(dst_chat_id, msg.venue.location.latitude, msg.venue.location.longitude, msg.venue.title, msg.venue.address, foursquare_id=getattr(msg.venue, "foursquare_id", None))
-    if ct == "contact" and getattr(msg, "contact", None):
-        return bot.send_contact(dst_chat_id, msg.contact.phone_number, msg.contact.first_name, last_name=getattr(msg.contact, "last_name", None))
-    if ct == "dice" and getattr(msg, "dice", None):
-        return bot.send_dice(dst_chat_id, emoji=getattr(msg.dice, "emoji", None))
-    if ct == "poll" and getattr(msg, "poll", None):
-        options = [opt.text for opt in getattr(msg.poll, "options", [])]
-        return bot.send_poll(dst_chat_id, msg.poll.question, options, is_anonymous=getattr(msg.poll, "is_anonymous", True), allows_multiple_answers=getattr(msg.poll, "allows_multiple_answers", False), type=getattr(msg.poll, "type", "regular"))
-    raise RuntimeError(f"Unsupported fallback content_type={ct}")
-
-
-def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool):
-    try:
-        sent = bot.copy_message(dst_chat_id, source_chat_id, msg.message_id)
-        dst_msg_id = sent.message_id
-    except Exception as e_copy:
-        try:
-            sent_msg = _fallback_send_single(dst_chat_id, msg)
-            dst_msg_id = sent_msg.message_id
-        except Exception as e_send:
-            _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e_send)
-            return None
-
-    _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
-
-    text_for_finance = _message_text_for_finance(msg)
-    if finance_enabled and text_for_finance and is_finance_mode(dst_chat_id):
-        try:
-            owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
-            sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
-        except Exception as e:
-            log_error(f"_forward_single_to_target finance sync {source_chat_id}->{dst_chat_id}: {e}")
-
-    return dst_msg_id
-
-
-def _flush_media_group_forward(source_chat_id: int, media_group_id: str):
-    cache_key = (int(source_chat_id), str(media_group_id))
-    messages = _media_group_cache.pop(cache_key, [])
-    timer = _media_group_timers.pop(cache_key, None)
-    if timer and timer.is_alive():
-        try:
-            timer.cancel()
-        except Exception:
-            pass
-
-    if not messages:
-        return
-
-    messages = sorted(messages, key=lambda m: m.message_id)
-    targets = resolve_forward_targets(source_chat_id)
-    if not targets:
-        return
-
-    media = []
-    for msg in messages:
-        item = _build_input_media_from_message(msg)
-        if not item:
-            media = []
-            break
-        media.append(item)
-
-    for dst_chat_id, mode, finance_enabled in targets:
-        sent_ids = []
-        if media:
-            try:
-                sent_group = bot.send_media_group(dst_chat_id, media)
-                sent_ids = [m.message_id for m in sent_group]
-            except Exception as e:
-                log_error(f"_flush_media_group_forward send_media_group failed {source_chat_id}->{dst_chat_id}: {e}")
-
-        if len(sent_ids) == len(messages):
-            for src_msg, dst_msg_id in zip(messages, sent_ids):
-                _store_forward_link(source_chat_id, src_msg.message_id, dst_chat_id, dst_msg_id)
-                text_for_finance = _message_text_for_finance(src_msg)
-                if finance_enabled and text_for_finance and is_finance_mode(dst_chat_id):
-                    try:
-                        owner_id = src_msg.from_user.id if getattr(src_msg, "from_user", None) else 0
-                        sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
-                    except Exception as e:
-                        log_error(f"_flush_media_group_forward finance sync {source_chat_id}->{dst_chat_id}: {e}")
-            continue
-
-        for src_msg in messages:
-            _forward_single_to_target(source_chat_id, src_msg, dst_chat_id, finance_enabled)
-
-
-def _collect_media_group_for_forward(source_chat_id: int, msg):
-    cache_key = (int(source_chat_id), str(msg.media_group_id))
-    bucket = _media_group_cache.setdefault(cache_key, [])
-    if not any(m.message_id == msg.message_id for m in bucket):
-        bucket.append(msg)
-
-    prev = _media_group_timers.get(cache_key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-
-    t = threading.Timer(0.8, lambda: _flush_media_group_forward(source_chat_id, msg.media_group_id))
-    _media_group_timers[cache_key] = t
-    t.start()
-
+    
 
 def forward_any_message(source_chat_id: int, msg):
     try:
         if getattr(getattr(msg, "from_user", None), "is_bot", False):
             return
+        # edited_message нельзя пересылать как новое сообщение,
+        # его должен обрабатывать отдельный edited_message_handler
         if getattr(msg, "edit_date", None):
             return
 
@@ -2057,16 +1461,35 @@ def forward_any_message(source_chat_id: int, msg):
         if not targets:
             return
 
-        if getattr(msg, "media_group_id", None) and getattr(msg, "content_type", None) in ("photo", "video", "document", "audio"):
-            _collect_media_group_for_forward(source_chat_id, msg)
-            return
+        for dst, mode, finance_enabled in targets:
+            sent = bot.copy_message(
+                dst,
+                source_chat_id,
+                msg.message_id
+            )
 
-        for dst_chat_id, mode, finance_enabled in targets:
-            _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
+            key = (source_chat_id, msg.message_id)
+            forward_map.setdefault(key, []).append(
+                (dst, sent.message_id)
+            )
+
+            text_for_finance = (msg.text or msg.caption or "").strip()
+
+            if finance_enabled and text_for_finance and is_finance_mode(dst):
+                try:
+                    owner_id = msg.from_user.id if msg.from_user else 0
+                    sync_forwarded_finance_message(
+                        dst,
+                        sent.message_id,
+                        text_for_finance,
+                        owner_id
+                    )
+                except Exception as e:
+                    log_error(f"forward_any_message finance sync {source_chat_id}->{dst}: {e}")
 
     except Exception as e:
         log_error(f"forward_any_message fatal: {e}")
-
+        
 # ===============================
 # UNIVERSAL SAFE FORWARD (ALL TYPES)
 # ===============================
@@ -2230,7 +1653,12 @@ def build_report_keyboard(month_key: str):
 def build_month_report_text(chat_id: int, month_key: str = None):
     """
     Отчёт за месяц в виде:
-    Дата    | Расход| Приход|Остаток
+    дата - расход - приход - остаток
+
+    Формат:
+    16.03.26 -    1234 -       0 -   45210
+
+    Каждое числовое поле — ширина 7, выравнивание вправо.
     """
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {})
@@ -2257,12 +1685,7 @@ def build_month_report_text(chat_id: int, month_key: str = None):
     lines = []
     lines.append(f"ОТЧЁТ ЗА {month_dt.strftime('%m.%Y')}")
     lines.append("")
-    lines.append(
-        f"{'Дата':<8}|"
-        f"{report_header_cell('Расход', 7)}|"
-        f"{report_header_cell('Приход', 7)}|"
-        f"{report_header_cell('Остаток', 7)}"
-    )
+    lines.append("Дата|Расход|Приход|Остаток")
     lines.append("")
 
     has_any = False
@@ -2282,26 +1705,24 @@ def build_month_report_text(chat_id: int, month_key: str = None):
                 total_income += amt
 
         day_balance = calc_day_balance(store, day_key)
-        if recs:
-            has_any = True
 
+
+
+        has_any = True
         date_str = datetime.strptime(day_key, "%Y-%m-%d").strftime("%d.%m.%y")
+
         lines.append(
-            f"{date_str:<8}|"
-            f"{report_cell(int(total_expense), 7)}|"
-            f"{report_cell(int(total_income), 7)}|"
-            f"{report_cell(int(day_balance), 7)}"
+            f"{date_str}|{int(total_expense)}|{int(total_income)}|{int(day_balance)}"
         )
 
     if not has_any:
         lines.append("Нет данных за этот месяц.")
 
     return "<pre>" + html.escape("\n".join(lines)) + "</pre>", month_key
-
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
     """
     Календарь на 31 день.
-    Дни с записями помечаются точкой: 📝 12.03
+    Дни с записями помечаются точкой: • 12.03
     """
     kb = types.InlineKeyboardMarkup(row_width=4)
     daily = {}
@@ -2310,7 +1731,6 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
         store = get_chat_store(chat_id)
         daily = store.get("daily_records", {})
         back_day_key = store.get("current_view_day", today_key())
-
     start_day = center_day.replace(day=1)
     if center_day.month == 12:
         next_month = center_day.replace(year=center_day.year + 1, month=1, day=1)
@@ -2353,24 +1773,16 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
         )
     )
 
-    current_month = now_local().strftime("%Y-%m")
-    shown_month = center_day.strftime("%Y-%m")
     bottom_row = []
-    if shown_month != current_month:
-        bottom_row.append(
-            types.InlineKeyboardButton(
-                "📅 Сегодня",
-                callback_data=f"c:{now_local().strftime('%Y-%m-%d')}"
-            )
-        )
-    elif back_day_key != today_key():
+    current_month_key = now_local().strftime("%Y-%m")
+    shown_month_key = center_day.strftime("%Y-%m")
+    if shown_month_key != current_month_key or back_day_key != today_key():
         bottom_row.append(
             types.InlineKeyboardButton(
                 "📅 Сегодня",
                 callback_data=f"d:{today_key()}:open"
             )
         )
-
     bottom_row.append(
         types.InlineKeyboardButton(
             "🔙 Назад",
@@ -2772,53 +2184,134 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
     store["report_month"] = month_key
     save_data(data)
 def handle_categories_callback(call, data_str: str) -> bool:
-    """UI окна расходов по статьям."""
+    """UI: 12 месяцев → 4 недели → отчёт по статьям. Возвращает True если обработано."""
     chat_id = call.message.chat.id
-    store = get_chat_store(chat_id)
-
-    if data_str == "cat_close":
-        mid = store.get("categories_msg_id")
+    # ─────────────────────────────
+    # ЧТ–СР НЕДЕЛЯ
+    # ─────────────────────────────
+    if data_str=="cat_close":
+        store=get_chat_store(chat_id)
+        mid=store.get("categories_msg_id")
         if mid:
-            try:
-                bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
-        store["categories_msg_id"] = None
+            try: bot.delete_message(chat_id,mid)
+            except Exception: pass
+        store["categories_msg_id"]=None
         save_chat_json(chat_id)
         return True
-
-    if data_str == "cat_today":
-        return handle_categories_callback(call, f"cat_wthu:{today_key()}")
-
     if data_str.startswith("cat_wthu:"):
         ref = data_str.split(":", 1)[1] or today_key()
+        store = get_chat_store(chat_id)
+
         start_key = week_start_thursday(ref)
         start, end = week_bounds_thu_wed(start_key)
-        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
-        text, _ = summarize_categories(store, start, end, label)
-        kb = build_categories_summary_keyboard("wthu", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb)
-        return True
 
+        store["current_week_thu"] = start_key
+        save_data(data)
+
+        cats = calc_categories_for_period(store, start, end)
+
+        lines = [
+            "📦 Расходы по статьям",
+            f"🗓 {fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)",
+            ""
+        ]
+
+        if not cats:
+            lines.append("Нет расходов за период.")
+        else:
+            for cat, amt in sorted(cats.items()):
+                   # 📋 список операций по статье (ЧТ–СР)
+                lines.append(f"{cat}: {fmt_num_plain(amt)}")
+                for day_i, amt_i, note_i in collect_items_for_category(store, start, end, cat):
+                    lines.append(f"  • {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {(note_i or '').strip()}")
+        kb = types.InlineKeyboardMarkup()
+        prev_k = (datetime.strptime(start_key, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        next_k = (datetime.strptime(start_key, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+
+        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_wthu:{prev_k}")]
+        if start_key != week_start_thursday(today_key()):
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"cat_wthu:{today_key()}"))
+        row.append(types.InlineKeyboardButton("Чт-Ср ➡️", callback_data=f"cat_wthu:{next_k}"))
+        kb.row(*row)
+        
+        kb.row(
+            types.InlineKeyboardButton("⬜ с Пн по Вскр",callback_data=f"cat_wk:{week_start_monday(start_key)}"),
+            types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"),
+            types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
+        )
+        #kb.row(types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"))
+        send_or_edit_categories_window(chat_id, "\n".join(lines), reply_markup=kb)
+        return True
+    # Быстрый переход: текущая неделя (сегодня)
+    if data_str == "cat_today":
+        start = week_start_monday(today_key())
+        return handle_categories_callback(call, f"cat_wk:{start}")
+
+    # Навигация по неделям: start=понедельник недели (YYYY-MM-DD)
     if data_str.startswith("cat_wk:"):
-        start_key = data_str.split(":", 1)[1].strip() or week_start_monday(today_key())
-        start, end = week_bounds_from_start(start_key)
-        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн–Вс)"
-        text, _ = summarize_categories(store, start, end, label)
-        kb = build_categories_summary_keyboard("wk", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb)
+        start = data_str.split(":", 1)[1].strip()
+        if not start:
+            start = week_start_monday(today_key())
+        start, end = week_bounds_from_start(start)
+        store = get_chat_store(chat_id)
+        cats = calc_categories_for_period(store, start, end)
+
+        lines = [
+            "📦 Расходы по статьям",
+            f"🗓 {fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн - Вскр)",
+            ""
+        ]
+
+        if not cats:
+            lines.append("Нет данных по статьям за этот период.")
+        else:
+            keys = list(cats.keys())
+            if "ПРОДУКТЫ" in keys:
+                keys.remove("ПРОДУКТЫ")
+                keys = ["ПРОДУКТЫ"] + sorted(keys)
+            else:
+                keys = sorted(keys)
+
+            for cat in keys:
+                lines.append(f"{cat}: {fmt_num_plain(cats[cat])}")
+                if cat == "ПРОДУКТЫ":
+                    items = collect_items_for_category(store, start, end, "ПРОДУКТЫ")
+                    if items:
+                        for day_i, amt_i, note_i in items:
+                            note_i = (note_i or "").strip()
+                            lines.append(f"  • {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {note_i}")
+
+        kb = types.InlineKeyboardMarkup()
+        try:
+            prev_start = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+            next_start = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+        except Exception:
+            prev_start = start
+            next_start = start
+        row = [types.InlineKeyboardButton("⬅️ Неделя", callback_data=f"cat_wk:{prev_start}")]
+        if start != week_start_monday(today_key()):
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
+        row.append(types.InlineKeyboardButton("Неделя ➡️", callback_data=f"cat_wk:{next_start}"))
+        kb.row(*row)
+     
+        kb.row(types.InlineKeyboardButton("🟦 с Чт по Ср", callback_data=f"cat_wthu:{start}"),
+                types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"),
+                types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
+        )
+       # kb.row(types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months"))
+        #kb.row(types.InlineKeyboardButton("❌ Закрыть статьи",callback_data="cat_close"))
+        send_or_edit_categories_window(chat_id, "\n".join(lines), reply_markup=kb)
+        
         return True
 
     if data_str == "cat_months":
         kb = types.InlineKeyboardMarkup(row_width=3)
-        current_month = now_local().month
+        # 12 месяцев
         for m in range(1, 13):
-            label = datetime(2000, m, 1).strftime("%b")
-            kb.add(types.InlineKeyboardButton(label, callback_data=f"cat_m:{m}"))
-        kb.row(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"),
-            types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close")
-        )
+            kb.add(types.InlineKeyboardButton(
+                datetime(2000, m, 1).strftime("%b"),
+                callback_data=f"cat_m:{m}"
+            ))
         send_or_edit_categories_window(chat_id, "📦 Выберите месяц:", reply_markup=kb)
         return True
 
@@ -2828,32 +2321,39 @@ def handle_categories_callback(call, data_str: str) -> bool:
         except Exception:
             return True
         year = now_local().year
+
+        # 4 недели месяца (простая разметка 1–7, 8–14, 15–21, 22–31)
         kb = types.InlineKeyboardMarkup(row_width=2)
         weeks = [(1, 7), (8, 14), (15, 21), (22, 31)]
         for a, b in weeks:
             kb.add(types.InlineKeyboardButton(
                 f"{a:02d}–{b:02d}",
-                callback_data=f"cat_rng:{year}:{month}:{a}:{b}"
+                callback_data=f"cat_w:{year}:{month}:{a}:{b}"
             ))
         row = []
         if month != now_local().month:
             row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
         row.append(types.InlineKeyboardButton("🔙 Назад", callback_data="cat_months"))
         kb.row(*row)
-        send_or_edit_categories_window(chat_id, "📆 Выберите неделю:", reply_markup=kb)
+        safe_edit(bot, call, "📆 Выберите неделю:", reply_markup=kb)
         return True
 
-    if data_str.startswith("cat_rng:"):
+    if data_str.startswith("cat_w:"):
         try:
             _, y, m, a, b = data_str.split(":")
             y, m, a, b = map(int, (y, m, a, b))
         except Exception:
             return True
 
-        if m == 12:
-            last_day = (datetime(y + 1, 1, 1) - timedelta(days=1)).day
-        else:
-            last_day = (datetime(y, m + 1, 1) - timedelta(days=1)).day
+        # нормализация конца месяца (если месяц короче 31)
+        try:
+            # последний день месяца: первый день следующего месяца - 1 день
+            if m == 12:
+                last_day = (datetime(y + 1, 1, 1) - timedelta(days=1)).day
+            else:
+                last_day = (datetime(y, m + 1, 1) - timedelta(days=1)).day
+        except Exception:
+            last_day = 31
 
         a = max(1, min(a, last_day))
         b = max(1, min(b, last_day))
@@ -2862,35 +2362,42 @@ def handle_categories_callback(call, data_str: str) -> bool:
 
         start = f"{y}-{m:02d}-{a:02d}"
         end = f"{y}-{m:02d}-{b:02d}"
-        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
-        text, _ = summarize_categories(store, start, end, label)
-        kb = build_categories_summary_keyboard("rng", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb)
-        return True
 
-    if data_str.startswith("cat_show:"):
-        _, start, end, slug = data_str.split(":", 3)
-        category = CATEGORY_BY_SLUG.get(slug)
-        if not category:
-            return True
+        store = get_chat_store(chat_id)
+        cats = calc_categories_for_period(store, start, end)
 
-        start_dt = datetime.strptime(start, "%Y-%m-%d")
-        end_dt = datetime.strptime(end, "%Y-%m-%d")
-        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
+        lines = [
+            "📦 Расходы по статьям",
+            f"🗓 {fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}",
+            ""
+        ]
 
-        if (end_dt - start_dt).days == 6 and start == week_start_thursday(start):
-            back_callback = f"cat_wthu:{start}"
-            label += " (Чт–Ср)"
-        elif (end_dt - start_dt).days == 6 and start == week_start_monday(start):
-            back_callback = f"cat_wk:{start}"
-            label += " (Пн–Вс)"
+        if not cats:
+            lines.append("Нет данных по статьям за этот период.")
         else:
-            y, m = start_dt.year, start_dt.month
-            back_callback = f"cat_rng:{y}:{m}:{start_dt.day}:{end_dt.day}"
+            # Стабильно: сначала ПРОДУКТЫ, затем остальные по алфавиту
+            keys = list(cats.keys())
+            if "ПРОДУКТЫ" in keys:
+                keys.remove("ПРОДУКТЫ")
+                keys = ["ПРОДУКТЫ"] + sorted(keys)
+            else:
+                keys = sorted(keys)
 
-        text = build_category_detail_text(store, start, end, category, label)
-        kb = build_category_detail_keyboard(start, end, back_callback)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb)
+            for cat in keys:
+                lines.append(f"{cat}: {fmt_num_plain(cats[cat])}")
+
+                if cat == "ПРОДУКТЫ":
+                    items = collect_items_for_category(store, start, end, "ПРОДУКТЫ")
+                    if items:
+                        for day_i, amt_i, note_i in items:
+                            note_i = (note_i or "").strip()
+                            lines.append(f"  • {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {note_i}")
+                    else:
+                        lines.append("  • нет операций")
+
+        kb = types.InlineKeyboardMarkup()
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"cat_m:{m}"))
+        send_or_edit_categories_window(chat_id, "\n".join(lines), reply_markup=kb)
         return True
 
     return False
@@ -4143,8 +3650,7 @@ def cmd_report(msg):
     open_report_window(chat_id, month_key)
 
     lines = build_day_report_lines(chat_id)
-    report_html = "<pre>" + html.escape("\n".join(lines)) + "</pre>"
-    send_html_and_auto_delete(chat_id, report_html, 20)
+    send_info(chat_id, "\n".join(lines))
 def cmd_csv_all(chat_id: int):
     """
     Общий CSV этого чата (все дни этого чата).
@@ -4353,20 +3859,6 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
         threading.Thread(target=_delete, daemon=True).start()
     except Exception as e:
         log_error(f"send_and_auto_delete: {e}")
-
-
-def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 15):
-    try:
-        msg = bot.send_message(chat_id, html_text, parse_mode="HTML")
-        def _delete():
-            time.sleep(delay)
-            try:
-                bot.delete_message(chat_id, msg.message_id)
-            except Exception:
-                pass
-        threading.Thread(target=_delete, daemon=True).start()
-    except Exception as e:
-        log_error(f"send_html_and_auto_delete: {e}")
 def delete_message_later(chat_id: int, message_id: int, delay: int = 10):
     """
     Отложенное удаление сообщения пользователя (например, команд).
@@ -4884,19 +4376,20 @@ def handle_document(msg):
 
         return
 
-    # обычные документы тоже должны пересылаться
     try:
         forward_any_message(chat_id, msg)
     except Exception as e:
         log_error(f"handle_document forward failed: {e}")
 
-
 def cleanup_forward_links(chat_id: int):
     """
-    Удаляет все связи пересылки для чата из памяти и из сохранённого индекса.
+    Удаляет все связи пересылки для чата.
+    ОБЯЗАТЕЛЬНО вызывать при reset / restore.
     """
-    _cleanup_forward_storage_for_chat(chat_id)
-
+    for key in list(forward_map.keys()):
+        if key[0] == chat_id:
+            del forward_map[key]
+            
 KEEP_ALIVE_SEND_TO_OWNER = False
 def keep_alive_task():
     while True:
@@ -4917,9 +4410,9 @@ def keep_alive_task():
         time.sleep(max(10, KEEP_ALIVE_INTERVAL_SECONDS))
         
 @bot.channel_post_handler(content_types=[
-    "text", "photo", "video", "animation", "audio",
+    "text", "photo", "video", "audio",
     "voice", "video_note", "document",
-    "sticker", "location", "venue", "contact", "dice", "poll"
+    "sticker"
 ])
 def on_any_channel_post(msg):
     try:
@@ -4934,9 +4427,9 @@ def on_any_channel_post(msg):
 
 
 @bot.edited_channel_post_handler(content_types=[
-    "text", "photo", "video", "animation", "audio",
+    "text", "photo", "video", "audio",
     "voice", "video_note", "document",
-    "sticker", "location", "venue", "contact", "dice", "poll"
+    "sticker"
 ])
 def on_edited_channel_post(msg):
     try:
@@ -4944,30 +4437,9 @@ def on_edited_channel_post(msg):
     except Exception as e:
         log_error(f"edited_channel_post update_chat_info failed: {e}")
 
-    try:
-        propagate_edited_to_copies(msg)
-    except Exception as e:
-        log_error(f"edited_channel_post propagate failed: {e}")
-
-
-def propagate_edited_to_copies(msg):
-    source_chat_id = msg.chat.id
-    text = _message_text_for_finance(msg)
-
-    links = get_forward_links(source_chat_id, msg.message_id)
-    if not links:
-        return
-
-    for dst_chat_id, dst_msg_id in links:
-        try:
-            finance_enabled = get_forward_finance(source_chat_id, dst_chat_id)
-            sync_edited_copy_to_target(source_chat_id, msg, dst_chat_id, dst_msg_id, finance_enabled)
-        except Exception as e:
-            log_error(f"propagate_edited_to_copies failed {dst_chat_id}:{dst_msg_id}: {e}")
-
 
 @bot.edited_message_handler(
-    content_types=["text", "photo", "video", "animation", "document", "audio", "voice"]
+    content_types=["text", "photo", "video", "document", "audio"]
 )
 def on_edited_message(msg):
     chat_id = msg.chat.id
@@ -4976,14 +4448,6 @@ def on_edited_message(msg):
         update_chat_info_from_message(msg)
     except Exception:
         pass
-
-    edit_text = _message_text_for_finance(msg)
-    if is_forward_delete_command(edit_text):
-        try:
-            delete_forward_copies_for_source(chat_id, msg.message_id)
-        except Exception as e:
-            log_error(f"[EDIT-DEL] failed: {e}")
-        return
 
     # 🔴 ФИНАНСЫ — БЕЗ РЕЖИМОВ
     try:
@@ -4996,10 +4460,48 @@ def on_edited_message(msg):
     except Exception as e:
         log_error(f"[EDIT-FIN] failed: {e}")
 
-    try:
-        propagate_edited_to_copies(msg)
-    except Exception as e:
-        log_error(f"[EDIT-FWD] failed: {e}")
+    # 🟢 ПЕРЕСЫЛКА — НЕ ТРОГАЕМ
+    key = (chat_id, msg.message_id)
+    links = forward_map.get(key)
+    if not links:
+        return
+
+    text = msg.text or msg.caption
+    if not text:
+        return
+
+    for dst_chat_id, dst_msg_id in list(links):
+        updated = False
+
+        try:
+            bot.edit_message_text(
+                text,
+                chat_id=dst_chat_id,
+                message_id=dst_msg_id
+            )
+            updated = True
+        except Exception:
+            try:
+                bot.edit_message_caption(
+                    caption=text,
+                    chat_id=dst_chat_id,
+                    message_id=dst_msg_id
+                )
+                updated = True
+            except Exception as e:
+                log_error(f"edit forward failed {dst_chat_id}:{dst_msg_id}: {e}")
+
+        if updated and get_forward_finance(chat_id, dst_chat_id):
+            try:
+                owner_id = msg.from_user.id if msg.from_user else 0
+                sync_forwarded_finance_message(
+                    dst_chat_id,
+                    dst_msg_id,
+                    text,
+                    owner_id
+                )
+            except Exception as e:
+                log_error(f"edit forward finance sync {dst_chat_id}:{dst_msg_id}: {e}")
                                             
 def start_keep_alive_thread():
     t = threading.Thread(target=keep_alive_task, daemon=True)
@@ -5049,7 +4551,6 @@ def set_webhook():
             "callback_query",
             "channel_post",
             "edited_channel_post",
-            "deleted_business_messages",
         ],
     )
     log_info(f"Webhook установлен: {wh_url} (allowed_updates включает edited_message)")
