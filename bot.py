@@ -33,7 +33,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # если дальше в коде ис
 PORT = 5000
 
 OWNER_ID = os.getenv("ID", "").strip()
-BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip() для
+BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 
 APP_URL = os.getenv("APP_URL", "").strip()
 #PORT = int(os.getenv("PORT", "8443"))
