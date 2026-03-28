@@ -27,19 +27,23 @@ window_locks = defaultdict(threading.Lock)
 # ⚙️ Конфигурация (жёстко прописанные значения для Render)
 # -----------------------------
 BOT_TOKEN = os.getenv("B_T")
-
-
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # если дальше в коде используется отдельная переменная вебхука
+#OWNER_ID = "8592220081"
+APP_URL = "https://start-3bfb.onrender.com"
+WEBHOOK_URL = "https://start-3bfb.onrender.com"  # если дальше в коде используется отдельная переменная вебхука
 PORT = 5000
 
-OWNER_ID = os.getenv("ID", "").strip()
-BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
+BACKUP_CHAT_ID = "-1003340340395"
 
-APP_URL = os.getenv("APP_URL", "").strip()
+
+#BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+OWNER_ID = os.getenv("ID", "").strip()
+#BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip() для
+
+#APP_URL = os.getenv("APP_URL", "").strip()
 #PORT = int(os.getenv("PORT", "8443"))
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "Code 😇🏝️"
+VERSION = "Code 🏝️"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
@@ -5377,7 +5381,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"🐙 Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🔥 🐙 Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
