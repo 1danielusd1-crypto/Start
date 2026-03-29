@@ -1130,16 +1130,21 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
 
 def build_categories_buttons(start: str, end: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
+    buttons = []
     for cat in get_ordered_category_names(include_all=True):
         slug = EXPENSE_CATEGORY_SLUGS.get(cat)
         if not slug:
             continue
-        kb.add(
+        buttons.append(
             types.InlineKeyboardButton(
                 cat,
                 callback_data=f"cat_show:{start}:{end}:{slug}"
             )
         )
+
+    for i in range(0, len(buttons), 3):
+        kb.row(*buttons[i:i + 3])
+
     return kb
 
 
@@ -4479,9 +4484,6 @@ def cmd_report(msg):
     if not require_finance(chat_id):
         return
 
-    month_key = now_local().strftime("%Y-%m")
-    open_report_window(chat_id, month_key)
-
     lines = build_day_report_lines(chat_id)
     report_html = "<pre>" + html.escape("\n".join(lines)) + "</pre>"
     send_html_and_auto_delete(chat_id, report_html, 20)
@@ -5247,11 +5249,18 @@ def keep_alive_task():
     while True:
         try:
             if APP_URL:
-                try:
-                    resp = requests.get(APP_URL, timeout=10)
-                    log_info(f"Keep-alive ping -> {resp.status_code}")
-                except Exception as e:
-                    log_error(f"Keep-alive self error: {e}")
+                base = APP_URL.rstrip("/")
+                for url in (f"{base}/healthz", f"{base}/?ts={int(time.time())}"):
+                    try:
+                        resp = requests.get(
+                            url,
+                            timeout=10,
+                            headers={"Cache-Control": "no-cache"}
+                        )
+                        log_info(f"Keep-alive ping {url} -> {resp.status_code}")
+                        break
+                    except Exception as e:
+                        log_error(f"Keep-alive self error for {url}: {e}")
             if KEEP_ALIVE_SEND_TO_OWNER and OWNER_ID:
                 try:
                     pass
@@ -5349,6 +5358,16 @@ def on_edited_message(msg):
 def start_keep_alive_thread():
     t = threading.Thread(target=keep_alive_task, daemon=True)
     t.start()
+@app.route("/", methods=["GET"])
+def index():
+    return "OK", 200
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return "OK", 200
+
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
     try:
