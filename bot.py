@@ -177,13 +177,19 @@ def format_finance_mode_label(chat_id: int) -> str:
 def build_forward_status_lines() -> list[str]:
     lines = []
     fr = data.get("forward_rules", {}) or {}
-    ff = data.get("forward_finance", {}) or {}
+
+    direction_map = {
+        "oneway_to": "➡️",
+        "oneway_from": "⬅️",
+        "twoway": "↔️",
+    }
 
     for src, dsts in sorted(fr.items(), key=lambda x: get_chat_display_name(int(x[0])).lower() if str(x[0]).lstrip('-').isdigit() else str(x[0])):
         try:
             src_id = int(src)
         except Exception:
             continue
+
         for dst, mode in sorted((dsts or {}).items(), key=lambda x: get_chat_display_name(int(x[0])).lower() if str(x[0]).lstrip('-').isdigit() else str(x[0])):
             try:
                 dst_id = int(dst)
@@ -192,8 +198,10 @@ def build_forward_status_lines() -> list[str]:
 
             src_name = get_chat_display_name(src_id)
             dst_name = get_chat_display_name(dst_id)
-            fin = "FIN ✅" if bool(ff.get(str(src_id), {}).get(str(dst_id), False)) else "FIN ❌"
-            lines.append(f"• {src_name} ➡️ {fin} {dst_name}")
+            mail_dir = direction_map.get(mode, "➡️")
+            fin_mode = format_finance_mode_label(dst_id)
+            fin_dir = mail_dir if get_forward_finance(src_id, dst_id) else "ВЫКЛ"
+            lines.append(f"• {src_name}-📨{mail_dir}-💰{fin_mode}-💸{fin_dir}-{dst_name}")
 
     if not lines:
         lines.append("• Связи пересылки не настроены")
@@ -289,6 +297,40 @@ def send_minimized_balance_panel(chat_id: int):
         log_error(f"send_minimized_balance_panel({chat_id}): {e}")
 
 
+def refresh_balance_panel_now(chat_id: int):
+    if not is_finance_mode(chat_id):
+        return
+
+    store = get_chat_store(chat_id)
+    panel_id = store.get("balance_panel_id")
+    if not panel_id:
+        return
+
+    mode = store.get("balance_panel_mode", "mini")
+    try:
+        if mode == "open":
+            day_key = store.get("current_view_day") or today_key()
+            txt, _ = render_day_window(chat_id, day_key)
+            kb = build_main_keyboard(day_key, chat_id)
+            bot.edit_message_text(
+                txt,
+                chat_id=chat_id,
+                message_id=panel_id,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            schedule_balance_panel_collapse(chat_id)
+        else:
+            bot.edit_message_text(
+                "📌 Быстрый остаток",
+                chat_id=chat_id,
+                message_id=panel_id,
+                reply_markup=build_balance_panel_keyboard(chat_id)
+            )
+    except Exception as e:
+        log_error(f"refresh_balance_panel_now({chat_id}): {e}")
+
+
 def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_REFRESH_DELAY):
     def _job():
         try:
@@ -329,7 +371,7 @@ def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | 
 def build_day_report_lines(chat_id: int) -> list[str]:
     """
     Красивый отчёт по дням:
-    Дата    | Расход| Приход|Остаток
+    Дата    | Приход| Расход|Остаток
     Числовые колонки фиксированной ширины 7 символов.
     """
     store = get_chat_store(chat_id)
@@ -339,8 +381,8 @@ def build_day_report_lines(chat_id: int) -> list[str]:
     lines.append("Отчёт:")
     lines.append(
         f"{'Дата':<8}|"
-        f"{report_header_cell('Расход', 7)}|"
         f"{report_header_cell('Приход', 7)}|"
+        f"{report_header_cell('Расход', 7)}|"
         f"{report_header_cell('Остаток', 7)}"
     )
 
@@ -362,11 +404,11 @@ def build_day_report_lines(chat_id: int) -> list[str]:
         running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
 
         date_txt = fmt_date_ddmmyy(dk)
-        exp_txt = report_cell(expense, 7)
         inc_txt = report_cell(income, 7)
+        exp_txt = report_cell(expense, 7)
         bal_txt = report_cell(running_balance, 7)
 
-        lines.append(f"{date_txt:<8}|{exp_txt}|{inc_txt}|{bal_txt}")
+        lines.append(f"{date_txt:<8}|{inc_txt}|{exp_txt}|{bal_txt}")
 
     return lines
 def week_start_monday(day_key: str) -> str:
@@ -1087,7 +1129,7 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
     return "\n".join(lines), cats
 
 def build_categories_buttons(start: str, end: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb = types.InlineKeyboardMarkup(row_width=3)
     for cat in get_ordered_category_names(include_all=True):
         slug = EXPENSE_CATEGORY_SLUGS.get(cat)
         if not slug:
@@ -2430,7 +2472,7 @@ def build_report_keyboard(month_key: str):
 def build_month_report_text(chat_id: int, month_key: str = None):
     """
     Отчёт за месяц в виде:
-    Дата    | Расход| Приход|Остаток
+    Дата    | Приход| Расход|Остаток
     """
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {})
@@ -2459,8 +2501,8 @@ def build_month_report_text(chat_id: int, month_key: str = None):
     lines.append("")
     lines.append(
         f"{'Дата':<8}|"
-        f"{report_header_cell('Расход', 7)}|"
         f"{report_header_cell('Приход', 7)}|"
+        f"{report_header_cell('Расход', 7)}|"
         f"{report_header_cell('Остаток', 7)}"
     )
     lines.append("")
@@ -2488,8 +2530,8 @@ def build_month_report_text(chat_id: int, month_key: str = None):
         date_str = datetime.strptime(day_key, "%Y-%m-%d").strftime("%d.%m.%y")
         lines.append(
             f"{date_str:<8}|"
-            f"{report_cell(int(total_expense), 7)}|"
             f"{report_cell(int(total_income), 7)}|"
+            f"{report_cell(int(total_expense), 7)}|"
             f"{report_cell(int(day_balance), 7)}"
         )
 
@@ -4639,7 +4681,7 @@ def cmd_autoadd_info(msg):
         "• ВЫКЛ → сообщения с суммами не записываются",
         12
     )
-def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
+def send_and_auto_delete(chat_id: int, text: str, delay: int = 30):
     try:
         msg = bot.send_message(chat_id, text)
         def _delete():
@@ -4653,7 +4695,7 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = 10):
         log_error(f"send_and_auto_delete: {e}")
 
 
-def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 15):
+def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 30):
     try:
         msg = bot.send_message(chat_id, html_text, parse_mode="HTML")
         def _delete():
@@ -4665,7 +4707,7 @@ def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 15):
         threading.Thread(target=_delete, daemon=True).start()
     except Exception as e:
         log_error(f"send_html_and_auto_delete: {e}")
-def delete_message_later(chat_id: int, message_id: int, delay: int = 10):
+def delete_message_later(chat_id: int, message_id: int, delay: int = 30):
     """
     Отложенное удаление сообщения пользователя (например, команд).
     """
@@ -4822,6 +4864,7 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.8):
 
         # 3) легкое сохранение основной базы
         _safe("save_data", lambda: save_data(data))
+        _safe("refresh_balance_panel_now", lambda: refresh_balance_panel_now(chat_id))
         _safe("schedule_balance_panel_refresh", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         # 4) тяжелые JSON/CSV/отправки — отдельно, с дебаунсом
