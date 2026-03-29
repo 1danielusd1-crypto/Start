@@ -90,6 +90,14 @@ DAY_WINDOW_MAX_CHARS = 3500
 
 BALANCE_PANEL_REFRESH_DELAY = 5.0
 BALANCE_PANEL_COLLAPSE_DELAY = 60.0
+COMMAND_DELETE_DELAY = 30
+HELPER_DELETE_DELAY = 25
+DOZVON_INTERVAL_SECONDS = 0.5
+DOZVON_BURST_SECONDS = 10
+DOZVON_PAUSE_SECONDS = 5
+
+_dozvon_sessions = {}
+_dozvon_target_index = defaultdict(set)
 
 
 def day_key_from_message(msg=None) -> str:
@@ -172,6 +180,218 @@ def get_chat_display_name(chat_id: int) -> str:
 
 def format_finance_mode_label(chat_id: int) -> str:
     return "ВКЛ ✅" if is_finance_mode(chat_id) else "ВЫКЛ ❌"
+
+
+def is_owner_chat(chat_id: int) -> bool:
+    return bool(OWNER_ID and str(chat_id) == str(OWNER_ID))
+
+
+def schedule_command_delete(msg):
+    try:
+        delete_message_later(msg.chat.id, msg.message_id, COMMAND_DELETE_DELAY)
+    except Exception:
+        pass
+
+
+def guard_non_owner_finance_for_command(msg, allowed_commands=None) -> bool:
+    allowed = {c.lower().lstrip('/') for c in (allowed_commands or [])}
+    chat_id = msg.chat.id
+    if is_owner_chat(chat_id):
+        return False
+
+    text = (getattr(msg, "text", None) or "").strip().lower()
+    cmd = text.split()[0].split('@')[0].lstrip('/') if text else ""
+    if cmd in allowed:
+        return False
+
+    if not is_finance_mode(chat_id):
+        send_and_auto_delete(chat_id, "⚙️ Для этого включите финансовый режим командой /ok", HELPER_DELETE_DELAY)
+        return True
+    return False
+
+
+def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
+    if is_owner_chat(chat_id):
+        return False
+    if is_finance_mode(chat_id):
+        return False
+
+    if data_str == "info_close":
+        return False
+    if data_str.startswith("d:") and data_str.endswith(":info"):
+        return False
+
+    send_and_auto_delete(chat_id, "⚙️ Для этого включите финансовый режим командой /ok", HELPER_DELETE_DELAY)
+    return True
+
+
+def add_buttons_in_rows(kb, buttons, per_row: int = 3):
+    for i in range(0, len(buttons), per_row):
+        kb.row(*buttons[i:i + per_row])
+    return kb
+
+
+def build_help_text(chat_id: int) -> str:
+    lines = [
+        f"ℹ️ Финансовый бот — версия {VERSION}",
+        "",
+        "Команды:",
+        "/ok, /поехали — включить финансовый режим",
+        "/start — окно сегодняшнего дня",
+        "/view YYYY-MM-DD — открыть конкретный день",
+        "/prev — предыдущий день",
+        "/next — следующий день",
+        "/balance — баланс по этому чату",
+        "/report — краткий отчёт по дням",
+        "/csv — CSV этого чата",
+        "/json — JSON этого чата",
+        "/reset — обнулить данные чата (с подтверждением)",
+        "/ping — проверка, жив ли бот",
+        "/restore / /restore_off — режим восстановления JSON/CSV",
+        "/autoadd_info — режим авто-добавления по суммам",
+        "/dozvon — окно дозвона по связанным чатам",
+    ]
+    if is_owner_chat(chat_id):
+        lines.extend([
+            "/stopforward — отключить пересылку",
+            "/backup_channel_on / _off — включить/выключить бэкап в канал",
+        ])
+    lines.append("/help — эта справка")
+    return "\n".join(lines)
+
+
+def build_info_text(chat_id: int) -> str:
+    return build_help_text(chat_id)
+
+
+def get_connected_chat_ids(chat_id: int):
+    connected = set()
+    fr = data.get("forward_rules", {}) or {}
+    src_key = str(chat_id)
+
+    for dst in (fr.get(src_key, {}) or {}).keys():
+        try:
+            connected.add(int(dst))
+        except Exception:
+            pass
+
+    for src, dsts in fr.items():
+        if src_key in (dsts or {}):
+            try:
+                connected.add(int(src))
+            except Exception:
+                pass
+
+    connected.discard(int(chat_id))
+    return sorted(connected, key=lambda cid: get_chat_display_name(cid).lower())
+
+
+def build_dozvon_menu(chat_id: int):
+    kb = types.InlineKeyboardMarkup()
+    buttons = []
+    for cid in get_connected_chat_ids(chat_id):
+        buttons.append(types.InlineKeyboardButton(
+            get_chat_display_name(cid),
+            callback_data=f"dzv:{cid}"
+        ))
+    if buttons:
+        add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="dzv:close"))
+    return kb
+
+
+def stop_dozvon_for_target(target_chat_id: int, reason: str = "reply"):
+    target_chat_id = int(target_chat_id)
+    for session_key in list(_dozvon_target_index.get(target_chat_id, set())):
+        sess = _dozvon_sessions.get(session_key)
+        if sess:
+            sess["stop"] = True
+            sess["stop_reason"] = reason
+
+
+def _cleanup_dozvon_session(session_key):
+    sess = _dozvon_sessions.pop(session_key, None)
+    if not sess:
+        return None
+    target_chat_id = int(sess["target_chat_id"])
+    idx = _dozvon_target_index.get(target_chat_id)
+    if idx and session_key in idx:
+        idx.discard(session_key)
+        if not idx:
+            _dozvon_target_index.pop(target_chat_id, None)
+    return sess
+
+
+def _run_dozvon_session(session_key):
+    sess = _dozvon_sessions.get(session_key)
+    if not sess:
+        return
+
+    source_chat_id = int(sess["source_chat_id"])
+    target_chat_id = int(sess["target_chat_id"])
+    source_name = get_chat_display_name(source_chat_id)
+    ping_text = f"📞 Дозвон от {source_name}"
+
+    try:
+        for phase in range(2):
+            end_ts = time.time() + DOZVON_BURST_SECONDS
+            while time.time() < end_ts:
+                if sess.get("stop"):
+                    break
+                try:
+                    sent = bot.send_message(target_chat_id, ping_text)
+                    delete_message_later(target_chat_id, sent.message_id, 3)
+                except Exception as e:
+                    log_error(f"dozvon send to {target_chat_id}: {e}")
+                    sess["stop"] = True
+                    sess["stop_reason"] = "send_error"
+                    break
+                time.sleep(DOZVON_INTERVAL_SECONDS)
+
+            if sess.get("stop"):
+                break
+
+            if phase == 0:
+                pause_until = time.time() + DOZVON_PAUSE_SECONDS
+                while time.time() < pause_until:
+                    if sess.get("stop"):
+                        break
+                    time.sleep(0.2)
+                if sess.get("stop"):
+                    break
+    finally:
+        sess = _cleanup_dozvon_session(session_key) or {}
+        reason = sess.get("stop_reason")
+        if reason == "reply":
+            send_and_auto_delete(source_chat_id, f"📞 Дозвон остановлен: {get_chat_display_name(target_chat_id)} ответил(а).", HELPER_DELETE_DELAY)
+        elif reason == "send_error":
+            send_and_auto_delete(source_chat_id, f"⚠️ Дозвон остановлен: не удалось отправить сообщения в {get_chat_display_name(target_chat_id)}.", HELPER_DELETE_DELAY)
+        else:
+            send_and_auto_delete(source_chat_id, f"📞 Дозвон завершён: {get_chat_display_name(target_chat_id)}.", HELPER_DELETE_DELAY)
+
+
+def start_dozvon(source_chat_id: int, target_chat_id: int):
+    source_chat_id = int(source_chat_id)
+    target_chat_id = int(target_chat_id)
+    session_key = (source_chat_id, target_chat_id)
+
+    existing = _dozvon_sessions.get(session_key)
+    if existing:
+        existing["stop"] = True
+        existing["stop_reason"] = "restart"
+        time.sleep(0.1)
+
+    sess = {
+        "source_chat_id": source_chat_id,
+        "target_chat_id": target_chat_id,
+        "stop": False,
+        "stop_reason": None,
+    }
+    _dozvon_sessions[session_key] = sess
+    _dozvon_target_index[target_chat_id].add(session_key)
+
+    send_and_auto_delete(source_chat_id, f"📞 Дозвон запущен: {get_chat_display_name(target_chat_id)}", HELPER_DELETE_DELAY)
+    threading.Thread(target=_run_dozvon_session, args=(session_key,), daemon=True).start()
 
 
 def build_forward_status_lines() -> list[str]:
@@ -2628,23 +2848,16 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
     return kb
 
 def build_csv_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-
-    kb.add(
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    buttons = [
         types.InlineKeyboardButton("📅 За день", callback_data=f"d:{day_key}:csv_day"),
-        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"d:{day_key}:csv_week")
-    )
-    kb.add(
+        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"d:{day_key}:csv_week"),
         types.InlineKeyboardButton("📆 За месяц", callback_data=f"d:{day_key}:csv_month"),
-        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"d:{day_key}:csv_wedthu")
-    )
-    kb.add(
-        types.InlineKeyboardButton("📂 Всё время", callback_data=f"d:{day_key}:csv_all_real")
-    )
-    kb.add(
-        types.InlineKeyboardButton("⬅️ Назад", callback_data=f"d:{day_key}:open")
-    )
-
+        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"d:{day_key}:csv_wedthu"),
+        types.InlineKeyboardButton("📂 Всё время", callback_data=f"d:{day_key}:csv_all_real"),
+    ]
+    add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"d:{day_key}:open"))
     return kb
 
 def build_edit_menu_keyboard(day_key: str, chat_id=None):
@@ -2696,6 +2909,7 @@ def build_forward_chat_list(day_key: str, chat_id: int):
 
     known = collect_forward_menu_chats()
     rules = data.get("forward_rules", {})
+    buttons = []
 
     for cid, info in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
         try:
@@ -2717,16 +2931,10 @@ def build_forward_chat_list(day_key: str, chat_id: int):
         else:
             label = title
 
-        kb.row(
-            types.InlineKeyboardButton(
-                label,
-                callback_data=f"d:{day_key}:fw_cfg_{cid}"
-            )
-        )
+        buttons.append(types.InlineKeyboardButton(label, callback_data=f"d:{day_key}:fw_cfg_{cid}"))
 
-    kb.row(
-        types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
-    )
+    add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
     return kb
 def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int):
     owner_title = get_chat_display_name(owner_chat)
@@ -2782,19 +2990,14 @@ def build_forward_source_menu():
         return kb
 
     known = collect_forward_menu_chats()
+    buttons = []
 
     for cid, ch in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
         title = ch.get("title") or f"Чат {cid}"
-        kb.row(
-            types.InlineKeyboardButton(
-                title,
-                callback_data=f"fw_src:{cid}"
-            )
-        )
+        buttons.append(types.InlineKeyboardButton(title, callback_data=f"fw_src:{cid}"))
 
-    kb.row(
-        types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root")
-    )
+    add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root"))
     return kb
 def build_forward_target_menu(src_id: int):
     kb = types.InlineKeyboardMarkup()
@@ -2802,6 +3005,7 @@ def build_forward_target_menu(src_id: int):
         return kb
 
     known = collect_forward_menu_chats()
+    buttons = []
 
     for cid, ch in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
         try:
@@ -2813,16 +3017,10 @@ def build_forward_target_menu(src_id: int):
             continue
 
         title = ch.get("title") or f"Чат {cid}"
-        kb.row(
-            types.InlineKeyboardButton(
-                title,
-                callback_data=f"fw_tgt:{src_id}:{cid}"
-            )
-        )
+        buttons.append(types.InlineKeyboardButton(title, callback_data=f"fw_tgt:{src_id}:{cid}"))
 
-    kb.row(
-        types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src")
-    )
+    add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src"))
     return kb
 
 
@@ -2845,13 +3043,15 @@ def build_finance_toggle_chat_menu(day_key: str):
         except Exception:
             pass
 
+    buttons = []
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
         state = format_finance_mode_label(int_cid)
-        kb.row(types.InlineKeyboardButton(
+        buttons.append(types.InlineKeyboardButton(
             f"💰 {state} {title}",
             callback_data=f"d:{day_key}:fw_finmode_pick_{int_cid}"
         ))
 
+    add_buttons_in_rows(kb, buttons, 3)
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
     return kb
 def build_forward_mode_menu(A: int, B: int):
@@ -3180,6 +3380,24 @@ def on_callback(call):
             update_chat_info_from_message(call.message)
         except Exception:
             pass
+
+        if guard_non_owner_finance_for_callback(chat_id, data_str):
+            return
+
+        if data_str == "dzv:close":
+            try:
+                bot.delete_message(chat_id, call.message.message_id)
+            except Exception:
+                pass
+            return
+        if data_str.startswith("dzv:"):
+            try:
+                target_chat_id = int(data_str.split(":", 1)[1])
+            except Exception:
+                return
+            start_dozvon(chat_id, target_chat_id)
+            safe_edit(bot, call, f"📞 Дозвон: {get_chat_display_name(target_chat_id)}", reply_markup=build_dozvon_menu(chat_id))
+            return
 
         store = get_chat_store(chat_id)
         if call.message.message_id == store.get("balance_panel_id") and data_str != "bp:open":
@@ -3535,27 +3753,7 @@ def on_callback(call):
                 bot.answer_callback_query(call.id)
             except Exception:
                 pass
-            info_text = (
-                f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
-                "Команды:\n"
-                "/ok, /поехали — включить финансовый режим\n"
-                "/start — окно сегодняшнего дня\n"
-                "/view YYYY-MM-DD — открыть конкретный день\n"
-                "/prev — предыдущий день\n"
-                "/next — следующий день\n"
-                "/balance — баланс по этому чату\n"
-                "/report — краткий отчёт по дням\n"
-                "/csv — CSV этого чата\n"
-                "/json — JSON этого чата\n"
-                "/reset — обнулить данные чата (с подтверждением)\n"
-                "/stopforward — отключить пересылку\n"
-                "/ping — проверка, жив ли бот\n"
-               
-                "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
-                "/restore / /restore_off — режим восстановления JSON/CSV\n"
-                
-                "/help — эта справка\n"
-            )
+            info_text = build_info_text(chat_id)
             kb = types.InlineKeyboardMarkup()
             kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
             bot.send_message(chat_id, info_text, reply_markup=kb)
@@ -3688,34 +3886,24 @@ def on_callback(call):
 
         if cmd == "forward_menu":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                bot.send_message(chat_id, "Меню доступно только владельцу.")
+                send_and_auto_delete(chat_id, "Меню доступно только владельцу.", HELPER_DELETE_DELAY)
                 return
-            kb = types.InlineKeyboardMarkup(row_width=1)
-
-            kb.row(
+            kb = types.InlineKeyboardMarkup(row_width=3)
+            add_buttons_in_rows(kb, [
                 types.InlineKeyboardButton(
-                    "📨 По чатам (старый режим)",
+                    "📨 По чатам",
                     callback_data=f"d:{day_key}:forward_old"
-                )
-            )
-            kb.row(
+                ),
                 types.InlineKeyboardButton(
                     "🔀 Пары A ↔ B",
                     callback_data="fw_open"
-                )
-            )
-            kb.row(
+                ),
                 types.InlineKeyboardButton(
-                    "💰 Вкл фин режима",
+                    "💰 Фин режим",
                     callback_data=f"d:{day_key}:forward_finmode_menu"
-                )
-            )
-            kb.row(
-                types.InlineKeyboardButton(
-                    "🔙 Назад",
-                    callback_data=f"d:{day_key}:edit_menu"
-                )
-            )
+                ),
+            ], 3)
+            kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
             safe_edit(
                 bot,
                 call,
@@ -3725,7 +3913,7 @@ def on_callback(call):
             return
         if cmd == "forward_old":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                bot.send_message(chat_id, "Меню доступно только владельцу.")
+                send_and_auto_delete(chat_id, "Меню доступно только владельцу.", HELPER_DELETE_DELAY)
                 return
             kb = build_forward_chat_list(day_key, chat_id)
             safe_edit(
@@ -4205,7 +4393,7 @@ def refresh_total_message_if_any(chat_id: int):
         store["total_msg_id"] = None
         save_data(data)
 def send_info(chat_id: int, text: str):
-    send_and_auto_delete(chat_id, text, 10)
+    send_and_auto_delete(chat_id, text, HELPER_DELETE_DELAY)
                 
 @bot.message_handler(commands=["ok"])
 def cmd_ok(msg):
@@ -4214,7 +4402,9 @@ def cmd_ok(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
+    stop_dozvon_for_target(chat_id)
     store = get_chat_store(chat_id)
 
     set_finance_mode(chat_id, True)
@@ -4224,10 +4414,7 @@ def cmd_ok(msg):
     save_data(data)
     schedule_finalize(chat_id, today_key())
 
-    bot.send_message(
-        chat_id,
-        "✅ Финансовый режим включён"
-    )
+    send_and_auto_delete(chat_id, "✅ Финансовый режим включён", HELPER_DELETE_DELAY)
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     try:
@@ -4235,9 +4422,12 @@ def cmd_start(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
 
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
 
@@ -4271,9 +4461,12 @@ def cmd_start_new(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
 
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
 
@@ -4313,34 +4506,11 @@ def cmd_help(msg):
         update_chat_info_from_message(msg)
     except Exception:
         pass
-
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
-    if not is_finance_mode(chat_id):
-        send_info(chat_id, "ℹ️ Финансовый режим выключен")
-        return
-    help_text = (
-        f"ℹ️ Финансовый бот — версия {VERSION}\n\n"
-        "Команды:\n"
-        "/ok, /поехали — включить финансовый режим\n"
-        "/start — окно сегодняшнего дня\n"
-        "/view YYYY-MM-DD — открыть конкретный день\n"
-        "/prev — предыдущий день\n"
-        "/next — следующий день\n"
-        "/balance — баланс по этому чату\n"
-        "/report — краткий отчёт по дням\n"
-        "/csv — CSV этого чата\n"
-        "/json — JSON этого чата\n"
-        "/reset — обнулить данные чата (с подтверждением)\n"
-        "/stopforward — отключить пересылку\n"
-        "/ping — проверка, жив ли бот\n"
-       
-        "/backup_channel_on / _off — включить/выключить бэкап в канал\n"
-        "/restore / /restore_off — режим восстановления JSON/CSV\n"
-        "/autoadd_info — режим авто-добавления по суммам\n"
-        "/help — эта справка\n"
-    )
-    send_info(chat_id, help_text)
+    stop_dozvon_for_target(chat_id)
+    help_text = build_help_text(chat_id)
+    send_and_auto_delete(chat_id, help_text, HELPER_DELETE_DELAY)
     
 @bot.message_handler(commands=["restore"])
 def cmd_restore(msg):
@@ -4348,6 +4518,11 @@ def cmd_restore(msg):
         update_chat_info_from_message(msg)
     except Exception:
         pass
+
+    schedule_command_delete(msg)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    stop_dozvon_for_target(msg.chat.id)
 
     global restore_mode
     restore_mode = msg.chat.id  # включаем только для текущего чата
@@ -4365,6 +4540,11 @@ def cmd_restore_off(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    stop_dozvon_for_target(msg.chat.id)
+
     global restore_mode
     restore_mode = None  # выключаем
     cleanup_forward_links(msg.chat.id)
@@ -4376,7 +4556,11 @@ def cmd_ping(msg):
     except Exception:
         pass
 
-    send_info(msg.chat.id, "PONG — бот работает 🟢")
+    schedule_command_delete(msg)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    stop_dozvon_for_target(msg.chat.id)
+    send_and_auto_delete(msg.chat.id, "PONG — бот работает 🟢", HELPER_DELETE_DELAY)
 @bot.message_handler(commands=["view"])
 def cmd_view(msg):
     try:
@@ -4384,7 +4568,11 @@ def cmd_view(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
 
     store = get_chat_store(chat_id)
     msg_id = store.get("wait_date_msg_id")
@@ -4396,13 +4584,12 @@ def cmd_view(msg):
         store["wait_date_msg_id"] = None
         save_data(data)
 
-    delete_message_later(chat_id, msg.message_id, 15)
     if not require_finance(chat_id):
         return
     parts = (msg.text or "").split()
     if len(parts) < 2:
         send_info(chat_id, "Использование: /view YYYY-MM-DD")
-        delete_message_later(chat_id, msg.message_id, 15)
+        schedule_command_delete(msg)
         return
     day_key = parts[1]
     try:
@@ -4424,8 +4611,11 @@ def cmd_prev(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
     d = datetime.strptime(today_key(), "%Y-%m-%d") - timedelta(days=1)
@@ -4444,8 +4634,11 @@ def cmd_next(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
     d = datetime.strptime(today_key(), "%Y-%m-%d") + timedelta(days=1)
@@ -4465,8 +4658,11 @@ def cmd_balance(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
     store = get_chat_store(chat_id)
@@ -4479,8 +4675,11 @@ def cmd_report(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
 
@@ -4517,7 +4716,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
     day_recs = store.get("daily_records", {}).get(day_key, [])
     if not day_recs:
         send_info(chat_id, "Нет записей за этот день.")
-        #delete_message_later(chat_id, msg.message_id, 15)
+        #schedule_command_delete(msg)
         return
     tmp_name = f"data_{chat_id}_{day_key}.csv"
     try:
@@ -4555,8 +4754,11 @@ def cmd_csv(msg):
     """
     Экспортирует CSV текущего чата.
     """
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
     export_global_csv(data)
@@ -4581,8 +4783,11 @@ def cmd_json(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
     save_chat_json(chat_id)
@@ -4599,7 +4804,11 @@ def cmd_reset(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if not require_finance(chat_id):
         return
     store = get_chat_store(chat_id)
@@ -4620,29 +4829,78 @@ def cmd_stopforward(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
     if str(chat_id) != str(OWNER_ID):
         send_info(chat_id, "Эта команда только для владельца.")
-        delete_message_later(chat_id, msg.message_id, 15)
+        schedule_command_delete(msg)
         return
     clear_forward_all()
     send_info(chat_id, "Пересылка полностью отключена.")
-    delete_message_later(chat_id, msg.message_id, 15)
 @bot.message_handler(commands=["backup_channel_on"])
 def cmd_on_channel(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
     backup_flags["channel"] = True
     save_data(data)
     send_info(chat_id, "📡 Бэкап в канал включён")
-    delete_message_later(chat_id, msg.message_id, 15)
 @bot.message_handler(commands=["backup_channel_off"])
 def cmd_off_channel(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
     backup_flags["channel"] = False
     save_data(data)
     send_info(chat_id, "📡 Бэкап в канал выключен")
-    delete_message_later(chat_id, msg.message_id, 15)
     
+@bot.message_handler(commands=["dozvon"])
+def cmd_dozvon(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+
+    connected = get_connected_chat_ids(chat_id)
+    if not connected:
+        send_and_auto_delete(chat_id, "📞 Нет связанных чатов для дозвона.", HELPER_DELETE_DELAY)
+        return
+
+    bot.send_message(
+        chat_id,
+        "📞 Выберите чат для дозвона:",
+        reply_markup=build_dozvon_menu(chat_id)
+    )
+
 @bot.message_handler(commands=["autoadd_info", "autoadd.info"])
 def cmd_autoadd_info(msg):
     try:
@@ -4650,8 +4908,11 @@ def cmd_autoadd_info(msg):
     except Exception:
         pass
 
+    schedule_command_delete(msg)
     chat_id = msg.chat.id
-    delete_message_later(chat_id, msg.message_id, 15)
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
 
     # 👑 ВЛАДЕЛЕЦ — авто-добавление всегда включено
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -4683,7 +4944,7 @@ def cmd_autoadd_info(msg):
         "• ВЫКЛ → сообщения с суммами не записываются",
         12
     )
-def send_and_auto_delete(chat_id: int, text: str, delay: int = 30):
+def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DELAY):
     try:
         msg = bot.send_message(chat_id, text)
         def _delete():
@@ -4697,7 +4958,7 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = 30):
         log_error(f"send_and_auto_delete: {e}")
 
 
-def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 30):
+def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = HELPER_DELETE_DELAY):
     try:
         msg = bot.send_message(chat_id, html_text, parse_mode="HTML")
         def _delete():
@@ -4762,6 +5023,11 @@ def update_chat_info_from_message(msg):
     На диск пишем только если реально что-то изменилось.
     """
     chat_id = msg.chat.id
+    try:
+        if not getattr(getattr(msg, "from_user", None), "is_bot", False):
+            stop_dozvon_for_target(chat_id)
+    except Exception:
+        pass
     store = get_chat_store(chat_id)
     info = store.setdefault("info", {})
 
@@ -5102,6 +5368,11 @@ def handle_document(msg):
 
     chat_id = msg.chat.id
     update_chat_info_from_message(msg)
+    try:
+        if not getattr(getattr(msg, "from_user", None), "is_bot", False):
+            stop_dozvon_for_target(chat_id)
+    except Exception:
+        pass
 
     file = msg.document
     fname = (file.file_name or "").lower()
@@ -5280,6 +5551,11 @@ def on_any_channel_post(msg):
         update_chat_info_from_message(msg)
     except Exception as e:
         log_error(f"channel_post update_chat_info failed: {e}")
+
+    try:
+        stop_dozvon_for_target(msg.chat.id)
+    except Exception:
+        pass
 
     try:
         forward_any_message(msg.chat.id, msg)
