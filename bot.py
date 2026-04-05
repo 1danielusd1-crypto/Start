@@ -24,10 +24,10 @@ from collections import defaultdict
 window_locks = defaultdict(threading.Lock)
 BOT_TOKEN = os.getenv("B_T", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
-APP_URL = os.getenv("APP_URL", "").strip()
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", APP_URL).strip()
+APP_URL = os.getenv("AP_URL", "").strip()
+WEBHOOK_URL = os.getenv("WEBHOK_URL", AP_URL).strip()
 PORT = int(os.getenv("PORT", "5000"))
-BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
+BACKUP_CHAT_ID = os.getenv("BAKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 VERSION = "Code 🏝️"
