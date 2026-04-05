@@ -23,11 +23,11 @@ from collections import defaultdict
 
 window_locks = defaultdict(threading.Lock)
 BOT_TOKEN = os.getenv("B_T", "").strip()
+OWNER_ID = os.getenv("ID", "").strip()
 APP_URL = os.getenv("APP_URL", "").strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", APP_URL).strip()
 PORT = int(os.getenv("PORT", "5000"))
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
-OWNER_ID = os.getenv("ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 VERSION = "Code 🏝️"
@@ -80,7 +80,7 @@ HELPER_DELETE_DELAY = 25
 DOZVON_INTERVAL_SECONDS = 0.5
 DOZVON_BURST_SECONDS = 10
 DOZVON_PAUSE_SECONDS = 5
-TOTAL_WINDOW_DELETE_DELAY = 60
+OWNER_TOTAL_WINDOW_DELETE_DELAY = 60
 
 _dozvon_sessions = {}
 _dozvon_target_index = defaultdict(set)
@@ -167,6 +167,60 @@ def get_chat_display_name(chat_id: int) -> str:
 def format_finance_mode_label(chat_id: int) -> str:
     return "ВКЛ ✅" if is_finance_mode(chat_id) else "ВЫКЛ ❌"
 
+
+def is_quick_balance_enabled(chat_id: int) -> bool:
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    return bool(settings.get("quick_balance_enabled", False))
+
+
+def set_quick_balance_enabled(chat_id: int, enabled: bool):
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    settings["quick_balance_enabled"] = bool(enabled)
+    if not enabled:
+        panel_id = store.get("balance_panel_id")
+        if panel_id:
+            try:
+                bot.delete_message(chat_id, panel_id)
+            except Exception:
+                pass
+            store["balance_panel_id"] = None
+            store["balance_panel_mode"] = "mini"
+    save_data(data)
+
+
+def schedule_owner_total_window_delete(chat_id: int, message_id: int, delay: int = OWNER_TOTAL_WINDOW_DELETE_DELAY):
+    key = int(chat_id)
+
+    def _job():
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+        try:
+            store = get_chat_store(chat_id)
+            if store.get("total_msg_id") == message_id:
+                store["total_msg_id"] = None
+                save_data(data)
+        except Exception as e:
+            log_error(f"schedule_owner_total_window_delete({chat_id}): {e}")
+
+    prev = _total_message_timers.get(key)
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(delay, _job)
+    _total_message_timers[key] = t
+    t.start()
+
+
+def build_toggle_label(prefix: str, title: str, enabled: bool) -> str:
+    icon = "✅" if enabled else "❌"
+    return f"{prefix} {icon} {title}"
 
 def is_owner_chat(chat_id: int) -> bool:
     return bool(OWNER_ID and str(chat_id) == str(OWNER_ID))
@@ -380,11 +434,22 @@ def start_dozvon(source_chat_id: int, target_chat_id: int):
     threading.Thread(target=_run_dozvon_session, args=(session_key,), daemon=True).start()
 
 
+
 def build_forward_status_lines() -> list[str]:
     lines = []
     fr = data.get("forward_rules", {}) or {}
+    ff = data.get("forward_finance", {}) or {}
 
-    pair_keys = set()
+    seen_pairs = set()
+
+    def _sorted_pair(a: int, b: int):
+        name_a = get_chat_display_name(a).lower()
+        name_b = get_chat_display_name(b).lower()
+        if (name_a, a) <= (name_b, b):
+            return a, b
+        return b, a
+
+    all_ids = set()
     for src, dsts in fr.items():
         try:
             src_id = int(src)
@@ -395,47 +460,41 @@ def build_forward_status_lines() -> list[str]:
                 dst_id = int(dst)
             except Exception:
                 continue
-            if src_id == dst_id:
-                continue
-            left, right = sorted(
-                (src_id, dst_id),
-                key=lambda cid: (get_chat_display_name(cid).lower(), str(cid))
-            )
-            pair_keys.add((left, right))
+            all_ids.add((src_id, dst_id))
 
-    for left, right in sorted(pair_keys, key=lambda pair: (
-        get_chat_display_name(pair[0]).lower(),
-        get_chat_display_name(pair[1]).lower(),
-        str(pair[0]),
-        str(pair[1]),
-    )):
-        left_name = get_chat_display_name(left)
-        right_name = get_chat_display_name(right)
+    for src_id, dst_id in sorted(all_ids, key=lambda p: (_sorted_pair(p[0], p[1])[0], _sorted_pair(p[0], p[1])[1])):
+        left_id, right_id = _sorted_pair(src_id, dst_id)
+        pair_key = (left_id, right_id)
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
 
-        ab_exists = str(right) in (fr.get(str(left), {}) or {})
-        ba_exists = str(left) in (fr.get(str(right), {}) or {})
+        ab_on = str(right_id) in (fr.get(str(left_id), {}) or {})
+        ba_on = str(left_id) in (fr.get(str(right_id), {}) or {})
 
-        if ab_exists and ba_exists:
+        if ab_on and ba_on:
             mail_dir = "↔️"
-        elif ab_exists:
+        elif ab_on:
             mail_dir = "➡️"
-        elif ba_exists:
+        elif ba_on:
             mail_dir = "⬅️"
         else:
             continue
 
-        fin_ab = get_forward_finance(left, right)
-        fin_ba = get_forward_finance(right, left)
-        fin_mode = "ВКЛ ✅" if (fin_ab or fin_ba) else "ВЫКЛ ❌"
-        if fin_ab and fin_ba:
+        ab_fin = bool((ff.get(str(left_id), {}) or {}).get(str(right_id), False))
+        ba_fin = bool((ff.get(str(right_id), {}) or {}).get(str(left_id), False))
+        if ab_fin and ba_fin:
             fin_dir = "↔️"
-        elif fin_ab:
+        elif ab_fin:
             fin_dir = "➡️"
-        elif fin_ba:
+        elif ba_fin:
             fin_dir = "⬅️"
         else:
             fin_dir = "ВЫКЛ"
 
+        fin_mode = "ВКЛ ✅" if (is_finance_mode(left_id) and is_finance_mode(right_id)) else "ВЫКЛ ❌"
+        left_name = get_chat_display_name(left_id)
+        right_name = get_chat_display_name(right_id)
         lines.append(f"• {left_name}-📨{mail_dir}-💰{fin_mode}-💸{fin_dir}-{right_name}")
 
     if not lines:
@@ -473,74 +532,6 @@ def _cancel_timer(timer_map: dict, key):
             pass
 
 
-def schedule_total_message_close(chat_id: int, message_id: int, delay: int = TOTAL_WINDOW_DELETE_DELAY):
-    key = ("total", int(chat_id))
-    _cancel_timer(_total_message_close_timers, key)
-
-    def _job():
-        try:
-            bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-        try:
-            store = get_chat_store(chat_id)
-            if store.get("total_msg_id") == message_id:
-                store["total_msg_id"] = None
-                save_data(data)
-        except Exception as e:
-            log_error(f"schedule_total_message_close({chat_id}): {e}")
-
-    t = threading.Timer(delay, _job)
-    _total_message_close_timers[key] = t
-    t.start()
-
-
-def clear_chat_active_windows(chat_id: int):
-    store = get_chat_store(chat_id)
-    active = dict(get_or_create_active_windows(chat_id))
-    for day_key, mid in active.items():
-        if not mid:
-            continue
-        try:
-            bot.delete_message(chat_id, mid)
-        except Exception:
-            pass
-    data.setdefault("active_messages", {})[str(chat_id)] = {}
-    store["active_windows"] = {}
-    save_data(data)
-
-
-def build_quick_balance_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup()
-    known = collect_forward_menu_chats()
-
-    items = {}
-    for cid, ch in known.items():
-        try:
-            int_cid = int(cid)
-        except Exception:
-            continue
-        items[int_cid] = ch.get("title") or get_chat_display_name(int_cid)
-
-    if OWNER_ID:
-        try:
-            owner_id = int(OWNER_ID)
-            items.setdefault(owner_id, get_chat_display_name(owner_id))
-        except Exception:
-            pass
-
-    buttons = []
-    for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
-        buttons.append(types.InlineKeyboardButton(
-            f"📌 {title}",
-            callback_data=f"d:{day_key}:qb_pick_{int_cid}"
-        ))
-
-    add_buttons_in_rows(kb, buttons, 3)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
-    return kb
-
-
 def collapse_balance_panel(chat_id: int):
     store = get_chat_store(chat_id)
     panel_id = store.get("balance_panel_id")
@@ -576,7 +567,7 @@ def schedule_balance_panel_collapse(chat_id: int, delay: float = BALANCE_PANEL_C
 
 
 def send_minimized_balance_panel(chat_id: int):
-    if not is_finance_mode(chat_id):
+    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
 
     store = get_chat_store(chat_id)
@@ -601,7 +592,7 @@ def send_minimized_balance_panel(chat_id: int):
 
 
 def refresh_balance_panel_now(chat_id: int):
-    if not is_finance_mode(chat_id):
+    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
 
     store = get_chat_store(chat_id)
@@ -635,6 +626,8 @@ def refresh_balance_panel_now(chat_id: int):
 
 
 def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_REFRESH_DELAY):
+    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
+        return
     def _job():
         try:
             send_minimized_balance_panel(chat_id)
@@ -648,6 +641,8 @@ def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_RE
 
 
 def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | None = None):
+    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
+        return
     if not day_key:
         day_key = get_chat_store(chat_id).get("current_view_day") or today_key()
 
@@ -987,15 +982,15 @@ def get_chat_store(chat_id: int) -> dict:
             "current_view_day": today_key(),
             "finance_mode": False,
             "settings": {
-                "auto_add": True
+                "auto_add": True,
+                "quick_balance_enabled": False
             },
-            "quick_balance_only": False,
         }
     )
 
     store.setdefault("settings", {}).setdefault("auto_add", True)
+    store.setdefault("settings", {}).setdefault("quick_balance_enabled", False)
     store.setdefault("finance_mode", False)
-    store.setdefault("quick_balance_only", False)
 
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         store["settings"]["auto_add"] = True
@@ -3052,8 +3047,9 @@ def build_forward_target_menu(src_id: int):
     return kb
 
 
+
 def build_finance_toggle_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup()
+    kb = types.InlineKeyboardMarkup(row_width=2)
     known = collect_forward_menu_chats()
 
     items = {}
@@ -3073,15 +3069,49 @@ def build_finance_toggle_chat_menu(day_key: str):
 
     buttons = []
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
-        state_icon = "✅" if is_finance_mode(int_cid) else "❌"
+        enabled = is_finance_mode(int_cid)
         buttons.append(types.InlineKeyboardButton(
-            f"💰 {state_icon} {title}",
+            f'{"✅" if enabled else "❌"} {title}',
             callback_data=f"d:{day_key}:fw_finmode_pick_{int_cid}"
         ))
 
     add_buttons_in_rows(kb, buttons, 2)
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
     return kb
+
+
+def build_quick_balance_chat_menu(day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    known = collect_forward_menu_chats()
+
+    items = {}
+    for cid, ch in known.items():
+        try:
+            int_cid = int(cid)
+        except Exception:
+            continue
+        items[int_cid] = ch.get("title") or get_chat_display_name(int_cid)
+
+    if OWNER_ID:
+        try:
+            owner_id = int(OWNER_ID)
+            items.setdefault(owner_id, get_chat_display_name(owner_id))
+        except Exception:
+            pass
+
+    buttons = []
+    for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
+        enabled = is_quick_balance_enabled(int_cid)
+        buttons.append(types.InlineKeyboardButton(
+            f'{"✅" if enabled else "❌"} {title}',
+            callback_data=f"d:{day_key}:qb_pick_{int_cid}"
+        ))
+
+    add_buttons_in_rows(kb, buttons, 2)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
+    return kb
+
+
 def build_forward_mode_menu(A: int, B: int):
     """
     Меню выбора режима пересылки между чатами A и B.
@@ -3749,12 +3779,10 @@ def on_callback(call):
                 info2 = st.get("info", {})
                 title2 = info2.get("title") or f"Чат {cid_int}"
                 other_lines.append(f"   • {title2}: {fmt_num(bal)}")
-
             if other_lines:
                 lines.append("")
                 lines.append("• Другие чаты:")
                 lines.extend(other_lines)
-
             lines.append("")
             lines.append(f"• Всего по всем чатам: {fmt_num(total_all)}")
 
@@ -3767,16 +3795,15 @@ def on_callback(call):
                         message_id=total_msg_id,
                         parse_mode="HTML"
                     )
-                    schedule_total_message_close(chat_id, total_msg_id)
+                    schedule_owner_total_window_delete(chat_id, total_msg_id)
                     save_data(data)
                     return
                 except Exception as e:
                     log_error(f"total(owner): edit total_msg_id for chat {chat_id} failed: {e}")
-
             sent = bot.send_message(chat_id, text, parse_mode="HTML")
             store["total_msg_id"] = sent.message_id
             save_data(data)
-            schedule_total_message_close(chat_id, sent.message_id)
+            schedule_owner_total_window_delete(chat_id, sent.message_id)
             return
         if cmd == "info":
             try:
@@ -3915,22 +3942,10 @@ def on_callback(call):
                 return
             kb = types.InlineKeyboardMarkup(row_width=2)
             add_buttons_in_rows(kb, [
-                types.InlineKeyboardButton(
-                    "📨 По чатам",
-                    callback_data=f"d:{day_key}:forward_old"
-                ),
-                types.InlineKeyboardButton(
-                    "🔀 Пары A ↔ B",
-                    callback_data="fw_open"
-                ),
-                types.InlineKeyboardButton(
-                    "💰 Фин режим",
-                    callback_data=f"d:{day_key}:forward_finmode_menu"
-                ),
-                types.InlineKeyboardButton(
-                    "📌 Быстрый остаток",
-                    callback_data=f"d:{day_key}:forward_quick_menu"
-                ),
+                types.InlineKeyboardButton("📨 По чатам", callback_data=f"d:{day_key}:forward_old"),
+                types.InlineKeyboardButton("🔀 Пары A ↔ B", callback_data="fw_open"),
+                types.InlineKeyboardButton("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
+                types.InlineKeyboardButton("🏦 Быстрый остаток", callback_data=f"d:{day_key}:quick_balance_menu"),
             ], 2)
             kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
             safe_edit(
@@ -3961,45 +3976,35 @@ def on_callback(call):
                 reply_markup=kb
             )
             return
-        if cmd == "forward_quick_menu":
+        if cmd == "quick_balance_menu":
             kb = build_quick_balance_chat_menu(day_key)
             safe_edit(
                 bot,
                 call,
-                build_forward_status_text("Выберите чат для режима быстрого остатка:"),
+                build_forward_status_text("Быстрый остаток:\nВыберите чат для включения или выключения окна."),
                 reply_markup=kb
             )
             return
         if cmd.startswith("qb_pick_"):
             tgt = int(cmd.split("_")[-1])
-            target_store = get_chat_store(tgt)
-            set_finance_mode(tgt, True)
-            target_store["quick_balance_only"] = True
-            save_data(data)
-            clear_chat_active_windows(tgt)
-            send_minimized_balance_panel(tgt)
+            set_quick_balance_enabled(tgt, not is_quick_balance_enabled(tgt))
             kb = build_quick_balance_chat_menu(day_key)
             safe_edit(
                 bot,
                 call,
-                build_forward_status_text(f"📌 Быстрый остаток включён для {get_chat_display_name(tgt)}"),
+                build_forward_status_text("Быстрый остаток:\nВыберите чат для включения или выключения окна."),
                 reply_markup=kb
             )
             return
         if cmd.startswith("fw_finmode_pick_"):
             tgt = int(cmd.split("_")[-1])
-            owner_store = get_chat_store(chat_id)
-            owner_store["finance_toggle_wait"] = {"target_chat_id": tgt, "day_key": day_key}
+            set_finance_mode(tgt, not is_finance_mode(tgt))
             save_data(data)
-            kb = types.InlineKeyboardMarkup()
-            kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_finmode_menu"))
+            kb = build_finance_toggle_chat_menu(day_key)
             safe_edit(
                 bot,
                 call,
-                build_forward_status_text(
-                    f"Напишите ДА, чтобы переключить финансовый режим для {get_chat_display_name(tgt)}.\n"
-                    f"Сейчас: {format_finance_mode_label(tgt)}"
-                ),
+                build_forward_status_text("Выберите чат для переключения финансового режима:"),
                 reply_markup=kb
             )
             return
@@ -4326,11 +4331,6 @@ def update_or_send_day_window(chat_id: int, day_key: str):
         backup_window_for_owner(chat_id, day_key)
         return
 
-    store = get_chat_store(chat_id)
-    if store.get("quick_balance_only"):
-        schedule_balance_panel_refresh(chat_id, 0.2)
-        return
-
     lock = window_locks[(chat_id, day_key)]
 
     with lock:
@@ -4442,6 +4442,8 @@ def refresh_total_message_if_any(chat_id: int):
             message_id=msg_id,
             parse_mode="HTML"
         )
+        if is_owner_chat(chat_id):
+            schedule_owner_total_window_delete(chat_id, msg_id)
     except Exception as e:
         log_error(f"refresh_total_message_if_any({chat_id}): {e}")
         store["total_msg_id"] = None
@@ -5109,7 +5111,7 @@ _finalize_timers = {}
 _backup_timers = {}
 _balance_panel_refresh_timers = {}
 _balance_panel_collapse_timers = {}
-_total_message_close_timers = {}
+_total_message_timers = {}
 
 def schedule_backup_flush(chat_id: int, delay: float = 8.0):
     def _job():
@@ -5689,12 +5691,11 @@ def telegram_webhook():
     return "OK", 200
         
 def set_webhook():
-    base_url = (WEBHOOK_URL or APP_URL).strip()
-    if not base_url:
-        log_info("WEBHOOK_URL/AP_URL не указан — работаем в режиме polling.")
+    if not WEBHOOK_URL:
+        log_info("WEBHOOK_URL не указан — работаем в режиме polling.")
         return
 
-    wh_url = base_url.rstrip("/") + f"/{BOT_TOKEN}"
+    wh_url = WEBHOOK_URL.rstrip("/") + f"/{BOT_TOKEN}"
 
     bot.remove_webhook()
     time.sleep(0.5)
