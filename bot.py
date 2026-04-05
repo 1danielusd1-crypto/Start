@@ -25,7 +25,7 @@ window_locks = defaultdict(threading.Lock)
 BOT_TOKEN = os.getenv("B_T", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
 APP_URL = os.getenv("AP_URL", "").strip()
-WEBHOOK_URL = os.getenv("WEBHOK_URL", AP_URL).strip()
+WEBHOOK_URL = os.getenv("WEBHOK_URL", "AP_URL").strip()
 PORT = int(os.getenv("PORT", "5000"))
 BACKUP_CHAT_ID = os.getenv("BAKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
