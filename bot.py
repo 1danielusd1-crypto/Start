@@ -995,12 +995,11 @@ def get_chat_store(chat_id: int) -> dict:
 
     return store
 
-def collect_forward_menu_chats(include_owner: bool = False) -> dict:
+def collect_forward_menu_chats() -> dict:
     """
     Собирает список чатов для меню пересылки:
     1) из known_chats владельца
     2) из data["chats"] как резерв
-    3) по желанию добавляет владельца в общий список
     """
     result = {}
 
@@ -1019,7 +1018,7 @@ def collect_forward_menu_chats(include_owner: bool = False) -> dict:
 
     try:
         for cid, store in (data.get("chats", {}) or {}).items():
-            if not include_owner and OWNER_ID and str(cid) == str(OWNER_ID):
+            if OWNER_ID and str(cid) == str(OWNER_ID):
                 continue
 
             info = store.get("info", {}) or {}
@@ -1032,17 +1031,6 @@ def collect_forward_menu_chats(include_owner: bool = False) -> dict:
             }
     except Exception as e:
         log_error(f"collect_forward_menu_chats data.chats: {e}")
-
-    if include_owner and OWNER_ID:
-        try:
-            owner_id = int(OWNER_ID)
-            result[str(owner_id)] = {
-                "title": get_chat_display_name(owner_id),
-                "username": get_chat_store(owner_id).get("info", {}).get("username"),
-                "type": get_chat_store(owner_id).get("info", {}).get("type"),
-            }
-        except Exception as e:
-            log_error(f"collect_forward_menu_chats owner: {e}")
 
     return result
 
@@ -2219,24 +2207,6 @@ def get_forward_links(src_chat_id: int, src_msg_id: int):
     return list(forward_map.get((int(src_chat_id), int(src_msg_id)), []))
 
 
-def _resolve_target_reply_message_id(source_chat_id: int, msg, dst_chat_id: int):
-    reply_msg = getattr(msg, "reply_to_message", None)
-    if not reply_msg:
-        return None
-    try:
-        src_reply_id = int(reply_msg.message_id)
-    except Exception:
-        return None
-
-    for linked_dst_chat_id, linked_dst_msg_id in get_forward_links(source_chat_id, src_reply_id):
-        try:
-            if int(linked_dst_chat_id) == int(dst_chat_id):
-                return int(linked_dst_msg_id)
-        except Exception:
-            continue
-    return None
-
-
 def delete_forward_copies_for_source(src_chat_id: int, src_msg_id: int):
     key = (int(src_chat_id), int(src_msg_id))
     links = list(forward_map.get(key, []))
@@ -2379,7 +2349,8 @@ def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_m
         except Exception:
             pass
 
-        sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=_resolve_target_reply_message_id(source_chat_id, msg, dst_chat_id))
+        reply_to_message_id = _get_target_reply_message_id(source_chat_id, msg, dst_chat_id)
+        sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=reply_to_message_id)
         new_dst_msg_id = sent_msg.message_id
         _replace_forward_link_pair(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id, dst_chat_id, new_dst_msg_id)
 
@@ -2426,6 +2397,86 @@ def _message_text_for_finance(msg) -> str:
     return (getattr(msg, "text", None) or getattr(msg, "caption", None) or "").strip()
 
 
+def _get_reply_source_message_id(msg):
+    try:
+        reply_msg = getattr(msg, "reply_to_message", None)
+        if reply_msg and getattr(reply_msg, "message_id", None):
+            return int(reply_msg.message_id)
+    except Exception:
+        pass
+    return None
+
+
+def _get_target_reply_message_id(source_chat_id: int, msg, dst_chat_id: int):
+    reply_src_msg_id = _get_reply_source_message_id(msg)
+    if not reply_src_msg_id:
+        return None
+
+    for linked_dst_chat_id, linked_dst_msg_id in get_forward_links(source_chat_id, reply_src_msg_id):
+        try:
+            if int(linked_dst_chat_id) == int(dst_chat_id):
+                return int(linked_dst_msg_id)
+        except Exception:
+            continue
+    return None
+
+
+def _copy_message_with_optional_reply(dst_chat_id: int, source_chat_id: int, source_msg_id: int, reply_to_message_id: int | None = None):
+    if reply_to_message_id:
+        reply_params_cls = getattr(types, "ReplyParameters", None)
+        if reply_params_cls is not None:
+            try:
+                return bot.copy_message(
+                    dst_chat_id,
+                    source_chat_id,
+                    source_msg_id,
+                    reply_parameters=reply_params_cls(int(reply_to_message_id))
+                )
+            except TypeError:
+                pass
+            except Exception:
+                pass
+        try:
+            return bot.copy_message(
+                dst_chat_id,
+                source_chat_id,
+                source_msg_id,
+                reply_to_message_id=int(reply_to_message_id)
+            )
+        except TypeError:
+            pass
+        except Exception:
+            pass
+    return bot.copy_message(dst_chat_id, source_chat_id, source_msg_id)
+
+
+def _send_media_group_with_optional_reply(dst_chat_id: int, media, reply_to_message_id: int | None = None):
+    if reply_to_message_id:
+        reply_params_cls = getattr(types, "ReplyParameters", None)
+        if reply_params_cls is not None:
+            try:
+                return bot.send_media_group(
+                    dst_chat_id,
+                    media,
+                    reply_parameters=reply_params_cls(int(reply_to_message_id))
+                )
+            except TypeError:
+                pass
+            except Exception:
+                pass
+        try:
+            return bot.send_media_group(
+                dst_chat_id,
+                media,
+                reply_to_message_id=int(reply_to_message_id)
+            )
+        except TypeError:
+            pass
+        except Exception:
+            pass
+    return bot.send_media_group(dst_chat_id, media)
+
+
 def _build_input_media_from_message(msg):
     caption = getattr(msg, "caption", None)
     ct = getattr(msg, "content_type", None)
@@ -2442,56 +2493,52 @@ def _build_input_media_from_message(msg):
     return None
 
 
-def _fallback_send_single(dst_chat_id: int, msg, reply_to_message_id=None):
+def _fallback_send_single(dst_chat_id: int, msg, reply_to_message_id: int | None = None):
     ct = getattr(msg, "content_type", None)
-    reply_kwargs = {}
+    kwargs = {}
     if reply_to_message_id:
-        reply_kwargs["reply_to_message_id"] = int(reply_to_message_id)
+        kwargs["reply_to_message_id"] = int(reply_to_message_id)
 
     if ct == "text":
-        return bot.send_message(dst_chat_id, msg.text or "", **reply_kwargs)
+        return bot.send_message(dst_chat_id, msg.text or "", **kwargs)
     if ct == "photo" and getattr(msg, "photo", None):
-        return bot.send_photo(dst_chat_id, msg.photo[-1].file_id, caption=getattr(msg, "caption", None), **reply_kwargs)
+        return bot.send_photo(dst_chat_id, msg.photo[-1].file_id, caption=getattr(msg, "caption", None), **kwargs)
     if ct == "video" and getattr(msg, "video", None):
-        return bot.send_video(dst_chat_id, msg.video.file_id, caption=getattr(msg, "caption", None), **reply_kwargs)
+        return bot.send_video(dst_chat_id, msg.video.file_id, caption=getattr(msg, "caption", None), **kwargs)
     if ct == "audio" and getattr(msg, "audio", None):
-        return bot.send_audio(dst_chat_id, msg.audio.file_id, caption=getattr(msg, "caption", None), **reply_kwargs)
+        return bot.send_audio(dst_chat_id, msg.audio.file_id, caption=getattr(msg, "caption", None), **kwargs)
     if ct == "document" and getattr(msg, "document", None):
-        return bot.send_document(dst_chat_id, msg.document.file_id, caption=getattr(msg, "caption", None), **reply_kwargs)
+        return bot.send_document(dst_chat_id, msg.document.file_id, caption=getattr(msg, "caption", None), **kwargs)
     if ct == "voice" and getattr(msg, "voice", None):
-        return bot.send_voice(dst_chat_id, msg.voice.file_id, caption=getattr(msg, "caption", None), **reply_kwargs)
+        return bot.send_voice(dst_chat_id, msg.voice.file_id, caption=getattr(msg, "caption", None), **kwargs)
     if ct == "video_note" and getattr(msg, "video_note", None):
-        return bot.send_video_note(dst_chat_id, msg.video_note.file_id, **reply_kwargs)
+        return bot.send_video_note(dst_chat_id, msg.video_note.file_id, **kwargs)
     if ct == "sticker" and getattr(msg, "sticker", None):
-        return bot.send_sticker(dst_chat_id, msg.sticker.file_id, **reply_kwargs)
+        return bot.send_sticker(dst_chat_id, msg.sticker.file_id, **kwargs)
     if ct == "animation" and getattr(msg, "animation", None):
-        return bot.send_animation(dst_chat_id, msg.animation.file_id, caption=getattr(msg, "caption", None), **reply_kwargs)
+        return bot.send_animation(dst_chat_id, msg.animation.file_id, caption=getattr(msg, "caption", None), **kwargs)
     if ct == "location" and getattr(msg, "location", None):
-        return bot.send_location(dst_chat_id, msg.location.latitude, msg.location.longitude, **reply_kwargs)
+        return bot.send_location(dst_chat_id, msg.location.latitude, msg.location.longitude, **kwargs)
     if ct == "venue" and getattr(msg, "venue", None):
-        return bot.send_venue(dst_chat_id, msg.venue.location.latitude, msg.venue.location.longitude, msg.venue.title, msg.venue.address, foursquare_id=getattr(msg.venue, "foursquare_id", None), **reply_kwargs)
+        return bot.send_venue(dst_chat_id, msg.venue.location.latitude, msg.venue.location.longitude, msg.venue.title, msg.venue.address, foursquare_id=getattr(msg.venue, "foursquare_id", None), **kwargs)
     if ct == "contact" and getattr(msg, "contact", None):
-        return bot.send_contact(dst_chat_id, msg.contact.phone_number, msg.contact.first_name, last_name=getattr(msg.contact, "last_name", None), **reply_kwargs)
+        return bot.send_contact(dst_chat_id, msg.contact.phone_number, msg.contact.first_name, last_name=getattr(msg.contact, "last_name", None), **kwargs)
     if ct == "dice" and getattr(msg, "dice", None):
-        return bot.send_dice(dst_chat_id, emoji=getattr(msg.dice, "emoji", None), **reply_kwargs)
+        return bot.send_dice(dst_chat_id, emoji=getattr(msg.dice, "emoji", None), **kwargs)
     if ct == "poll" and getattr(msg, "poll", None):
         options = [opt.text for opt in getattr(msg.poll, "options", [])]
-        return bot.send_poll(dst_chat_id, msg.poll.question, options, is_anonymous=getattr(msg.poll, "is_anonymous", True), allows_multiple_answers=getattr(msg.poll, "allows_multiple_answers", False), type=getattr(msg.poll, "type", "regular"), **reply_kwargs)
+        return bot.send_poll(dst_chat_id, msg.poll.question, options, is_anonymous=getattr(msg.poll, "is_anonymous", True), allows_multiple_answers=getattr(msg.poll, "allows_multiple_answers", False), type=getattr(msg.poll, "type", "regular"), **kwargs)
     raise RuntimeError(f"Unsupported fallback content_type={ct}")
 
-def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool):
-    target_reply_id = _resolve_target_reply_message_id(source_chat_id, msg, dst_chat_id)
 
+def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool):
+    reply_to_message_id = _get_target_reply_message_id(source_chat_id, msg, dst_chat_id)
     try:
-        if target_reply_id:
-            sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=target_reply_id)
-            dst_msg_id = sent_msg.message_id
-        else:
-            sent = bot.copy_message(dst_chat_id, source_chat_id, msg.message_id)
-            dst_msg_id = sent.message_id
+        sent = _copy_message_with_optional_reply(dst_chat_id, source_chat_id, msg.message_id, reply_to_message_id)
+        dst_msg_id = sent.message_id
     except Exception as e_copy:
         try:
-            sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=target_reply_id)
+            sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=reply_to_message_id)
             dst_msg_id = sent_msg.message_id
         except Exception as e_send:
             _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e_send)
@@ -2508,6 +2555,7 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             log_error(f"_forward_single_to_target finance sync {source_chat_id}->{dst_chat_id}: {e}")
 
     return dst_msg_id
+
 
 def _flush_media_group_forward(source_chat_id: int, media_group_id: str):
     cache_key = (int(source_chat_id), str(media_group_id))
@@ -2539,7 +2587,8 @@ def _flush_media_group_forward(source_chat_id: int, media_group_id: str):
         sent_ids = []
         if media:
             try:
-                sent_group = bot.send_media_group(dst_chat_id, media)
+                reply_to_message_id = _get_target_reply_message_id(source_chat_id, messages[0], dst_chat_id)
+                sent_group = _send_media_group_with_optional_reply(dst_chat_id, media, reply_to_message_id)
                 sent_ids = [m.message_id for m in sent_group]
             except Exception as e:
                 log_error(f"_flush_media_group_forward send_media_group failed {source_chat_id}->{dst_chat_id}: {e}")
@@ -2959,7 +3008,105 @@ def build_cancel_edit_keyboard(day_key: str):
     return kb
 
 def build_forward_chat_list(day_key: str, chat_id: int):
-    return build_forward_source_menu()
+    kb = types.InlineKeyboardMarkup()
+    if not OWNER_ID:
+        return kb
+
+    known = collect_forward_menu_chats()
+    rules = data.get("forward_rules", {})
+    buttons = []
+
+    for cid, info in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
+        try:
+            int_cid = int(cid)
+        except Exception:
+            continue
+
+        if int_cid == chat_id:
+            continue
+
+        title = info.get("title") or f"Чат {cid}"
+        cur_mode = rules.get(str(chat_id), {}).get(cid)
+        if cur_mode == "oneway_to":
+            label = f"{title} ➡️"
+        elif cur_mode == "oneway_from":
+            label = f"{title} ⬅️"
+        elif cur_mode == "twoway":
+            label = f"{title} ↔️"
+        else:
+            label = title
+
+        buttons.append(types.InlineKeyboardButton(label, callback_data=f"d:{day_key}:fw_cfg_{cid}"))
+
+    add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
+    return kb
+def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int):
+    owner_title = get_chat_display_name(owner_chat)
+    target_title = get_chat_display_name(target_chat)
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    fr = data.get("forward_rules", {}) or {}
+
+    ab_link = str(target_chat) in fr.get(str(owner_chat), {})
+    ba_link = str(owner_chat) in fr.get(str(target_chat), {})
+    two_on = ab_link and ba_link
+
+    ab_state = "ВКЛ ✅" if ab_link else "ВЫКЛ ❌"
+    ba_state = "ВКЛ ✅" if ba_link else "ВЫКЛ ❌"
+    two_state = "ВКЛ ✅" if two_on else "ВЫКЛ ❌"
+
+    ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_chat) else "ВЫКЛ ❌"
+    ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, owner_chat) else "ВЫКЛ ❌"
+
+    kb.row(types.InlineKeyboardButton(
+        f"➡️ {ab_state} {owner_title} → {target_title}",
+        callback_data=f"d:{day_key}:fw_one_{target_chat}"
+    ))
+    kb.row(types.InlineKeyboardButton(
+        f"⬅️ {ba_state} {target_title} → {owner_title}",
+        callback_data=f"d:{day_key}:fw_rev_{target_chat}"
+    ))
+    kb.row(types.InlineKeyboardButton(
+        f"↔️ {two_state} {owner_title} ⇄ {target_title}",
+        callback_data=f"d:{day_key}:fw_two_{target_chat}"
+    ))
+    kb.row(types.InlineKeyboardButton(
+        f"💰 {ab_fin} Учёт {owner_title} → {target_title}",
+        callback_data=f"d:{day_key}:fw_fin_ab_{target_chat}"
+    ))
+    kb.row(types.InlineKeyboardButton(
+        f"💰 {ba_fin} Учёт {target_title} → {owner_title}",
+        callback_data=f"d:{day_key}:fw_fin_ba_{target_chat}"
+    ))
+    kb.row(types.InlineKeyboardButton(
+        "❌ Удалить все связи",
+        callback_data=f"d:{day_key}:fw_del_{target_chat}"
+    ))
+    kb.row(types.InlineKeyboardButton(
+        "🔙 Назад",
+        callback_data=f"d:{day_key}:forward_old"
+    ))
+    return kb
+def collect_forward_pair_menu_items(include_owner: bool = True):
+    items = {}
+    known = collect_forward_menu_chats()
+
+    for cid, ch in known.items():
+        try:
+            int_cid = int(cid)
+        except Exception:
+            continue
+        items[int_cid] = ch.get("title") or get_chat_display_name(int_cid)
+
+    if include_owner and OWNER_ID:
+        try:
+            owner_id = int(OWNER_ID)
+            items.setdefault(owner_id, get_chat_display_name(owner_id))
+        except Exception:
+            pass
+
+    return sorted(items.items(), key=lambda x: x[1].lower())
 
 
 def build_forward_source_menu():
@@ -2967,12 +3114,10 @@ def build_forward_source_menu():
     if not OWNER_ID:
         return kb
 
-    known = collect_forward_menu_chats(include_owner=True)
-    buttons = []
-
-    for cid, ch in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
-        title = ch.get("title") or f"Чат {cid}"
-        buttons.append(types.InlineKeyboardButton(title, callback_data=f"fw_src:{cid}"))
+    buttons = [
+        types.InlineKeyboardButton(title, callback_data=f"fw_src:{cid}")
+        for cid, title in collect_forward_pair_menu_items(include_owner=True)
+    ]
 
     add_buttons_in_rows(kb, buttons, 3)
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root"))
@@ -2984,23 +3129,26 @@ def build_forward_target_menu(src_id: int):
     if not OWNER_ID:
         return kb
 
-    known = collect_forward_menu_chats(include_owner=True)
     buttons = []
-
-    for cid, ch in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
-        try:
-            int_cid = int(cid)
-        except Exception:
+    for cid, title in collect_forward_pair_menu_items(include_owner=True):
+        if int(cid) == int(src_id):
             continue
-
-        if int_cid == src_id:
-            continue
-
-        title = ch.get("title") or f"Чат {cid}"
         buttons.append(types.InlineKeyboardButton(title, callback_data=f"fw_tgt:{src_id}:{cid}"))
 
     add_buttons_in_rows(kb, buttons, 3)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src"))
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fw_back_tgt:{src_id}"))
+    return kb
+
+
+def build_forward_root_menu(day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    add_buttons_in_rows(kb, [
+        types.InlineKeyboardButton("🔀 Чаты / пары", callback_data="fw_open"),
+        types.InlineKeyboardButton("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
+        types.InlineKeyboardButton("🏦 Быстрый остаток", callback_data=f"d:{day_key}:quick_balance_menu"),
+        types.InlineKeyboardButton("🪟 Фин окна чатов", callback_data=f"d:{day_key}:fin_windows_menu"),
+    ], 2)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
     return kb
 
 
@@ -3510,27 +3658,18 @@ def on_callback(call):
                 safe_edit(
                     bot,
                     call,
-                    build_forward_status_text("Выберите первый чат пары:"),
+                    build_forward_status_text("Выберите чат A:"),
                     reply_markup=kb
                 )
                 return
             if data_str == "fw_back_root":
                 owner_store = get_chat_store(int(OWNER_ID))
                 day_key = owner_store.get("current_view_day", today_key())
-                kb = types.InlineKeyboardMarkup(row_width=2)
-                add_buttons_in_rows(kb, [
-                    types.InlineKeyboardButton("📨 По чатам", callback_data=f"d:{day_key}:forward_old"),
-                    types.InlineKeyboardButton("🔀 Пары A ↔ B", callback_data="fw_open"),
-                    types.InlineKeyboardButton("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
-                    types.InlineKeyboardButton("🏦 Быстрый остаток", callback_data=f"d:{day_key}:quick_balance_menu"),
-                    types.InlineKeyboardButton("🪟 Фин окна чатов", callback_data=f"d:{day_key}:fin_windows_menu"),
-                ], 2)
-                kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
                 safe_edit(
                     bot,
                     call,
                     build_forward_status_text("Меню пересылки:\nВыберите режим:"),
-                    reply_markup=kb
+                    reply_markup=build_forward_root_menu(day_key)
                 )
                 return
             if data_str == "fw_back_src":
@@ -3979,32 +4118,22 @@ def on_callback(call):
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 send_and_auto_delete(chat_id, "Меню доступно только владельцу.", HELPER_DELETE_DELAY)
                 return
-            kb = types.InlineKeyboardMarkup(row_width=2)
-            add_buttons_in_rows(kb, [
-                types.InlineKeyboardButton("📨 По чатам", callback_data=f"d:{day_key}:forward_old"),
-                types.InlineKeyboardButton("🔀 Пары A ↔ B", callback_data="fw_open"),
-                types.InlineKeyboardButton("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
-                types.InlineKeyboardButton("🏦 Быстрый остаток", callback_data=f"d:{day_key}:quick_balance_menu"),
-                types.InlineKeyboardButton("🪟 Фин окна чатов", callback_data=f"d:{day_key}:fin_windows_menu"),
-            ], 2)
-            kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
             safe_edit(
                 bot,
                 call,
                 build_forward_status_text("Меню пересылки:\nВыберите режим:"),
-                reply_markup=kb
+                reply_markup=build_forward_root_menu(day_key)
             )
             return
         if cmd == "forward_old":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 send_and_auto_delete(chat_id, "Меню доступно только владельцу.", HELPER_DELETE_DELAY)
                 return
-            kb = build_forward_chat_list(day_key, chat_id)
             safe_edit(
                 bot,
                 call,
-                build_forward_status_text("Выберите чат, для которого хотите настроить пересылку:"),
-                reply_markup=kb
+                build_forward_status_text("Выберите чат A:"),
+                reply_markup=build_forward_source_menu()
             )
             return
         if cmd == "forward_finmode_menu":
@@ -5830,7 +5959,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f" 🔥  Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🔥 🐙 Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
