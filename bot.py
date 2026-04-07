@@ -5,12 +5,18 @@ import csv
 import re
 import html
 import logging
-import threadin
+import threading
+import time
+
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+import requests
 import telebot
 from telebot import types
 from telebot.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo, InputMediaAudio, InputMediaAnimation
 
-from flask import Flask, rЯequest
+from flask import Flask, request
 
 
 from collections import defaultdict
@@ -5824,7 +5830,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"🔥 Бот запущен (версия {VERSION}).\n"
+                    f" 🔥  Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
