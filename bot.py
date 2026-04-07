@@ -5,7 +5,7 @@ import csv
 import re
 import html
 import logging
-import threadinч
+import threadin
 import telebot
 from telebot import types
 from telebot.types import InputMediaDocument, InputMediaPhoto, InputMediaVideo, InputMediaAudio, InputMediaAnimation
