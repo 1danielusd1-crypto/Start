@@ -30,7 +30,7 @@ PORT = int(os.getenv("PORT", "5000"))
 BACKUP_CHAT_ID = os.getenv("BAKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "bot_16_qb_reply_pairs_fixed 🏝️"
+VERSION = "bot_16_qb_reply_pairs_fixed_v2 🏝️"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
@@ -529,28 +529,59 @@ def build_forward_status_text(title: str | None = None) -> str:
     lines.extend(build_forward_status_lines())
     return "\n".join(lines)
 
+def _find_forward_origin_by_copied_message(chat_id: int, msg_id: int):
+    """
+    Ищет origin (source_chat_id, source_msg_id) по копии сообщения в конкретном чате.
+    Нужно для правильного reply, когда пользователь отвечает на сообщение,
+    которое бот ранее переслал из другого чата.
+    """
+    try:
+        for (src_chat_id, src_msg_id), pairs in forward_map.items():
+            for pair_chat_id, pair_msg_id in pairs:
+                if int(pair_chat_id) == int(chat_id) and int(pair_msg_id) == int(msg_id):
+                    return int(src_chat_id), int(src_msg_id)
+    except Exception:
+        pass
+    return None, None
+
+
 def resolve_reply_target_message_id(source_chat_id: int, reply_to_message_id: int | None, dst_chat_id: int):
+    """
+    Возвращает message_id, к которому нужно привязать reply в целевом чате.
+
+    Поддерживает оба сценария:
+    1) reply на исходное сообщение текущего чата
+    2) reply на сообщение, которое бот переслал сюда из другого чата
+    """
     if not reply_to_message_id:
         return None
 
+    source_chat_id = int(source_chat_id)
+    dst_chat_id = int(dst_chat_id)
+    reply_to_message_id = int(reply_to_message_id)
+
+    # Сценарий 1: отвечают на оригинал в текущем чате.
+    # Тогда в целевом чате нужен его mirror/copy.
     try:
         for link_dst_chat_id, link_dst_msg_id in get_forward_links(source_chat_id, reply_to_message_id):
-            if int(link_dst_chat_id) == int(dst_chat_id):
+            if int(link_dst_chat_id) == dst_chat_id:
                 return int(link_dst_msg_id)
     except Exception:
         pass
 
+    # Сценарий 2: отвечают на бот-копию, пришедшую из другого чата.
+    # Тогда надо найти origin и:
+    #   • если целевой чат = origin chat → reply на оригинал
+    #   • если целевой чат другой → reply на соответствующую копию origin-сообщения
     try:
-        for (_src_chat_id, _src_msg_id), pairs in forward_map.items():
-            hit_in_source = False
-            dst_hit = None
-            for pair_chat_id, pair_msg_id in pairs:
-                if int(pair_chat_id) == int(source_chat_id) and int(pair_msg_id) == int(reply_to_message_id):
-                    hit_in_source = True
-                if int(pair_chat_id) == int(dst_chat_id):
-                    dst_hit = int(pair_msg_id)
-            if hit_in_source and dst_hit:
-                return dst_hit
+        origin_chat_id, origin_msg_id = _find_forward_origin_by_copied_message(source_chat_id, reply_to_message_id)
+        if origin_chat_id is not None and origin_msg_id is not None:
+            if dst_chat_id == int(origin_chat_id):
+                return int(origin_msg_id)
+
+            for link_dst_chat_id, link_dst_msg_id in get_forward_links(origin_chat_id, origin_msg_id):
+                if int(link_dst_chat_id) == dst_chat_id:
+                    return int(link_dst_msg_id)
     except Exception:
         pass
 
@@ -5995,7 +6026,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🔥 🐙 Бот запущен (версия {VERSION}).\n"
+                    f"_🐙_ Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
