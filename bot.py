@@ -30,7 +30,7 @@ PORT = int(os.getenv("PORT", "5000"))
 BACKUP_CHAT_ID = os.getenv("BAKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "bot_16_qb_finwindows_fixed_v3 🏝️"
+VERSION = "bot_16_qb_finwindows_fixed_v3 (1) 🏝️"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 60
 DATA_FILE = "data.json"
