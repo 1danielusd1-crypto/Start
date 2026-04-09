@@ -128,14 +128,14 @@ def fmt_num_compact(v) -> str:
 
 
 def fmt_csv_amount(v) -> str:
-    """CSV-представление суммы без минуса; доход с префиксом «Плюс»."""
+    """CSV-представление суммы без минуса; доход с префиксом «+»."""
     try:
         v = float(v or 0)
     except Exception:
         return str(v)
     body = fmt_num_compact(abs(v))
     if v > 0:
-        return f"Плюс {body}"
+        return f"+ {body}"
     return body
 
 
@@ -145,7 +145,7 @@ def parse_csv_amount(raw) -> float:
     if not s:
         return 0.0
     low = s.lower()
-    if low.startswith("плюс"):
+    if low.startswith("+"):
         num = s[5:].strip()
         return abs(parse_amount("+" + num))
     if s.startswith(("+", "-", "–")):
