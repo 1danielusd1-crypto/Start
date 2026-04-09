@@ -24,15 +24,18 @@ from collections import defaultdict
 window_locks = defaultdict(threading.Lock)
 BOT_TOKEN = os.getenv("B_T", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
-APP_URL = os.getenv("AP_URL", "").strip()
-WEBHOOK_URL = os.getenv("WEBHOK_URL", "AP_URL").strip()
-PORT = int(os.getenv("PORT", "5000"))
-BACKUP_CHAT_ID = os.getenv("BAKUP_CHAT_ID", "").strip()
+APP_URL = os.getenv("APP_URL", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip()
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip() or APP_URL
+try:
+    PORT = int(os.getenv("PORT", "5000"))
+except Exception:
+    PORT = 5000
+BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
-VERSION = "bot_16_qb_reply_pairs_fixed_v2 🏝️"
+    raise RuntimeError("B_T is not set")
+VERSION = "Скачать bot_16_qb_reply_pairs_fixed_v2_render_fixed_v2.py 🏝️"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
-KEEP_ALIVE_INTERVAL_SECONDS = 60
+KEEP_ALIVE_INTERVAL_SECONDS = 30
 DATA_FILE = "data.json"
 CSV_FILE = "data.csv"
 CSV_META_FILE = "csv_meta.json"
@@ -122,6 +125,32 @@ def fmt_num_compact(v) -> str:
         return s
     except Exception:
         return str(v)
+
+
+def fmt_csv_amount(v) -> str:
+    """CSV-представление суммы без минуса; доход с префиксом «Плюс»."""
+    try:
+        v = float(v or 0)
+    except Exception:
+        return str(v)
+    body = fmt_num_compact(abs(v))
+    if v > 0:
+        return f"Плюс {body}"
+    return body
+
+
+def parse_csv_amount(raw) -> float:
+    """Понимает новый CSV-формат и старые +/- значения."""
+    s = str(raw or "").strip()
+    if not s:
+        return 0.0
+    low = s.lower()
+    if low.startswith("плюс"):
+        num = s[5:].strip()
+        return abs(parse_amount("+" + num))
+    if s.startswith(("+", "-", "–")):
+        return parse_amount(s)
+    return -abs(parse_amount(s))
 
 
 def center_text(text: str, width: int) -> str:
@@ -1140,9 +1169,9 @@ def save_chat_json(chat_id: int):
                 recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
                 for r in recs_sorted:
                     w.writerow([
-                        dk,  # дата
-                        fmt_num_compact(r.get("amount")),  # сумма без .0
-                        r.get("note", "")  # описание
+                        dk,
+                        fmt_csv_amount(r.get("amount")),
+                        r.get("note", "")
                     ])
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
@@ -1241,7 +1270,7 @@ def restore_from_csv(chat_id: int, path: str):
         for row in r:
             try:
                 dk = (row.get("day_key") or today_key()).strip()
-                amt = float(row.get("amount") or 0)
+                amt = parse_csv_amount(row.get("amount") or 0)
                 note = (row.get("note") or "").strip()
                 owner = row.get("owner") or ""
                 ts = (row.get("timestamp") or now_local().isoformat(timespec="seconds")).strip()
@@ -1853,9 +1882,9 @@ def export_global_csv(d: dict):
                 for dk, records in cdata.get("daily_records", {}).items():
                     for r in records:
                         w.writerow([
-                            dk,  # дата
-                            fmt_num_compact(r.get("amount")),  # сумма без .0
-                            r.get("note", "")  # описание
+                            dk,
+                            fmt_csv_amount(r.get("amount")),
+                            r.get("note", "")
                         ])
     except Exception as e:
         log_error(f"export_global_csv: {e}")
@@ -3260,15 +3289,19 @@ def build_quick_balance_chat_menu(day_key: str):
             continue
         items[int_cid] = ch.get("title") or get_chat_display_name(int_cid)
 
+    owner_item = None
     if OWNER_ID:
         try:
             owner_id = int(OWNER_ID)
-            items.setdefault(owner_id, get_chat_display_name(owner_id))
+            owner_item = (owner_id, get_chat_display_name(owner_id))
+            items.setdefault(owner_id, owner_item[1])
         except Exception:
-            pass
+            owner_item = None
 
     buttons = []
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
+        if owner_item and int_cid == owner_item[0]:
+            continue
         enabled = is_quick_balance_enabled(int_cid)
         buttons.append(types.InlineKeyboardButton(
             f'{"✅" if enabled else "❌"} {title}',
@@ -3276,6 +3309,14 @@ def build_quick_balance_chat_menu(day_key: str):
         ))
 
     add_buttons_in_rows(kb, buttons, 2)
+
+    if owner_item:
+        enabled = is_quick_balance_enabled(owner_item[0])
+        kb.row(types.InlineKeyboardButton(
+            f'{"✅" if enabled else "❌"} {owner_item[1]}',
+            callback_data=f"d:{day_key}:qb_pick_{owner_item[0]}"
+        ))
+
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
     return kb
 
@@ -4248,6 +4289,8 @@ def on_callback(call):
             set_quick_balance_enabled(tgt, new_state)
             if new_state:
                 set_finance_mode(tgt, True)
+            if OWNER_ID and str(tgt) != str(OWNER_ID):
+                refresh_owner_after_chat_change(tgt)
             kb = build_quick_balance_chat_menu(day_key)
             safe_edit(
                 bot,
@@ -4399,7 +4442,7 @@ def send_csv_week(chat_id: int, day_key: str):
         for i in range(7):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             for r in store.get("daily_records", {}).get(d, []):
-                rows.append((d, r["amount"], r.get("note", "")))
+                rows.append((d, fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных за неделю")
@@ -4430,7 +4473,7 @@ def send_csv_month(chat_id: int, day_key: str):
             dt = datetime.strptime(d, "%Y-%m-%d")
             if dt >= start and dt <= base:
                 for r in recs:
-                    rows.append((d, r["amount"], r.get("note", "")))
+                    rows.append((d, fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных за месяц")
@@ -4464,7 +4507,7 @@ def send_csv_wedthu(chat_id: int, day_key: str):
         for i in range(2):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             for r in store.get("daily_records", {}).get(d, []):
-                rows.append((d, r["amount"], r.get("note", "")))
+                rows.append((d, fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных Ср–Чт")
@@ -4661,6 +4704,8 @@ def set_finance_mode(chat_id: int, enabled: bool):
                 pass
         store["balance_panel_id"] = None
         store["balance_panel_mode"] = "mini"
+    save_data(data)
+
 def require_finance(chat_id: int) -> bool:
     """
     Проверка: включён ли финансовый режим.
@@ -4724,10 +4769,32 @@ def refresh_total_message_if_any(chat_id: int):
         log_error(f"refresh_total_message_if_any({chat_id}): {e}")
         store["total_msg_id"] = None
         save_data(data)
+def refresh_owner_after_chat_change(source_chat_id: int):
+    if not OWNER_ID:
+        return
+    try:
+        owner_chat_id = int(OWNER_ID)
+    except Exception:
+        return
+    if int(source_chat_id) == owner_chat_id:
+        return
+
+    try:
+        owner_store = get_chat_store(owner_chat_id)
+        owner_day_key = owner_store.get("current_view_day", today_key())
+        if is_quick_balance_enabled(owner_chat_id):
+            refresh_balance_panel_now(owner_chat_id)
+        else:
+            backup_window_for_owner(owner_chat_id, owner_day_key, None)
+        refresh_total_message_if_any(owner_chat_id)
+    except Exception as e:
+        log_error(f"refresh_owner_after_chat_change({source_chat_id}): {e}")
+
+
 def send_info(chat_id: int, text: str):
     send_and_auto_delete(chat_id, text, HELPER_DELETE_DELAY)
                 
-@bot.message_handler(commands=["ok"])
+@bot.message_handler(commands=["ok", "поехали"])
 def cmd_ok(msg):
     try:
         update_chat_info_from_message(msg)
@@ -5065,7 +5132,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
                     r.get("id"),
                     r.get("short_id"),
                     r.get("timestamp"),
-                    fmt_num(r.get("amount")),
+                    fmt_csv_amount(r.get("amount")),
                     r.get("note"),
                     r.get("owner"),
                     day_key,
@@ -5458,6 +5525,10 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.8):
                 "refresh_total_owner",
                 lambda: refresh_total_message_if_any(int(OWNER_ID))
             )
+            _safe(
+                "refresh_owner_window",
+                lambda: refresh_owner_after_chat_change(chat_id)
+            )
 
         _safe("save_data", lambda: save_data(data))
         _safe("refresh_balance_panel_now", lambda: refresh_balance_panel_now(chat_id))
@@ -5681,6 +5752,10 @@ def reset_chat_data(chat_id: int):
                 refresh_total_message_if_any(int(OWNER_ID))
             except Exception:
                 pass
+            try:
+                refresh_owner_after_chat_change(chat_id)
+            except Exception:
+                pass
     except Exception as e:
         log_error(f"reset_chat_data({chat_id}): {e}")
 
@@ -5831,19 +5906,35 @@ KEEP_ALIVE_SEND_TO_OWNER = False
 def keep_alive_task():
     while True:
         try:
-            if APP_URL:
-                base = APP_URL.rstrip("/")
-                for url in (f"{base}/healthz", f"{base}/?ts={int(time.time())}"):
-                    try:
-                        resp = requests.get(
-                            url,
-                            timeout=10,
-                            headers={"Cache-Control": "no-cache"}
-                        )
-                        log_info(f"Keep-alive ping {url} -> {resp.status_code}")
+            base_candidates = []
+            for raw in (APP_URL, WEBHOOK_URL, os.getenv("RENDER_EXTERNAL_URL", "").strip()):
+                if not raw:
+                    continue
+                base = raw.rstrip("/")
+                if base not in base_candidates:
+                    base_candidates.append(base)
+
+            if base_candidates:
+                ok = False
+                for base in base_candidates:
+                    for url in (f"{base}/healthz", f"{base}/?ts={int(time.time())}"):
+                        try:
+                            resp = requests.get(
+                                url,
+                                timeout=10,
+                                headers={"Cache-Control": "no-cache"}
+                            )
+                            log_info(f"Keep-alive ping {url} -> {resp.status_code}")
+                            ok = True
+                            break
+                        except Exception as e:
+                            log_error(f"Keep-alive self error for {url}: {e}")
+                    if ok:
                         break
-                    except Exception as e:
-                        log_error(f"Keep-alive self error for {url}: {e}")
+                if not ok:
+                    log_error("Keep-alive: all self-ping attempts failed")
+            else:
+                log_error("Keep-alive skipped: APP_URL / WEBHOOK_URL / RENDER_EXTERNAL_URL are empty")
             if KEEP_ALIVE_SEND_TO_OWNER and OWNER_ID:
                 try:
                     pass
@@ -5852,7 +5943,7 @@ def keep_alive_task():
         except Exception as e:
             log_error(f"Keep-alive loop error: {e}")
         time.sleep(max(10, KEEP_ALIVE_INTERVAL_SECONDS))
-        
+
 @bot.channel_post_handler(content_types=[
     "text", "photo", "video", "animation", "audio",
     "voice", "video_note", "document",
@@ -5982,7 +6073,7 @@ def telegram_webhook():
         
 def set_webhook():
     if not WEBHOOK_URL:
-        log_info("WEBHOOK_URL не указан — работаем в режиме polling.")
+        log_info("WEBHOOK_URL / APP_URL / RENDER_EXTERNAL_URL не указаны — webhook не установлен.")
         return
 
     wh_url = WEBHOOK_URL.rstrip("/") + f"/{BOT_TOKEN}"
@@ -6026,11 +6117,11 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"_🐙_ Бот запущен (версия {VERSION}).\n"
+                    f"✅ Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
-    app.run(host="0.0.0.0", port=PORT)
+    app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 if __name__ == "__main__":
     main()
