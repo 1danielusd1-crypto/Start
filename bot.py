@@ -33,7 +33,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "Скачать bot_16_qb_reply_pairs_fixed_v2_render_fixed_v2.py 🏝️"
+VERSION = "bot_18_windows_quickbalance_fixed.py 🏝️"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DATA_FILE = "data.json"
@@ -84,6 +84,7 @@ DOZVON_INTERVAL_SECONDS = 0.5
 DOZVON_BURST_SECONDS = 10
 DOZVON_PAUSE_SECONDS = 5
 OWNER_TOTAL_WINDOW_DELETE_DELAY = 60
+AUX_WINDOW_DELETE_DELAY = 120
 
 _dozvon_sessions = {}
 _dozvon_target_index = defaultdict(set)
@@ -203,6 +204,19 @@ def is_quick_balance_enabled(chat_id: int) -> bool:
     return bool(settings.get("quick_balance_enabled", False))
 
 
+def get_quick_balance_behavior(chat_id: int) -> str:
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    behavior = (settings.get("quick_balance_behavior") or "mini").strip().lower()
+    return "open" if behavior == "open" else "mini"
+
+
+def set_quick_balance_behavior(chat_id: int, behavior: str):
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    settings["quick_balance_behavior"] = "open" if str(behavior).lower() == "open" else "mini"
+
+
 def set_quick_balance_enabled(chat_id: int, enabled: bool):
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
@@ -262,6 +276,91 @@ def schedule_owner_total_window_delete(chat_id: int, message_id: int, delay: int
     t = threading.Timer(delay, _job)
     _total_message_timers[key] = t
     t.start()
+
+
+_aux_window_timers = {}
+
+
+def _clear_stored_window(chat_id: int, store_key: str, message_id: int | None = None):
+    try:
+        store = get_chat_store(chat_id)
+        current = store.get(store_key)
+        if not current:
+            return
+        if message_id is not None and int(current) != int(message_id):
+            return
+        store[store_key] = None
+        save_data(data)
+    except Exception as e:
+        log_error(f"_clear_stored_window({chat_id},{store_key}): {e}")
+
+
+def schedule_stored_window_delete(chat_id: int, store_key: str, delay: int = AUX_WINDOW_DELETE_DELAY):
+    key = (int(chat_id), str(store_key))
+
+    def _job():
+        try:
+            store = get_chat_store(chat_id)
+            message_id = store.get(store_key)
+            if not message_id:
+                return
+            try:
+                bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+            if store.get(store_key) == message_id:
+                store[store_key] = None
+                save_data(data)
+        except Exception as e:
+            log_error(f"schedule_stored_window_delete({chat_id},{store_key}): {e}")
+
+    prev = _aux_window_timers.get(key)
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(delay, _job)
+    _aux_window_timers[key] = t
+    t.start()
+
+
+def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_markup=None, parse_mode=None, delay: int = AUX_WINDOW_DELETE_DELAY):
+    store = get_chat_store(chat_id)
+    message_id = store.get(store_key)
+
+    if message_id:
+        try:
+            bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+            schedule_stored_window_delete(chat_id, store_key, delay)
+            return message_id
+        except Exception:
+            try:
+                bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    caption=text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+                schedule_stored_window_delete(chat_id, store_key, delay)
+                return message_id
+            except Exception:
+                store[store_key] = None
+                save_data(data)
+
+    sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    store[store_key] = sent.message_id
+    save_data(data)
+    schedule_stored_window_delete(chat_id, store_key, delay)
+    return sent.message_id
 
 
 def build_toggle_label(prefix: str, title: str, enabled: bool) -> str:
@@ -641,6 +740,17 @@ def build_balance_panel_keyboard(chat_id: int):
     return kb
 
 
+def render_open_balance_panel_text(chat_id: int) -> str:
+    bal = get_chat_store(chat_id).get("balance", 0)
+    return f"🏦 Остаток по чату: {fmt_num(bal)}"
+
+
+def build_balance_panel_open_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton("🔽 Свернуть", callback_data="bp:collapse"))
+    return kb
+
+
 def _cancel_timer(timer_map: dict, key):
     prev = timer_map.get(key)
     if prev and getattr(prev, "is_alive", lambda: False)():
@@ -667,6 +777,32 @@ def collapse_balance_panel(chat_id: int):
         save_data(data)
     except Exception as e:
         log_error(f"collapse_balance_panel({chat_id}): {e}")
+
+
+def send_expanded_balance_panel(chat_id: int):
+    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
+        return
+
+    store = get_chat_store(chat_id)
+    old_id = store.get("balance_panel_id")
+    if old_id:
+        try:
+            bot.delete_message(chat_id, old_id)
+        except Exception:
+            pass
+
+    try:
+        sent = bot.send_message(
+            chat_id,
+            render_open_balance_panel_text(chat_id),
+            reply_markup=build_balance_panel_open_keyboard(chat_id)
+        )
+        store["balance_panel_id"] = sent.message_id
+        store["balance_panel_mode"] = "open"
+        save_data(data)
+        schedule_balance_panel_collapse(chat_id)
+    except Exception as e:
+        log_error(f"send_expanded_balance_panel({chat_id}): {e}")
 
 
 def schedule_balance_panel_collapse(chat_id: int, delay: float = BALANCE_PANEL_COLLAPSE_DELAY):
@@ -719,13 +855,26 @@ def refresh_balance_panel_now(chat_id: int):
         return
 
     try:
-        bot.edit_message_text(
-            "📌 Быстрый остаток",
-            chat_id=chat_id,
-            message_id=panel_id,
-            reply_markup=build_balance_panel_keyboard(chat_id)
-        )
-        store["balance_panel_mode"] = "mini"
+        desired_open = (store.get("balance_panel_mode") == "open") or get_quick_balance_behavior(chat_id) == "open"
+        if desired_open:
+            bot.edit_message_text(
+                render_open_balance_panel_text(chat_id),
+                chat_id=chat_id,
+                message_id=panel_id,
+                reply_markup=build_balance_panel_open_keyboard(chat_id)
+            )
+            store["balance_panel_mode"] = "open"
+            save_data(data)
+            schedule_balance_panel_collapse(chat_id)
+        else:
+            bot.edit_message_text(
+                "📌 Быстрый остаток",
+                chat_id=chat_id,
+                message_id=panel_id,
+                reply_markup=build_balance_panel_keyboard(chat_id)
+            )
+            store["balance_panel_mode"] = "mini"
+            save_data(data)
     except Exception as e:
         log_error(f"refresh_balance_panel_now({chat_id}): {e}")
 
@@ -734,7 +883,10 @@ def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_RE
         return
     def _job():
         try:
-            send_minimized_balance_panel(chat_id)
+            if get_quick_balance_behavior(chat_id) == "open":
+                send_expanded_balance_panel(chat_id)
+            else:
+                send_minimized_balance_panel(chat_id)
         except Exception as e:
             log_error(f"schedule_balance_panel_refresh({chat_id}): {e}")
 
@@ -749,15 +901,16 @@ def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | 
         return
     try:
         bot.edit_message_text(
-            "📌 Быстрый остаток",
+            render_open_balance_panel_text(chat_id),
             chat_id=chat_id,
             message_id=message_id,
-            reply_markup=build_balance_panel_keyboard(chat_id)
+            reply_markup=build_balance_panel_open_keyboard(chat_id)
         )
         store = get_chat_store(chat_id)
         store["balance_panel_id"] = message_id
-        store["balance_panel_mode"] = "mini"
+        store["balance_panel_mode"] = "open"
         save_data(data)
+        schedule_balance_panel_collapse(chat_id)
     except Exception as e:
         log_error(f"open_balance_panel_in_message({chat_id},{message_id}): {e}")
 
@@ -1078,13 +1231,15 @@ def get_chat_store(chat_id: int) -> dict:
             "finance_mode": False,
             "settings": {
                 "auto_add": True,
-                "quick_balance_enabled": False
+                "quick_balance_enabled": False,
+                "quick_balance_behavior": "mini"
             },
         }
     )
 
     store.setdefault("settings", {}).setdefault("auto_add", True)
     store.setdefault("settings", {}).setdefault("quick_balance_enabled", False)
+    store.setdefault("settings", {}).setdefault("quick_balance_behavior", "mini")
     store.setdefault("finance_mode", False)
 
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -3303,21 +3458,39 @@ def build_quick_balance_chat_menu(day_key: str):
         if owner_item and int_cid == owner_item[0]:
             continue
         enabled = is_quick_balance_enabled(int_cid)
+        icon = "✅" if enabled else "⬜"
         buttons.append(types.InlineKeyboardButton(
-            f'{"✅" if enabled else "❌"} {title}',
-            callback_data=f"d:{day_key}:qb_pick_{int_cid}"
+            f'{icon} {title}',
+            callback_data=f"d:{day_key}:qb_cfg_{int_cid}"
         ))
 
     add_buttons_in_rows(kb, buttons, 2)
 
     if owner_item:
         enabled = is_quick_balance_enabled(owner_item[0])
+        icon = "✅" if enabled else "⬜"
         kb.row(types.InlineKeyboardButton(
-            f'{"✅" if enabled else "❌"} {owner_item[1]}',
-            callback_data=f"d:{day_key}:qb_pick_{owner_item[0]}"
+            f'{icon} {owner_item[1]}',
+            callback_data=f"d:{day_key}:qb_cfg_{owner_item[0]}"
         ))
 
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
+    return kb
+
+
+def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    enabled = is_quick_balance_enabled(target_chat_id)
+    behavior = get_quick_balance_behavior(target_chat_id)
+
+    normal_icon = "✅" if not enabled else "⬜"
+    open_icon = "✅" if enabled and behavior == "open" else "⬜"
+
+    kb.row(
+        types.InlineKeyboardButton(f"{normal_icon} Как обычно", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"),
+        types.InlineKeyboardButton(f"{open_icon} Быстрый остаток открывался", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}")
+    )
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:quick_balance_menu"))
     return kb
 
 
@@ -3501,22 +3674,25 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
     kb = build_report_keyboard(month_key)
 
     store = get_chat_store(chat_id)
+    target_id = message_id or store.get("report_window_id")
 
-    if message_id:
+    if target_id:
         try:
             bot.edit_message_text(
                 text,
                 chat_id=chat_id,
-                message_id=message_id,
+                message_id=target_id,
                 reply_markup=kb,
                 parse_mode="HTML"
             )
-            store["report_window_id"] = message_id
+            store["report_window_id"] = target_id
             store["report_month"] = month_key
             save_data(data)
+            schedule_stored_window_delete(chat_id, "report_window_id", AUX_WINDOW_DELETE_DELAY)
             return
         except Exception as e:
             log_error(f"open_report_window edit failed: {e}")
+            _clear_stored_window(chat_id, "report_window_id", target_id)
 
     sent = bot.send_message(
         chat_id,
@@ -3527,6 +3703,21 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
     store["report_window_id"] = sent.message_id
     store["report_month"] = month_key
     save_data(data)
+    schedule_stored_window_delete(chat_id, "report_window_id", AUX_WINDOW_DELETE_DELAY)
+
+
+def open_info_window(chat_id: int):
+    info_text = build_info_text(chat_id)
+    kb = types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
+    send_or_edit_stored_window(
+        chat_id,
+        "info_msg_id",
+        info_text,
+        reply_markup=kb,
+        parse_mode=None,
+        delay=AUX_WINDOW_DELETE_DELAY
+    )
 def handle_categories_callback(call, data_str: str) -> bool:
     """UI окна расходов по статьям."""
     chat_id = call.message.chat.id
@@ -3721,6 +3912,9 @@ def on_callback(call):
                 bot.answer_callback_query(call.id, f"Остаток: {fmt_num(get_chat_store(chat_id).get('balance', 0))}")
             except Exception:
                 pass
+            return
+        if data_str == "bp:collapse":
+            collapse_balance_panel(chat_id)
             return
 
         if data_str == "rep_today":
@@ -3924,6 +4118,7 @@ def on_callback(call):
                 bot.delete_message(chat_id, call.message.message_id)
             except Exception as e:
                 log_error(f"info_close delete failed: {e}")
+            _clear_stored_window(chat_id, "info_msg_id", call.message.message_id)
             return
         if data_str.startswith("fv:"):
             try:
@@ -4092,17 +4287,14 @@ def on_callback(call):
                 bot.answer_callback_query(call.id)
             except Exception:
                 pass
-            info_text = build_info_text(chat_id)
-            kb = types.InlineKeyboardMarkup()
-            kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
-            bot.send_message(chat_id, info_text, reply_markup=kb)
+            open_info_window(chat_id)
             return
         if cmd in ("edit_menu", "menu"):
 
             store["current_view_day"] = day_key
             kb = build_edit_menu_keyboard(day_key, chat_id)
-            cur_text = getattr(call.message, "caption", None) or getattr(call.message, "text", None) or ""
-            safe_edit(bot, call, cur_text, reply_markup=kb, parse_mode="HTML")
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
             return
         if cmd == "back_main":
             store["current_view_day"] = day_key
@@ -4117,11 +4309,13 @@ def on_callback(call):
             return
         if cmd == "csv_all":
             kb = build_csv_menu(day_key)
+            txt, _ = render_day_window(chat_id, day_key)
             safe_edit(
                 bot,
                 call,
-                "📂 Выберите период CSV:",
-                reply_markup=kb
+                txt,
+                reply_markup=kb,
+                parse_mode="HTML"
             )
             return
         if cmd == "csv_day":
@@ -4159,7 +4353,7 @@ def on_callback(call):
                 return
             kb2 = types.InlineKeyboardMarkup(row_width=3)
             for r in day_recs:
-                lbl = f" {fmt_num(r['amount'])}" # — {r.get('note','')}" #{r['short_id']} 
+                lbl = f" {fmt_num(r['amount'])}"
                 rid = r["id"]
                 kb2.row(
                     types.InlineKeyboardButton(lbl, callback_data="none"),
@@ -4169,11 +4363,13 @@ def on_callback(call):
             kb2.row(
                 types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu")
             )
+            txt, _ = render_day_window(chat_id, day_key)
             safe_edit(
                 bot,
                 call,
-                "Выберите действие:",
+                txt,
                 reply_markup=kb2,
+                parse_mode="HTML"
             )
             return
 
@@ -4283,19 +4479,40 @@ def on_callback(call):
                 parse_mode="HTML"
             )
             return
-        if cmd.startswith("qb_pick_"):
+        if cmd.startswith("qb_cfg_"):
             tgt = int(cmd.split("_")[-1])
-            new_state = not is_quick_balance_enabled(tgt)
-            set_quick_balance_enabled(tgt, new_state)
-            if new_state:
-                set_finance_mode(tgt, True)
+            kb = build_quick_balance_mode_menu(day_key, tgt)
+            safe_edit(
+                bot,
+                call,
+                f"Быстрый остаток:\n{get_chat_display_name(tgt)}\n\nВыберите режим:",
+                reply_markup=kb
+            )
+            return
+        if cmd.startswith("qb_mode_normal_"):
+            tgt = int(cmd.split("_")[-1])
+            set_quick_balance_enabled(tgt, False)
             if OWNER_ID and str(tgt) != str(OWNER_ID):
                 refresh_owner_after_chat_change(tgt)
             kb = build_quick_balance_chat_menu(day_key)
             safe_edit(
                 bot,
                 call,
-                build_forward_status_text("Быстрый остаток:\nВыберите чат для включения или выключения режима."),
+                build_forward_status_text("Быстрый остаток:\nВыберите чат для настройки режима."),
+                reply_markup=kb
+            )
+            return
+        if cmd.startswith("qb_mode_open_"):
+            tgt = int(cmd.split("_")[-1])
+            set_quick_balance_behavior(tgt, "open")
+            set_quick_balance_enabled(tgt, True)
+            if OWNER_ID and str(tgt) != str(OWNER_ID):
+                refresh_owner_after_chat_change(tgt)
+            kb = build_quick_balance_chat_menu(day_key)
+            safe_edit(
+                bot,
+                call,
+                build_forward_status_text("Быстрый остаток:\nВыберите чат для настройки режима."),
                 reply_markup=kb
             )
             return
