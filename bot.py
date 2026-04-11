@@ -33,7 +33,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_18_windows_quickbalance_fixed.py 🏝️"
+VERSION = "bot_18_windows_quickbalance_fixed_v2.py"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DATA_FILE = "data.json"
@@ -1735,8 +1735,26 @@ def build_category_detail_text(store: dict, start: str, end: str, category: str,
 
     return "\n".join(lines)
 
-def build_category_detail_keyboard(start: str, end: str, back_callback: str):
+def build_category_detail_keyboard(start: str, end: str, back_callback: str, mode: str | None = None, slug: str | None = None):
     kb = build_categories_buttons(start, end)
+
+    if mode == "wthu" and slug:
+        prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_show_wthu:{prev_key}:{slug}")]
+        if start != week_start_thursday(today_key()):
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"cat_show_wthu:{today_key()}:{slug}"))
+        row.append(types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=f"cat_show_wthu:{next_key}:{slug}"))
+        kb.row(*row)
+    elif mode == "wk" and slug:
+        prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+        row = [types.InlineKeyboardButton("⬅️ Пн–Вс", callback_data=f"cat_show_wk:{prev_key}:{slug}")]
+        if start != week_start_monday(today_key()):
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"cat_show_wk:{today_key()}:{slug}"))
+        row.append(types.InlineKeyboardButton("Пн–Вс ➡️", callback_data=f"cat_show_wk:{next_key}:{slug}"))
+        kb.row(*row)
+
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=back_callback))
     kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close"))
     return kb
@@ -3636,28 +3654,47 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
         pass
     bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
 
-def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None):
+def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None, preferred_message_id=None):
     """Отдельное окно для отчёта по статьям расходов (одно сообщение на чат)."""
     store = get_chat_store(chat_id)
     mid = store.get("categories_msg_id")
 
+    candidates = []
+    if preferred_message_id:
+        try:
+            candidates.append(int(preferred_message_id))
+        except Exception:
+            pass
     if mid:
+        try:
+            mid_int = int(mid)
+            if mid_int not in candidates:
+                candidates.append(mid_int)
+        except Exception:
+            pass
+
+    for target_id in candidates:
         try:
             bot.edit_message_text(
                 text,
                 chat_id=chat_id,
-                message_id=mid,
+                message_id=target_id,
                 reply_markup=reply_markup,
                 parse_mode=parse_mode
             )
-            return
-        except Exception:
-            store["categories_msg_id"] = None
+            store["categories_msg_id"] = target_id
             save_chat_json(chat_id)
+            return target_id
+        except Exception as e:
+            log_error(f"send_or_edit_categories_window edit failed {chat_id}:{target_id}: {e}")
+            if store.get("categories_msg_id") == target_id:
+                store["categories_msg_id"] = None
+                save_chat_json(chat_id)
 
     sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
     store["categories_msg_id"] = sent.message_id
     save_chat_json(chat_id)
+    return sent.message_id
 
 def build_week_thu_keyboard(start_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -3744,7 +3781,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
         text, _ = summarize_categories(store, start, end, label)
         kb = build_categories_summary_keyboard("wthu", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
     if data_str.startswith("cat_wk:"):
@@ -3753,7 +3790,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн–Вс)"
         text, _ = summarize_categories(store, start, end, label)
         kb = build_categories_summary_keyboard("wk", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
     if data_str == "cat_months":
@@ -3812,7 +3849,35 @@ def handle_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
         text, _ = summarize_categories(store, start, end, label)
         kb = build_categories_summary_keyboard("rng", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
+        return True
+
+    if data_str.startswith("cat_show_wthu:"):
+        _, ref, slug = data_str.split(":", 2)
+        category = CATEGORY_BY_SLUG.get(slug)
+        if not category:
+            return True
+
+        start_key = week_start_thursday(ref or today_key())
+        start, end = week_bounds_thu_wed(start_key)
+        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
+        text = build_category_detail_text(store, start, end, category, label)
+        kb = build_category_detail_keyboard(start, end, f"cat_wthu:{start}", mode="wthu", slug=slug)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
+        return True
+
+    if data_str.startswith("cat_show_wk:"):
+        _, ref, slug = data_str.split(":", 2)
+        category = CATEGORY_BY_SLUG.get(slug)
+        if not category:
+            return True
+
+        start_key = week_start_monday(ref or today_key())
+        start, end = week_bounds_from_start(start_key)
+        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн–Вс)"
+        text = build_category_detail_text(store, start, end, category, label)
+        kb = build_category_detail_keyboard(start, end, f"cat_wk:{start}", mode="wk", slug=slug)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
     if data_str.startswith("cat_show:"):
@@ -3835,9 +3900,15 @@ def handle_categories_callback(call, data_str: str) -> bool:
             y, m = start_dt.year, start_dt.month
             back_callback = f"cat_rng:{y}:{m}:{start_dt.day}:{end_dt.day}"
 
+        mode = None
+        if (end_dt - start_dt).days == 6 and start == week_start_thursday(start):
+            mode = "wthu"
+        elif (end_dt - start_dt).days == 6 and start == week_start_monday(start):
+            mode = "wk"
+
         text = build_category_detail_text(store, start, end, category, label)
-        kb = build_category_detail_keyboard(start, end, back_callback)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb)
+        kb = build_category_detail_keyboard(start, end, back_callback, mode=mode, slug=slug)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
     return False
