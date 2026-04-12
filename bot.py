@@ -5,6 +5,7 @@ import csv
 import re
 import html
 import logging
+import sqlite3
 import threading
 import time
 
@@ -33,9 +34,10 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_18_windows_quickbalance_fixed_v7 💧"
+VERSION = "bot_18_sqlite_max 🍥"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
+DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
 DATA_FILE = "data.json"
 CSV_FILE = "data.csv"
 CSV_META_FILE = "csv_meta.json"
@@ -57,6 +59,149 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 app = Flask(__name__)
 data = {}
 finance_active_chats = set()
+
+
+class SQLiteState:
+    def __init__(self, path: str):
+        self.path = path
+        self.lock = threading.RLock()
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self._init_db()
+
+    def _init_db(self):
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA synchronous=NORMAL")
+            cur.execute("PRAGMA temp_store=MEMORY")
+            cur.execute("PRAGMA foreign_keys=ON")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS chats (chat_id TEXT PRIMARY KEY, v TEXT NOT NULL)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS meta (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind, k))"
+            )
+            self.conn.commit()
+
+    def _dump(self, obj) -> str:
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+    def _load(self, raw, default=None):
+        if raw is None:
+            return default
+        try:
+            return json.loads(raw)
+        except Exception:
+            return default
+
+    def get_kv(self, key: str, default=None):
+        with self.lock:
+            row = self.conn.execute("SELECT v FROM kv WHERE k=?", (key,)).fetchone()
+        return self._load(row[0], default) if row else default
+
+    def set_kv(self, key: str, obj):
+        payload = self._dump(obj)
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                (key, payload),
+            )
+            self.conn.commit()
+
+    def load_root(self):
+        return self.get_kv("root", None)
+
+    def save_root(self, obj):
+        self.set_kv("root", obj)
+
+    def load_chats(self) -> dict:
+        with self.lock:
+            rows = self.conn.execute("SELECT chat_id, v FROM chats").fetchall()
+        out = {}
+        for row in rows:
+            val = self._load(row[1], {})
+            if isinstance(val, dict):
+                out[str(row[0])] = val
+        return out
+
+    def save_chats(self, chats: dict):
+        chats = chats or {}
+        with self.lock:
+            existing = {str(r[0]) for r in self.conn.execute("SELECT chat_id FROM chats").fetchall()}
+            for chat_id, payload in chats.items():
+                self.conn.execute(
+                    "INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v",
+                    (str(chat_id), self._dump(payload)),
+                )
+            for stale in existing - {str(k) for k in chats.keys()}:
+                self.conn.execute("DELETE FROM chats WHERE chat_id=?", (stale,))
+            self.conn.commit()
+
+    def get_meta(self, kind: str, key: str, default=None):
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT v FROM meta WHERE kind=? AND k=?", (kind, key)
+            ).fetchone()
+        return self._load(row[0], default) if row else default
+
+    def set_meta(self, kind: str, key: str, obj):
+        payload = self._dump(obj)
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO meta(kind,k,v) VALUES(?,?,?) ON CONFLICT(kind,k) DO UPDATE SET v=excluded.v",
+                (kind, key, payload),
+            )
+            self.conn.commit()
+
+
+SQLITE = SQLiteState(DB_FILE)
+
+
+def _sqlite_pack_root(d: dict) -> dict:
+    return {k: v for k, v in (d or {}).items() if k != "chats"}
+
+
+def _sqlite_unpack_data(root: dict | None, chats: dict | None) -> dict:
+    d = default_data()
+    if isinstance(root, dict):
+        for k, v in root.items():
+            d[k] = v
+    d["chats"] = chats if isinstance(chats, dict) else {}
+    return d
+
+
+def _import_legacy_global_json_to_db(path: str = DATA_FILE, force: bool = False) -> bool:
+    root = SQLITE.load_root()
+    chats = SQLITE.load_chats()
+    if not force and (root is not None or chats):
+        return False
+
+    payload = _load_json(path, None)
+    if not isinstance(payload, dict):
+        return False
+
+    SQLITE.save_root(_sqlite_pack_root(payload))
+    SQLITE.save_chats(payload.get("chats", {}) or {})
+
+    legacy_csv_meta = _load_json(CSV_META_FILE, None)
+    if isinstance(legacy_csv_meta, dict):
+        SQLITE.set_meta("csv_meta", "main", legacy_csv_meta)
+
+    legacy_backup_meta = _load_json(CHAT_BACKUP_META_FILE, None)
+    if isinstance(legacy_backup_meta, dict):
+        SQLITE.set_meta("chat_backup_meta", "main", legacy_backup_meta)
+
+    return True
+
+
+def _import_payload_to_db(payload: dict):
+    SQLITE.save_root(_sqlite_pack_root(payload))
+    SQLITE.save_chats(payload.get("chats", {}) or {})
+
 
 def log_info(msg: str):
     logger.info(msg)
@@ -1095,11 +1240,19 @@ def _save_json(path: str, obj):
     except Exception as e:
         log_error(f"JSON save error {path}: {e}")
 def _load_csv_meta():
-    return _load_json(CSV_META_FILE, {})
+    meta = SQLITE.get_meta("csv_meta", "main", None)
+    if isinstance(meta, dict):
+        return meta
+    legacy = _load_json(CSV_META_FILE, {})
+    if isinstance(legacy, dict) and legacy:
+        SQLITE.set_meta("csv_meta", "main", legacy)
+    return legacy if isinstance(legacy, dict) else {}
+
 def _save_csv_meta(meta: dict):
     try:
-        _save_json(CSV_META_FILE, meta)
-        log_info("csv_meta.json updated")
+        SQLITE.set_meta("csv_meta", "main", meta or {})
+        _save_json(CSV_META_FILE, meta or {})
+        log_info("csv_meta updated in sqlite")
     except Exception as e:
         log_error(f"_save_csv_meta: {e}")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1108,18 +1261,26 @@ log_info(f"chat_backup_meta.json PATH = {CHAT_BACKUP_META_FILE}")
 def _load_chat_backup_meta() -> dict:
     """Загрузка meta-файла бэкапов для всех чатов."""
     try:
+        meta = SQLITE.get_meta("chat_backup_meta", "main", None)
+        if isinstance(meta, dict):
+            return meta
         if not os.path.exists(CHAT_BACKUP_META_FILE):
             return {}
-        return _load_json(CHAT_BACKUP_META_FILE, {})
+        legacy = _load_json(CHAT_BACKUP_META_FILE, {})
+        if isinstance(legacy, dict) and legacy:
+            SQLITE.set_meta("chat_backup_meta", "main", legacy)
+        return legacy if isinstance(legacy, dict) else {}
     except Exception as e:
         log_error(f"_load_chat_backup_meta: {e}")
         return {}
+
 def _save_chat_backup_meta(meta: dict) -> None:
-    """Сохранение meta-файла в ТОТ ЖЕ каталог, где лежит бот."""
+    """Сохранение meta-файла и sqlite-копии."""
     try:
+        SQLITE.set_meta("chat_backup_meta", "main", meta or {})
         log_info(f"SAVING META TO: {os.path.abspath(CHAT_BACKUP_META_FILE)}")
-        _save_json(CHAT_BACKUP_META_FILE, meta)
-        log_info("chat_backup_meta.json updated")
+        _save_json(CHAT_BACKUP_META_FILE, meta or {})
+        log_info("chat_backup_meta updated in sqlite")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
 def send_backup_to_chat(chat_id: int) -> None:
@@ -1237,14 +1398,25 @@ def default_data():
         "forward_index": {},
     }
 def load_data():
-    d = _load_json(DATA_FILE, default_data())
+    _import_legacy_global_json_to_db(DATA_FILE, force=False)
+
+    root = SQLITE.load_root()
+    chats = SQLITE.load_chats()
+
+    if root is None and not chats:
+        d = default_data()
+    else:
+        d = _sqlite_unpack_data(root or {}, chats or {})
+
     base = default_data()
     for k, v in base.items():
         if k not in d:
             d[k] = v
+
     flags = d.get("backup_flags") or {}
     backup_flags["drive"] = bool(flags.get("drive", True))
     backup_flags["channel"] = bool(flags.get("channel", True))
+
     fac = d.get("finance_active_chats") or {}
     finance_active_chats.clear()
     for cid, enabled in fac.items():
@@ -1266,6 +1438,7 @@ def load_data():
         log_error(f"load_data forward_index: {e}")
 
     return d
+
 def save_data(d):
     fac = {}
     for cid in finance_active_chats:
@@ -1279,7 +1452,9 @@ def save_data(d):
         _persist_forward_index_in_data(d)
     except Exception as e:
         log_error(f"save_data forward_index: {e}")
-    _save_json(DATA_FILE, d)
+
+    SQLITE.save_root(_sqlite_pack_root(d))
+    SQLITE.save_chats(d.get("chats", {}) or {})
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
 def chat_csv_file(chat_id: int) -> str:
@@ -2335,74 +2510,73 @@ def send_backup_to_channel(chat_id: int):
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
 def _owner_data_file() -> str | None:
-    """
-    Файл владельца, где хранится forward_rules.
-    """
+    """Legacy JSON snapshot file for owner-compatible backups."""
     if not OWNER_ID:
         return None
     try:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
+
 def load_forward_rules():
     """
-    Загружает forward_rules и forward_finance из файла владельца.
-    Поддерживает старый формат (списки) и новый (словарь).
+    Загружает forward_rules/forward_finance из SQLite,
+    а если их там ещё нет — пытается импортировать из legacy owner JSON.
     """
     try:
+        fr = data.get("forward_rules", {}) or {}
+        ff = data.get("forward_finance", {}) or {}
+        if fr or ff:
+            data["forward_finance"] = ff if isinstance(ff, dict) else {}
+            return fr if isinstance(fr, dict) else {}
+
         path = _owner_data_file()
         if not path or not os.path.exists(path):
             data["forward_finance"] = {}
             return {}
 
         payload = _load_json(path, {}) or {}
-
-        fr = payload.get("forward_rules", {})
+        raw_fr = payload.get("forward_rules", {})
         upgraded = {}
 
-        for src, value in fr.items():
+        for src, value in raw_fr.items():
             if isinstance(value, list):
                 upgraded[src] = {}
                 for dst in value:
                     upgraded[src][dst] = "oneway_to"
             elif isinstance(value, dict):
                 upgraded[src] = value
-            else:
-                continue
 
         ff = payload.get("forward_finance", {})
-        if isinstance(ff, dict):
-            data["forward_finance"] = ff
-        else:
-            data["forward_finance"] = {}
+        if not isinstance(ff, dict):
+            ff = {}
 
+        data["forward_finance"] = ff
+        data["forward_rules"] = upgraded
+        save_data(data)
         return upgraded
 
     except Exception as e:
         log_error(f"load_forward_rules: {e}")
         data["forward_finance"] = {}
         return {}
+
 def persist_forward_rules_to_owner():
     """
-    Сохраняет forward_rules и forward_finance только в data_OWNER.json.
+    Сохраняет forward_rules/forward_finance в SQLite
+    и дополнительно пишет legacy owner JSON-снимок для совместимости.
     """
     try:
+        save_data(data)
         path = _owner_data_file()
-        if not path:
-            return
-
-        payload = {}
-        if os.path.exists(path):
-            payload = _load_json(path, {})
+        if path:
+            payload = _load_json(path, {}) or {}
             if not isinstance(payload, dict):
                 payload = {}
-
-        payload["forward_rules"] = data.get("forward_rules", {})
-        payload["forward_finance"] = data.get("forward_finance", {})
-
-        _save_json(path, payload)
-        log_info(f"forward_rules persisted to {path}")
-
+            payload["forward_rules"] = data.get("forward_rules", {})
+            payload["forward_finance"] = data.get("forward_finance", {})
+            _save_json(path, payload)
+            log_info(f"forward_rules snapshot persisted to {path}")
     except Exception as e:
         log_error(f"persist_forward_rules_to_owner: {e}")
         
@@ -6183,7 +6357,8 @@ def handle_document(msg):
 
         try:
             if fname == "data.json":
-                os.replace(tmp_path, "data.json")
+                os.replace(tmp_path, DATA_FILE)
+                _import_legacy_global_json_to_db(DATA_FILE, force=True)
                 data = load_data()
 
                 finance_active_chats.clear()
@@ -6196,13 +6371,14 @@ def handle_document(msg):
                             pass
 
                 restore_mode = None
-                send_and_auto_delete(chat_id, "🟢 Глобальный data.json восстановлен!")
+                send_and_auto_delete(chat_id, "🟢 Глобальный data.json импортирован в SQLite!")
                 return
 
             if fname == "csv_meta.json":
-                os.replace(tmp_path, "csv_meta.json")
+                os.replace(tmp_path, CSV_META_FILE)
+                _save_csv_meta(_load_json(CSV_META_FILE, {}) or {})
                 restore_mode = None
-                send_and_auto_delete(chat_id, "🟢 csv_meta.json восстановлён")
+                send_and_auto_delete(chat_id, "🟢 csv_meta.json импортирован в SQLite")
                 return
 
             if fname.endswith(".json"):
@@ -6211,11 +6387,12 @@ def handle_document(msg):
                     raise RuntimeError("JSON не является объектом")
 
                 if "chats" in payload:
-                    os.replace(tmp_path, "data.json")
+                    os.replace(tmp_path, DATA_FILE)
+                    _import_legacy_global_json_to_db(DATA_FILE, force=True)
                     data.clear()
                     data.update(load_data())
                     restore_mode = None
-                    send_and_auto_delete(chat_id, "🟢 Глобальный data.json восстановлен")
+                    send_and_auto_delete(chat_id, "🟢 Глобальный data.json импортирован в SQLite")
                     return
 
                 inner_chat_id = payload.get("chat_id")
@@ -6418,6 +6595,30 @@ def on_edited_message(msg):
     except Exception as e:
         log_error(f"[EDIT-FWD] failed: {e}")
                                             
+@bot.message_handler(commands=["sqlite", "db"])
+def cmd_sqlite_dump(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+
+    try:
+        with open(DB_FILE, "rb") as f:
+            bot.send_document(chat_id, f, caption=f"🗄 SQLite база: {os.path.basename(DB_FILE)}")
+    except Exception as e:
+        log_error(f"cmd_sqlite_dump: {e}")
+        send_and_auto_delete(chat_id, f"❌ Не удалось отправить SQLite: {e}", HELPER_DELETE_DELAY)
+
+
 def start_keep_alive_thread():
     t = threading.Thread(target=keep_alive_task, daemon=True)
     t.start()
@@ -6489,7 +6690,7 @@ def main():
             finance_active_chats.add(int(OWNER_ID))
         except Exception:
             pass
-    log_info(f"Данные загружены. Версия бота: {VERSION}")
+    log_info(f"Данные загружены из SQLite ({DB_FILE}). Версия бота: {VERSION}")
     set_webhook()
     start_keep_alive_thread()
     owner_id = None
