@@ -33,7 +33,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_18_windows_quickbalance_fixed_v4.py"
+VERSION = "bot_18_windows_quickbalance_fixed_v5"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DATA_FILE = "data.json"
@@ -152,17 +152,6 @@ def parse_csv_amount(raw) -> float:
     if s.startswith(("+", "-", "–")):
         return parse_amount(s)
     return -abs(parse_amount(s))
-
-
-def write_csv_rows_grouped(writer, rows, include_blank_between_days: bool = True):
-    """Пишет строки CSV и вставляет пустую строку между разными днями."""
-    prev_day = None
-    for row in rows:
-        cur_day = row[0] if row else None
-        if include_blank_between_days and prev_day is not None and cur_day != prev_day:
-            writer.writerow([])
-        writer.writerow(list(row))
-        prev_day = cur_day
 
 
 def center_text(text: str, width: int) -> str:
@@ -771,41 +760,11 @@ def _cancel_timer(timer_map: dict, key):
             pass
 
 
-def is_balance_panel_message(chat_id: int, message_id: int | None = None) -> bool:
-    store = get_chat_store(chat_id)
-    panel_id = store.get("balance_panel_id")
-    if not panel_id:
-        return False
-    if message_id is None:
-        return True
+def _clear_active_windows_for_chat(chat_id: int):
     try:
-        return int(panel_id) == int(message_id)
+        data.setdefault("active_messages", {})[str(chat_id)] = {}
     except Exception:
-        return False
-
-
-def open_balance_day_window_in_message(chat_id: int, message_id: int, day_key: str | None = None):
-    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
-        return
-    store = get_chat_store(chat_id)
-    day_key = day_key or store.get("current_view_day", today_key())
-    store["current_view_day"] = day_key
-    txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
-    try:
-        bot.edit_message_text(
-            txt,
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
-        store["balance_panel_id"] = message_id
-        store["balance_panel_mode"] = "window"
-        save_data(data)
-        schedule_balance_panel_collapse(chat_id)
-    except Exception as e:
-        log_error(f"open_balance_day_window_in_message({chat_id},{message_id}): {e}")
+        pass
 
 
 def collapse_balance_panel(chat_id: int):
@@ -822,6 +781,7 @@ def collapse_balance_panel(chat_id: int):
             reply_markup=build_balance_panel_keyboard(chat_id)
         )
         store["balance_panel_mode"] = "mini"
+        _clear_active_windows_for_chat(chat_id)
         save_data(data)
     except Exception as e:
         log_error(f"collapse_balance_panel({chat_id}): {e}")
@@ -874,11 +834,24 @@ def send_minimized_balance_panel(chat_id: int):
 
     store = get_chat_store(chat_id)
     old_id = store.get("balance_panel_id")
+
     if old_id:
         try:
-            bot.delete_message(chat_id, old_id)
+            bot.edit_message_text(
+                "📌 Быстрый остаток",
+                chat_id=chat_id,
+                message_id=old_id,
+                reply_markup=build_balance_panel_keyboard(chat_id)
+            )
+            store["balance_panel_mode"] = "mini"
+            _clear_active_windows_for_chat(chat_id)
+            save_data(data)
+            return
         except Exception:
-            pass
+            try:
+                bot.delete_message(chat_id, old_id)
+            except Exception:
+                pass
 
     try:
         sent = bot.send_message(
@@ -888,9 +861,51 @@ def send_minimized_balance_panel(chat_id: int):
         )
         store["balance_panel_id"] = sent.message_id
         store["balance_panel_mode"] = "mini"
+        _clear_active_windows_for_chat(chat_id)
         save_data(data)
     except Exception as e:
         log_error(f"send_minimized_balance_panel({chat_id}): {e}")
+
+
+def open_quick_balance_day_window(chat_id: int, day_key: str, message_id: int | None = None):
+    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
+        return False
+
+    store = get_chat_store(chat_id)
+    target_id = message_id or store.get("balance_panel_id")
+    if not target_id:
+        send_minimized_balance_panel(chat_id)
+        target_id = store.get("balance_panel_id")
+        if not target_id:
+            return False
+
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+
+    try:
+        bot.edit_message_text(
+            txt,
+            chat_id=chat_id,
+            message_id=target_id,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        log_error(f"open_quick_balance_day_window edit failed {chat_id}:{target_id}: {e}")
+        try:
+            sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+            target_id = sent.message_id
+        except Exception as e2:
+            log_error(f"open_quick_balance_day_window send failed {chat_id}: {e2}")
+            return False
+
+    store["current_view_day"] = day_key
+    store["balance_panel_id"] = target_id
+    store["balance_panel_mode"] = "open"
+    set_active_window_id(chat_id, day_key, target_id)
+    save_data(data)
+    schedule_balance_panel_collapse(chat_id)
+    return True
 
 
 def refresh_balance_panel_now(chat_id: int):
@@ -903,26 +918,17 @@ def refresh_balance_panel_now(chat_id: int):
         return
 
     try:
-        mode = store.get("balance_panel_mode") or "mini"
-        if mode == "window":
-            day_key = store.get("current_view_day", today_key())
-            txt, _ = render_day_window(chat_id, day_key)
-            bot.edit_message_text(
-                txt,
-                chat_id=chat_id,
-                message_id=panel_id,
-                reply_markup=build_main_keyboard(day_key, chat_id),
-                parse_mode="HTML"
-            )
-            schedule_balance_panel_collapse(chat_id)
-        elif mode == "open":
-            bot.edit_message_text(
-                render_open_balance_panel_text(chat_id),
-                chat_id=chat_id,
-                message_id=panel_id,
-                reply_markup=build_balance_panel_open_keyboard(chat_id)
-            )
-            schedule_balance_panel_collapse(chat_id)
+        if store.get("balance_panel_mode") == "open":
+            if get_quick_balance_behavior(chat_id) == "open":
+                open_quick_balance_day_window(chat_id, store.get("current_view_day", today_key()), message_id=panel_id)
+            else:
+                bot.edit_message_text(
+                    render_open_balance_panel_text(chat_id),
+                    chat_id=chat_id,
+                    message_id=panel_id,
+                    reply_markup=build_balance_panel_open_keyboard(chat_id)
+                )
+                schedule_balance_panel_collapse(chat_id)
         else:
             bot.edit_message_text(
                 "📌 Быстрый остаток",
@@ -931,7 +937,7 @@ def refresh_balance_panel_now(chat_id: int):
                 reply_markup=build_balance_panel_keyboard(chat_id)
             )
             store["balance_panel_mode"] = "mini"
-        save_data(data)
+            save_data(data)
     except Exception as e:
         log_error(f"refresh_balance_panel_now({chat_id}): {e}")
 
@@ -958,19 +964,18 @@ def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_RE
 def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | None = None):
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
-
-    if get_quick_balance_behavior(chat_id) == "open":
-        open_balance_day_window_in_message(chat_id, message_id, day_key)
-        return
-
     try:
+        store = get_chat_store(chat_id)
+        if get_quick_balance_behavior(chat_id) == "open":
+            open_quick_balance_day_window(chat_id, day_key or store.get("current_view_day", today_key()), message_id=message_id)
+            return
+
         bot.edit_message_text(
             render_open_balance_panel_text(chat_id),
             chat_id=chat_id,
             message_id=message_id,
             reply_markup=build_balance_panel_open_keyboard(chat_id)
         )
-        store = get_chat_store(chat_id)
         store["balance_panel_id"] = message_id
         store["balance_panel_mode"] = "open"
         save_data(data)
@@ -1381,19 +1386,15 @@ def save_chat_json(chat_id: int):
         _save_json(chat_path_json, payload)
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["date", "amount", "note"])  # Простой заголовок
+            w.writerow(["date", "amount", "note"])
             daily = store.get("daily_records", {})
             rows = []
             for dk in sorted(daily.keys()):
                 recs = daily.get(dk, [])
                 recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
                 for r in recs_sorted:
-                    rows.append((
-                        dk,
-                        fmt_csv_amount(r.get("amount")),
-                        r.get("note", "")
-                    ))
-            write_csv_rows_grouped(w, rows)
+                    rows.append((dk, fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            write_grouped_csv_rows(w, rows)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
@@ -2116,18 +2117,14 @@ def export_global_csv(d: dict):
     try:
         with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["date", "amount", "note"])  # Простой заголовок
+            w.writerow(["date", "amount", "note"])
             rows = []
             for cid, cdata in d.get("chats", {}).items():
-                for dk in sorted((cdata.get("daily_records", {}) or {}).keys()):
-                    for r in (cdata.get("daily_records", {}) or {}).get(dk, []):
-                        rows.append((
-                            dk,
-                            fmt_csv_amount(r.get("amount")),
-                            r.get("note", "")
-                        ))
+                for dk, records in sorted((cdata.get("daily_records", {}) or {}).items()):
+                    for r in records:
+                        rows.append((dk, fmt_csv_amount(r.get("amount")), r.get("note", "")))
             rows.sort(key=lambda x: x[0])
-            write_csv_rows_grouped(w, rows)
+            write_grouped_csv_rows(w, rows)
     except Exception as e:
         log_error(f"export_global_csv: {e}")
 EMOJI_DIGITS = {
@@ -3291,7 +3288,7 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
     )
     kb.row(
         types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset"),
-        types.InlineKeyboardButton("📊 Статьи расходов", callback_data="cat_today")
+        types.InlineKeyboardButton("📊 Статьи расходов", callback_data=f"d:{day_key}:cat_open")
     )
 
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -3570,12 +3567,12 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     enabled = is_quick_balance_enabled(target_chat_id)
     behavior = get_quick_balance_behavior(target_chat_id)
 
-    normal_icon = "✅" if not enabled else "⬜"
+    normal_icon = "✅" if enabled and behavior == "mini" else "⬜"
     open_icon = "✅" if enabled and behavior == "open" else "⬜"
 
     kb.row(
         types.InlineKeyboardButton(f"{normal_icon} Как обычно", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"),
-        types.InlineKeyboardButton(f"{open_icon} Открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}")
+        types.InlineKeyboardButton(f"{open_icon} Быстрый остаток открывался", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}")
     )
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:quick_balance_menu"))
     return kb
@@ -3729,17 +3726,16 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
     mid = store.get("categories_msg_id")
 
     candidates = []
-    if mid:
-        try:
-            candidates.append(int(mid))
-        except Exception:
-            pass
-
     if preferred_message_id:
         try:
-            pref_id = int(preferred_message_id)
-            if pref_id not in candidates:
-                candidates.append(pref_id)
+            candidates.append(int(preferred_message_id))
+        except Exception:
+            pass
+    if mid:
+        try:
+            mid_int = int(mid)
+            if mid_int not in candidates:
+                candidates.append(mid_int)
         except Exception:
             pass
 
@@ -3829,8 +3825,15 @@ def handle_categories_callback(call, data_str: str) -> bool:
     """UI окна расходов по статьям."""
     chat_id = call.message.chat.id
     store = get_chat_store(chat_id)
-    current_cat_mid = store.get("categories_msg_id")
-    preferred_categories_mid = call.message.message_id if current_cat_mid and int(current_cat_mid) == int(call.message.message_id) else None
+
+    def _preferred_mid():
+        current_mid = getattr(call.message, "message_id", None)
+        existing_mid = store.get("categories_msg_id")
+        if existing_mid:
+            return existing_mid
+        if current_mid and current_mid == existing_mid:
+            return current_mid
+        return None
 
     if data_str == "cat_close":
         mid = store.get("categories_msg_id")
@@ -3844,17 +3847,13 @@ def handle_categories_callback(call, data_str: str) -> bool:
         return True
 
     if data_str == "cat_today":
-        current_cat_mid = store.get("categories_msg_id")
-        if current_cat_mid and int(current_cat_mid) != int(call.message.message_id):
-            try:
-                class _CatProxyCall:
-                    pass
-                proxy = _CatProxyCall()
-                proxy.message = type("_Msg", (), {"chat": call.message.chat, "message_id": int(current_cat_mid)})()
-                return handle_categories_callback(proxy, f"cat_wthu:{today_key()}")
-            except Exception:
-                pass
-        return handle_categories_callback(call, f"cat_wthu:{today_key()}")
+        start_key = week_start_thursday(today_key())
+        start, end = week_bounds_thu_wed(start_key)
+        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
+        text, _ = summarize_categories(store, start, end, label)
+        kb = build_categories_summary_keyboard("wthu", start, end)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=store.get("categories_msg_id"))
+        return True
 
     if data_str.startswith("cat_wthu:"):
         ref = data_str.split(":", 1)[1] or today_key()
@@ -3863,7 +3862,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
         text, _ = summarize_categories(store, start, end, label)
         kb = build_categories_summary_keyboard("wthu", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=preferred_categories_mid)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=_preferred_mid())
         return True
 
     if data_str.startswith("cat_wk:"):
@@ -3872,12 +3871,11 @@ def handle_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн–Вс)"
         text, _ = summarize_categories(store, start, end, label)
         kb = build_categories_summary_keyboard("wk", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=preferred_categories_mid)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=_preferred_mid())
         return True
 
     if data_str == "cat_months":
         kb = types.InlineKeyboardMarkup(row_width=3)
-        current_month = now_local().month
         for m in range(1, 13):
             label = datetime(2000, m, 1).strftime("%b")
             kb.add(types.InlineKeyboardButton(label, callback_data=f"cat_m:{m}"))
@@ -3885,7 +3883,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"),
             types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close")
         )
-        send_or_edit_categories_window(chat_id, "📦 Выберите месяц:", reply_markup=kb, preferred_message_id=preferred_categories_mid)
+        send_or_edit_categories_window(chat_id, "📦 Выберите месяц:", reply_markup=kb, preferred_message_id=_preferred_mid())
         return True
 
     if data_str.startswith("cat_m:"):
@@ -3906,7 +3904,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
         row.append(types.InlineKeyboardButton("🔙 Назад", callback_data="cat_months"))
         kb.row(*row)
-        send_or_edit_categories_window(chat_id, "📆 Выберите неделю:", reply_markup=kb, preferred_message_id=preferred_categories_mid)
+        send_or_edit_categories_window(chat_id, "📆 Выберите неделю:", reply_markup=kb, preferred_message_id=_preferred_mid())
         return True
 
     if data_str.startswith("cat_rng:"):
@@ -3931,7 +3929,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
         text, _ = summarize_categories(store, start, end, label)
         kb = build_categories_summary_keyboard("rng", start, end)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=preferred_categories_mid)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=_preferred_mid())
         return True
 
     if data_str.startswith("cat_show_wthu:"):
@@ -3945,7 +3943,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
         text = build_category_detail_text(store, start, end, category, label)
         kb = build_category_detail_keyboard(start, end, f"cat_wthu:{start}", mode="wthu", slug=slug)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=preferred_categories_mid)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=_preferred_mid())
         return True
 
     if data_str.startswith("cat_show_wk:"):
@@ -3959,7 +3957,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн–Вс)"
         text = build_category_detail_text(store, start, end, category, label)
         kb = build_category_detail_keyboard(start, end, f"cat_wk:{start}", mode="wk", slug=slug)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=preferred_categories_mid)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=_preferred_mid())
         return True
 
     if data_str.startswith("cat_show:"):
@@ -3975,26 +3973,23 @@ def handle_categories_callback(call, data_str: str) -> bool:
         if (end_dt - start_dt).days == 6 and start == week_start_thursday(start):
             back_callback = f"cat_wthu:{start}"
             label += " (Чт–Ср)"
+            mode = "wthu"
         elif (end_dt - start_dt).days == 6 and start == week_start_monday(start):
             back_callback = f"cat_wk:{start}"
             label += " (Пн–Вс)"
+            mode = "wk"
         else:
             y, m = start_dt.year, start_dt.month
             back_callback = f"cat_rng:{y}:{m}:{start_dt.day}:{end_dt.day}"
-
-        mode = None
-        if (end_dt - start_dt).days == 6 and start == week_start_thursday(start):
-            mode = "wthu"
-        elif (end_dt - start_dt).days == 6 and start == week_start_monday(start):
-            mode = "wk"
+            mode = None
 
         text = build_category_detail_text(store, start, end, category, label)
         kb = build_category_detail_keyboard(start, end, back_callback, mode=mode, slug=slug)
-        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=preferred_categories_mid)
+        send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=_preferred_mid())
         return True
 
     return False
-    
+
 def render_week_thu_wed_report(chat_id: int):
     store = get_chat_store(chat_id)
 
@@ -4296,10 +4291,12 @@ def on_callback(call):
             store["current_view_day"] = day_key
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, day_key, None)
-            elif is_balance_panel_message(chat_id, call.message.message_id) and get_quick_balance_behavior(chat_id) == "open":
-                open_balance_day_window_in_message(chat_id, call.message.message_id, day_key)
             elif is_quick_balance_enabled(chat_id):
-                refresh_balance_panel_now(chat_id)
+                qb_store = get_chat_store(chat_id)
+                if get_quick_balance_behavior(chat_id) == "open" and (qb_store.get("balance_panel_mode") == "open" or call.message.message_id == qb_store.get("balance_panel_id")):
+                    open_quick_balance_day_window(chat_id, day_key, call.message.message_id)
+                else:
+                    refresh_balance_panel_now(chat_id)
             else:
                 txt, _ = render_day_window(chat_id, day_key)
                 kb = build_main_keyboard(day_key, chat_id)
@@ -4312,10 +4309,12 @@ def on_callback(call):
             store["current_view_day"] = nd
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, nd, call.message.message_id)
-            elif is_balance_panel_message(chat_id, call.message.message_id) and get_quick_balance_behavior(chat_id) == "open":
-                open_balance_day_window_in_message(chat_id, call.message.message_id, nd)
             elif is_quick_balance_enabled(chat_id):
-                refresh_balance_panel_now(chat_id)
+                qb_store = get_chat_store(chat_id)
+                if get_quick_balance_behavior(chat_id) == "open" and (qb_store.get("balance_panel_mode") == "open" or call.message.message_id == qb_store.get("balance_panel_id")):
+                    open_quick_balance_day_window(chat_id, nd, call.message.message_id)
+                else:
+                    refresh_balance_panel_now(chat_id)
             else:
                 txt, _ = render_day_window(chat_id, nd)
                 kb = build_main_keyboard(nd, chat_id)
@@ -4328,10 +4327,12 @@ def on_callback(call):
             store["current_view_day"] = nd
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, nd, call.message.message_id)
-            elif is_balance_panel_message(chat_id, call.message.message_id) and get_quick_balance_behavior(chat_id) == "open":
-                open_balance_day_window_in_message(chat_id, call.message.message_id, nd)
             elif is_quick_balance_enabled(chat_id):
-                refresh_balance_panel_now(chat_id)
+                qb_store = get_chat_store(chat_id)
+                if get_quick_balance_behavior(chat_id) == "open" and (qb_store.get("balance_panel_mode") == "open" or call.message.message_id == qb_store.get("balance_panel_id")):
+                    open_quick_balance_day_window(chat_id, nd, call.message.message_id)
+                else:
+                    refresh_balance_panel_now(chat_id)
             else:
                 txt, _ = render_day_window(chat_id, nd)
                 kb = build_main_keyboard(nd, chat_id)
@@ -4343,10 +4344,12 @@ def on_callback(call):
             store["current_view_day"] = nd
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, nd, call.message.message_id)
-            elif is_balance_panel_message(chat_id, call.message.message_id) and get_quick_balance_behavior(chat_id) == "open":
-                open_balance_day_window_in_message(chat_id, call.message.message_id, nd)
             elif is_quick_balance_enabled(chat_id):
-                refresh_balance_panel_now(chat_id)
+                qb_store = get_chat_store(chat_id)
+                if get_quick_balance_behavior(chat_id) == "open" and (qb_store.get("balance_panel_mode") == "open" or call.message.message_id == qb_store.get("balance_panel_id")):
+                    open_quick_balance_day_window(chat_id, nd, call.message.message_id)
+                else:
+                    refresh_balance_panel_now(chat_id)
             else:
                 txt, _ = render_day_window(chat_id, nd)
                 kb = build_main_keyboard(nd, chat_id)
@@ -4457,12 +4460,13 @@ def on_callback(call):
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
             return
+        if cmd == "cat_open":
+            handle_categories_callback(call, "cat_today")
+            return
         if cmd == "back_main":
             store["current_view_day"] = day_key
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, day_key, None)
-            elif is_balance_panel_message(chat_id, call.message.message_id) and get_quick_balance_behavior(chat_id) == "open":
-                open_balance_day_window_in_message(chat_id, call.message.message_id, day_key)
             elif is_quick_balance_enabled(chat_id):
                 refresh_balance_panel_now(chat_id)
             else:
@@ -4654,8 +4658,11 @@ def on_callback(call):
             return
         if cmd.startswith("qb_mode_normal_"):
             tgt = int(cmd.split("_")[-1])
-            set_quick_balance_behavior(tgt, "mini")
-            set_quick_balance_enabled(tgt, False)
+            if is_quick_balance_enabled(tgt) and get_quick_balance_behavior(tgt) == "mini":
+                set_quick_balance_enabled(tgt, False)
+            else:
+                set_quick_balance_behavior(tgt, "mini")
+                set_quick_balance_enabled(tgt, True)
             if OWNER_ID and str(tgt) != str(OWNER_ID):
                 refresh_owner_after_chat_change(tgt)
             kb = build_quick_balance_chat_menu(day_key)
@@ -4668,8 +4675,11 @@ def on_callback(call):
             return
         if cmd.startswith("qb_mode_open_"):
             tgt = int(cmd.split("_")[-1])
-            set_quick_balance_behavior(tgt, "open")
-            set_quick_balance_enabled(tgt, True)
+            if is_quick_balance_enabled(tgt) and get_quick_balance_behavior(tgt) == "open":
+                set_quick_balance_enabled(tgt, False)
+            else:
+                set_quick_balance_behavior(tgt, "open")
+                set_quick_balance_enabled(tgt, True)
             if OWNER_ID and str(tgt) != str(OWNER_ID):
                 refresh_owner_after_chat_change(tgt)
             kb = build_quick_balance_chat_menu(day_key)
@@ -4811,6 +4821,16 @@ def on_callback(call):
             return
     except Exception as e:
         log_error(f"on_callback error: {e}")
+def write_grouped_csv_rows(writer, rows):
+    prev_day = None
+    for row in rows:
+        day = row[0] if row else None
+        if prev_day is not None and day != prev_day:
+            writer.writerow([])
+        writer.writerow(list(row))
+        prev_day = day
+
+
 def send_csv_week(chat_id: int, day_key: str):
     try:
         store = get_chat_store(chat_id)
@@ -4834,7 +4854,7 @@ def send_csv_week(chat_id: int, day_key: str):
         with open(tmp, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["date", "amount", "note"])
-            write_csv_rows_grouped(w, rows)
+            write_grouped_csv_rows(w, rows)
 
         with open(tmp, "rb") as f:
             bot.send_document(chat_id, f, caption="🗓 CSV за неделю")
@@ -4865,7 +4885,7 @@ def send_csv_month(chat_id: int, day_key: str):
         with open(tmp, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["date", "amount", "note"])
-            write_csv_rows_grouped(w, rows)
+            write_grouped_csv_rows(w, rows)
 
         with open(tmp, "rb") as f:
             bot.send_document(chat_id, f, caption="📆 CSV за месяц")
@@ -4899,7 +4919,7 @@ def send_csv_wedthu(chat_id: int, day_key: str):
         with open(tmp, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["date", "amount", "note"])
-            w.writerows(rows)
+            write_grouped_csv_rows(w, rows)
 
         with open(tmp, "rb") as f:
             bot.send_document(chat_id, f, caption="📊 CSV Ср–Чт")
@@ -5017,7 +5037,11 @@ def update_or_send_day_window(chat_id: int, day_key: str):
         return
 
     if is_quick_balance_enabled(chat_id):
-        schedule_balance_panel_refresh(chat_id, 0.1)
+        qb_store = get_chat_store(chat_id)
+        if get_quick_balance_behavior(chat_id) == "open" and qb_store.get("balance_panel_mode") == "open":
+            open_quick_balance_day_window(chat_id, day_key)
+        else:
+            schedule_balance_panel_refresh(chat_id, 0.1)
         return
 
     lock = window_locks[(chat_id, day_key)]
@@ -5507,10 +5531,12 @@ def cmd_csv_day(chat_id: int, day_key: str):
         with open(tmp_name, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
-            rows = []
+            first = True
             for r in day_recs:
-                rows.append((
-                    day_key,
+                if not first:
+                    pass
+                first = False
+                w.writerow([
                     chat_id,
                     r.get("id"),
                     r.get("short_id"),
@@ -5519,14 +5545,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
                     r.get("note"),
                     r.get("owner"),
                     day_key,
-                ))
-            prev_day = None
-            for row in rows:
-                cur_day = row[0]
-                if prev_day is not None and cur_day != prev_day:
-                    w.writerow([])
-                w.writerow(list(row[1:]))
-                prev_day = cur_day
+                ])
         with open(tmp_name, "rb") as f:
             bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}")
     except Exception as e:
