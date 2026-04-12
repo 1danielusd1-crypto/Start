@@ -33,7 +33,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_18_windows_quickbalance_fixed_v5"
+VERSION = "bot_18_windows_quickbalance_fixed_v6.py"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DATA_FILE = "data.json"
@@ -5235,29 +5235,7 @@ def cmd_start(msg):
     if not require_finance(chat_id):
         return
 
-    day_key = today_key()
-
-    
-    set_active_window_id(chat_id, day_key, None)
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        backup_window_for_owner(chat_id, day_key, None)
-        return
-
-    if is_quick_balance_enabled(chat_id):
-        schedule_balance_panel_refresh(chat_id, 0.1)
-        return
-
-    txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
-    sent = bot.send_message(
-        chat_id,
-        txt,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
-    set_active_window_id(chat_id, day_key, sent.message_id)
-    schedule_balance_panel_refresh(chat_id, 0.5)
+    open_day_window_for_chat(chat_id, today_key())
 @bot.message_handler(commands=["start_new"])
 def cmd_start_new(msg):
     try:
@@ -5274,36 +5252,7 @@ def cmd_start_new(msg):
     if not require_finance(chat_id):
         return
 
-    day_key = today_key()
-
-    old_mid = get_active_window_id(chat_id, day_key)
-    if old_mid:
-        try:
-            bot.delete_message(chat_id, old_mid)
-        except Exception:
-            pass
-
-    set_active_window_id(chat_id, day_key, None)
-
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        backup_window_for_owner(chat_id, day_key, None)
-        return
-
-    if is_quick_balance_enabled(chat_id):
-        schedule_balance_panel_refresh(chat_id, 0.1)
-        return
-
-    txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
-    sent = bot.send_message(
-        chat_id,
-        txt,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
-    set_active_window_id(chat_id, day_key, sent.message_id)
-    schedule_balance_panel_refresh(chat_id, 0.5)
+    open_day_window_for_chat(chat_id, today_key(), force_new=True)
 @bot.message_handler(commands=["help"])
 def cmd_help(msg):
     try:
@@ -5401,15 +5350,8 @@ def cmd_view(msg):
     except ValueError:
         send_info(chat_id, "❌ Неверная дата. Формат: YYYY-MM-DD")
         return
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        backup_window_for_owner(chat_id, day_key, None)
-    elif is_quick_balance_enabled(chat_id):
-        schedule_balance_panel_refresh(chat_id, 0.1)
-    else:
-        txt, _ = render_day_window(chat_id, day_key)
-        kb = build_main_keyboard(day_key, chat_id)
-        sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-        set_active_window_id(chat_id, day_key, sent.message_id)
+
+    open_day_window_for_chat(chat_id, day_key)
 @bot.message_handler(commands=["prev"])
 def cmd_prev(msg):
     try:
@@ -5424,17 +5366,10 @@ def cmd_prev(msg):
         return
     if not require_finance(chat_id):
         return
-    d = datetime.strptime(today_key(), "%Y-%m-%d") - timedelta(days=1)
-    day_key = d.strftime("%Y-%m-%d")
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        backup_window_for_owner(chat_id, day_key, None)
-    elif is_quick_balance_enabled(chat_id):
-        schedule_balance_panel_refresh(chat_id, 0.1)
-    else:
-        txt, _ = render_day_window(chat_id, day_key)
-        kb = build_main_keyboard(day_key, chat_id)
-        sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-        set_active_window_id(chat_id, day_key, sent.message_id)
+
+    current_day = get_chat_store(chat_id).get("current_view_day", today_key())
+    d = datetime.strptime(current_day, "%Y-%m-%d") - timedelta(days=1)
+    open_day_window_for_chat(chat_id, d.strftime("%Y-%m-%d"))
 @bot.message_handler(commands=["next"])
 def cmd_next(msg):
     try:
@@ -5449,17 +5384,10 @@ def cmd_next(msg):
         return
     if not require_finance(chat_id):
         return
-    d = datetime.strptime(today_key(), "%Y-%m-%d") + timedelta(days=1)
-    day_key = d.strftime("%Y-%m-%d")
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        backup_window_for_owner(chat_id, day_key, None)
-    elif is_quick_balance_enabled(chat_id):
-        schedule_balance_panel_refresh(chat_id, 0.1)
-    else:
-        txt, _ = render_day_window(chat_id, day_key)
-        kb = build_main_keyboard(day_key, chat_id)
-        sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
-        set_active_window_id(chat_id, day_key, sent.message_id)
+
+    current_day = get_chat_store(chat_id).get("current_view_day", today_key())
+    d = datetime.strptime(current_day, "%Y-%m-%d") + timedelta(days=1)
+    open_day_window_for_chat(chat_id, d.strftime("%Y-%m-%d"))
 @bot.message_handler(commands=["balance"])
 def cmd_balance(msg):
     try:
@@ -6103,6 +6031,55 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
             parse_mode="HTML"
         )
         set_active_window_id(chat_id, day_key, sent.message_id)
+
+def open_day_window_for_chat(chat_id: int, day_key: str, message_id_override: int | None = None, force_new: bool = False):
+    """
+    Единая логика открытия окна дня для владельца и для остальных чатов.
+    Разница между чатами остаётся только там, где она задумана по ТЗ:
+    - владелец использует backup_window_for_owner
+    - быстрый остаток использует свой режим
+    - обычные чаты редактируют уже открытое окно, а не плодят новые
+    """
+    store = get_chat_store(chat_id)
+    store["current_view_day"] = day_key
+
+    if force_new:
+        old_mid = get_active_window_id(chat_id, day_key)
+        if old_mid and old_mid != message_id_override:
+            try:
+                bot.delete_message(chat_id, old_mid)
+            except Exception:
+                pass
+            try:
+                get_or_create_active_windows(chat_id).pop(day_key, None)
+            except Exception:
+                pass
+
+    save_data(data)
+
+    if OWNER_ID and str(chat_id) == str(OWNER_ID):
+        backup_window_for_owner(chat_id, day_key, message_id_override)
+        return
+
+    if is_quick_balance_enabled(chat_id):
+        if get_quick_balance_behavior(chat_id) == "open":
+            open_quick_balance_day_window(chat_id, day_key, message_id_override)
+        else:
+            if force_new:
+                panel_id = store.get("balance_panel_id")
+                if panel_id:
+                    try:
+                        bot.delete_message(chat_id, panel_id)
+                    except Exception:
+                        pass
+                store["balance_panel_id"] = None
+                store["balance_panel_mode"] = "mini"
+                save_data(data)
+            schedule_balance_panel_refresh(chat_id, 0.1)
+        return
+
+    update_or_send_day_window(chat_id, day_key)
+
 
 def force_new_day_window(chat_id: int, day_key: str):
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
