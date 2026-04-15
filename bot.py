@@ -34,7 +34,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_19_sqlite_max 🍥"
+VERSION = "bot (19)__fixed_windows_quick_balance"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -356,13 +356,13 @@ def format_finance_mode_label(chat_id: int) -> str:
 def is_quick_balance_enabled(chat_id: int) -> bool:
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
-    return bool(settings.get("quick_balance_enabled", False))
+    return bool(settings.get("quick_balance_enabled", True))
 
 
 def get_quick_balance_behavior(chat_id: int) -> str:
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
-    behavior = (settings.get("quick_balance_behavior") or "mini").strip().lower()
+    behavior = (settings.get("quick_balance_behavior") or "open").strip().lower()
     return "open" if behavior == "open" else "mini"
 
 
@@ -370,6 +370,7 @@ def set_quick_balance_behavior(chat_id: int, behavior: str):
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
     settings["quick_balance_behavior"] = "open" if str(behavior).lower() == "open" else "mini"
+    save_data(data)
 
 
 def set_quick_balance_enabled(chat_id: int, enabled: bool):
@@ -381,15 +382,8 @@ def set_quick_balance_enabled(chat_id: int, enabled: bool):
 
     if enabled:
         set_finance_mode(chat_id, True)
-        store["balance_panel_mode"] = "mini"
-        aw = data.setdefault("active_messages", {}).get(str(chat_id), {}) or {}
-        for _dk, _mid in list(aw.items()):
-            if _mid:
-                try:
-                    bot.delete_message(chat_id, _mid)
-                except Exception:
-                    pass
-        clear_chat_active_windows(chat_id)
+        if store.get("balance_panel_mode") not in {"mini", "open"}:
+            store["balance_panel_mode"] = "mini"
         save_data(data)
         schedule_balance_panel_refresh(chat_id, 0.1)
         return
@@ -402,7 +396,6 @@ def set_quick_balance_enabled(chat_id: int, enabled: bool):
             pass
     store["balance_panel_id"] = None
     store["balance_panel_mode"] = "mini"
-    clear_chat_active_windows(chat_id)
     save_data(data)
 
 
@@ -497,7 +490,10 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
             )
             schedule_stored_window_delete(chat_id, store_key, delay)
             return message_id
-        except Exception:
+        except Exception as e:
+            if "message is not modified" in str(e).lower():
+                schedule_stored_window_delete(chat_id, store_key, delay)
+                return message_id
             try:
                 bot.edit_message_caption(
                     chat_id=chat_id,
@@ -508,7 +504,10 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
                 )
                 schedule_stored_window_delete(chat_id, store_key, delay)
                 return message_id
-            except Exception:
+            except Exception as e2:
+                if "message is not modified" in str(e2).lower():
+                    schedule_stored_window_delete(chat_id, store_key, delay)
+                    return message_id
                 store[store_key] = None
                 save_data(data)
 
@@ -517,117 +516,6 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
     save_data(data)
     schedule_stored_window_delete(chat_id, store_key, delay)
     return sent.message_id
-
-
-def delete_stored_window_now(chat_id: int, store_key: str):
-    store = get_chat_store(chat_id)
-    message_id = store.get(store_key)
-    if message_id:
-        try:
-            bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-    store[store_key] = None
-    save_data(data)
-
-
-def render_total_window_text(chat_id: int) -> str:
-    store = get_chat_store(chat_id)
-    chat_bal = store.get("balance", 0)
-
-    if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-        return f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}"
-
-    lines = []
-    info = store.get("info", {})
-    title = info.get("title") or f"Чат {chat_id}"
-    lines.append("💰 Общий итог (для владельца)")
-    lines.append("")
-    lines.append(f"• Этот чат ({title}): {fmt_num(chat_bal)}")
-
-    all_chats = data.get("chats", {})
-    total_all = 0
-    other_lines = []
-    for cid, st in all_chats.items():
-        try:
-            cid_int = int(cid)
-        except Exception:
-            continue
-        bal = st.get("balance", 0)
-        total_all += bal
-        if cid_int == chat_id:
-            continue
-        info2 = st.get("info", {})
-        title2 = info2.get("title") or f"Чат {cid_int}"
-        other_lines.append(f"   • {title2}: {fmt_num(bal)}")
-
-    if other_lines:
-        lines.append("")
-        lines.append("• Другие чаты:")
-        lines.extend(other_lines)
-
-    lines.append("")
-    lines.append(f"• Всего по всем чатам: {fmt_num(total_all)}")
-    return "\n".join(lines)
-
-
-def open_total_window(chat_id: int):
-    delay = OWNER_TOTAL_WINDOW_DELETE_DELAY if is_owner_chat(chat_id) else AUX_WINDOW_DELETE_DELAY
-    send_or_edit_stored_window(
-        chat_id,
-        "total_msg_id",
-        render_total_window_text(chat_id),
-        parse_mode="HTML",
-        delay=delay,
-    )
-
-
-def open_pick_date_window(chat_id: int):
-    kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="pick_date_close"))
-    send_or_edit_stored_window(
-        chat_id,
-        "wait_date_msg_id",
-        "Введите дату:\n/view YYYY-MM-DD",
-        reply_markup=kb,
-        delay=40,
-    )
-
-
-def open_reset_window(chat_id: int, day_key: str):
-    kb = types.InlineKeyboardMarkup()
-    kb.row(
-        types.InlineKeyboardButton("✅ Да, обнулить", callback_data=f"d:{day_key}:reset_yes"),
-        types.InlineKeyboardButton("❌ Отмена", callback_data=f"d:{day_key}:reset_no"),
-    )
-    send_or_edit_stored_window(
-        chat_id,
-        "reset_msg_id",
-        "⚠️ Вы уверены, что хотите обнулить данные этого чата?",
-        reply_markup=kb,
-        delay=40,
-    )
-
-
-def clear_edit_prompt(chat_id: int, clear_wait: bool = True):
-    prev = _edit_cancel_timers.get(chat_id)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-
-    store = get_chat_store(chat_id)
-    prompt_id = store.get("edit_prompt_msg_id")
-    if prompt_id:
-        try:
-            bot.delete_message(chat_id, prompt_id)
-        except Exception:
-            pass
-    store["edit_prompt_msg_id"] = None
-    if clear_wait:
-        store["edit_wait"] = None
-    save_data(data)
 
 
 def build_toggle_label(prefix: str, title: str, enabled: bool) -> str:
@@ -1001,15 +889,22 @@ def build_balance_panel_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     bal = get_chat_store(chat_id).get("balance", 0)
     kb.row(types.InlineKeyboardButton(
-        f"🏦 Остаток по чату: {fmt_num(bal)}",
+        f"🏦 Остаток: {fmt_num(bal)}",
         callback_data="bp:open"
     ))
     return kb
 
 
 def render_open_balance_panel_text(chat_id: int) -> str:
-    bal = get_chat_store(chat_id).get("balance", 0)
-    return f"🏦 Остаток по чату: {fmt_num(bal)}"
+    store = get_chat_store(chat_id)
+    bal = store.get("balance", 0)
+    day_key = store.get("current_view_day", today_key())
+    return (
+        "🏦 Быстрый остаток\n\n"
+        f"Баланс по чату: {fmt_num(bal)}\n"
+        f"Текущий день: {fmt_date_ddmmyy(day_key)}\n"
+        f"Финрежим: {format_finance_mode_label(chat_id)}"
+    )
 
 
 def build_balance_panel_open_keyboard(chat_id: int):
@@ -1042,24 +937,7 @@ def is_quick_balance_open_mode(chat_id: int) -> bool:
 
 
 def is_quick_balance_main_open(chat_id: int, message_id: int | None = None) -> bool:
-    if not is_quick_balance_enabled(chat_id) or not is_quick_balance_open_mode(chat_id):
-        return False
-    store = get_chat_store(chat_id)
-    panel_id = store.get("balance_panel_id")
-    if not panel_id or store.get("balance_panel_mode") != "open_main":
-        return False
-    if message_id is not None and int(panel_id) != int(message_id):
-        return False
-    return True
-
-
-def render_quick_balance_main_window(chat_id: int, day_key: str | None = None):
-    store = get_chat_store(chat_id)
-    view_day = day_key or store.get("current_view_day", today_key())
-    store["current_view_day"] = view_day
-    txt, _ = render_day_window(chat_id, view_day)
-    kb = build_main_keyboard(view_day, chat_id)
-    return txt, kb, view_day
+    return False
 
 
 def collapse_balance_panel(chat_id: int):
@@ -1076,34 +954,11 @@ def collapse_balance_panel(chat_id: int):
             reply_markup=build_balance_panel_keyboard(chat_id)
         )
         store["balance_panel_mode"] = "mini"
-        clear_chat_active_windows(chat_id)
         save_data(data)
     except Exception as e:
-        log_error(f"collapse_balance_panel({chat_id}): {e}")
-
-
-def open_quick_balance_main_window(chat_id: int, message_id: int, day_key: str | None = None):
-    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
-        return
-
-    store = get_chat_store(chat_id)
-    txt, kb, view_day = render_quick_balance_main_window(chat_id, day_key)
-
-    try:
-        bot.edit_message_text(
-            txt,
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
-        store["balance_panel_id"] = message_id
-        store["balance_panel_mode"] = "open_main"
-        bind_single_active_window(chat_id, view_day, message_id)
-        save_data(data)
-        schedule_balance_panel_collapse(chat_id)
-    except Exception as e:
-        log_error(f"open_quick_balance_main_window({chat_id},{message_id}): {e}")
+        err = str(e).lower()
+        if "message is not modified" not in err:
+            log_error(f"collapse_balance_panel({chat_id}): {e}")
 
 
 def schedule_balance_panel_collapse(chat_id: int, delay: float = BALANCE_PANEL_COLLAPSE_DELAY):
@@ -1137,10 +992,14 @@ def send_minimized_balance_panel(chat_id: int):
                 reply_markup=build_balance_panel_keyboard(chat_id)
             )
             store["balance_panel_mode"] = "mini"
-            clear_chat_active_windows(chat_id)
             save_data(data)
             return
         except Exception as e:
+            err = str(e).lower()
+            if "message is not modified" in err:
+                store["balance_panel_mode"] = "mini"
+                save_data(data)
+                return
             log_error(f"send_minimized_balance_panel edit({chat_id}): {e}")
             try:
                 bot.delete_message(chat_id, panel_id)
@@ -1156,7 +1015,6 @@ def send_minimized_balance_panel(chat_id: int):
         )
         store["balance_panel_id"] = sent.message_id
         store["balance_panel_mode"] = "mini"
-        clear_chat_active_windows(chat_id)
         save_data(data)
     except Exception as e:
         log_error(f"send_minimized_balance_panel({chat_id}): {e}")
@@ -1169,36 +1027,32 @@ def refresh_balance_panel_now(chat_id: int):
     store = get_chat_store(chat_id)
     panel_id = store.get("balance_panel_id")
     if not panel_id:
+        send_minimized_balance_panel(chat_id)
         return
 
+    mode = store.get("balance_panel_mode") or "mini"
     try:
-        if is_quick_balance_main_open(chat_id):
-            txt, kb, view_day = render_quick_balance_main_window(chat_id)
+        if mode == "open":
             bot.edit_message_text(
-                txt,
+                render_open_balance_panel_text(chat_id),
                 chat_id=chat_id,
                 message_id=panel_id,
-                reply_markup=kb,
-                parse_mode="HTML"
+                reply_markup=build_balance_panel_open_keyboard(chat_id)
             )
-            bind_single_active_window(chat_id, view_day, panel_id)
-            save_data(data)
             schedule_balance_panel_collapse(chat_id)
+        else:
+            bot.edit_message_text(
+                "📌 Быстрый остаток",
+                chat_id=chat_id,
+                message_id=panel_id,
+                reply_markup=build_balance_panel_keyboard(chat_id)
+            )
+    except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" in err:
+            if mode == "open":
+                schedule_balance_panel_collapse(chat_id)
             return
-    except Exception as e:
-        log_error(f"refresh_balance_panel_now main({chat_id}): {e}")
-
-    try:
-        bot.edit_message_text(
-            "📌 Быстрый остаток",
-            chat_id=chat_id,
-            message_id=panel_id,
-            reply_markup=build_balance_panel_keyboard(chat_id)
-        )
-        store["balance_panel_mode"] = "mini"
-        clear_chat_active_windows(chat_id)
-        save_data(data)
-    except Exception as e:
         log_error(f"refresh_balance_panel_now({chat_id}): {e}")
         send_minimized_balance_panel(chat_id)
 
@@ -1210,9 +1064,7 @@ def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_RE
     def _job():
         try:
             store = get_chat_store(chat_id)
-            if is_quick_balance_main_open(chat_id):
-                refresh_balance_panel_now(chat_id)
-            elif store.get("balance_panel_id"):
+            if store.get("balance_panel_id"):
                 refresh_balance_panel_now(chat_id)
             else:
                 send_minimized_balance_panel(chat_id)
@@ -1242,6 +1094,14 @@ def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | 
         save_data(data)
         schedule_balance_panel_collapse(chat_id)
     except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" in err:
+            store = get_chat_store(chat_id)
+            store["balance_panel_id"] = message_id
+            store["balance_panel_mode"] = "open"
+            save_data(data)
+            schedule_balance_panel_collapse(chat_id)
+            return
         log_error(f"open_balance_panel_in_message({chat_id},{message_id}): {e}")
 
 def build_day_report_lines(chat_id: int) -> list[str]:
@@ -1587,46 +1447,23 @@ def get_chat_store(chat_id: int) -> dict:
             "active_windows": {},
             "edit_wait": None,
             "edit_target": None,
-            "edit_prompt_msg_id": None,
             "current_view_day": today_key(),
             "finance_mode": False,
-            "report_window_id": None,
-            "report_month": None,
-            "total_msg_id": None,
-            "info_msg_id": None,
-            "categories_msg_id": None,
-            "wait_date_msg_id": None,
-            "reset_msg_id": None,
-            "balance_panel_id": None,
-            "balance_panel_mode": "mini",
             "settings": {
                 "auto_add": True,
                 "quick_balance_enabled": True,
-                "quick_balance_behavior": "mini"
+                "quick_balance_behavior": "open"
             },
         }
     )
 
-    settings = store.setdefault("settings", {})
-    settings.setdefault("auto_add", True)
-    settings.setdefault("quick_balance_enabled", True)
-    settings.setdefault("quick_balance_behavior", "mini")
-
+    store.setdefault("settings", {}).setdefault("auto_add", True)
+    store.setdefault("settings", {}).setdefault("quick_balance_enabled", True)
+    store.setdefault("settings", {}).setdefault("quick_balance_behavior", "open")
     store.setdefault("finance_mode", False)
-    store.setdefault("edit_prompt_msg_id", None)
-    store.setdefault("report_window_id", None)
-    store.setdefault("report_month", None)
-    store.setdefault("total_msg_id", None)
-    store.setdefault("info_msg_id", None)
-    store.setdefault("categories_msg_id", None)
-    store.setdefault("wait_date_msg_id", None)
-    store.setdefault("reset_msg_id", None)
-    store.setdefault("balance_panel_id", None)
-    store.setdefault("balance_panel_mode", "mini")
 
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        settings["auto_add"] = True
-        settings.setdefault("quick_balance_enabled", True)
+        store["settings"]["auto_add"] = True
         store["finance_mode"] = True
 
     if "known_chats" not in store:
@@ -2269,9 +2106,8 @@ def on_any_message(msg):
                             r["note"] = note
 
                 store["balance"] = sum(r["amount"] for r in store.get("records", []))
-                store["edit_wait"] = None
+                clear_edit_wait_state(chat_id)
                 save_data(data)
-                clear_edit_prompt(chat_id, clear_wait=False)
 
                 update_or_send_day_window(chat_id, day_key)
                 send_and_auto_delete(
@@ -4076,6 +3912,10 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
             save_chat_json(chat_id)
             return target_id
         except Exception as e:
+            if "message is not modified" in str(e).lower():
+                store["categories_msg_id"] = target_id
+                save_chat_json(chat_id)
+                return target_id
             log_error(f"send_or_edit_categories_window edit failed {chat_id}:{target_id}: {e}")
             if store.get("categories_msg_id") == target_id:
                 store["categories_msg_id"] = None
@@ -4095,42 +3935,26 @@ def build_week_thu_keyboard(start_key: str):
     return kb
 def open_report_window(chat_id: int, month_key: str = None, message_id: int = None):
     """
-    Открывает или обновляет отдельное окно отчёта.
+    Открывает или обновляет отдельное окно отчёта без размножения сообщений.
     """
     text, month_key = build_month_report_text(chat_id, month_key)
     kb = build_report_keyboard(month_key)
 
     store = get_chat_store(chat_id)
-    target_id = message_id or store.get("report_window_id")
+    if message_id and not store.get("report_window_id"):
+        store["report_window_id"] = message_id
 
-    if target_id:
-        try:
-            bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=target_id,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-            store["report_window_id"] = target_id
-            store["report_month"] = month_key
-            save_data(data)
-            schedule_stored_window_delete(chat_id, "report_window_id", AUX_WINDOW_DELETE_DELAY)
-            return
-        except Exception as e:
-            log_error(f"open_report_window edit failed: {e}")
-            _clear_stored_window(chat_id, "report_window_id", target_id)
-
-    sent = bot.send_message(
+    final_id = send_or_edit_stored_window(
         chat_id,
+        "report_window_id",
         text,
         reply_markup=kb,
-        parse_mode="HTML"
+        parse_mode="HTML",
+        delay=AUX_WINDOW_DELETE_DELAY
     )
-    store["report_window_id"] = sent.message_id
+    store["report_window_id"] = final_id
     store["report_month"] = month_key
     save_data(data)
-    schedule_stored_window_delete(chat_id, "report_window_id", AUX_WINDOW_DELETE_DELAY)
 
 
 def open_info_window(chat_id: int):
@@ -4596,58 +4420,58 @@ def on_callback(call):
                     parse_mode="HTML"
                 )
             return
-        if data_str == "pick_date_close":
-            delete_stored_window_now(chat_id, "wait_date_msg_id")
-            return
-        if data_str.startswith("d:") and data_str.endswith(":reset_yes"):
-            delete_stored_window_now(chat_id, "reset_msg_id")
-            reset_chat_data(chat_id)
-            send_and_auto_delete(chat_id, "✅ Данные чата обнулены.", 10)
-            return
-        if data_str.startswith("d:") and data_str.endswith(":reset_no"):
-            delete_stored_window_now(chat_id, "reset_msg_id")
-            send_and_auto_delete(chat_id, "❎ Обнуление отменено.", 8)
-            return
         if not data_str.startswith("d:"):
             return
         _, day_key, cmd = data_str.split(":", 2)
         store = get_chat_store(chat_id)
         if cmd == "open":
             store["current_view_day"] = day_key
-            save_data(data)
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
-                backup_window_for_owner(chat_id, day_key, call.message.message_id)
+                backup_window_for_owner(chat_id, day_key, None)
             else:
-                update_or_send_day_window(chat_id, day_key)
+                txt, _ = render_day_window(chat_id, day_key)
+                kb = build_main_keyboard(day_key, chat_id)
+                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
+                set_active_window_id(chat_id, day_key, call.message.message_id)
+                schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "prev":
             d = datetime.strptime(day_key, "%Y-%m-%d") - timedelta(days=1)
             nd = d.strftime("%Y-%m-%d")
             store["current_view_day"] = nd
-            save_data(data)
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, nd, call.message.message_id)
             else:
-                update_or_send_day_window(chat_id, nd)
+                txt, _ = render_day_window(chat_id, nd)
+                kb = build_main_keyboard(nd, chat_id)
+                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
+                set_active_window_id(chat_id, nd, call.message.message_id)
+                schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "next":
             d = datetime.strptime(day_key, "%Y-%m-%d") + timedelta(days=1)
             nd = d.strftime("%Y-%m-%d")
             store["current_view_day"] = nd
-            save_data(data)
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, nd, call.message.message_id)
             else:
-                update_or_send_day_window(chat_id, nd)
+                txt, _ = render_day_window(chat_id, nd)
+                kb = build_main_keyboard(nd, chat_id)
+                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
+                set_active_window_id(chat_id, nd, call.message.message_id)
+                schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "today":
             nd = today_key()
             store["current_view_day"] = nd
-            save_data(data)
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, nd, call.message.message_id)
             else:
-                update_or_send_day_window(chat_id, nd)
+                txt, _ = render_day_window(chat_id, nd)
+                kb = build_main_keyboard(nd, chat_id)
+                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
+                set_active_window_id(chat_id, nd, call.message.message_id)
+                schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "calendar":
             try:
@@ -4669,7 +4493,61 @@ def on_callback(call):
             open_report_window(chat_id, month_key)
             return
         if cmd == "total":
-            open_total_window(chat_id)
+            chat_bal = store.get("balance", 0)
+
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                text = f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}"
+                final_id = send_or_edit_stored_window(
+                    chat_id,
+                    "total_msg_id",
+                    text,
+                    parse_mode="HTML",
+                    delay=AUX_WINDOW_DELETE_DELAY
+                )
+                store["total_msg_id"] = final_id
+                save_data(data)
+                return
+
+            lines = []
+            info = store.get("info", {})
+            title = info.get("title") or f"Чат {chat_id}"
+            lines.append("💰 Общий итог (для владельца)")
+            lines.append("")
+            lines.append(f"• Этот чат ({title}): {fmt_num(chat_bal)}")
+
+            all_chats = data.get("chats", {})
+            total_all = 0
+            other_lines = []
+            for cid, st in all_chats.items():
+                try:
+                    cid_int = int(cid)
+                except Exception:
+                    continue
+                bal = st.get("balance", 0)
+                total_all += bal
+                if cid_int == chat_id:
+                    continue
+                info2 = st.get("info", {})
+                title2 = info2.get("title") or f"Чат {cid_int}"
+                other_lines.append(f"   • {title2}: {fmt_num(bal)}")
+            if other_lines:
+                lines.append("")
+                lines.append("• Другие чаты:")
+                lines.extend(other_lines)
+            lines.append("")
+            lines.append(f"• Всего по всем чатам: {fmt_num(total_all)}")
+
+            text = "\n".join(lines)
+            final_id = send_or_edit_stored_window(
+                chat_id,
+                "total_msg_id",
+                text,
+                parse_mode="HTML",
+                delay=OWNER_TOTAL_WINDOW_DELETE_DELAY
+            )
+            store["total_msg_id"] = final_id
+            save_data(data)
+            schedule_owner_total_window_delete(chat_id, final_id)
             return
         if cmd == "info":
             try:
@@ -4687,11 +4565,14 @@ def on_callback(call):
             return
         if cmd == "back_main":
             store["current_view_day"] = day_key
-            save_data(data)
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
-                backup_window_for_owner(chat_id, day_key, call.message.message_id)
+                backup_window_for_owner(chat_id, day_key, None)
             else:
-                update_or_send_day_window(chat_id, day_key)
+                txt, _ = render_day_window(chat_id, day_key)
+                kb = build_main_keyboard(day_key, chat_id)
+                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
+                set_active_window_id(chat_id, day_key, call.message.message_id)
+                schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "csv_all":
             kb = build_csv_menu(day_key)
@@ -4725,7 +4606,11 @@ def on_callback(call):
         if cmd == "reset":
             if not require_finance(chat_id):
                 return
-            open_reset_window(chat_id, day_key)
+            store["reset_wait"] = True
+            store["reset_time"] = time.time()
+            save_data(data)
+            send_and_auto_delete(chat_id, "⚠️ Вы уверены, что хотите обнулить данные? Напишите ДА в течение 15 секунд.", 15)
+            schedule_cancel_wait(chat_id, 15)
             return
 
         if cmd == "edit_list":
@@ -4764,32 +4649,33 @@ def on_callback(call):
                 send_and_auto_delete(chat_id, "❌ Запись не найдена.")
                 return
 
-            store["edit_wait"] = {
-                "type": "edit",
-                "rid": rid,
-                "day_key": day_key,
-            }
-            save_data(data)
-
             text = (
                 f"✏️ Редактирование записи R{rid}\n\n"
                 f"Текущие данные:\n"
                 f"{fmt_num(rec['amount'])} {rec.get('note','')}\n\n"
                 f"✍️ Напишите новые данные.\n\n"
-                f"⏳ Это сообщение будет удалено через 40 секунд,\n"
-                f"если изменений не будет — редактирование отменится."
+                f"⏳ Это сообщение и режим редактирования будут автоматически отменены через 40 секунд."
             )
 
             kb = build_cancel_edit_keyboard(day_key)
-            prompt_id = send_or_edit_stored_window(
+
+            sent = bot.send_message(
                 chat_id,
-                "edit_prompt_msg_id",
                 text,
-                reply_markup=kb,
-                delay=40
+                reply_markup=kb
             )
 
-            schedule_cancel_edit(chat_id, prompt_id, delay=40)
+            store["edit_wait"] = {
+                "type": "edit",
+                "rid": rid,
+                "day_key": day_key,
+                "prompt_msg_id": sent.message_id,
+                "expires_at": time.time() + 40,
+            }
+            save_data(data)
+
+            schedule_cancel_edit(chat_id, sent.message_id, delay=40)
+
             return
         if cmd.startswith("del_rec_"):
             rid = int(cmd.split("_")[-1])
@@ -5013,10 +4899,17 @@ def on_callback(call):
             )
             return
         if cmd == "pick_date":
-            open_pick_date_window(chat_id)
+            msg = bot.send_message(chat_id, "Введите дату:\n/view YYYY-MM-DD")
+
+            store = get_chat_store(chat_id)
+            store["wait_date_msg_id"] = msg.message_id
+            save_data(data)
+
+            delete_message_later(chat_id, msg.message_id, 30)
+
             return
         if cmd == "cancel_edit":
-            clear_edit_prompt(chat_id)
+            clear_edit_wait_state(chat_id, call.message.message_id, delete_prompt=True)
             send_and_auto_delete(chat_id, "❎ Редактирование отменено.", 5)
             return
     except Exception as e:
@@ -5227,6 +5120,7 @@ def delete_active_window_if_exists(chat_id: int, day_key: str):
 def update_or_send_day_window(chat_id: int, day_key: str):
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
         backup_window_for_owner(chat_id, day_key)
+        schedule_balance_panel_refresh(chat_id, 0.5)
         return
 
     lock = window_locks[(chat_id, day_key)]
@@ -5249,21 +5143,17 @@ def update_or_send_day_window(chat_id: int, day_key: str):
                     parse_mode="HTML"
                 )
                 set_active_window_id(chat_id, day_key, old_mid)
-                schedule_balance_panel_refresh(chat_id, 0.3)
+                schedule_balance_panel_refresh(chat_id, 0.5)
                 return
             except Exception as e:
                 err = str(e).lower()
                 if "message is not modified" in err:
-                    schedule_balance_panel_refresh(chat_id, 0.3)
+                    schedule_balance_panel_refresh(chat_id, 0.5)
                     return
                 try:
                     bot.delete_message(chat_id, old_mid)
                 except Exception:
                     pass
-                aw = get_or_create_active_windows(chat_id)
-                if aw.get(day_key) == old_mid:
-                    del aw[day_key]
-                    save_data(data)
 
         sent = bot.send_message(
             chat_id,
@@ -5292,7 +5182,6 @@ def set_finance_mode(chat_id: int, enabled: bool):
         finance_active_chats.add(chat_id)
     else:
         finance_active_chats.discard(chat_id)
-        store.setdefault("settings", {})["quick_balance_enabled"] = False
         panel_id = store.get("balance_panel_id")
         if panel_id:
             try:
@@ -5301,7 +5190,6 @@ def set_finance_mode(chat_id: int, enabled: bool):
                 pass
         store["balance_panel_id"] = None
         store["balance_panel_mode"] = "mini"
-        clear_chat_active_windows(chat_id)
     save_data(data)
 
 def require_finance(chat_id: int) -> bool:
@@ -5323,17 +5211,51 @@ def refresh_total_message_if_any(chat_id: int):
     if not msg_id:
         return
     try:
+        chat_bal = store.get("balance", 0)
+        if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+            text = f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}"
+        else:
+            lines = []
+            info = store.get("info", {})
+            title = info.get("title") or f"Чат {chat_id}"
+            lines.append("💰 Общий итог (для владельца)")
+            lines.append("")
+            lines.append(f"• Этот чат ({title}): {fmt_num(chat_bal)}")
+            all_chats = data.get("chats", {})
+            total_all = 0
+            other_lines = []
+            for cid, st in all_chats.items():
+                try:
+                    cid_int = int(cid)
+                except Exception:
+                    continue
+                bal = st.get("balance", 0)
+                total_all += bal
+                if cid_int == chat_id:
+                    continue
+                info2 = st.get("info", {})
+                title2 = info2.get("title") or f"Чат {cid_int}"
+                other_lines.append(f"   • {title2}: {fmt_num(bal)}")
+            if other_lines:
+                lines.append("")
+                lines.append("• Другие чаты:")
+                lines.extend(other_lines)
+            lines.append("")
+            lines.append(f"• Всего по всем чатам: {fmt_num(total_all)}")
+            text = "\n".join(lines)
         bot.edit_message_text(
-            render_total_window_text(chat_id),
+            text,
             chat_id=chat_id,
             message_id=msg_id,
             parse_mode="HTML"
         )
         if is_owner_chat(chat_id):
-            schedule_stored_window_delete(chat_id, "total_msg_id", OWNER_TOTAL_WINDOW_DELETE_DELAY)
-        else:
-            schedule_stored_window_delete(chat_id, "total_msg_id", AUX_WINDOW_DELETE_DELAY)
+            schedule_owner_total_window_delete(chat_id, msg_id)
     except Exception as e:
+        if "message is not modified" in str(e).lower():
+            if is_owner_chat(chat_id):
+                schedule_owner_total_window_delete(chat_id, msg_id)
+            return
         log_error(f"refresh_total_message_if_any({chat_id}): {e}")
         store["total_msg_id"] = None
         save_data(data)
@@ -5350,10 +5272,8 @@ def refresh_owner_after_chat_change(source_chat_id: int):
     try:
         owner_store = get_chat_store(owner_chat_id)
         owner_day_key = owner_store.get("current_view_day", today_key())
-        if is_quick_balance_enabled(owner_chat_id):
-            refresh_balance_panel_now(owner_chat_id)
-        else:
-            backup_window_for_owner(owner_chat_id, owner_day_key, None)
+        backup_window_for_owner(owner_chat_id, owner_day_key, None)
+        refresh_balance_panel_now(owner_chat_id)
         refresh_total_message_if_any(owner_chat_id)
     except Exception as e:
         log_error(f"refresh_owner_after_chat_change({source_chat_id}): {e}")
@@ -5377,11 +5297,9 @@ def cmd_ok(msg):
     set_finance_mode(chat_id, True)
     store["current_view_day"] = today_key()
     store.setdefault("settings", {})["auto_add"] = True
-    store.setdefault("settings", {})["quick_balance_enabled"] = True
 
     save_data(data)
-    update_or_send_day_window(chat_id, today_key())
-    schedule_balance_panel_refresh(chat_id, 0.2)
+    schedule_finalize(chat_id, today_key())
 
     send_and_auto_delete(chat_id, "✅ Финансовый режим включён", HELPER_DELETE_DELAY)
 @bot.message_handler(commands=["start"])
@@ -5395,16 +5313,14 @@ def cmd_start(msg):
     chat_id = msg.chat.id
     stop_dozvon_for_target(chat_id)
 
-    store = get_chat_store(chat_id)
-    set_finance_mode(chat_id, True)
-    store.setdefault("settings", {})["auto_add"] = True
-    store.setdefault("settings", {})["quick_balance_enabled"] = True
-    day_key = today_key()
-    store["current_view_day"] = day_key
-    save_data(data)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
 
+    day_key = today_key()
+    get_chat_store(chat_id)["current_view_day"] = day_key
     update_or_send_day_window(chat_id, day_key)
-    schedule_balance_panel_refresh(chat_id, 0.2)
 @bot.message_handler(commands=["start_new"])
 def cmd_start_new(msg):
     try:
@@ -5416,11 +5332,12 @@ def cmd_start_new(msg):
     chat_id = msg.chat.id
     stop_dozvon_for_target(chat_id)
 
-    set_finance_mode(chat_id, True)
-    store = get_chat_store(chat_id)
-    store.setdefault("settings", {})["quick_balance_enabled"] = True
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+
     day_key = today_key()
-    store["current_view_day"] = day_key
 
     old_mid = get_active_window_id(chat_id, day_key)
     if old_mid:
@@ -5428,13 +5345,25 @@ def cmd_start_new(msg):
             bot.delete_message(chat_id, old_mid)
         except Exception:
             pass
-        aw = get_or_create_active_windows(chat_id)
-        if day_key in aw:
-            del aw[day_key]
 
-    save_data(data)
-    update_or_send_day_window(chat_id, day_key)
-    schedule_balance_panel_refresh(chat_id, 0.2)
+    set_active_window_id(chat_id, day_key, None)
+
+    if OWNER_ID and str(chat_id) == str(OWNER_ID):
+        backup_window_for_owner(chat_id, day_key, None)
+        schedule_balance_panel_refresh(chat_id, 0.5)
+        return
+
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+    sent = bot.send_message(
+        chat_id,
+        txt,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+    set_active_window_id(chat_id, day_key, sent.message_id)
+    schedule_balance_panel_refresh(chat_id, 0.5)
 @bot.message_handler(commands=["help"])
 def cmd_help(msg):
     try:
@@ -5509,13 +5438,22 @@ def cmd_view(msg):
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
 
-    delete_stored_window_now(chat_id, "wait_date_msg_id")
+    store = get_chat_store(chat_id)
+    msg_id = store.get("wait_date_msg_id")
+    if msg_id:
+        try:
+            bot.delete_message(chat_id, msg_id)
+        except Exception:
+            pass
+        store["wait_date_msg_id"] = None
+        save_data(data)
 
     if not require_finance(chat_id):
         return
     parts = (msg.text or "").split()
     if len(parts) < 2:
         send_info(chat_id, "Использование: /view YYYY-MM-DD")
+        schedule_command_delete(msg)
         return
     day_key = parts[1]
     try:
@@ -5523,9 +5461,7 @@ def cmd_view(msg):
     except ValueError:
         send_info(chat_id, "❌ Неверная дата. Формат: YYYY-MM-DD")
         return
-    store = get_chat_store(chat_id)
     store["current_view_day"] = day_key
-    save_data(data)
     update_or_send_day_window(chat_id, day_key)
 @bot.message_handler(commands=["prev"])
 def cmd_prev(msg):
@@ -5592,16 +5528,12 @@ def cmd_report(msg):
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
+    if not require_finance(chat_id):
+        return
 
-    set_finance_mode(chat_id, True)
-    get_chat_store(chat_id).setdefault("settings", {})["quick_balance_enabled"] = True
-    save_data(data)
-
-    try:
-        month_key = datetime.strptime(get_chat_store(chat_id).get("current_view_day", today_key()), "%Y-%m-%d").strftime("%Y-%m")
-    except Exception:
-        month_key = now_local().strftime("%Y-%m")
-    open_report_window(chat_id, month_key)
+    lines = build_day_report_lines(chat_id)
+    report_html = "<pre>" + html.escape("\n".join(lines)) + "</pre>"
+    send_html_and_auto_delete(chat_id, report_html, 20)
 def cmd_csv_all(chat_id: int):
     """
     Общий CSV этого чата (все дни этого чата).
@@ -5725,9 +5657,18 @@ def cmd_reset(msg):
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
-
-    day_key = get_chat_store(chat_id).get("current_view_day", today_key())
-    open_reset_window(chat_id, day_key)
+    if not require_finance(chat_id):
+        return
+    store = get_chat_store(chat_id)
+    store["reset_wait"] = True
+    store["reset_time"] = time.time()
+    save_data(data)
+    send_and_auto_delete(
+        chat_id,
+        "⚠️ Вы уверены, что хотите обнулить данные? Напишите ДА в течение 15 секунд.",
+        15
+    )
+    schedule_cancel_wait(chat_id, 15)
 
 @bot.message_handler(commands=["stopforward"])
 def cmd_stopforward(msg):
@@ -5890,7 +5831,59 @@ def delete_message_later(chat_id: int, message_id: int, delay: int = 30):
     except Exception as e:
         log_error(f"delete_message_later: {e}")
 _edit_cancel_timers = {}
-        
+
+
+def clear_edit_wait_state(chat_id: int, expected_prompt_id: int | None = None, delete_prompt: bool = True):
+    store = get_chat_store(chat_id)
+    edit_wait = store.get("edit_wait") or {}
+    prompt_id = edit_wait.get("prompt_msg_id")
+
+    if expected_prompt_id is not None and prompt_id and int(prompt_id) != int(expected_prompt_id):
+        return False
+
+    key = (int(chat_id), "edit_wait")
+    prev = _edit_cancel_timers.get(key)
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+        _edit_cancel_timers.pop(key, None)
+
+    store["edit_wait"] = None
+    save_data(data)
+
+    if delete_prompt and prompt_id:
+        try:
+            bot.delete_message(chat_id, int(prompt_id))
+        except Exception:
+            pass
+    return True
+
+
+def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float = 40.0):
+    key = (int(chat_id), "edit_wait")
+
+    def _job():
+        try:
+            cleared = clear_edit_wait_state(chat_id, prompt_message_id, delete_prompt=True)
+            if cleared:
+                send_and_auto_delete(chat_id, "⌛ Время редактирования истекло. Режим редактирования отменён.", 8)
+        except Exception as e:
+            log_error(f"schedule_cancel_edit({chat_id},{prompt_message_id}): {e}")
+
+    prev = _edit_cancel_timers.get(key)
+    if prev and prev.is_alive():
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(delay, _job)
+    _edit_cancel_timers[key] = t
+    t.start()
+
+
 def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
     """
     Через delay секунд сбрасывает флаг reset_wait,
@@ -5922,37 +5915,6 @@ def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
     _edit_cancel_timers[chat_id] = t
     t.start()
     
-
-
-def schedule_cancel_edit(chat_id: int, message_id: int | None = None, delay: float = 40.0):
-    def _job():
-        try:
-            store = get_chat_store(chat_id)
-            prompt_id = message_id or store.get("edit_prompt_msg_id")
-            if prompt_id:
-                try:
-                    bot.delete_message(chat_id, prompt_id)
-                except Exception:
-                    pass
-            if store.get("edit_prompt_msg_id") == prompt_id:
-                store["edit_prompt_msg_id"] = None
-            if store.get("edit_wait"):
-                store["edit_wait"] = None
-            save_data(data)
-        except Exception as e:
-            log_error(f"schedule_cancel_edit job: {e}")
-
-    prev = _edit_cancel_timers.get(chat_id)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-
-    t = threading.Timer(delay, _job)
-    _edit_cancel_timers[chat_id] = t
-    t.start()
-
 def update_chat_info_from_message(msg):
     """
     Обновляет информацию о чате в памяти.
@@ -6249,62 +6211,41 @@ def force_new_day_window(chat_id: int, day_key: str):
             pass
 def reset_chat_data(chat_id: int):
     """
-    Полное обнуление данных чата.
+    Полное обнуление данных чата:
+      • баланс
+      • записи / daily_records
+      • next_id
+      • active_windows
+      • edit_wait / edit_target
+      • обновление окна дня
+      • бэкап
     """
     try:
         store = get_chat_store(chat_id)
         cleanup_forward_links(chat_id)
-
-        for key in (
-            "report_window_id",
-            "total_msg_id",
-            "info_msg_id",
-            "categories_msg_id",
-            "wait_date_msg_id",
-            "reset_msg_id",
-            "edit_prompt_msg_id",
-        ):
-            message_id = store.get(key)
-            if message_id:
-                try:
-                    bot.delete_message(chat_id, message_id)
-                except Exception:
-                    pass
-            store[key] = None
-
-        panel_id = store.get("balance_panel_id")
-        if panel_id:
-            try:
-                bot.delete_message(chat_id, panel_id)
-            except Exception:
-                pass
-        store["balance_panel_id"] = None
-        store["balance_panel_mode"] = "mini"
-
-        clear_chat_active_windows(chat_id)
         store["balance"] = 0
         store["records"] = []
         store["daily_records"] = {}
         store["next_id"] = 1
         store["active_windows"] = {}
-        store["edit_wait"] = None
+        clear_edit_wait_state(chat_id, delete_prompt=True)
         store["edit_target"] = None
         store["reset_wait"] = False
         store["reset_time"] = 0
-        store.setdefault("settings", {})["quick_balance_enabled"] = True
-
         save_data(data)
         save_chat_json(chat_id)
         export_global_csv(data)
         send_backup_to_channel(chat_id)
         send_backup_to_chat(chat_id)
-
-        day_key = today_key()
-        store["current_view_day"] = day_key
+        day_key = store.get("current_view_day", today_key())
         update_or_send_day_window(chat_id, day_key)
-        schedule_balance_panel_refresh(chat_id, 0.5)
+        try:
+            day_key = get_chat_store(chat_id).get("current_view_day", today_key())
+            update_or_send_day_window(chat_id, day_key)
+        except Exception:
+            pass
         refresh_total_message_if_any(chat_id)
-
+        schedule_balance_panel_refresh(chat_id, 1.0)
         if OWNER_ID and str(chat_id) != str(OWNER_ID):
             try:
                 refresh_total_message_if_any(int(OWNER_ID))
@@ -6683,6 +6624,15 @@ def main():
     global data
     restored = False
     data = load_data()
+    for cid in list((data.get("chats", {}) or {}).keys()):
+        try:
+            store = get_chat_store(int(cid))
+            settings = store.setdefault("settings", {})
+            settings["quick_balance_enabled"] = True
+            settings["quick_balance_behavior"] = "open"
+        except Exception:
+            pass
+    save_data(data)
     data["forward_rules"] = load_forward_rules()
     if OWNER_ID:
         try:
