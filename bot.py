@@ -118,7 +118,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (23)__queued_chat_locks"
+VERSION = "bot (24)__queued_locks_owner_json_prompt"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -6274,6 +6274,96 @@ def maybe_prompt_owner_for_new_chat_auto_backup(chat_id: int):
     delete_message_later(owner_id, msg.message_id, 10)
 
 
+
+def _extract_chat_id_from_json_filename(fname: str):
+    """Пытается вытащить chat_id из имени data_<chat_id>.json."""
+    try:
+        m = re.search(r"data_(-?\d+)\.json$", str(fname or "").strip().lower())
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def _extract_chat_id_from_json_payload(payload, fname: str = ""):
+    """Определяет, к какому чату относится JSON-файл."""
+    try:
+        if isinstance(payload, dict):
+            raw_chat_id = payload.get("chat_id")
+            if raw_chat_id is not None:
+                return int(raw_chat_id)
+
+            # Иногда файл может быть глобальным data.json. В этом случае внутри есть chats,
+            # но одного конкретного чата нет — тогда не спрашиваем, чтобы не включить не тот чат.
+            if isinstance(payload.get("chats"), dict):
+                return None
+    except Exception:
+        pass
+    return _extract_chat_id_from_json_filename(fname)
+
+
+def maybe_prompt_owner_for_json_file_auto_backup(msg, fname: str, raw: bytes | None = None) -> bool:
+    """
+    Если в чате владельца появился JSON-файл, спрашиваем:
+    обновлять ли автоматически JSON/CSV-бэкапы для чата из этого файла.
+
+    Вопрос удаляется через 10 секунд в любом случае.
+    Возвращает True, если вопрос был показан.
+    """
+    try:
+        if not OWNER_ID or str(msg.chat.id) != str(OWNER_ID):
+            return False
+        if not str(fname or "").lower().endswith(".json"):
+            return False
+
+        if raw is None:
+            try:
+                file_info = bot.get_file(msg.document.file_id)
+                raw = bot.download_file(file_info.file_path)
+            except Exception as e:
+                log_error(f"owner json prompt download failed: {e}")
+                return False
+
+        try:
+            payload = json.loads(raw.decode("utf-8-sig"))
+        except Exception as e:
+            log_error(f"owner json prompt parse failed ({fname}): {e}")
+            return False
+
+        target_chat_id = _extract_chat_id_from_json_payload(payload, fname)
+        if target_chat_id is None:
+            log_info(f"owner json prompt skipped: cannot detect chat_id for {fname}")
+            return False
+
+        # Гарантируем, что чат есть в хранилище, иначе кнопка тоже должна работать.
+        target_store = get_chat_store(target_chat_id)
+        target_store.setdefault("settings", {}).setdefault("auto_backup_enabled", True)
+        save_data(data)
+
+        title = get_chat_display_name(target_chat_id)
+        status = "сейчас ВКЛ ✅" if is_auto_backup_enabled(target_chat_id) else "сейчас ВЫКЛ ❌"
+        text = (
+            "🧾 В чате владельца появился JSON-файл\n\n"
+            f"Файл: {fname}\n"
+            f"Чат: {title}\n"
+            f"ID: {target_chat_id}\n"
+            f"Автообновление: {status}\n\n"
+            "Автоматически обновлять JSON/CSV-бэкапы по этому чату?"
+        )
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.row(
+            types.InlineKeyboardButton("✅ Да", callback_data=f"ncb:{target_chat_id}:yes"),
+            types.InlineKeyboardButton("❌ Нет", callback_data=f"ncb:{target_chat_id}:no"),
+        )
+        sent = bot.send_message(int(OWNER_ID), text, reply_markup=kb)
+        delete_message_later(int(OWNER_ID), sent.message_id, 10)
+        return True
+    except Exception as e:
+        log_error(f"maybe_prompt_owner_for_json_file_auto_backup({fname}): {e}")
+        return False
+
+
 _finalize_timers = {}
 _backup_timers = {}
 _balance_panel_refresh_timers = {}
@@ -6556,6 +6646,15 @@ def handle_document(msg):
     fname = (file.file_name or "").lower()
 
     log_info(f"[DOC] recv chat={chat_id} restore={restore_mode} fname={fname}")
+
+    # Если владелец прислал/получил JSON в своём чате вне режима восстановления —
+    # спрашиваем, включать ли автообновление JSON/CSV-бэкапов для чата из файла.
+    # Сам вопрос удаляется через 10 секунд.
+    if restore_mode is None and OWNER_ID and str(chat_id) == str(OWNER_ID) and fname.endswith(".json"):
+        try:
+            maybe_prompt_owner_for_json_file_auto_backup(msg, fname)
+        except Exception as e:
+            log_error(f"owner json auto-backup prompt failed: {e}")
 
     if restore_mode is not None and restore_mode == chat_id:
 
