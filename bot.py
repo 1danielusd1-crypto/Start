@@ -34,7 +34,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (21)__clean_quick_hidden_finance"
+VERSION = "bot (22)__hidden_silent_delete_update_prompt"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -446,6 +446,28 @@ def is_hidden_finance_mode(chat_id: int) -> bool:
         return False
 
 
+def is_finance_output_suppressed(chat_id: int) -> bool:
+    """Скрытый финрежим: учёт остаётся, но в самом чате ничего финансового не выводим."""
+    try:
+        return bool(is_hidden_finance_mode(chat_id) and not is_owner_chat(chat_id))
+    except Exception:
+        return False
+
+
+def is_auto_backup_enabled(chat_id: int) -> bool:
+    try:
+        store = get_chat_store(chat_id)
+        return bool(store.setdefault("settings", {}).get("auto_backup_enabled", True))
+    except Exception:
+        return True
+
+
+def set_auto_backup_enabled(chat_id: int, enabled: bool):
+    store = get_chat_store(chat_id)
+    store.setdefault("settings", {})["auto_backup_enabled"] = bool(enabled)
+    save_data(data)
+
+
 def set_hidden_finance_mode(chat_id: int, enabled: bool):
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
@@ -654,6 +676,8 @@ def guard_non_owner_finance_for_command(msg, allowed_commands=None) -> bool:
     chat_id = msg.chat.id
     if is_owner_chat(chat_id):
         return False
+    if is_finance_output_suppressed(chat_id):
+        return True
 
     text = (getattr(msg, "text", None) or "").strip().lower()
     cmd = text.split()[0].split('@')[0].lstrip('/') if text else ""
@@ -669,6 +693,8 @@ def guard_non_owner_finance_for_command(msg, allowed_commands=None) -> bool:
 def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
     if is_owner_chat(chat_id):
         return False
+    if is_finance_output_suppressed(chat_id):
+        return True
     if is_finance_mode(chat_id):
         return False
 
@@ -1344,6 +1370,8 @@ def _save_chat_backup_meta(meta: dict) -> None:
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
 def send_backup_to_chat(chat_id: int) -> None:
+    if is_finance_output_suppressed(chat_id) or not is_auto_backup_enabled(chat_id):
+        return
     """
     Универсальный авто-бэкап JSON прямо в чате.
     Работает одинаково для владельца, групп, каналов, всех чатов.
@@ -1546,7 +1574,8 @@ def get_chat_store(chat_id: int) -> dict:
                 "auto_add": True,
                 "quick_balance_enabled": True,
                 "quick_balance_behavior": "open",
-                "hidden_finance": False
+                "hidden_finance": False,
+                "auto_backup_enabled": True
             },
         }
     )
@@ -1555,6 +1584,7 @@ def get_chat_store(chat_id: int) -> dict:
     store.setdefault("settings", {}).setdefault("quick_balance_enabled", True)
     store.setdefault("settings", {}).setdefault("quick_balance_behavior", "open")
     store.setdefault("settings", {}).setdefault("hidden_finance", False)
+    store.setdefault("settings", {}).setdefault("auto_backup_enabled", True)
     store.setdefault("finance_mode", False)
 
     if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -2254,6 +2284,7 @@ def handle_finance_text(msg):
             return
 
         entry_day = day_key_from_message(msg)
+        store["current_view_day"] = entry_day
 
         add_record_to_chat(
             chat_id,
@@ -2328,6 +2359,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             break
 
     entry_day = today_key()
+    store["current_view_day"] = entry_day
 
     if text and looks_like_amount(text):
         try:
@@ -2524,6 +2556,8 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
     except Exception as e:
         log_error(f"send_backup_to_channel_for_file({base_path}): {e}")
 def send_backup_to_channel(chat_id: int):
+    if is_finance_output_suppressed(chat_id) or not is_auto_backup_enabled(chat_id):
+        return
     """
     Общий бэкап файлов чата в BACKUP_CHAT_ID.
     Делает:
@@ -3830,22 +3864,36 @@ def toggle_edit_delete_selection(chat_id: int, day_key: str, rid: int):
 
 
 def delete_selected_records(chat_id: int, day_key: str) -> int:
+    """Удаляет все отмеченные ☑️ записи одним проходом, без ошибки из-за перенумерации id."""
     store = get_chat_store(chat_id)
     all_sel = store.setdefault("edit_delete_selected", {})
-    selected = list(all_sel.get(day_key, []))
+    selected = {int(x) for x in all_sel.get(day_key, [])}
     if not selected:
         return 0
-    count = 0
-    for rid in selected:
-        try:
-            delete_record_in_chat(chat_id, int(rid))
-            count += 1
-        except Exception as e:
-            log_error(f"delete_selected_records {chat_id}:{rid}: {e}")
+
+    before = len(store.get("records", []) or [])
+    store["records"] = [r for r in (store.get("records", []) or []) if int(r.get("id", -1)) not in selected]
+
+    daily = store.get("daily_records", {}) or {}
+    for dk in list(daily.keys()):
+        arr = daily.get(dk, []) or []
+        arr2 = [r for r in arr if int(r.get("id", -1)) not in selected]
+        if arr2:
+            daily[dk] = arr2
+        else:
+            daily.pop(dk, None)
+
+    deleted = before - len(store.get("records", []) or [])
     all_sel.pop(day_key, None)
+
+    renumber_chat_records(chat_id)
+    recalc_balance(chat_id)
+    rebuild_global_records()
     save_data(data)
-    schedule_finalize(chat_id, day_key)
-    return count
+    save_chat_json(chat_id)
+    export_global_csv(data)
+    schedule_finalize(chat_id, day_key, delay=0.1)
+    return deleted
 
 def build_fin_windows_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -4301,6 +4349,25 @@ def on_callback(call):
             update_chat_info_from_message(call.message)
         except Exception:
             pass
+
+        if data_str.startswith("ncb:"):
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                return
+            try:
+                _, target_s, answer = data_str.split(":", 2)
+                target_chat_id = int(target_s)
+            except Exception:
+                return
+            set_auto_backup_enabled(target_chat_id, answer == "yes")
+            try:
+                bot.delete_message(chat_id, call.message.message_id)
+            except Exception:
+                pass
+            try:
+                bot.answer_callback_query(call.id, "Автообновление бэкапов включено" if answer == "yes" else "Автообновление бэкапов выключено")
+            except Exception:
+                pass
+            return
 
         if guard_non_owner_finance_for_callback(chat_id, data_str):
             return
@@ -5054,6 +5121,8 @@ def on_callback(call):
     except Exception as e:
         log_error(f"on_callback error: {e}")
 def send_csv_week(chat_id: int, day_key: str):
+    if is_finance_output_suppressed(chat_id):
+        return
     try:
         store = get_chat_store(chat_id)
 
@@ -5085,6 +5154,8 @@ def send_csv_week(chat_id: int, day_key: str):
     except Exception as e:
         log_error(f"send_csv_week: {e}")
 def send_csv_month(chat_id: int, day_key: str):
+    if is_finance_output_suppressed(chat_id):
+        return
     try:
         store = get_chat_store(chat_id)
 
@@ -5117,6 +5188,8 @@ def send_csv_month(chat_id: int, day_key: str):
     except Exception as e:
         log_error(f"send_csv_month: {e}")
 def send_csv_wedthu(chat_id: int, day_key: str):
+    if is_finance_output_suppressed(chat_id):
+        return
     try:
         store = get_chat_store(chat_id)
 
@@ -5418,6 +5491,8 @@ def cmd_ok(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     store = get_chat_store(chat_id)
 
@@ -5438,6 +5513,8 @@ def cmd_start(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
 
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
@@ -5456,6 +5533,8 @@ def cmd_help(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     help_text = build_help_text(chat_id)
     send_and_auto_delete(chat_id, help_text, HELPER_DELETE_DELAY)
@@ -5518,6 +5597,8 @@ def cmd_prev(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5536,6 +5617,8 @@ def cmd_next(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5554,6 +5637,8 @@ def cmd_balance(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5571,6 +5656,8 @@ def cmd_report(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5584,6 +5671,8 @@ def cmd_csv_all(chat_id: int):
     """
     Общий CSV этого чата (все дни этого чата).
     """
+    if is_finance_output_suppressed(chat_id):
+        return
     if not require_finance(chat_id):
         return
     try:
@@ -5604,6 +5693,8 @@ def cmd_csv_day(chat_id: int, day_key: str):
     """
     CSV только за один день для текущего чата.
     """
+    if is_finance_output_suppressed(chat_id):
+        return
     if not require_finance(chat_id):
         return
     store = get_chat_store(chat_id)
@@ -5651,6 +5742,8 @@ def cmd_csv(msg):
     """
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5679,6 +5772,8 @@ def cmd_json(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5700,6 +5795,8 @@ def cmd_reset(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5725,6 +5822,8 @@ def cmd_stopforward(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5743,6 +5842,8 @@ def cmd_on_channel(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5761,6 +5862,8 @@ def cmd_off_channel(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5780,6 +5883,8 @@ def cmd_dozvon(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5804,6 +5909,8 @@ def cmd_autoadd_info(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -5837,6 +5944,8 @@ def cmd_autoadd_info(msg):
         12
     )
 def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DELAY):
+    if is_finance_output_suppressed(chat_id):
+        return
     try:
         msg = bot.send_message(chat_id, text)
         def _delete():
@@ -5851,6 +5960,8 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DEL
 
 
 def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = HELPER_DELETE_DELAY):
+    if is_finance_output_suppressed(chat_id):
+        return
     try:
         msg = bot.send_message(chat_id, html_text, parse_mode="HTML")
         def _delete():
@@ -5967,6 +6078,7 @@ def update_chat_info_from_message(msg):
     На диск пишем только если реально что-то изменилось.
     """
     chat_id = msg.chat.id
+    was_new_chat = str(chat_id) not in (data.get("chats", {}) if isinstance(data, dict) else {})
     try:
         if not getattr(getattr(msg, "from_user", None), "is_bot", False):
             stop_dozvon_for_target(chat_id)
@@ -6016,6 +6128,45 @@ def update_chat_info_from_message(msg):
 
     if changed:
         save_data(data)
+
+    try:
+        if was_new_chat and OWNER_ID and str(chat_id) != str(OWNER_ID):
+            maybe_prompt_owner_for_new_chat_auto_backup(chat_id)
+    except Exception as e:
+        log_error(f"new chat auto-backup prompt failed for {chat_id}: {e}")
+
+
+def maybe_prompt_owner_for_new_chat_auto_backup(chat_id: int):
+    """При первом появлении чата спрашиваем владельца, обновлять ли JSON/CSV бэкапы автоматически."""
+    if not OWNER_ID:
+        return
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    if settings.get("owner_auto_backup_prompted"):
+        return
+    settings["owner_auto_backup_prompted"] = True
+    settings.setdefault("auto_backup_enabled", True)
+    save_data(data)
+
+    owner_id = int(OWNER_ID)
+    title = get_chat_display_name(chat_id)
+    text = (
+        "🆕 Новый чат появился в картотеке\n\n"
+        f"{title}\n"
+        f"ID: {chat_id}\n\n"
+        "Автоматически обновлять JSON/CSV бэкапы по этому чату?"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        types.InlineKeyboardButton("✅ Да", callback_data=f"ncb:{chat_id}:yes"),
+        types.InlineKeyboardButton("❌ Нет", callback_data=f"ncb:{chat_id}:no"),
+    )
+    msg = bot.send_message(owner_id, text, reply_markup=kb)
+    settings["owner_auto_backup_prompt_msg_id"] = msg.message_id
+    save_data(data)
+    delete_message_later(owner_id, msg.message_id, 10)
+
+
 _finalize_timers = {}
 _backup_timers = {}
 _balance_panel_refresh_timers = {}
@@ -6028,8 +6179,9 @@ def schedule_backup_flush(chat_id: int, delay: float = 8.0):
             save_chat_json(chat_id)
             export_global_csv(data)
 
-            send_backup_to_chat(chat_id)
-            send_backup_to_channel(chat_id)
+            if not is_finance_output_suppressed(chat_id) and is_auto_backup_enabled(chat_id):
+                send_backup_to_chat(chat_id)
+                send_backup_to_channel(chat_id)
         except Exception as e:
             log_error(f"schedule_backup_flush({chat_id}): {e}")
 
@@ -6084,8 +6236,9 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.8):
             )
 
         _safe("save_data", lambda: save_data(data))
-        _safe("refresh_balance_panel_now", lambda: refresh_balance_panel_now(chat_id))
-        _safe("schedule_balance_panel_refresh", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
+        if not is_hidden_finance_mode(chat_id):
+            _safe("refresh_balance_panel_now", lambda: refresh_balance_panel_now(chat_id))
+            _safe("schedule_balance_panel_refresh", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         _safe(
             "schedule_backup_flush",
@@ -6241,17 +6394,21 @@ def reset_chat_data(chat_id: int):
         save_data(data)
         save_chat_json(chat_id)
         export_global_csv(data)
-        send_backup_to_channel(chat_id)
-        send_backup_to_chat(chat_id)
+        if not is_finance_output_suppressed(chat_id) and is_auto_backup_enabled(chat_id):
+            send_backup_to_channel(chat_id)
+            send_backup_to_chat(chat_id)
         day_key = store.get("current_view_day", today_key())
-        update_or_send_day_window(chat_id, day_key)
+        if not is_finance_output_suppressed(chat_id):
+            update_or_send_day_window(chat_id, day_key)
         try:
             day_key = get_chat_store(chat_id).get("current_view_day", today_key())
-            update_or_send_day_window(chat_id, day_key)
+            if not is_finance_output_suppressed(chat_id):
+                update_or_send_day_window(chat_id, day_key)
         except Exception:
             pass
-        refresh_total_message_if_any(chat_id)
-        schedule_balance_panel_refresh(chat_id, 1.0)
+        if not is_finance_output_suppressed(chat_id):
+            refresh_total_message_if_any(chat_id)
+            schedule_balance_panel_refresh(chat_id, 1.0)
         if OWNER_ID and str(chat_id) != str(OWNER_ID):
             try:
                 refresh_total_message_if_any(int(OWNER_ID))
@@ -6556,6 +6713,8 @@ def cmd_sqlite_dump(msg):
 
     schedule_command_delete(msg)
     chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
@@ -6643,6 +6802,7 @@ def main():
             settings.setdefault("quick_balance_enabled", True)
             settings.setdefault("quick_balance_behavior", "open")
             settings.setdefault("hidden_finance", False)
+            settings.setdefault("auto_backup_enabled", True)
         except Exception:
             pass
     save_data(data)
