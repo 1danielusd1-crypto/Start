@@ -34,7 +34,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (20)__quick_hidden_finance_windows"
+VERSION = "bot (21)__clean_quick_hidden_finance"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -198,11 +198,6 @@ def _import_legacy_global_json_to_db(path: str = DATA_FILE, force: bool = False)
     return True
 
 
-def _import_payload_to_db(payload: dict):
-    SQLITE.save_root(_sqlite_pack_root(payload))
-    SQLITE.save_chats(payload.get("chats", {}) or {})
-
-
 def log_info(msg: str):
     logger.info(msg)
 def log_error(msg: str):
@@ -243,14 +238,6 @@ def day_key_from_message(msg=None) -> str:
         pass
     return today_key()
 
-def fmt_num(v):
-    try:
-        v = float(v)
-        if v.is_integer():
-            return str(int(v))
-        return str(v)
-    except:
-        return str(v)
     
 def fmt_date_ddmmyy(day_key: str) -> str:
     """YYYY-MM-DD -> DD.MM.YY"""
@@ -449,8 +436,6 @@ def set_quick_balance_enabled(chat_id: int, enabled: bool):
     store["balance_panel_id"] = None
     store["balance_panel_mode"] = "mini"
     save_data(data)
-
-
 
 
 def is_hidden_finance_mode(chat_id: int) -> bool:
@@ -652,10 +637,6 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
     schedule_stored_window_delete(chat_id, store_key, delay)
     return sent.message_id
 
-
-def build_toggle_label(prefix: str, title: str, enabled: bool) -> str:
-    icon = "✅" if enabled else "❌"
-    return f"{prefix} {icon} {title}"
 
 def is_owner_chat(chat_id: int) -> bool:
     return bool(OWNER_ID and str(chat_id) == str(OWNER_ID))
@@ -868,7 +849,6 @@ def start_dozvon(source_chat_id: int, target_chat_id: int):
     threading.Thread(target=_run_dozvon_session, args=(session_key,), daemon=True).start()
 
 
-
 def build_forward_status_lines() -> list[str]:
     lines = []
     fr = data.get("forward_rules", {}) or {}
@@ -1029,24 +1009,6 @@ def build_balance_panel_keyboard(chat_id: int):
     return kb
 
 
-def render_open_balance_panel_text(chat_id: int) -> str:
-    store = get_chat_store(chat_id)
-    bal = store.get("balance", 0)
-    day_key = store.get("current_view_day", today_key())
-    return (
-        "🏦 Быстрый остаток\n\n"
-        f"Баланс по чату: {fmt_num(bal)}\n"
-        f"Текущий день: {fmt_date_ddmmyy(day_key)}\n"
-        f"Финрежим: {format_finance_mode_label(chat_id)}"
-    )
-
-
-def build_balance_panel_open_keyboard(chat_id: int):
-    kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton("🔽 Свернуть", callback_data="bp:collapse"))
-    return kb
-
-
 def _cancel_timer(timer_map: dict, key):
     prev = timer_map.get(key)
     if prev and getattr(prev, "is_alive", lambda: False)():
@@ -1054,24 +1016,6 @@ def _cancel_timer(timer_map: dict, key):
             prev.cancel()
         except Exception:
             pass
-
-
-def clear_chat_active_windows(chat_id: int):
-    data.setdefault("active_messages", {})[str(chat_id)] = {}
-    save_data(data)
-
-
-def bind_single_active_window(chat_id: int, day_key: str, message_id: int):
-    data.setdefault("active_messages", {})[str(chat_id)] = {}
-    set_active_window_id(chat_id, day_key, message_id)
-
-
-def is_quick_balance_open_mode(chat_id: int) -> bool:
-    return get_quick_balance_behavior(chat_id) == "open"
-
-
-def is_quick_balance_main_open(chat_id: int, message_id: int | None = None) -> bool:
-    return False
 
 
 def collapse_balance_panel(chat_id: int):
@@ -1709,10 +1653,6 @@ def save_chat_json(chat_id: int):
         log_info(f"Per-chat files saved for chat {chat_id}")
     except Exception as e:
         log_error(f"save_chat_json({chat_id}): {e}")
-def persist_chat_state(chat_id: int):
-    save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)        
 def restore_from_json(chat_id: int, path: str):
     """
     Восстановление из JSON.
@@ -2492,17 +2432,6 @@ def get_chat_name_for_filename(chat_id: int) -> str:
     except Exception as e:
         log_error(f"get_chat_name_for_filename({chat_id}): {e}")
         return _safe_chat_title_for_filename(str(chat_id))
-def _get_chat_title_for_backup(chat_id: int) -> str:
-    """Пытается достать название чата из store["info"]["title"]"""
-    try:
-        store = data.get("chats", {}).get(str(chat_id), {}) if isinstance(data, dict) else {}
-        info = store.get("info", {})
-        title = info.get("title")
-        if title:
-            return title
-    except Exception as e:
-        log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
-    return f"chat_{chat_id}"
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """
     Берём название чата из store["info"], чтобы подписывать бэкап.
@@ -3641,87 +3570,6 @@ def build_cancel_edit_keyboard(day_key: str):
     )
     return kb
 
-def build_forward_chat_list(day_key: str, chat_id: int):
-    kb = types.InlineKeyboardMarkup()
-    if not OWNER_ID:
-        return kb
-
-    known = collect_forward_menu_chats()
-    rules = data.get("forward_rules", {})
-    buttons = []
-
-    for cid, info in sorted(known.items(), key=lambda x: (x[1].get("title") or "").lower()):
-        try:
-            int_cid = int(cid)
-        except Exception:
-            continue
-
-        if int_cid == chat_id:
-            continue
-
-        title = info.get("title") or f"Чат {cid}"
-        cur_mode = rules.get(str(chat_id), {}).get(cid)
-        if cur_mode == "oneway_to":
-            label = f"{title} ➡️"
-        elif cur_mode == "oneway_from":
-            label = f"{title} ⬅️"
-        elif cur_mode == "twoway":
-            label = f"{title} ↔️"
-        else:
-            label = title
-
-        buttons.append(types.InlineKeyboardButton(label, callback_data=f"d:{day_key}:fw_cfg_{cid}"))
-
-    add_buttons_in_rows(kb, buttons, 3)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
-    return kb
-def build_forward_direction_menu(day_key: str, owner_chat: int, target_chat: int):
-    owner_title = get_chat_display_name(owner_chat)
-    target_title = get_chat_display_name(target_chat)
-
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    fr = data.get("forward_rules", {}) or {}
-
-    ab_link = str(target_chat) in fr.get(str(owner_chat), {})
-    ba_link = str(owner_chat) in fr.get(str(target_chat), {})
-    two_on = ab_link and ba_link
-
-    ab_state = "ВКЛ ✅" if ab_link else "ВЫКЛ ❌"
-    ba_state = "ВКЛ ✅" if ba_link else "ВЫКЛ ❌"
-    two_state = "ВКЛ ✅" if two_on else "ВЫКЛ ❌"
-
-    ab_fin = "ВКЛ ✅" if get_forward_finance(owner_chat, target_chat) else "ВЫКЛ ❌"
-    ba_fin = "ВКЛ ✅" if get_forward_finance(target_chat, owner_chat) else "ВЫКЛ ❌"
-
-    kb.row(types.InlineKeyboardButton(
-        f"➡️ {ab_state} {owner_title} → {target_title}",
-        callback_data=f"d:{day_key}:fw_one_{target_chat}"
-    ))
-    kb.row(types.InlineKeyboardButton(
-        f"⬅️ {ba_state} {target_title} → {owner_title}",
-        callback_data=f"d:{day_key}:fw_rev_{target_chat}"
-    ))
-    kb.row(types.InlineKeyboardButton(
-        f"↔️ {two_state} {owner_title} ⇄ {target_title}",
-        callback_data=f"d:{day_key}:fw_two_{target_chat}"
-    ))
-    kb.row(types.InlineKeyboardButton(
-        f"💰 {ab_fin} Учёт {owner_title} → {target_title}",
-        callback_data=f"d:{day_key}:fw_fin_ab_{target_chat}"
-    ))
-    kb.row(types.InlineKeyboardButton(
-        f"💰 {ba_fin} Учёт {target_title} → {owner_title}",
-        callback_data=f"d:{day_key}:fw_fin_ba_{target_chat}"
-    ))
-    kb.row(types.InlineKeyboardButton(
-        "❌ Удалить все связи",
-        callback_data=f"d:{day_key}:fw_del_{target_chat}"
-    ))
-    kb.row(types.InlineKeyboardButton(
-        "🔙 Назад",
-        callback_data="fw_back_root"
-    ))
-    return kb
 def build_forward_root_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
     add_buttons_in_rows(kb, [
@@ -3896,7 +3744,6 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     )
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:quick_balance_menu"))
     return kb
-
 
 
 def build_hidden_finance_chat_menu(day_key: str):
@@ -4161,23 +4008,6 @@ def build_forward_mode_menu(A: int, B: int):
         callback_data=f"fw_back_tgt:{A}"
     ))
     return kb
-def apply_forward_mode(A: int, B: int, mode: str):
-    """
-    Применяет выбранный режим пересылки между чатами A и B.
-    Использует общие функции add_forward_link / remove_forward_link.
-    """
-    if mode == "to":
-        add_forward_link(A, B, "oneway_to")
-        remove_forward_link(B, A)
-    elif mode == "from":
-        add_forward_link(B, A, "oneway_to")
-        remove_forward_link(A, B)
-    elif mode == "two":
-        add_forward_link(A, B, "twoway")
-        add_forward_link(B, A, "twoway")
-    elif mode == "del":
-        remove_forward_link(A, B)
-        remove_forward_link(B, A)
 
 
 def _one_button_keyboard(label: str, callback_data: str):
@@ -4261,13 +4091,6 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
     save_chat_json(chat_id)
     return sent.message_id
 
-def build_week_thu_keyboard(start_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.row(
-        types.InlineKeyboardButton("⬅️", callback_data=f"wthu:{start_key}:prev"),
-        types.InlineKeyboardButton("➡️", callback_data=f"wthu:{start_key}:next"),
-    )
-    return kb
 def open_report_window(chat_id: int, month_key: str = None, message_id: int = None):
     """
     Открывает или обновляет отдельное окно отчёта без размножения сообщений.
@@ -4462,31 +4285,6 @@ def handle_categories_callback(call, data_str: str) -> bool:
 
     return False
     
-def render_week_thu_wed_report(chat_id: int):
-    store = get_chat_store(chat_id)
-
-    ref_day = store.get("current_week_thu", today_key())
-    start_key = week_start_thursday(ref_day)
-    start, end = week_bounds_thu_wed(start_key)
-
-    store["current_week_thu"] = start_key
-    save_data(data)
-
-    cats = calc_categories_for_period(store, start, end)
-
-    lines = [
-        f"📊 Расходы по статьям",
-        f"🗓 {fmt_date_ddmmyy(start)} → {fmt_date_ddmmyy(end)} (Чт–Ср)",
-        ""
-    ]
-
-    if not cats:
-        lines.append("Нет расходов за период.")
-    else:
-        for cat, amt in sorted(cats.items()):
-            lines.append(f"• {cat}: {fmt_num_plain(amt)}")
-
-    return "\n".join(lines), start_key
 @bot.callback_query_handler(func=lambda c: True)
 
 def on_callback(call):
@@ -5126,18 +4924,6 @@ def on_callback(call):
                 reply_markup=kb
             )
             return
-        if cmd == "forward_old":
-            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                send_and_auto_delete(chat_id, "Меню доступно только владельцу.", HELPER_DELETE_DELAY)
-                return
-            kb = build_forward_source_menu()
-            safe_edit(
-                bot,
-                call,
-                build_forward_status_text("Выберите чат A:"),
-                reply_markup=kb
-            )
-            return
         if cmd == "forward_finmode_menu":
             kb = build_finance_toggle_chat_menu(day_key)
             safe_edit(
@@ -5251,100 +5037,6 @@ def on_callback(call):
                 bot,
                 call,
                 build_forward_status_text("Выберите чат для переключения финансового режима:"),
-                reply_markup=kb
-            )
-            return
-        if cmd.startswith("fw_cfg_"):
-            tgt = int(cmd.split("_")[-1])
-            kb = build_forward_direction_menu(day_key, chat_id, tgt)
-            safe_edit(
-                bot,
-                call,
-                build_forward_status_text(f"Настройка пересылки для {get_chat_display_name(tgt)}:"),
-                reply_markup=kb
-            )
-            return
-        if cmd.startswith("fw_fin_ab_"):
-            tgt = int(cmd.split("_")[-1])
-            set_forward_finance(chat_id, tgt, not get_forward_finance(chat_id, tgt))
-            kb = build_forward_direction_menu(day_key, chat_id, tgt)
-            safe_edit(
-                bot,
-                call,
-                build_forward_status_text(f"Настройка пересылки для {get_chat_display_name(tgt)}:"),
-                reply_markup=kb
-            )
-            return
-
-        if cmd.startswith("fw_fin_ba_"):
-            tgt = int(cmd.split("_")[-1])
-            set_forward_finance(tgt, chat_id, not get_forward_finance(tgt, chat_id))
-            kb = build_forward_direction_menu(day_key, chat_id, tgt)
-            safe_edit(
-                bot,
-                call,
-                build_forward_status_text(f"Настройка пересылки для {get_chat_display_name(tgt)}:"),
-                reply_markup=kb
-            )
-            return
-        if cmd.startswith("fw_one_"):
-            tgt = int(cmd.split("_")[-1])
-            fr = data.get("forward_rules", {}) or {}
-            if str(tgt) in fr.get(str(chat_id), {}):
-                remove_forward_link(chat_id, tgt)
-            else:
-                add_forward_link(chat_id, tgt, "oneway_to")
-            kb = build_forward_direction_menu(day_key, chat_id, tgt)
-            safe_edit(
-                bot,
-                call,
-                build_forward_status_text(f"Настройка пересылки для {get_chat_display_name(tgt)}:"),
-                reply_markup=kb
-            )
-            return
-        if cmd.startswith("fw_rev_"):
-            tgt = int(cmd.split("_")[-1])
-            fr = data.get("forward_rules", {}) or {}
-            if str(chat_id) in fr.get(str(tgt), {}):
-                remove_forward_link(tgt, chat_id)
-            else:
-                add_forward_link(tgt, chat_id, "oneway_to")
-            kb = build_forward_direction_menu(day_key, chat_id, tgt)
-            safe_edit(
-                bot,
-                call,
-                build_forward_status_text(f"Настройка пересылки для {get_chat_display_name(tgt)}:"),
-                reply_markup=kb
-            )
-            return
-        if cmd.startswith("fw_two_"):
-            tgt = int(cmd.split("_")[-1])
-            fr = data.get("forward_rules", {}) or {}
-            ab_on = str(tgt) in fr.get(str(chat_id), {})
-            ba_on = str(chat_id) in fr.get(str(tgt), {})
-            if ab_on and ba_on:
-                remove_forward_link(chat_id, tgt)
-                remove_forward_link(tgt, chat_id)
-            else:
-                add_forward_link(chat_id, tgt, "twoway")
-                add_forward_link(tgt, chat_id, "twoway")
-            kb = build_forward_direction_menu(day_key, chat_id, tgt)
-            safe_edit(
-                bot,
-                call,
-                build_forward_status_text(f"Настройка пересылки для {get_chat_display_name(tgt)}:"),
-                reply_markup=kb
-            )
-            return
-        if cmd.startswith("fw_del_"):
-            tgt = int(cmd.split("_")[-1])
-            remove_forward_link(chat_id, tgt)
-            remove_forward_link(tgt, chat_id)
-            kb = build_forward_direction_menu(day_key, chat_id, tgt)
-            safe_edit(
-                bot,
-                call,
-                build_forward_status_text(f"Настройка пересылки для {get_chat_display_name(tgt)}:"),
                 reply_markup=kb
             )
             return
@@ -5550,20 +5242,6 @@ def set_active_window_id(chat_id: int, day_key: str, message_id: int):
 def get_active_window_id(chat_id: int, day_key: str):
     aw = get_or_create_active_windows(chat_id)
     return aw.get(day_key)
-def delete_active_window_if_exists(chat_id: int, day_key: str):
-    mid = get_active_window_id(chat_id, day_key)
-    if not mid:
-        return
-
-    try:
-        bot.delete_message(chat_id, mid)
-    except Exception:
-        pass
-
-    aw = get_or_create_active_windows(chat_id)
-    if day_key in aw:
-        del aw[day_key]
-    save_data(data)
 def update_or_send_day_window(chat_id: int, day_key: str):
     if is_hidden_finance_mode(chat_id) and not is_owner_chat(chat_id):
         return
@@ -5770,49 +5448,6 @@ def cmd_start(msg):
     day_key = today_key()
     get_chat_store(chat_id)["current_view_day"] = day_key
     force_new_day_window(chat_id, day_key)
-@bot.message_handler(commands=["start_new"])
-def cmd_start_new(msg):
-    try:
-        update_chat_info_from_message(msg)
-    except Exception:
-        pass
-
-    schedule_command_delete(msg)
-    chat_id = msg.chat.id
-    stop_dozvon_for_target(chat_id)
-
-    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
-        return
-    if not require_finance(chat_id):
-        return
-
-    day_key = today_key()
-
-    old_mid = get_active_window_id(chat_id, day_key)
-    if old_mid:
-        try:
-            bot.delete_message(chat_id, old_mid)
-        except Exception:
-            pass
-
-    set_active_window_id(chat_id, day_key, None)
-
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        backup_window_for_owner(chat_id, day_key, None)
-        schedule_balance_panel_refresh(chat_id, 0.5)
-        return
-
-    txt, _ = render_day_window(chat_id, day_key)
-    kb = build_main_keyboard(day_key, chat_id)
-    sent = bot.send_message(
-        chat_id,
-        txt,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
-    set_active_window_id(chat_id, day_key, sent.message_id)
-    schedule_balance_panel_refresh(chat_id, 0.5)
 @bot.message_handler(commands=["help"])
 def cmd_help(msg):
     try:
@@ -6521,47 +6156,6 @@ def rebuild_global_records():
         all_recs.extend(st.get("records", []))
     data["records"] = all_recs
     data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
-def force_backup_to_chat(chat_id: int):
-    try:
-        save_chat_json(chat_id)
-        json_path = chat_json_file(chat_id)
-        if not os.path.exists(json_path):
-            log_error(f"force_backup_to_chat: {json_path} missing")
-            return
-
-        meta = _load_chat_backup_meta()
-        msg_key = f"msg_chat_{chat_id}"
-        ts_key = f"timestamp_chat_{chat_id}"
-
-        chat_title = _get_chat_title_for_backup(chat_id)
-        caption = (
-            f"🧾 Авто-бэкап JSON чата: {chat_title}\n"
-            f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-
-        with open(json_path, "rb") as f:
-            data_bytes = f.read()
-            if not data_bytes:
-                log_error("force_backup_to_chat: empty JSON")
-                return
-
-        base = os.path.basename(json_path)
-        name_no_ext, dot, ext = base.partition(".")
-        suffix = get_chat_name_for_filename(chat_id)
-        file_name = suffix if suffix else name_no_ext
-        if dot:
-            file_name += f".{ext}"
-
-        buf = io.BytesIO(data_bytes)
-        buf.name = file_name
-
-        sent = bot.send_document(chat_id, buf, caption=caption)
-        meta[msg_key] = sent.message_id
-        meta[ts_key] = now_local().isoformat(timespec="seconds")
-        _save_chat_backup_meta(meta)
-
-    except Exception as e:
-        log_error(f"force_backup_to_chat({chat_id}): {e}")
 
 def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
     """
