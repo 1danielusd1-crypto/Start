@@ -21,8 +21,92 @@ from flask import Flask, request
 
 
 from collections import defaultdict
+from contextlib import contextmanager
 
 window_locks = defaultdict(threading.Lock)
+
+# ─────────────────────────────────────────────────────────────
+# Потокобезопасность / очереди по чатам
+# ─────────────────────────────────────────────────────────────
+# Flask webhook работает в threaded=True, поэтому разные апдейты Telegram
+# могут приходить одновременно. Эти замки делают обработку стабильной:
+# • один и тот же чат обрабатывается строго по очереди;
+# • data/save_data защищены отдельным глобальным замком;
+# • forward_map защищён отдельным замком;
+# • пересылка вынесена из основного lock чата и выполняется через общий
+#   forward_delivery_lock, чтобы не было deadlock при связках A ⇄ B.
+chat_locks = defaultdict(threading.RLock)
+data_lock = threading.RLock()
+forward_map_lock = threading.RLock()
+forward_delivery_lock = threading.RLock()
+timer_lock = threading.RLock()
+
+
+def chat_lock_for(chat_id: int):
+    return chat_locks[int(chat_id)]
+
+
+@contextmanager
+def locked_chat(chat_id: int):
+    with chat_lock_for(int(chat_id)):
+        yield
+
+
+def _extract_update_chat_id(payload: dict):
+    """Достаёт chat_id из сырого Telegram update до передачи в telebot."""
+    try:
+        for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
+            item = payload.get(key)
+            if isinstance(item, dict):
+                chat = item.get("chat") or {}
+                if "id" in chat:
+                    return int(chat["id"])
+
+        cq = payload.get("callback_query")
+        if isinstance(cq, dict):
+            msg = cq.get("message") or {}
+            chat = msg.get("chat") or {}
+            if "id" in chat:
+                return int(chat["id"])
+    except Exception:
+        pass
+    return None
+
+
+def schedule_forward_any_message(source_chat_id: int, msg):
+    """Запускает пересылку после выхода из lock исходного чата."""
+    def _job():
+        try:
+            with forward_delivery_lock:
+                forward_any_message(source_chat_id, msg)
+        except Exception as e:
+            log_error(f"schedule_forward_any_message({source_chat_id}): {e}")
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
+def schedule_propagate_edited_to_copies(msg):
+    """Синхронизация правок копий вынесена из lock исходного чата."""
+    def _job():
+        try:
+            with forward_delivery_lock:
+                propagate_edited_to_copies(msg)
+        except Exception as e:
+            log_error(f"schedule_propagate_edited_to_copies: {e}")
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
+def schedule_delete_forward_copies_for_source(source_chat_id: int, source_msg_id: int):
+    """Удаление копий вынесено из lock исходного чата."""
+    def _job():
+        try:
+            with forward_delivery_lock:
+                delete_forward_copies_for_source(source_chat_id, source_msg_id)
+        except Exception as e:
+            log_error(f"schedule_delete_forward_copies_for_source: {e}")
+
+    threading.Thread(target=_job, daemon=True).start()
 BOT_TOKEN = os.getenv("B_T", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
 APP_URL = os.getenv("APP_URL", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip()
@@ -34,7 +118,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (22)__hidden_silent_delete_update_prompt"
+VERSION = "bot (23)__queued_chat_locks"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1528,21 +1612,23 @@ def load_data():
     return d
 
 def save_data(d):
-    fac = {}
-    for cid in finance_active_chats:
-        fac[str(cid)] = True
-    d["finance_active_chats"] = fac
-    d["backup_flags"] = {
-        "drive": bool(backup_flags.get("drive", True)),
-        "channel": bool(backup_flags.get("channel", True)),
-    }
-    try:
-        _persist_forward_index_in_data(d)
-    except Exception as e:
-        log_error(f"save_data forward_index: {e}")
+    """Потокобезопасное сохранение общего состояния."""
+    with data_lock:
+        fac = {}
+        for cid in list(finance_active_chats):
+            fac[str(cid)] = True
+        d["finance_active_chats"] = fac
+        d["backup_flags"] = {
+            "drive": bool(backup_flags.get("drive", True)),
+            "channel": bool(backup_flags.get("channel", True)),
+        }
+        try:
+            _persist_forward_index_in_data(d)
+        except Exception as e:
+            log_error(f"save_data forward_index: {e}")
 
-    SQLITE.save_root(_sqlite_pack_root(d))
-    SQLITE.save_chats(d.get("chats", {}) or {})
+        SQLITE.save_root(_sqlite_pack_root(d))
+        SQLITE.save_chats(d.get("chats", {}) or {})
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
 def chat_csv_file(chat_id: int) -> str:
@@ -1555,46 +1641,48 @@ def get_chat_store(chat_id: int) -> dict:
     Хранилище данных одного чата.
     Добавлено поле "known_chats" для отображения названий/username в меню пересылки.
     """
-    chats = data.setdefault("chats", {})
-    store = chats.setdefault(
-        str(chat_id),
-        {
-            "info": {},
-            "known_chats": {},
-            "balance": 0,
-            "records": [],
-            "daily_records": {},
-            "next_id": 1,
-            "active_windows": {},
-            "edit_wait": None,
-            "edit_target": None,
-            "current_view_day": today_key(),
-            "finance_mode": False,
-            "settings": {
-                "auto_add": True,
-                "quick_balance_enabled": True,
-                "quick_balance_behavior": "open",
-                "hidden_finance": False,
-                "auto_backup_enabled": True
-            },
-        }
-    )
+    with data_lock:
 
-    store.setdefault("settings", {}).setdefault("auto_add", True)
-    store.setdefault("settings", {}).setdefault("quick_balance_enabled", True)
-    store.setdefault("settings", {}).setdefault("quick_balance_behavior", "open")
-    store.setdefault("settings", {}).setdefault("hidden_finance", False)
-    store.setdefault("settings", {}).setdefault("auto_backup_enabled", True)
-    store.setdefault("finance_mode", False)
+        chats = data.setdefault("chats", {})
+        store = chats.setdefault(
+            str(chat_id),
+            {
+                "info": {},
+                "known_chats": {},
+                "balance": 0,
+                "records": [],
+                "daily_records": {},
+                "next_id": 1,
+                "active_windows": {},
+                "edit_wait": None,
+                "edit_target": None,
+                "current_view_day": today_key(),
+                "finance_mode": False,
+                "settings": {
+                    "auto_add": True,
+                    "quick_balance_enabled": True,
+                    "quick_balance_behavior": "open",
+                    "hidden_finance": False,
+                    "auto_backup_enabled": True
+                },
+            }
+        )
 
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        store["settings"]["auto_add"] = True
-        store["finance_mode"] = True
+        store.setdefault("settings", {}).setdefault("auto_add", True)
+        store.setdefault("settings", {}).setdefault("quick_balance_enabled", True)
+        store.setdefault("settings", {}).setdefault("quick_balance_behavior", "open")
+        store.setdefault("settings", {}).setdefault("hidden_finance", False)
+        store.setdefault("settings", {}).setdefault("auto_backup_enabled", True)
+        store.setdefault("finance_mode", False)
 
-    if "known_chats" not in store:
-        store["known_chats"] = {}
+        if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            store["settings"]["auto_add"] = True
+            store["finance_mode"] = True
 
-    return store
+        if "known_chats" not in store:
+            store["known_chats"] = {}
+
+        return store
 
 def collect_forward_menu_chats() -> dict:
     """
@@ -2257,7 +2345,7 @@ def on_any_message(msg):
         except Exception as e:
             log_error(f"handle_finance_text error: {e}")
 
-    forward_any_message(chat_id, msg)
+    schedule_forward_any_message(chat_id, msg)
 def handle_finance_text(msg):
     """
     Обработка обычного текстового ввода:
@@ -2343,58 +2431,59 @@ def handle_finance_edit(msg):
     update_or_send_day_window(chat_id, day_key)
     return True
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0):
-    if not is_finance_mode(dst_chat_id):
-        return
-
-    store = get_chat_store(dst_chat_id)
-    existing = None
-
-    for r in store.get("records", []):
-        if (
-            r.get("source_msg_id") == dst_msg_id
-            or r.get("origin_msg_id") == dst_msg_id
-            or r.get("msg_id") == dst_msg_id
-        ):
-            existing = r
-            break
-
-    entry_day = today_key()
-    store["current_view_day"] = entry_day
-
-    if text and looks_like_amount(text):
-        try:
-            amount, note = split_amount_and_note(text)
-        except Exception:
+    with locked_chat(dst_chat_id):
+        if not is_finance_mode(dst_chat_id):
             return
 
-        if existing:
-            existing["amount"] = amount
-            existing["note"] = note
+        store = get_chat_store(dst_chat_id)
+        existing = None
+
+        for r in store.get("records", []):
+            if (
+                r.get("source_msg_id") == dst_msg_id
+                or r.get("origin_msg_id") == dst_msg_id
+                or r.get("msg_id") == dst_msg_id
+            ):
+                existing = r
+                break
+
+        entry_day = today_key()
+        store["current_view_day"] = entry_day
+
+        if text and looks_like_amount(text):
+            try:
+                amount, note = split_amount_and_note(text)
+            except Exception:
+                return
+
+            if existing:
+                existing["amount"] = amount
+                existing["note"] = note
+                entry_day = existing.get("day_key") or entry_day
+                rebuild_month_short_ids(dst_chat_id)
+                rebuild_global_records()
+                store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+            else:
+                shadow_msg = type("ForwardShadowMsg", (), {"message_id": dst_msg_id})()
+                add_record_to_chat(
+                    dst_chat_id,
+                    amount,
+                    note,
+                    owner,
+                    source_msg=shadow_msg,
+                    day_key=entry_day
+                )
+        elif existing:
+            existing["amount"] = 0
+            existing["note"] = "удалено"
             entry_day = existing.get("day_key") or entry_day
             rebuild_month_short_ids(dst_chat_id)
             rebuild_global_records()
             store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
         else:
-            shadow_msg = type("ForwardShadowMsg", (), {"message_id": dst_msg_id})()
-            add_record_to_chat(
-                dst_chat_id,
-                amount,
-                note,
-                owner,
-                source_msg=shadow_msg,
-                day_key=entry_day
-            )
-    elif existing:
-        existing["amount"] = 0
-        existing["note"] = "удалено"
-        entry_day = existing.get("day_key") or entry_day
-        rebuild_month_short_ids(dst_chat_id)
-        rebuild_global_records()
-        store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
-    else:
-        return
+            return
 
-    schedule_finalize(dst_chat_id, entry_day)
+        schedule_finalize(dst_chat_id, entry_day)
 
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel)."""
@@ -2670,25 +2759,26 @@ def persist_forward_rules_to_owner():
         log_error(f"persist_forward_rules_to_owner: {e}")
         
 def resolve_forward_targets(source_chat_id: int):
-    fr = data.get("forward_rules", {})
-    ff = data.get("forward_finance", {})
-    src = str(source_chat_id)
+    with data_lock:
+        fr = data.get("forward_rules", {})
+        ff = data.get("forward_finance", {})
+        src = str(source_chat_id)
 
-    if src not in fr:
-        return []
+        if src not in fr:
+            return []
 
-    out = []
-    for dst, mode in fr[src].items():
-        try:
-            out.append((
-                int(dst),
-                mode,
-                bool(ff.get(src, {}).get(dst, False))
-            ))
-        except Exception:
-            continue
+        out = []
+        for dst, mode in list(fr[src].items()):
+            try:
+                out.append((
+                    int(dst),
+                    mode,
+                    bool(ff.get(src, {}).get(dst, False))
+                ))
+            except Exception:
+                continue
 
-    return out
+        return out
 def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     fr = data.setdefault("forward_rules", {})
     src = str(src_chat_id)
@@ -2773,75 +2863,82 @@ def _schedule_persist_forward_state(delay: float = 1.2):
 
 
 def _persist_forward_index_in_data(d: dict):
-    idx = {}
-    for (src_chat_id, src_msg_id), pairs in forward_map.items():
-        rows = []
-        for pair in pairs:
-            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
-                continue
-            dst_chat_id, dst_msg_id = pair[0], pair[1]
-            rows.append({
-                "dst_chat_id": int(dst_chat_id),
-                "dst_msg_id": int(dst_msg_id),
-                "status": "delivered",
-            })
-        if rows:
-            idx[_forward_key(src_chat_id, src_msg_id)] = rows
-    d["forward_index"] = idx
+    with forward_map_lock:
+        idx = {}
+        for (src_chat_id, src_msg_id), pairs in forward_map.items():
+            rows = []
+            for pair in pairs:
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                    continue
+                dst_chat_id, dst_msg_id = pair[0], pair[1]
+                rows.append({
+                    "dst_chat_id": int(dst_chat_id),
+                    "dst_msg_id": int(dst_msg_id),
+                    "status": "delivered",
+                })
+            if rows:
+                idx[_forward_key(src_chat_id, src_msg_id)] = rows
+        d["forward_index"] = idx
 
 
 def _load_forward_index_from_data(d: dict):
-    forward_map.clear()
-    idx = d.get("forward_index", {}) or {}
-    for key, rows in idx.items():
-        try:
-            src_chat_id_s, src_msg_id_s = str(key).split(":", 1)
-            src_chat_id = int(src_chat_id_s)
-            src_msg_id = int(src_msg_id_s)
-        except Exception:
-            continue
-
-        pairs = []
-        for row in rows or []:
+    with forward_map_lock:
+        forward_map.clear()
+        idx = d.get("forward_index", {}) or {}
+        for key, rows in idx.items():
             try:
-                dst_chat_id = int(row.get("dst_chat_id"))
-                dst_msg_id = int(row.get("dst_msg_id"))
-                pairs.append((dst_chat_id, dst_msg_id))
+                src_chat_id_s, src_msg_id_s = str(key).split(":", 1)
+                src_chat_id = int(src_chat_id_s)
+                src_msg_id = int(src_msg_id_s)
             except Exception:
                 continue
 
-        if pairs:
-            forward_map[(src_chat_id, src_msg_id)] = pairs
+            pairs = []
+            for row in rows or []:
+                try:
+                    dst_chat_id = int(row.get("dst_chat_id"))
+                    dst_msg_id = int(row.get("dst_msg_id"))
+                    pairs.append((dst_chat_id, dst_msg_id))
+                except Exception:
+                    continue
+
+            if pairs:
+                forward_map[(src_chat_id, src_msg_id)] = pairs
 
 
 def _store_forward_link(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst_msg_id: int):
-    key = (int(src_chat_id), int(src_msg_id))
-    pair = (int(dst_chat_id), int(dst_msg_id))
-    items = forward_map.setdefault(key, [])
-    if pair not in items:
-        items.append(pair)
+    with forward_map_lock:
+        key = (int(src_chat_id), int(src_msg_id))
+        pair = (int(dst_chat_id), int(dst_msg_id))
+        items = forward_map.setdefault(key, [])
+        if pair not in items:
+            items.append(pair)
     _schedule_persist_forward_state()
 
 
 def get_forward_links(src_chat_id: int, src_msg_id: int):
-    return list(forward_map.get((int(src_chat_id), int(src_msg_id)), []))
+    with forward_map_lock:
+        return list(forward_map.get((int(src_chat_id), int(src_msg_id)), []))
 
 
 def delete_forward_copies_for_source(src_chat_id: int, src_msg_id: int):
     key = (int(src_chat_id), int(src_msg_id))
-    links = list(forward_map.get(key, []))
+    with forward_map_lock:
+        links = list(forward_map.get(key, []))
     for dst_chat_id, dst_msg_id in links:
         try:
             bot.delete_message(dst_chat_id, dst_msg_id)
         except Exception as e:
             log_error(f"delete_forward_copies_for_source {src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}: {e}")
         try:
-            delete_forwarded_finance_record_by_msg_id(dst_chat_id, dst_msg_id)
+            with locked_chat(dst_chat_id):
+                delete_forwarded_finance_record_by_msg_id(dst_chat_id, dst_msg_id)
         except Exception as e:
             log_error(f"delete_forwarded_finance_record_by_msg_id {dst_chat_id}:{dst_msg_id}: {e}")
-    if key in forward_map:
-        del forward_map[key]
-        _schedule_persist_forward_state()
+    with forward_map_lock:
+        if key in forward_map:
+            del forward_map[key]
+            _schedule_persist_forward_state()
 
 
 def is_forward_delete_command(text: str) -> bool:
@@ -2862,64 +2959,65 @@ def find_record_by_message_id(chat_id: int, msg_id: int):
 
 
 def delete_forwarded_finance_record_by_msg_id(chat_id: int, msg_id: int) -> bool:
-    rec = find_record_by_message_id(chat_id, msg_id)
-    if not rec:
-        return False
-    day_key = rec.get("day_key") or today_key()
-    delete_record_in_chat(chat_id, rec["id"])
-    schedule_finalize(chat_id, day_key)
-    return True
-
+    with locked_chat(chat_id):
+        rec = find_record_by_message_id(chat_id, msg_id)
+        if not rec:
+            return False
+        day_key = rec.get("day_key") or today_key()
+        delete_record_in_chat(chat_id, rec["id"])
+        schedule_finalize(chat_id, day_key)
+        return True
 
 def rebind_forwarded_finance_record(chat_id: int, old_msg_id: int, new_msg_id: int, text: str, owner: int = 0):
-    store = get_chat_store(chat_id)
-    rec = find_record_by_message_id(chat_id, old_msg_id)
-    if rec:
-        rec["source_msg_id"] = new_msg_id
-        rec["origin_msg_id"] = new_msg_id
-        rec["msg_id"] = new_msg_id
+    with locked_chat(chat_id):
+        store = get_chat_store(chat_id)
+        rec = find_record_by_message_id(chat_id, old_msg_id)
+        if rec:
+            rec["source_msg_id"] = new_msg_id
+            rec["origin_msg_id"] = new_msg_id
+            rec["msg_id"] = new_msg_id
+
+            if text and looks_like_amount(text):
+                try:
+                    amount, note = split_amount_and_note(text)
+                    rec["amount"] = amount
+                    rec["note"] = note
+                except Exception:
+                    pass
+
+            rec_id = rec.get("id")
+            for day, arr in store.get("daily_records", {}).items():
+                for item in arr:
+                    if item.get("id") == rec_id:
+                        item.update(rec)
+
+            store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+            rebuild_month_short_ids(chat_id)
+            rebuild_global_records()
+            schedule_finalize(chat_id, rec.get("day_key") or today_key())
+            return True
 
         if text and looks_like_amount(text):
-            try:
-                amount, note = split_amount_and_note(text)
-                rec["amount"] = amount
-                rec["note"] = note
-            except Exception:
-                pass
+            sync_forwarded_finance_message(chat_id, new_msg_id, text, owner)
+            return True
 
-        rec_id = rec.get("id")
-        for day, arr in store.get("daily_records", {}).items():
-            for item in arr:
-                if item.get("id") == rec_id:
-                    item.update(rec)
-
-        store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
-        rebuild_month_short_ids(chat_id)
-        rebuild_global_records()
-        schedule_finalize(chat_id, rec.get("day_key") or today_key())
-        return True
-
-    if text and looks_like_amount(text):
-        sync_forwarded_finance_message(chat_id, new_msg_id, text, owner)
-        return True
-
-    return False
-
+        return False
 
 def _replace_forward_link_pair(src_chat_id: int, src_msg_id: int, old_dst_chat_id: int, old_dst_msg_id: int, new_dst_chat_id: int, new_dst_msg_id: int):
-    key = (int(src_chat_id), int(src_msg_id))
-    pairs = list(forward_map.get(key, []))
-    updated = []
-    replaced = False
-    for pair in pairs:
-        if int(pair[0]) == int(old_dst_chat_id) and int(pair[1]) == int(old_dst_msg_id):
+    with forward_map_lock:
+        key = (int(src_chat_id), int(src_msg_id))
+        pairs = list(forward_map.get(key, []))
+        updated = []
+        replaced = False
+        for pair in pairs:
+            if int(pair[0]) == int(old_dst_chat_id) and int(pair[1]) == int(old_dst_msg_id):
+                updated.append((int(new_dst_chat_id), int(new_dst_msg_id)))
+                replaced = True
+            else:
+                updated.append(pair)
+        if not replaced:
             updated.append((int(new_dst_chat_id), int(new_dst_msg_id)))
-            replaced = True
-        else:
-            updated.append(pair)
-    if not replaced:
-        updated.append((int(new_dst_chat_id), int(new_dst_msg_id)))
-    forward_map[key] = updated
+        forward_map[key] = updated
     _schedule_persist_forward_state()
 
 
@@ -2996,16 +3094,17 @@ def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_m
 
 def _cleanup_forward_storage_for_chat(chat_id: int):
     chat_id = int(chat_id)
-    for key in list(forward_map.keys()):
-        src_chat_id, _ = key
-        if src_chat_id == chat_id:
-            del forward_map[key]
-            continue
-        pairs = [pair for pair in forward_map.get(key, []) if int(pair[0]) != chat_id]
-        if pairs:
-            forward_map[key] = pairs
-        elif key in forward_map:
-            del forward_map[key]
+    with forward_map_lock:
+        for key in list(forward_map.keys()):
+            src_chat_id, _ = key
+            if src_chat_id == chat_id:
+                del forward_map[key]
+                continue
+            pairs = [pair for pair in forward_map.get(key, []) if int(pair[0]) != chat_id]
+            if pairs:
+                forward_map[key] = pairs
+            elif key in forward_map:
+                del forward_map[key]
     _schedule_persist_forward_state()
 
 
@@ -3137,6 +3236,11 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
 
 
 def _flush_media_group_forward(source_chat_id: int, media_group_id: str):
+    with forward_delivery_lock:
+        return _flush_media_group_forward_locked(source_chat_id, media_group_id)
+
+
+def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
     cache_key = (int(source_chat_id), str(media_group_id))
     messages = _media_group_cache.pop(cache_key, [])
     timer = _media_group_timers.pop(cache_key, None)
@@ -3864,36 +3968,37 @@ def toggle_edit_delete_selection(chat_id: int, day_key: str, rid: int):
 
 
 def delete_selected_records(chat_id: int, day_key: str) -> int:
-    """Удаляет все отмеченные ☑️ записи одним проходом, без ошибки из-за перенумерации id."""
-    store = get_chat_store(chat_id)
-    all_sel = store.setdefault("edit_delete_selected", {})
-    selected = {int(x) for x in all_sel.get(day_key, [])}
-    if not selected:
-        return 0
+    with locked_chat(chat_id):
+        """Удаляет все отмеченные ☑️ записи одним проходом, без ошибки из-за перенумерации id."""
+        store = get_chat_store(chat_id)
+        all_sel = store.setdefault("edit_delete_selected", {})
+        selected = {int(x) for x in all_sel.get(day_key, [])}
+        if not selected:
+            return 0
 
-    before = len(store.get("records", []) or [])
-    store["records"] = [r for r in (store.get("records", []) or []) if int(r.get("id", -1)) not in selected]
+        before = len(store.get("records", []) or [])
+        store["records"] = [r for r in (store.get("records", []) or []) if int(r.get("id", -1)) not in selected]
 
-    daily = store.get("daily_records", {}) or {}
-    for dk in list(daily.keys()):
-        arr = daily.get(dk, []) or []
-        arr2 = [r for r in arr if int(r.get("id", -1)) not in selected]
-        if arr2:
-            daily[dk] = arr2
-        else:
-            daily.pop(dk, None)
+        daily = store.get("daily_records", {}) or {}
+        for dk in list(daily.keys()):
+            arr = daily.get(dk, []) or []
+            arr2 = [r for r in arr if int(r.get("id", -1)) not in selected]
+            if arr2:
+                daily[dk] = arr2
+            else:
+                daily.pop(dk, None)
 
-    deleted = before - len(store.get("records", []) or [])
-    all_sel.pop(day_key, None)
+        deleted = before - len(store.get("records", []) or [])
+        all_sel.pop(day_key, None)
 
-    renumber_chat_records(chat_id)
-    recalc_balance(chat_id)
-    rebuild_global_records()
-    save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
-    schedule_finalize(chat_id, day_key, delay=0.1)
-    return deleted
+        renumber_chat_records(chat_id)
+        recalc_balance(chat_id)
+        rebuild_global_records()
+        save_data(data)
+        save_chat_json(chat_id)
+        export_global_csv(data)
+        schedule_finalize(chat_id, day_key, delay=0.1)
+        return deleted
 
 def build_fin_windows_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -5233,49 +5338,51 @@ def add_record_to_chat(
     source_msg=None,
     day_key=None
 ):
-    store = get_chat_store(chat_id)
-    rid = store.get("next_id", 1)
+    with locked_chat(chat_id):
+        store = get_chat_store(chat_id)
+        rid = store.get("next_id", 1)
 
-    if not day_key:
-        day_key = day_key_from_message(source_msg)
+        if not day_key:
+            day_key = day_key_from_message(source_msg)
 
-    rec = {
-        "id": rid,
-        "short_id": "",
-        "timestamp": now_local().isoformat(timespec="seconds"),
-        "amount": amount,
-        "note": note,
-        "source_msg_id": source_msg.message_id if source_msg else None,
-        "owner": owner,
-        "msg_id": source_msg.message_id if source_msg else None,
-        "origin_msg_id": source_msg.message_id if source_msg else None,
-        "day_key": day_key,
-    }
+        rec = {
+            "id": rid,
+            "short_id": "",
+            "timestamp": now_local().isoformat(timespec="seconds"),
+            "amount": amount,
+            "note": note,
+            "source_msg_id": source_msg.message_id if source_msg else None,
+            "owner": owner,
+            "msg_id": source_msg.message_id if source_msg else None,
+            "origin_msg_id": source_msg.message_id if source_msg else None,
+            "day_key": day_key,
+        }
 
-    store.setdefault("records", []).append(rec)
-    store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
+        store.setdefault("records", []).append(rec)
+        store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
 
-    store["next_id"] = rid + 1
-    store["balance"] = sum(r["amount"] for r in store["records"])
+        store["next_id"] = rid + 1
+        store["balance"] = sum(r["amount"] for r in store["records"])
 
-    rebuild_month_short_ids(chat_id)
-    rebuild_global_records()
+        rebuild_month_short_ids(chat_id)
+        rebuild_global_records()
 
 def delete_record_in_chat(chat_id: int, rid: int):
-    store = get_chat_store(chat_id)
+    with locked_chat(chat_id):
+        store = get_chat_store(chat_id)
 
-    store["records"] = [x for x in store["records"] if x["id"] != rid]
+        store["records"] = [x for x in store["records"] if x["id"] != rid]
 
-    for day, arr in list(store.get("daily_records", {}).items()):
-        arr2 = [x for x in arr if x["id"] != rid]
-        if arr2:
-            store["daily_records"][day] = arr2
-        else:
-            del store["daily_records"][day]
+        for day, arr in list(store.get("daily_records", {}).items()):
+            arr2 = [x for x in arr if x["id"] != rid]
+            if arr2:
+                store["daily_records"][day] = arr2
+            else:
+                del store["daily_records"][day]
 
-    renumber_chat_records(chat_id)
-    store["balance"] = sum(x["amount"] for x in store["records"])
-    rebuild_global_records()
+        renumber_chat_records(chat_id)
+        store["balance"] = sum(x["amount"] for x in store["records"])
+        rebuild_global_records()
 
 def renumber_chat_records(chat_id: int):
     """
@@ -6176,25 +6283,27 @@ _total_message_timers = {}
 def schedule_backup_flush(chat_id: int, delay: float = 8.0):
     def _job():
         try:
-            save_chat_json(chat_id)
-            export_global_csv(data)
+            with locked_chat(chat_id):
+                save_chat_json(chat_id)
+                export_global_csv(data)
 
-            if not is_finance_output_suppressed(chat_id) and is_auto_backup_enabled(chat_id):
-                send_backup_to_chat(chat_id)
-                send_backup_to_channel(chat_id)
+                if not is_finance_output_suppressed(chat_id) and is_auto_backup_enabled(chat_id):
+                    send_backup_to_chat(chat_id)
+                    send_backup_to_channel(chat_id)
         except Exception as e:
             log_error(f"schedule_backup_flush({chat_id}): {e}")
 
-    prev = _backup_timers.get(chat_id)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
+    with timer_lock:
+        prev = _backup_timers.get(chat_id)
+        if prev and prev.is_alive():
+            try:
+                prev.cancel()
+            except Exception:
+                pass
 
-    t = threading.Timer(delay, _job)
-    _backup_timers[chat_id] = t
-    t.start()
+        t = threading.Timer(delay, _job)
+        _backup_timers[chat_id] = t
+        t.start()
     
 def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.8):
     def _safe(action_name, func):
@@ -6205,57 +6314,65 @@ def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.8):
             return None
 
     def _job():
-        _safe("recalc_balance", lambda: recalc_balance(chat_id))
-        _safe("rebuild_global_records", rebuild_global_records)
+        # Всё, что меняет/пересчитывает текущий чат, идёт строго под lock этого чата.
+        with locked_chat(chat_id):
+            _safe("recalc_balance", lambda: recalc_balance(chat_id))
+            _safe("rebuild_global_records", rebuild_global_records)
 
-        if not is_hidden_finance_mode(chat_id):
-            if OWNER_ID and str(chat_id) == str(OWNER_ID):
+            if not is_hidden_finance_mode(chat_id):
+                if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                    _safe(
+                        "owner_backup_window",
+                        lambda: backup_window_for_owner(chat_id, day_key, None)
+                    )
+                else:
+                    _safe(
+                        "update_day_window",
+                        lambda: update_or_send_day_window(chat_id, day_key)
+                    )
+
                 _safe(
-                    "owner_backup_window",
-                    lambda: backup_window_for_owner(chat_id, day_key, None)
+                    "refresh_total_chat",
+                    lambda: refresh_total_message_if_any(chat_id)
                 )
-            else:
-                _safe(
-                    "update_day_window",
-                    lambda: update_or_send_day_window(chat_id, day_key)
-                )
+
+            _safe("save_data", lambda: save_data(data))
+            if not is_hidden_finance_mode(chat_id):
+                _safe("refresh_balance_panel_now", lambda: refresh_balance_panel_now(chat_id))
+                _safe("schedule_balance_panel_refresh", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
             _safe(
-                "refresh_total_chat",
-                lambda: refresh_total_message_if_any(chat_id)
+                "schedule_backup_flush",
+                lambda: schedule_backup_flush(chat_id, 8.0)
             )
 
+        # Окно владельца обновляем уже после выхода из lock рабочего чата, чтобы не
+        # получить взаимную блокировку owner ↔ target при активных кнопках владельца.
         if OWNER_ID and str(chat_id) != str(OWNER_ID):
-            _safe(
-                "refresh_total_owner",
-                lambda: refresh_total_message_if_any(int(OWNER_ID))
-            )
-            _safe(
-                "refresh_owner_window",
-                lambda: refresh_owner_after_chat_change(chat_id)
-            )
+            owner_id = int(OWNER_ID)
+            with locked_chat(owner_id):
+                _safe(
+                    "refresh_total_owner",
+                    lambda: refresh_total_message_if_any(owner_id)
+                )
+                _safe(
+                    "refresh_owner_window",
+                    lambda: refresh_owner_after_chat_change(chat_id)
+                )
 
-        _safe("save_data", lambda: save_data(data))
-        if not is_hidden_finance_mode(chat_id):
-            _safe("refresh_balance_panel_now", lambda: refresh_balance_panel_now(chat_id))
-            _safe("schedule_balance_panel_refresh", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
+    with timer_lock:
+        t_prev = _finalize_timers.get(chat_id)
+        if t_prev and t_prev.is_alive():
+            try:
+                t_prev.cancel()
+            except Exception:
+                pass
 
-        _safe(
-            "schedule_backup_flush",
-            lambda: schedule_backup_flush(chat_id, 8.0)
-        )
-
-    t_prev = _finalize_timers.get(chat_id)
-    if t_prev and t_prev.is_alive():
-        try:
-            t_prev.cancel()
-        except Exception:
-            pass
-
-    t = threading.Timer(delay, _job)
-    _finalize_timers[chat_id] = t
-    t.start()
+        t = threading.Timer(delay, _job)
+        _finalize_timers[chat_id] = t
+        t.start()
     
+
 def recalc_balance(chat_id: int):
     store = get_chat_store(chat_id)
     store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
@@ -6304,11 +6421,12 @@ def calc_day_balance(store: dict, day_key: str) -> float:
 
     return total
 def rebuild_global_records():
-    all_recs = []
-    for cid, st in data.get("chats", {}).items():
-        all_recs.extend(st.get("records", []))
-    data["records"] = all_recs
-    data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
+    with data_lock:
+        all_recs = []
+        for cid, st in list(data.get("chats", {}).items()):
+            all_recs.extend(st.get("records", []))
+        data["records"] = all_recs
+        data["overall_balance"] = sum(r.get("amount", 0) for r in all_recs)
 
 def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
     """
@@ -6557,7 +6675,7 @@ def handle_document(msg):
         return
 
     try:
-        forward_any_message(chat_id, msg)
+        schedule_forward_any_message(chat_id, msg)
     except Exception as e:
         log_error(f"handle_document forward failed: {e}")
 
@@ -6632,9 +6750,9 @@ def on_any_channel_post(msg):
         pass
 
     try:
-        forward_any_message(msg.chat.id, msg)
+        schedule_forward_any_message(msg.chat.id, msg)
     except Exception as e:
-        log_error(f"channel_post forward failed: {e}")
+        log_error(f"channel_post forward schedule failed: {e}")
 
 
 @bot.edited_channel_post_handler(content_types=[
@@ -6649,9 +6767,9 @@ def on_edited_channel_post(msg):
         log_error(f"edited_channel_post update_chat_info failed: {e}")
 
     try:
-        propagate_edited_to_copies(msg)
+        schedule_propagate_edited_to_copies(msg)
     except Exception as e:
-        log_error(f"edited_channel_post propagate failed: {e}")
+        log_error(f"edited_channel_post propagate schedule failed: {e}")
 
 
 def propagate_edited_to_copies(msg):
@@ -6684,9 +6802,9 @@ def on_edited_message(msg):
     edit_text = _message_text_for_finance(msg)
     if is_forward_delete_command(edit_text):
         try:
-            delete_forward_copies_for_source(chat_id, msg.message_id)
+            schedule_delete_forward_copies_for_source(chat_id, msg.message_id)
         except Exception as e:
-            log_error(f"[EDIT-DEL] failed: {e}")
+            log_error(f"[EDIT-DEL] schedule failed: {e}")
 
     try:
         edited = handle_finance_edit(msg)
@@ -6700,9 +6818,9 @@ def on_edited_message(msg):
 
     try:
         if not is_forward_delete_command(edit_text):
-            propagate_edited_to_copies(msg)
+            schedule_propagate_edited_to_copies(msg)
     except Exception as e:
-        log_error(f"[EDIT-FWD] failed: {e}")
+        log_error(f"[EDIT-FWD] schedule failed: {e}")
                                             
 @bot.message_handler(commands=["sqlite", "db"])
 def cmd_sqlite_dump(msg):
@@ -6761,7 +6879,13 @@ def telegram_webhook():
                 log_info("WEBHOOK: получен update с callback_query")
 
         update = telebot.types.Update.de_json(payload)
-        bot.process_new_updates([update])
+        update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
+        if update_chat_id is None:
+            bot.process_new_updates([update])
+        else:
+            # Главная очередь: один и тот же чат всегда обрабатывается строго последовательно.
+            with locked_chat(update_chat_id):
+                bot.process_new_updates([update])
     except Exception as e:
         log_error(f"WEBHOOK: process update error: {e}")
         return "ERROR", 500
