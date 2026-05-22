@@ -118,7 +118,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (24)__queued_locks_owner_json_prompt"
+VERSION = "bot (24)__owner_json_restore_prompt"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -134,6 +134,8 @@ _media_group_cache = {}
 _media_group_timers = {}
 FORWARD_MEDIA_GROUP_DELAY = 0.8
 _forward_state_timer = None
+_owner_json_restore_prompts = {}
+_owner_json_restore_prompt_lock = threading.RLock()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
@@ -4455,6 +4457,54 @@ def on_callback(call):
         except Exception:
             pass
 
+        if data_str.startswith("ojr:"):
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                return
+            try:
+                _, key_s, answer = data_str.split(":", 2)
+                key = int(key_s)
+            except Exception:
+                return
+
+            with _owner_json_restore_prompt_lock:
+                item = _owner_json_restore_prompts.pop(key, None)
+
+            try:
+                bot.delete_message(chat_id, call.message.message_id)
+            except Exception:
+                pass
+
+            if not item:
+                try:
+                    bot.answer_callback_query(call.id, "Срок кнопки истёк", show_alert=True)
+                except Exception:
+                    pass
+                return
+
+            if answer != "yes":
+                tmp_path = item.get("tmp_path")
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                try:
+                    bot.answer_callback_query(call.id, "Обновление JSON отменено")
+                except Exception:
+                    pass
+                return
+
+            try:
+                bot.answer_callback_query(call.id, "Принято, обновляю JSON…")
+            except Exception:
+                pass
+            threading.Thread(
+                target=run_owner_json_restore_prompt_job,
+                args=(chat_id, item),
+                daemon=True,
+            ).start()
+            return
+
         if data_str.startswith("ncb:"):
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 return
@@ -6275,6 +6325,14 @@ def maybe_prompt_owner_for_new_chat_auto_backup(chat_id: int):
 
 
 
+def _safe_tmp_json_name(fname: str) -> str:
+    base = os.path.basename(str(fname or "backup.json"))
+    base = re.sub(r"[^0-9A-Za-zА-Яа-я_.\-]+", "_", base)
+    if not base.lower().endswith(".json"):
+        base += ".json"
+    return base[:80]
+
+
 def _extract_chat_id_from_json_filename(fname: str):
     """Пытается вытащить chat_id из имени data_<chat_id>.json."""
     try:
@@ -6286,82 +6344,189 @@ def _extract_chat_id_from_json_filename(fname: str):
     return None
 
 
-def _extract_chat_id_from_json_payload(payload, fname: str = ""):
-    """Определяет, к какому чату относится JSON-файл."""
-    try:
-        if isinstance(payload, dict):
-            raw_chat_id = payload.get("chat_id")
-            if raw_chat_id is not None:
-                return int(raw_chat_id)
+def _describe_json_restore_payload(payload, fname: str = ""):
+    """Возвращает короткое описание JSON перед подтверждением восстановления."""
+    fname_l = str(fname or "").lower()
+    if fname_l == "csv_meta.json":
+        return "метаданные CSV", None
+    if isinstance(payload, dict) and isinstance(payload.get("chats"), dict):
+        return f"глобальный data.json, чатов: {len(payload.get('chats') or {})}", None
+    if isinstance(payload, dict):
+        cid = payload.get("chat_id")
+        if cid is None:
+            cid = _extract_chat_id_from_json_filename(fname)
+        if cid is not None:
+            try:
+                cid = int(cid)
+                rec_count = len(payload.get("records") or []) if isinstance(payload.get("records"), list) else 0
+                daily = payload.get("daily_records") or {}
+                if isinstance(daily, dict):
+                    rec_count = rec_count or sum(len(v or []) for v in daily.values())
+                return f"JSON чата {get_chat_display_name(cid)} / ID {cid}, записей: {rec_count}", cid
+            except Exception:
+                pass
+    return "JSON-файл неизвестного формата", None
 
-            # Иногда файл может быть глобальным data.json. В этом случае внутри есть chats,
-            # но одного конкретного чата нет — тогда не спрашиваем, чтобы не включить не тот чат.
-            if isinstance(payload.get("chats"), dict):
-                return None
-    except Exception:
-        pass
-    return _extract_chat_id_from_json_filename(fname)
 
-
-def maybe_prompt_owner_for_json_file_auto_backup(msg, fname: str, raw: bytes | None = None) -> bool:
+def _apply_json_restore_from_owner_prompt(owner_chat_id: int, tmp_path: str, fname: str) -> str:
     """
-    Если в чате владельца появился JSON-файл, спрашиваем:
-    обновлять ли автоматически JSON/CSV-бэкапы для чата из этого файла.
+    Восстановление JSON, когда владелец прислал файл без /restore и нажал ✅ Да.
+    Поддерживает:
+    • глобальный data.json / JSON с ключом chats;
+    • csv_meta.json;
+    • per-chat JSON data_<chat_id>.json или JSON с chat_id.
+    """
+    global data, restore_mode
 
-    Вопрос удаляется через 10 секунд в любом случае.
-    Возвращает True, если вопрос был показан.
+    fname_l = str(fname or "").lower()
+    payload = _load_json(tmp_path, None)
+    if not isinstance(payload, dict):
+        raise RuntimeError("JSON повреждён или не является объектом")
+
+    # csv_meta.json
+    if fname_l == "csv_meta.json":
+        os.replace(tmp_path, CSV_META_FILE)
+        _save_csv_meta(_load_json(CSV_META_FILE, {}) or {})
+        restore_mode = None
+        return "🟢 csv_meta.json обновлён"
+
+    # Глобальный data.json
+    if fname_l == "data.json" or isinstance(payload.get("chats"), dict):
+        os.replace(tmp_path, DATA_FILE)
+        _import_legacy_global_json_to_db(DATA_FILE, force=True)
+        data.clear()
+        data.update(load_data())
+        rebuild_global_records()
+        save_data(data)
+        export_global_csv(data)
+        restore_mode = None
+        return "🟢 Глобальный data.json обновлён"
+
+    # JSON конкретного чата
+    target_chat_id = payload.get("chat_id")
+    if target_chat_id is None:
+        target_chat_id = _extract_chat_id_from_json_filename(fname_l)
+    if target_chat_id is None:
+        raise RuntimeError("В JSON нет chat_id и его нельзя понять из имени файла")
+    target_chat_id = int(target_chat_id)
+
+    # Восстанавливаем именно тот чат, к которому относится файл, даже если файл прислан владельцу.
+    restore_from_json(target_chat_id, tmp_path)
+    day_key = get_chat_store(target_chat_id).get("current_view_day", today_key())
+    update_or_send_day_window(target_chat_id, day_key)
+    save_chat_json(target_chat_id)
+    export_global_csv(data)
+    schedule_backup_flush(target_chat_id, 0.1)
+    refresh_owner_after_chat_change(target_chat_id)
+    restore_mode = None
+    return f"🟢 JSON чата обновлён: {get_chat_display_name(target_chat_id)}"
+
+
+def _cleanup_owner_json_restore_prompt(key: int, remove_prompt: bool = False):
+    try:
+        with _owner_json_restore_prompt_lock:
+            item = _owner_json_restore_prompts.pop(int(key), None)
+        if not item:
+            return
+        if remove_prompt:
+            try:
+                bot.delete_message(int(OWNER_ID), int(item.get("prompt_msg_id")))
+            except Exception:
+                pass
+        tmp_path = item.get("tmp_path")
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        log_error(f"_cleanup_owner_json_restore_prompt({key}): {e}")
+
+
+def _schedule_owner_json_restore_prompt_cleanup(key: int, delay: int = 12):
+    def _job():
+        _cleanup_owner_json_restore_prompt(key, remove_prompt=True)
+    try:
+        threading.Timer(delay, _job).start()
+    except Exception as e:
+        log_error(f"_schedule_owner_json_restore_prompt_cleanup({key}): {e}")
+
+
+def maybe_prompt_owner_for_json_restore(msg, fname: str) -> bool:
+    """
+    Если владелец прислал .json в личку без /restore — спрашиваем, обновлять данные или нет.
+    Кнопки/окно удаляются через 10 секунд в любом случае.
     """
     try:
         if not OWNER_ID or str(msg.chat.id) != str(OWNER_ID):
             return False
-        if not str(fname or "").lower().endswith(".json"):
+        if restore_mode is not None:
+            return False
+        if not str(fname or "").lower().endswith((".json", ".ison")):
             return False
 
-        if raw is None:
+        file_info = bot.get_file(msg.document.file_id)
+        raw = bot.download_file(file_info.file_path)
+
+        tmp_name = f"owner_json_restore_{int(msg.chat.id)}_{int(msg.message_id)}_{_safe_tmp_json_name(fname)}"
+        with open(tmp_name, "wb") as f:
+            f.write(raw)
+
+        payload = _load_json(tmp_name, None)
+        if not isinstance(payload, dict):
             try:
-                file_info = bot.get_file(msg.document.file_id)
-                raw = bot.download_file(file_info.file_path)
-            except Exception as e:
-                log_error(f"owner json prompt download failed: {e}")
-                return False
+                os.remove(tmp_name)
+            except Exception:
+                pass
+            send_and_auto_delete(int(OWNER_ID), f"⚠️ JSON не прочитан или повреждён: {fname}", 10)
+            return True
 
-        try:
-            payload = json.loads(raw.decode("utf-8-sig"))
-        except Exception as e:
-            log_error(f"owner json prompt parse failed ({fname}): {e}")
-            return False
-
-        target_chat_id = _extract_chat_id_from_json_payload(payload, fname)
-        if target_chat_id is None:
-            log_info(f"owner json prompt skipped: cannot detect chat_id for {fname}")
-            return False
-
-        # Гарантируем, что чат есть в хранилище, иначе кнопка тоже должна работать.
-        target_store = get_chat_store(target_chat_id)
-        target_store.setdefault("settings", {}).setdefault("auto_backup_enabled", True)
-        save_data(data)
-
-        title = get_chat_display_name(target_chat_id)
-        status = "сейчас ВКЛ ✅" if is_auto_backup_enabled(target_chat_id) else "сейчас ВЫКЛ ❌"
+        desc, target_chat_id = _describe_json_restore_payload(payload, fname)
+        key = int(msg.message_id)
         text = (
-            "🧾 В чате владельца появился JSON-файл\n\n"
+            "🧾 В чате владельца появился JSON-файл без /restore\n\n"
             f"Файл: {fname}\n"
-            f"Чат: {title}\n"
-            f"ID: {target_chat_id}\n"
-            f"Автообновление: {status}\n\n"
-            "Автоматически обновлять JSON/CSV-бэкапы по этому чату?"
+            f"Что внутри: {desc}\n\n"
+            "Обновить данные бота из этого JSON?"
         )
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.row(
-            types.InlineKeyboardButton("✅ Да", callback_data=f"ncb:{target_chat_id}:yes"),
-            types.InlineKeyboardButton("❌ Нет", callback_data=f"ncb:{target_chat_id}:no"),
+            types.InlineKeyboardButton("✅ Да", callback_data=f"ojr:{key}:yes"),
+            types.InlineKeyboardButton("❌ Нет", callback_data=f"ojr:{key}:no"),
         )
         sent = bot.send_message(int(OWNER_ID), text, reply_markup=kb)
+        with _owner_json_restore_prompt_lock:
+            _owner_json_restore_prompts[key] = {
+                "tmp_path": tmp_name,
+                "fname": fname,
+                "prompt_msg_id": sent.message_id,
+                "created_at": time.time(),
+                "target_chat_id": target_chat_id,
+            }
         delete_message_later(int(OWNER_ID), sent.message_id, 10)
+        _schedule_owner_json_restore_prompt_cleanup(key, 12)
         return True
     except Exception as e:
-        log_error(f"maybe_prompt_owner_for_json_file_auto_backup({fname}): {e}")
+        log_error(f"maybe_prompt_owner_for_json_restore({fname}): {e}")
         return False
+
+
+def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
+    tmp_path = item.get("tmp_path")
+    fname = item.get("fname") or "backup.json"
+    try:
+        # Для глобального файла защищаем data_lock, для per-chat restore_from_json уже сохраняет данные.
+        with data_lock:
+            result = _apply_json_restore_from_owner_prompt(owner_chat_id, tmp_path, fname)
+        send_and_auto_delete(owner_chat_id, result, 10)
+    except Exception as e:
+        send_and_auto_delete(owner_chat_id, f"❌ JSON не обновлён: {e}", 12)
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
 
 
 _finalize_timers = {}
@@ -6647,14 +6812,11 @@ def handle_document(msg):
 
     log_info(f"[DOC] recv chat={chat_id} restore={restore_mode} fname={fname}")
 
-    # Если владелец прислал/получил JSON в своём чате вне режима восстановления —
-    # спрашиваем, включать ли автообновление JSON/CSV-бэкапов для чата из файла.
-    # Сам вопрос удаляется через 10 секунд.
-    if restore_mode is None and OWNER_ID and str(chat_id) == str(OWNER_ID) and fname.endswith(".json"):
-        try:
-            maybe_prompt_owner_for_json_file_auto_backup(msg, fname)
-        except Exception as e:
-            log_error(f"owner json auto-backup prompt failed: {e}")
+    # Владелец прислал .json без /restore: спрашиваем, обновлять данные или нет.
+    # Если показали вопрос — сам файл дальше не пересылаем и не обрабатываем как обычный документ.
+    if restore_mode is None and OWNER_ID and str(chat_id) == str(OWNER_ID) and fname.endswith((".json", ".ison")):
+        if maybe_prompt_owner_for_json_restore(msg, fname):
+            return
 
     if restore_mode is not None and restore_mode == chat_id:
 
