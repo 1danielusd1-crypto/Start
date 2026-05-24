@@ -8,6 +8,9 @@ import logging
 import sqlite3
 import threading
 import time
+import subprocess
+import shutil
+import tempfile
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -118,13 +121,31 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (29)__simplified_main_forward"
+VERSION = "bot (30)__mega_autorestore"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
 DATA_FILE = "data.json"
 CSV_FILE = "data.csv"
 CSV_META_FILE = "csv_meta.json"
+
+# ─────────────────────────────────────────────────────────────
+# MEGA.nz / MEGAcmd backup + autorestore
+# ─────────────────────────────────────────────────────────────
+def _env_bool(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "y", "on", "да"}
+
+MEGA_ENABLED = _env_bool("MEGA_ENABLED", "0")
+MEGA_AUTORESTORE = _env_bool("MEGA_AUTORESTORE", "1")
+MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
+MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
+MEGA_BACKUP_DIR = os.getenv("MEGA_BACKUP_DIR", "/TelegramBotBackups").strip() or "/TelegramBotBackups"
+try:
+    MEGA_TIMEOUT = int(os.getenv("MEGA_TIMEOUT", "120"))
+except Exception:
+    MEGA_TIMEOUT = 120
+MEGA_LATEST_GLOBAL_NAME = os.getenv("MEGA_LATEST_GLOBAL_NAME", "latest_global.json").strip() or "latest_global.json"
+MEGA_LOCAL_TMP_DIR = os.getenv("MEGA_LOCAL_TMP_DIR", "/tmp").strip() or "/tmp"
 forward_map = {}
 backup_flags = {
     "channel": True,
@@ -921,6 +942,8 @@ def build_help_text(chat_id: int) -> str:
             "/backup_channel_on / _off — включить/выключить бэкап в канал",
             "/diag — диагностика бота",
             "/errors — последние ошибки",
+            "/mega_status — статус MEGA/MEGAcmd",
+            "/mega_backup_now — сразу загрузить latest_global.json в MEGA",
         ])
     lines.append("/help — эта справка")
     return "\n".join(lines)
@@ -1510,6 +1533,217 @@ def _save_json(path: str, obj):
             json.dump(obj, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log_error(f"JSON save error {path}: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# MEGA.nz helpers. Работает через официальный MEGAcmd:
+# mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
+# ─────────────────────────────────────────────────────────────
+def mega_is_configured() -> bool:
+    return bool(MEGA_ENABLED and MEGA_EMAIL and MEGA_PASSWORD)
+
+
+def mega_remote_file_path(filename: str = None) -> str:
+    filename = filename or MEGA_LATEST_GLOBAL_NAME
+    return MEGA_BACKUP_DIR.rstrip("/") + "/" + filename
+
+
+def _mega_required_commands():
+    return ["mega-login", "mega-whoami", "mega-mkdir", "mega-put", "mega-get", "mega-rm"]
+
+
+def mega_missing_commands():
+    return [cmd for cmd in _mega_required_commands() if shutil.which(cmd) is None]
+
+
+def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = True):
+    args = list(args or [])
+    exe = shutil.which(cmd)
+    if not exe:
+        raise RuntimeError(f"MEGAcmd command not found: {cmd}")
+    try:
+        res = subprocess.run(
+            [exe] + args,
+            capture_output=True,
+            text=True,
+            timeout=timeout or MEGA_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
+    if check and res.returncode != 0:
+        out = (res.stdout or "").strip()
+        err = (res.stderr or "").strip()
+        msg = (err or out or f"returncode={res.returncode}")[:800]
+        # Не печатаем пароль/логин-команду в лог.
+        raise RuntimeError(f"{cmd} failed: {msg}")
+    return res
+
+
+def mega_login_if_needed() -> bool:
+    if not mega_is_configured():
+        return False
+    missing = mega_missing_commands()
+    if missing:
+        raise RuntimeError("MEGAcmd не установлен или команды не в PATH: " + ", ".join(missing))
+
+    try:
+        res = _mega_run("mega-whoami", [], check=False, timeout=30)
+        text = ((res.stdout or "") + "\n" + (res.stderr or "")).lower()
+        if res.returncode == 0 and (MEGA_EMAIL.lower() in text or "account e-mail" in text or "email" in text):
+            return True
+    except Exception:
+        pass
+
+    # Если сессии нет — логинимся. Ошибку не раскрываем с паролем.
+    res = _mega_run("mega-login", [MEGA_EMAIL, MEGA_PASSWORD], check=False, timeout=MEGA_TIMEOUT)
+    if res.returncode != 0:
+        msg = ((res.stderr or "") or (res.stdout or "") or "login failed")[:500]
+        raise RuntimeError(f"mega-login failed: {msg}")
+    return True
+
+
+def mega_ensure_remote_dir() -> bool:
+    if not mega_login_if_needed():
+        return False
+    parts = [p for p in MEGA_BACKUP_DIR.strip("/").split("/") if p]
+    current = ""
+    for part in parts:
+        current += "/" + part
+        # Если папка уже есть, mega-mkdir может вернуть ошибку — это нормально.
+        _mega_run("mega-mkdir", [current], check=False, timeout=30)
+    return True
+
+
+def make_global_backup_payload() -> dict:
+    """Глобальный JSON для восстановления всего бота."""
+    with data_lock:
+        payload = json.loads(json.dumps(data or {}, ensure_ascii=False, default=str))
+    payload.setdefault("chats", {})
+    payload.setdefault("forward_rules", data.get("forward_rules", {}) if isinstance(data, dict) else {})
+    payload.setdefault("forward_finance", data.get("forward_finance", {}) if isinstance(data, dict) else {})
+    payload["_backup_meta"] = {
+        "kind": "mega_latest_global",
+        "version": VERSION,
+        "created_at": now_local().isoformat(timespec="seconds"),
+        "chat_count": len(payload.get("chats", {}) or {}),
+    }
+    return payload
+
+
+def save_global_backup_snapshot(path: str) -> str:
+    payload = make_global_backup_payload()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path
+
+
+def mega_upload_latest_global_backup() -> bool:
+    """Загружает latest_global.json в MEGA. Не ломает основной бот при ошибке."""
+    if not mega_is_configured():
+        return False
+    try:
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        local_path = os.path.join(MEGA_LOCAL_TMP_DIR, MEGA_LATEST_GLOBAL_NAME)
+        save_global_backup_snapshot(local_path)
+        mega_ensure_remote_dir()
+        remote_file = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
+        # Удаляем старый файл, чтобы в MEGA не плодились дубли latest_global.json.
+        _mega_run("mega-rm", [remote_file], check=False, timeout=30)
+        _mega_run("mega-put", [local_path, MEGA_BACKUP_DIR], check=True, timeout=MEGA_TIMEOUT)
+        log_info(f"[MEGA] latest backup uploaded: {remote_file}")
+        return True
+    except Exception as e:
+        log_error(f"[MEGA BACKUP ERROR] {e}")
+        return False
+
+
+def mega_download_latest_global_backup() -> str | None:
+    if not mega_is_configured():
+        return None
+    try:
+        mega_login_if_needed()
+        restore_dir = tempfile.mkdtemp(prefix="mega_restore_")
+        remote_file = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
+        _mega_run("mega-get", [remote_file, restore_dir], check=True, timeout=MEGA_TIMEOUT)
+        local_path = os.path.join(restore_dir, MEGA_LATEST_GLOBAL_NAME)
+        if not os.path.exists(local_path):
+            # На случай если MEGAcmd сохранил с другим именем — ищем первый JSON.
+            for name in os.listdir(restore_dir):
+                if name.lower().endswith(".json"):
+                    local_path = os.path.join(restore_dir, name)
+                    break
+        if not os.path.exists(local_path):
+            raise RuntimeError("download finished, but latest_global.json not found locally")
+        log_info(f"[MEGA] latest backup downloaded: {local_path}")
+        return local_path
+    except Exception as e:
+        log_error(f"[MEGA RESTORE DOWNLOAD ERROR] {e}")
+        return None
+
+
+def is_data_effectively_empty_for_restore(d: dict) -> bool:
+    """True, если база похожа на пустую после нового deploy Render."""
+    if not isinstance(d, dict):
+        return True
+    if d.get("forward_rules") or d.get("forward_finance"):
+        return False
+    chats = d.get("chats", {}) or {}
+    if not chats:
+        return True
+    for _, store in chats.items():
+        if not isinstance(store, dict):
+            continue
+        if store.get("records"):
+            return False
+        daily = store.get("daily_records") or {}
+        if any((daily.get(day) or []) for day in daily):
+            return False
+    return True
+
+
+def mega_autorestore_if_needed() -> bool:
+    """При старте: если SQLite/data пустые, пробуем восстановиться из MEGA latest_global.json."""
+    global data
+    if not MEGA_AUTORESTORE or not mega_is_configured():
+        return False
+    if not is_data_effectively_empty_for_restore(data):
+        return False
+
+    local_path = mega_download_latest_global_backup()
+    if not local_path:
+        return False
+
+    try:
+        # restore_from_json уже умеет глобальный JSON с ключом chats.
+        restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
+        restore_from_json(restore_chat_id, local_path)
+        log_info("[MEGA] autorestore completed")
+        return True
+    except Exception as e:
+        log_error(f"[MEGA AUTORESTORE ERROR] {e}")
+        return False
+
+
+def mega_status_text() -> str:
+    lines = ["☁️ MEGA.nz / MEGAcmd"]
+    lines.append(f"MEGA_ENABLED: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'}")
+    lines.append(f"MEGA_AUTORESTORE: {'ВКЛ' if MEGA_AUTORESTORE else 'ВЫКЛ'}")
+    lines.append(f"MEGA_EMAIL: {'есть' if MEGA_EMAIL else 'нет'}")
+    lines.append(f"MEGA_BACKUP_DIR: {MEGA_BACKUP_DIR}")
+    missing = mega_missing_commands()
+    lines.append(f"MEGAcmd: {'OK' if not missing else 'нет команд: ' + ', '.join(missing)}")
+    if mega_is_configured() and not missing:
+        try:
+            mega_login_if_needed()
+            res = _mega_run("mega-whoami", [], check=False, timeout=30)
+            txt = ((res.stdout or "") + (res.stderr or "")).strip()
+            if txt:
+                lines.append("whoami: " + txt[:300])
+            else:
+                lines.append("whoami: OK")
+        except Exception as e:
+            lines.append("whoami/login: ERROR — " + str(e)[:300])
+    return "\n".join(lines)
 def _load_csv_meta():
     meta = SQLITE.get_meta("csv_meta", "main", None)
     if isinstance(meta, dict):
@@ -6935,6 +7169,12 @@ def _flush_dirty_backups():
     except Exception as e:
         log_error(f"_flush_dirty_backups global export/save: {e}")
 
+    # MEGA latest_global.json — внешний бэкап для автовосстановления после Render deploy/restart.
+    try:
+        mega_upload_latest_global_backup()
+    except Exception as e:
+        log_error(f"_flush_dirty_backups mega upload: {e}")
+
     for cid in dirty:
         try:
             with locked_chat(cid):
@@ -7434,6 +7674,43 @@ def on_edited_message(msg):
     except Exception as e:
         log_error(f"[EDIT-FWD] schedule failed: {e}")
                                             
+
+@bot.message_handler(commands=["mega_status"])
+def cmd_mega_status(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    send_and_auto_delete(chat_id, mega_status_text(), 90)
+
+
+@bot.message_handler(commands=["mega_backup_now"])
+def cmd_mega_backup_now(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    try:
+        with data_lock:
+            export_global_csv(data)
+            save_data(data)
+        ok = mega_upload_latest_global_backup()
+        send_and_auto_delete(chat_id, "☁️ MEGA backup: ✅ загружен" if ok else "☁️ MEGA backup: ❌ не загружен, смотри /errors", 60)
+    except Exception as e:
+        log_error(f"cmd_mega_backup_now: {e}")
+        send_and_auto_delete(chat_id, "☁️ MEGA backup: ❌ ошибка, смотри /errors", 60)
+
+
 def build_diag_text() -> str:
     chats = data.get("chats", {}) or {}
     finance_ids = collect_finance_chat_ids()
@@ -7475,6 +7752,8 @@ def build_diag_text() -> str:
         f"Dirty-бэкапов в очереди: {dirty_count}",
         f"BACKUP_CHAT_ID: {'есть' if BACKUP_CHAT_ID else 'нет'}",
         f"Бэкап в канал: {'ВКЛ' if backup_flags.get('channel', True) else 'ВЫКЛ'}",
+        f"MEGA: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'} / {'настроено' if mega_is_configured() else 'не настроено'}",
+        f"MEGA dir: {MEGA_BACKUP_DIR}",
         f"Ошибок в журнале: {len(get_recent_errors(80))}",
     ]
     if errors:
@@ -7617,6 +7896,11 @@ def main():
     global data
     restored = False
     data = load_data()
+    try:
+        restored = mega_autorestore_if_needed()
+    except Exception as e:
+        log_error(f"main mega_autorestore_if_needed: {e}")
+        restored = False
     for cid in list((data.get("chats", {}) or {}).keys()):
         try:
             store = get_chat_store(int(cid))
