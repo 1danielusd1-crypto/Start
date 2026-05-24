@@ -118,7 +118,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (27)__deep_cleanup"
+VERSION = "bot (28)__error_finance_accept_fix"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -141,7 +141,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
-BOT_ERROR_LOG = deque(maxlen=80)
+BOT_ERROR_LOG = deque(maxlen=200)
 error_log_lock = threading.RLock()
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 app = Flask(__name__)
@@ -2255,6 +2255,17 @@ def looks_like_amount(text):
         return True
     except:
         return False
+
+
+def text_has_any_digit(text: str) -> bool:
+    return bool(re.search(r"\d", str(text or "")))
+
+
+def describe_msg_for_log(msg) -> str:
+    try:
+        return f"chat={getattr(getattr(msg, 'chat', None), 'id', '?')} msg={getattr(msg, 'message_id', '?')} type={getattr(msg, 'content_type', '?')}"
+    except Exception:
+        return "msg=?"
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -2455,42 +2466,53 @@ def on_any_message(msg):
     schedule_forward_any_message(chat_id, msg)
 def handle_finance_text(msg):
     """
-    Обработка обычного текстового ввода:
-    - авто-добавление
+    Обработка обычного ввода для финучёта.
+    Теперь принимает сумму не только из text, но и из caption
+    у фото/видео/документов/аудио и т.п.
     """
 
-    if msg.content_type != "text":
-        return
-
     chat_id = msg.chat.id
-    text = (msg.text or "").strip()
+    text = _message_text_for_finance(msg)
     if not text:
-        return
+        return False
     if not is_finance_mode(chat_id):
-        return
+        return False
 
     store = get_chat_store(chat_id)
     settings = store.get("settings", {})
+    if not settings.get("auto_add", True):
+        return False
 
-    if settings.get("auto_add", True) and looks_like_amount(text):
-        try:
-            amount, note = split_amount_and_note(text)
-        except Exception:
-            return
+    if not looks_like_amount(text):
+        # Не считаем обычный текст ошибкой, но если в сообщении есть цифры,
+        # это полезно видеть в /errors: возможно, формат суммы не распознан.
+        if text_has_any_digit(text):
+            log_error(f"[FINANCE SKIP] amount not recognized: {describe_msg_for_log(msg)} text={text[:220]!r}")
+        return False
 
-        entry_day = day_key_from_message(msg)
-        store["current_view_day"] = entry_day
+    try:
+        amount, note = split_amount_and_note(text)
+    except Exception as e:
+        log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
+        return False
 
+    entry_day = day_key_from_message(msg)
+    store["current_view_day"] = entry_day
+
+    try:
         add_record_to_chat(
             chat_id,
             amount,
             note,
-            msg.from_user.id,
+            getattr(getattr(msg, "from_user", None), "id", 0),
             source_msg=msg,
             day_key=entry_day
         )
         schedule_finalize(chat_id, entry_day)
-        return
+        return True
+    except Exception as e:
+        log_error(f"[FINANCE ADD ERROR] {describe_msg_for_log(msg)} amount={amount} note={note!r}: {e}")
+        return False
 
 def handle_finance_edit(msg):
     chat_id = msg.chat.id
@@ -2539,7 +2561,9 @@ def handle_finance_edit(msg):
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0):
     with locked_chat(dst_chat_id):
         if not is_finance_mode(dst_chat_id):
-            return
+            if text_has_any_digit(text):
+                log_error(f"[FWD FINANCE SKIP] finance mode off: dst={dst_chat_id} msg={dst_msg_id} text={str(text)[:220]!r}")
+            return False
 
         store = get_chat_store(dst_chat_id)
         existing = None
@@ -2559,26 +2583,32 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
         if text and looks_like_amount(text):
             try:
                 amount, note = split_amount_and_note(text)
-            except Exception:
-                return
+            except Exception as e:
+                log_error(f"[FWD FINANCE PARSE ERROR] dst={dst_chat_id} msg={dst_msg_id} text={str(text)[:220]!r}: {e}")
+                return False
 
-            if existing:
-                existing["amount"] = amount
-                existing["note"] = note
-                entry_day = existing.get("day_key") or entry_day
-                rebuild_month_short_ids(dst_chat_id)
-                rebuild_global_records()
-                store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
-            else:
-                shadow_msg = type("ForwardShadowMsg", (), {"message_id": dst_msg_id})()
-                add_record_to_chat(
-                    dst_chat_id,
-                    amount,
-                    note,
-                    owner,
-                    source_msg=shadow_msg,
-                    day_key=entry_day
-                )
+            try:
+                if existing:
+                    existing["amount"] = amount
+                    existing["note"] = note
+                    entry_day = existing.get("day_key") or entry_day
+                    rebuild_month_short_ids(dst_chat_id)
+                    rebuild_global_records()
+                    store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+                else:
+                    shadow_msg = type("ForwardShadowMsg", (), {"message_id": dst_msg_id, "date": int(time.time())})()
+                    add_record_to_chat(
+                        dst_chat_id,
+                        amount,
+                        note,
+                        owner,
+                        source_msg=shadow_msg,
+                        day_key=entry_day
+                    )
+            except Exception as e:
+                log_error(f"[FWD FINANCE ADD ERROR] dst={dst_chat_id} msg={dst_msg_id} amount={amount} note={note!r}: {e}")
+                return False
+
         elif existing:
             existing["amount"] = 0
             existing["note"] = "удалено"
@@ -2587,9 +2617,12 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             rebuild_global_records()
             store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
         else:
-            return
+            if text_has_any_digit(text):
+                log_error(f"[FWD FINANCE SKIP] amount not recognized: dst={dst_chat_id} msg={dst_msg_id} text={str(text)[:220]!r}")
+            return False
 
         schedule_finalize(dst_chat_id, entry_day)
+        return True
 
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel)."""
@@ -3331,10 +3364,12 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
     bump_quick_balance_recreate_counter(dst_chat_id)
 
     text_for_finance = _message_text_for_finance(msg)
-    if finance_enabled and text_for_finance and is_finance_mode(dst_chat_id):
+    if finance_enabled and text_for_finance:
         try:
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
-            sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
+            ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
+            if not ok_fin and text_has_any_digit(text_for_finance):
+                log_error(f"[FWD FINANCE NOT RECORDED] {source_chat_id}:{msg.message_id} -> {dst_chat_id}:{dst_msg_id} text={text_for_finance[:220]!r}")
         except Exception as e:
             log_error(f"_forward_single_to_target finance sync {source_chat_id}->{dst_chat_id}: {e}")
 
@@ -3404,10 +3439,12 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                 _store_forward_link(source_chat_id, src_msg.message_id, dst_chat_id, dst_msg_id)
                 bump_quick_balance_recreate_counter(dst_chat_id)
                 text_for_finance = _message_text_for_finance(src_msg)
-                if finance_enabled and text_for_finance and is_finance_mode(dst_chat_id):
+                if finance_enabled and text_for_finance:
                     try:
                         owner_id = src_msg.from_user.id if getattr(src_msg, "from_user", None) else 0
-                        sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
+                        ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
+                        if not ok_fin and text_has_any_digit(text_for_finance):
+                            log_error(f"[FWD MEDIA FINANCE NOT RECORDED] {source_chat_id}:{src_msg.message_id} -> {dst_chat_id}:{dst_msg_id} text={text_for_finance[:220]!r}")
                     except Exception as e:
                         log_error(f"_flush_media_group_forward finance sync {source_chat_id}->{dst_chat_id}: {e}")
             continue
@@ -6448,6 +6485,11 @@ def update_chat_info_from_message(msg):
         pass
     store = get_chat_store(chat_id)
     info = store.setdefault("info", {})
+    # У каналов/чатов username может отсутствовать. Не обращаемся к ключам напрямую,
+    # чтобы не ловить KeyError: 'username' на channel_post / edited_channel_post.
+    info.setdefault("title", "")
+    info.setdefault("username", None)
+    info.setdefault("type", getattr(msg.chat, "type", None))
 
     changed = False
 
@@ -6479,9 +6521,9 @@ def update_chat_info_from_message(msg):
         kc = owner_store.setdefault("known_chats", {})
 
         new_known = {
-            "title": info["title"],
-            "username": info["username"],
-            "type": info["type"],
+            "title": info.get("title") or f"Чат {chat_id}",
+            "username": info.get("username"),
+            "type": info.get("type"),
         }
 
         if kc.get(str(chat_id)) != new_known:
@@ -7036,7 +7078,18 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
                 err = str(e).lower()
                 if "message is not modified" in err:
                     return
-                log_error(f"backup_window_for_owner edit failed: {e}")
+                # Старое окно могли удалить руками или Telegram уже не даёт его редактировать.
+                # Это не критическая ошибка: очищаем сохранённый id и создаём новое окно.
+                if any(x in err for x in ("message to edit not found", "message_id_invalid", "message not found")):
+                    try:
+                        aw = get_or_create_active_windows(chat_id)
+                        if aw.get(day_key) == mid:
+                            aw.pop(day_key, None)
+                            save_data(data)
+                    except Exception:
+                        pass
+                else:
+                    log_error(f"backup_window_for_owner edit failed: {e}")
                 try:
                     bot.delete_message(chat_id, mid)
                 except Exception:
@@ -7293,6 +7346,12 @@ def on_any_channel_post(msg):
         pass
 
     try:
+        if is_finance_mode(msg.chat.id):
+            handle_finance_text(msg)
+    except Exception as e:
+        log_error(f"channel_post finance failed: {e}")
+
+    try:
         schedule_forward_any_message(msg.chat.id, msg)
     except Exception as e:
         log_error(f"channel_post forward schedule failed: {e}")
@@ -7308,6 +7367,12 @@ def on_edited_channel_post(msg):
         update_chat_info_from_message(msg)
     except Exception as e:
         log_error(f"edited_channel_post update_chat_info failed: {e}")
+
+    try:
+        if is_finance_mode(msg.chat.id):
+            handle_finance_edit(msg)
+    except Exception as e:
+        log_error(f"edited_channel_post finance edit failed: {e}")
 
     try:
         schedule_propagate_edited_to_copies(msg)
