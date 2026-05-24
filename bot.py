@@ -118,7 +118,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (28)__error_finance_accept_fix"
+VERSION = "bot (29)__simplified_main_forward"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -305,6 +305,40 @@ def get_recent_errors(limit: int = 20):
             return list(BOT_ERROR_LOG)[-int(limit):]
     except Exception:
         return []
+
+
+def format_error_for_owner(raw) -> str:
+    """Для /errors: по возможности заменяет известные chat_id на имена чатов/пользователей."""
+    text = str(raw or "")
+    try:
+        ids = set()
+        for cid in (data.get("chats", {}) or {}).keys():
+            try:
+                ids.add(str(int(cid)))
+            except Exception:
+                pass
+        if OWNER_ID:
+            try:
+                ids.add(str(int(OWNER_ID)))
+            except Exception:
+                pass
+        if BACKUP_CHAT_ID:
+            try:
+                ids.add(str(int(BACKUP_CHAT_ID)))
+            except Exception:
+                pass
+        for cid_s in sorted(ids, key=len, reverse=True):
+            try:
+                name = get_chat_display_name(int(cid_s))
+            except Exception:
+                continue
+            if not name or name == f"Чат {cid_s}":
+                continue
+            text = re.sub(rf"(?<!\\d){re.escape(cid_s)}(?!\\d)", name, text)
+    except Exception:
+        pass
+    return text
+
 def get_tz():
     """Return local timezone, with fallback to UTC-3."""
     try:
@@ -2562,7 +2596,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
     with locked_chat(dst_chat_id):
         if not is_finance_mode(dst_chat_id):
             if text_has_any_digit(text):
-                log_error(f"[FWD FINANCE SKIP] finance mode off: dst={dst_chat_id} msg={dst_msg_id} text={str(text)[:220]!r}")
+                log_error(f"[FWD FINANCE SKIP] finance mode off: dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}")
             return False
 
         store = get_chat_store(dst_chat_id)
@@ -2584,7 +2618,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             try:
                 amount, note = split_amount_and_note(text)
             except Exception as e:
-                log_error(f"[FWD FINANCE PARSE ERROR] dst={dst_chat_id} msg={dst_msg_id} text={str(text)[:220]!r}: {e}")
+                log_error(f"[FWD FINANCE PARSE ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}: {e}")
                 return False
 
             try:
@@ -2606,7 +2640,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                         day_key=entry_day
                     )
             except Exception as e:
-                log_error(f"[FWD FINANCE ADD ERROR] dst={dst_chat_id} msg={dst_msg_id} amount={amount} note={note!r}: {e}")
+                log_error(f"[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} amount={amount} note={note!r}: {e}")
                 return False
 
         elif existing:
@@ -2618,7 +2652,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
         else:
             if text_has_any_digit(text):
-                log_error(f"[FWD FINANCE SKIP] amount not recognized: dst={dst_chat_id} msg={dst_msg_id} text={str(text)[:220]!r}")
+                log_error(f"[FWD FINANCE SKIP] amount not recognized: dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}")
             return False
 
         schedule_finalize(dst_chat_id, entry_day)
@@ -3247,11 +3281,15 @@ def _cleanup_forward_storage_for_chat(chat_id: int):
     _schedule_persist_forward_state()
 
 
+
 def _notify_forward_failure(source_chat_id: int, msg_id: int, dst_chat_id: int, err: Exception):
+    src_name = get_chat_display_name(source_chat_id)
+    dst_name = get_chat_display_name(dst_chat_id)
     text = (
         f"⚠️ Пересылка не доставлена\n"
-        f"из {source_chat_id}:{msg_id}\n"
-        f"в {dst_chat_id}\n"
+        f"из: {src_name}\n"
+        f"сообщение: {msg_id}\n"
+        f"в: {dst_name}\n"
         f"{err}"
     )
     log_error(text)
@@ -3260,8 +3298,6 @@ def _notify_forward_failure(source_chat_id: int, msg_id: int, dst_chat_id: int, 
             bot.send_message(int(OWNER_ID), text)
         except Exception:
             pass
-
-
 def _message_text_for_finance(msg) -> str:
     return (getattr(msg, "text", None) or getattr(msg, "caption", None) or "").strip()
 
@@ -3369,9 +3405,9 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
             ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
             if not ok_fin and text_has_any_digit(text_for_finance):
-                log_error(f"[FWD FINANCE NOT RECORDED] {source_chat_id}:{msg.message_id} -> {dst_chat_id}:{dst_msg_id} text={text_for_finance[:220]!r}")
+                log_error(f"[FWD FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
         except Exception as e:
-            log_error(f"_forward_single_to_target finance sync {source_chat_id}->{dst_chat_id}: {e}")
+            log_error(f"_forward_single_to_target finance sync {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
 
     return dst_msg_id
 
@@ -3432,7 +3468,7 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                     sent_group = bot.send_media_group(dst_chat_id, media)
                 sent_ids = [m.message_id for m in sent_group]
             except Exception as e:
-                log_error(f"_flush_media_group_forward send_media_group failed {source_chat_id}->{dst_chat_id}: {e}")
+                log_error(f"_flush_media_group_forward send_media_group failed {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
 
         if len(sent_ids) == len(messages):
             for src_msg, dst_msg_id in zip(messages, sent_ids):
@@ -3444,9 +3480,9 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                         owner_id = src_msg.from_user.id if getattr(src_msg, "from_user", None) else 0
                         ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
                         if not ok_fin and text_has_any_digit(text_for_finance):
-                            log_error(f"[FWD MEDIA FINANCE NOT RECORDED] {source_chat_id}:{src_msg.message_id} -> {dst_chat_id}:{dst_msg_id} text={text_for_finance[:220]!r}")
+                            log_error(f"[FWD MEDIA FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{src_msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
                     except Exception as e:
-                        log_error(f"_flush_media_group_forward finance sync {source_chat_id}->{dst_chat_id}: {e}")
+                        log_error(f"_flush_media_group_forward finance sync {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
             continue
 
         for src_msg in messages:
@@ -3566,34 +3602,46 @@ def render_day_window(chat_id: int, day_key: str):
         hidden += 1
         visible = visible[1:]
 
+
 def build_main_keyboard(day_key: str, chat_id=None):
+    """Главное окно без отдельной кнопки «Меню»: все основные функции сразу на виду."""
     kb = types.InlineKeyboardMarkup(row_width=3)
-    kb.row(
-        types.InlineKeyboardButton("📋 Меню", callback_data=f"d:{day_key}:menu")
-    )
 
     nav_row = [
         types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"d:{day_key}:prev")
     ]
     if day_key != today_key():
-        nav_row.append(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{day_key}:today")
-        )
-    nav_row.append(
-        types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next")
-    )
+        nav_row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{day_key}:today"))
+    nav_row.append(types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next"))
     kb.row(*nav_row)
 
     kb.row(
         types.InlineKeyboardButton("📅 Календарь", callback_data=f"d:{day_key}:calendar"),
-        types.InlineKeyboardButton("📊 Отчёт", callback_data=f"d:{day_key}:report")
+        types.InlineKeyboardButton("📊 Отчёт", callback_data=f"d:{day_key}:report"),
+        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total"),
     )
     kb.row(
-        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
-        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total")
+        types.InlineKeyboardButton("📝 Редактировать", callback_data=f"d:{day_key}:edit_list"),
+        types.InlineKeyboardButton("📂 CSV", callback_data=f"d:{day_key}:csv_all"),
+        types.InlineKeyboardButton("📊 Статьи", callback_data="cat_today"),
     )
-    return kb
+    kb.row(
+        types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset"),
+        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
+    )
 
+    if OWNER_ID and str(chat_id) == str(OWNER_ID):
+        kb.row(
+            types.InlineKeyboardButton("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu"),
+            types.InlineKeyboardButton("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
+            types.InlineKeyboardButton("🏦 Быстрый остаток", callback_data=f"d:{day_key}:quick_balance_menu"),
+        )
+        kb.row(
+            types.InlineKeyboardButton("🙈 Скрытые финансы", callback_data=f"d:{day_key}:hidden_finance_menu"),
+            types.InlineKeyboardButton("🪟 Фин окна чатов", callback_data=f"d:{day_key}:fin_windows_menu"),
+        )
+
+    return kb
 def build_report_keyboard(month_key: str):
     """
     month_key: YYYY-MM
@@ -3809,38 +3857,10 @@ def build_csv_menu(day_key: str):
     kb.row(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"d:{day_key}:edit_menu"))
     return kb
 
+
 def build_edit_menu_keyboard(day_key: str, chat_id=None):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.row(
-        types.InlineKeyboardButton("📝 Редактировать запись", callback_data=f"d:{day_key}:edit_list"),
-        types.InlineKeyboardButton("📂 Общий CSV", callback_data=f"d:{day_key}:csv_all")
-    )
-    kb.row(
-        types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset"),
-        types.InlineKeyboardButton("📊 Статьи расходов", callback_data="cat_today")
-    )
-
-    if OWNER_ID and str(chat_id) == str(OWNER_ID):
-        kb.row(
-            types.InlineKeyboardButton("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu")
-        )
-
-    nav_row = []
-    if day_key != today_key():
-        nav_row.append(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{today_key()}:open")
-        )
-    nav_row.append(
-        types.InlineKeyboardButton("📆 Выбрать день", callback_data=f"d:{day_key}:pick_date")
-    )
-    kb.row(*nav_row)
-
-    kb.row(
-        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
-        types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main")
-    )
-    return kb
-
+    """Совместимость со старыми callback: отдельного подменю больше нет."""
+    return build_main_keyboard(day_key, chat_id)
 def build_cancel_edit_keyboard(day_key: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(
@@ -3860,19 +3880,10 @@ def build_finwin_cancel_edit_keyboard(target_chat_id: int, day_key: str, owner_d
     ))
     return kb
 
+
 def build_forward_root_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    add_buttons_in_rows(kb, [
-        types.InlineKeyboardButton("📨 Чаты и пары", callback_data="fw_open"),
-        types.InlineKeyboardButton("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
-        types.InlineKeyboardButton("🏦 Быстрый остаток", callback_data=f"d:{day_key}:quick_balance_menu"),
-        types.InlineKeyboardButton("🙈 Скрытые финансы", callback_data=f"d:{day_key}:hidden_finance_menu"),
-        types.InlineKeyboardButton("🪟 Фин окна чатов", callback_data=f"d:{day_key}:fin_windows_menu"),
-    ], 2)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
-    return kb
-
-
+    """Старое корневое меню пересылки убрано; открываем сразу выбор чата A."""
+    return build_forward_source_menu(day_key)
 def _collect_forward_picker_items(include_owner: bool = True):
     known = collect_forward_menu_chats()
     items = []
@@ -3900,8 +3911,9 @@ def _collect_forward_picker_items(include_owner: bool = True):
     return items, owner_item
 
 
-def build_forward_source_menu():
-    kb = types.InlineKeyboardMarkup()
+
+def build_forward_source_menu(day_key: str | None = None):
+    kb = types.InlineKeyboardMarkup(row_width=3)
     if not OWNER_ID:
         return kb
 
@@ -3910,16 +3922,16 @@ def build_forward_source_menu():
         types.InlineKeyboardButton(title, callback_data=f"fw_src:{cid}")
         for cid, title in items
     ]
-
     add_buttons_in_rows(kb, buttons, 3)
 
     if owner_item:
         kb.row(types.InlineKeyboardButton(owner_item[1], callback_data=f"fw_src:{owner_item[0]}"))
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root"))
+    if day_key:
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    else:
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root"))
     return kb
-
-
 def build_forward_target_menu(src_id: int):
     kb = types.InlineKeyboardMarkup()
     if not OWNER_ID:
@@ -3942,8 +3954,9 @@ def build_forward_target_menu(src_id: int):
     return kb
 
 
+
 def build_finance_toggle_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb = types.InlineKeyboardMarkup(row_width=3)
     known = collect_forward_menu_chats()
 
     items = {}
@@ -3969,13 +3982,12 @@ def build_finance_toggle_chat_menu(day_key: str):
             callback_data=f"d:{day_key}:fw_finmode_pick_{int_cid}"
         ))
 
-    add_buttons_in_rows(kb, buttons, 2)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
+    add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
-
 def build_quick_balance_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb = types.InlineKeyboardMarkup(row_width=3)
     known = collect_forward_menu_chats()
 
     items = {}
@@ -4000,49 +4012,44 @@ def build_quick_balance_chat_menu(day_key: str):
         if owner_item and int_cid == owner_item[0]:
             continue
         enabled = is_quick_balance_enabled(int_cid)
-        icon = "✅" if enabled else "⬜"
+        icon = "✅" if enabled else "❌"
         buttons.append(types.InlineKeyboardButton(
             f'{icon} {title}',
             callback_data=f"d:{day_key}:qb_cfg_{int_cid}"
         ))
 
-    add_buttons_in_rows(kb, buttons, 2)
+    add_buttons_in_rows(kb, buttons, 3)
 
     if owner_item:
         enabled = is_quick_balance_enabled(owner_item[0])
-        icon = "✅" if enabled else "⬜"
+        icon = "✅" if enabled else "❌"
         kb.row(types.InlineKeyboardButton(
             f'{icon} {owner_item[1]}',
             callback_data=f"d:{day_key}:qb_cfg_{owner_item[0]}"
         ))
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
-
 def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb = types.InlineKeyboardMarkup(row_width=3)
     enabled = is_quick_balance_enabled(target_chat_id)
     behavior = get_quick_balance_behavior(target_chat_id)
 
-    normal_icon = "✅" if enabled and behavior == "mini" else "⬜"
-    open_icon = "✅" if enabled and behavior == "open" else "⬜"
-    first_icon = "✅" if enabled and behavior == "first" else "⬜"
+    normal_icon = "✅" if enabled and behavior == "mini" else "❌"
+    open_icon = "✅" if enabled and behavior == "open" else "❌"
+    first_icon = "✅" if enabled and behavior == "first" else "❌"
 
     kb.row(
         types.InlineKeyboardButton(f"{normal_icon} Как обычно", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"),
-        types.InlineKeyboardButton(f"{open_icon} Быстрый остаток открывался", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}")
+        types.InlineKeyboardButton(f"{open_icon} Открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"),
+        types.InlineKeyboardButton(f"{first_icon} Всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"),
     )
-    kb.row(types.InlineKeyboardButton(
-        f"{first_icon} Всегда быть первым",
-        callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"
-    ))
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:quick_balance_menu"))
     return kb
 
-
 def build_hidden_finance_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb = types.InlineKeyboardMarkup(row_width=3)
     known = collect_forward_menu_chats()
 
     items = {}
@@ -4063,16 +4070,15 @@ def build_hidden_finance_chat_menu(day_key: str):
     buttons = []
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
         enabled = is_hidden_finance_mode(int_cid)
-        icon = "✅" if enabled else "⬜"
+        icon = "✅" if enabled else "❌"
         buttons.append(types.InlineKeyboardButton(
             f"{icon} {title}",
             callback_data=f"d:{day_key}:hf_pick_{int_cid}"
         ))
 
-    add_buttons_in_rows(kb, buttons, 2)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
+    add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
-
 
 def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str = "d", owner_day_key: str | None = None):
     store = get_chat_store(chat_id)
@@ -4102,12 +4108,10 @@ def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str = "d", o
             kb.row(types.InlineKeyboardButton("🗑 Удалить выбранное", callback_data=f"d:{day_key}:del_selected"))
 
     if prefix == "fv":
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{chat_id}:{day_key}:menu:{owner_day_key or today_key()}"))
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{chat_id}:{day_key}:clear_delete_back:{owner_day_key or today_key()}"))
     else:
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:edit_menu"))
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
-
-
 def toggle_edit_delete_selection(chat_id: int, day_key: str, rid: int):
     store = get_chat_store(chat_id)
     all_sel = store.setdefault("edit_delete_selected", {})
@@ -4185,8 +4189,9 @@ def delete_selected_records(chat_id: int, day_key: str) -> int:
         finance_changed(chat_id, day_key, reason="delete_selected", delay=0.1)
         return deleted
 
+
 def build_fin_windows_chat_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb = types.InlineKeyboardMarkup(row_width=3)
     items = []
 
     for cid, store in (data.get("chats", {}) or {}).items():
@@ -4204,17 +4209,15 @@ def build_fin_windows_chat_menu(day_key: str):
     ]
 
     if buttons:
-        add_buttons_in_rows(kb, buttons, 2)
+        add_buttons_in_rows(kb, buttons, 3)
     else:
         kb.row(types.InlineKeyboardButton("Нет чатов с финрежимом", callback_data="none"))
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
-
 
 def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
-    kb.row(types.InlineKeyboardButton("📋 Меню", callback_data=f"fv:{target_chat_id}:{day_key}:menu:{owner_day_key}"))
 
     prev_day = (datetime.strptime(day_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     next_day = (datetime.strptime(day_key, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -4225,31 +4228,24 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
     kb.row(*nav_row)
 
     kb.row(
+        types.InlineKeyboardButton("📝 Редактировать", callback_data=f"fv:{target_chat_id}:{day_key}:edit_list:{owner_day_key}"),
+        types.InlineKeyboardButton("📂 CSV", callback_data=f"fv:{target_chat_id}:{day_key}:csv_all:{owner_day_key}"),
+        types.InlineKeyboardButton("📊 Статьи", callback_data="cat_today"),
+    )
+    kb.row(
         types.InlineKeyboardButton("📅 Календарь", callback_data=f"fv:{target_chat_id}:{day_key}:calendar:{owner_day_key}"),
-        types.InlineKeyboardButton("📊 Отчёт", callback_data=f"fv:{target_chat_id}:{day_key}:report:{owner_day_key}")
+        types.InlineKeyboardButton("📊 Отчёт", callback_data=f"fv:{target_chat_id}:{day_key}:report:{owner_day_key}"),
+        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"fv:{target_chat_id}:{day_key}:total:{owner_day_key}"),
     )
     kb.row(
         types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"fv:{target_chat_id}:{day_key}:info:{owner_day_key}"),
-        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"fv:{target_chat_id}:{day_key}:total:{owner_day_key}")
+        types.InlineKeyboardButton("🔙 Назад к списку", callback_data=f"d:{owner_day_key}:fin_windows_menu"),
     )
-    kb.row(types.InlineKeyboardButton("🔙 Назад к списку", callback_data=f"d:{owner_day_key}:fin_windows_menu"))
     return kb
-
 
 def build_fin_window_menu_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.row(
-        types.InlineKeyboardButton("📝 Редактировать запись", callback_data=f"fv:{target_chat_id}:{day_key}:edit_list:{owner_day_key}"),
-        types.InlineKeyboardButton("📂 Общий CSV", callback_data=f"fv:{target_chat_id}:{day_key}:csv_all:{owner_day_key}")
-    )
-    kb.row(
-        types.InlineKeyboardButton("📊 Статьи расходов", callback_data="cat_today"),
-        types.InlineKeyboardButton("📅 Календарь", callback_data=f"fv:{target_chat_id}:{day_key}:calendar:{owner_day_key}")
-    )
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
-    return kb
-
-
+    """Совместимость: отдельного меню больше нет."""
+    return build_fin_window_view_keyboard(target_chat_id, day_key, owner_day_key)
 def render_fin_window_text(target_chat_id: int, day_key: str):
     txt, _ = render_day_window(target_chat_id, day_key)
     return f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n\n{txt}"
@@ -4776,31 +4772,30 @@ def on_callback(call):
                     pass
                 return
             if data_str == "fw_open":
-                kb = build_forward_source_menu()
+                owner_store = get_chat_store(int(OWNER_ID))
+                owner_day_key = owner_store.get("current_view_day", today_key())
+                kb = build_forward_source_menu(owner_day_key)
                 safe_edit(
                     bot,
                     call,
-                    build_forward_status_text("Выберите чат A:"),
+                    build_forward_status_text("Пересылка:\nВыберите чат A:"),
                     reply_markup=kb
                 )
                 return
             if data_str == "fw_back_root":
                 owner_store = get_chat_store(int(OWNER_ID))
                 day_key = owner_store.get("current_view_day", today_key())
-                kb = build_forward_root_menu(day_key)
-                safe_edit(
-                    bot,
-                    call,
-                    build_forward_status_text("Меню пересылки:\nВыберите режим:"),
-                    reply_markup=kb
-                )
+                txt, _ = render_day_window(chat_id, day_key)
+                safe_edit(bot, call, txt, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode="HTML")
                 return
             if data_str == "fw_back_src":
-                kb = build_forward_source_menu()
+                owner_store = get_chat_store(int(OWNER_ID))
+                owner_day_key = owner_store.get("current_view_day", today_key())
+                kb = build_forward_source_menu(owner_day_key)
                 safe_edit(
                     bot,
                     call,
-                    build_forward_status_text("Выберите чат A:"),
+                    build_forward_status_text("Пересылка:\nВыберите чат A:"),
                     reply_markup=kb
                 )
                 return
@@ -4963,7 +4958,18 @@ def on_callback(call):
             target_store = get_chat_store(target_chat_id)
             target_store["current_view_day"] = view_day
 
-            if action in {"open", "back_main"}:
+            if action == "clear_delete_back":
+                clear_edit_delete_selection(target_chat_id, view_day)
+                safe_edit(
+                    bot,
+                    call,
+                    render_fin_window_text(target_chat_id, view_day),
+                    reply_markup=build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key),
+                    parse_mode="HTML"
+                )
+                return
+
+            if action in {"open", "back_main", "menu"}:
                 clear_edit_delete_selection(target_chat_id, view_day)
                 safe_edit(
                     bot,
@@ -5224,12 +5230,11 @@ def on_callback(call):
             open_info_window(chat_id)
             return
         if cmd in ("edit_menu", "menu"):
-
             clear_edit_delete_selection(chat_id, day_key)
             store["current_view_day"] = day_key
-            kb = build_edit_menu_keyboard(day_key, chat_id)
             txt, _ = render_day_window(chat_id, day_key)
-            safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
+            safe_edit(bot, call, txt, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode="HTML")
+            set_active_window_id(chat_id, day_key, call.message.message_id)
             return
         if cmd == "back_main":
             clear_edit_delete_selection(chat_id, day_key)
@@ -5351,11 +5356,11 @@ def on_callback(call):
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 send_and_auto_delete(chat_id, "Меню доступно только владельцу.", HELPER_DELETE_DELAY)
                 return
-            kb = build_forward_root_menu(day_key)
+            kb = build_forward_source_menu(day_key)
             safe_edit(
                 bot,
                 call,
-                build_forward_status_text("Меню пересылки:\nВыберите режим:"),
+                build_forward_status_text("Пересылка:\nВыберите чат A:"),
                 reply_markup=kb
             )
             return
@@ -6076,7 +6081,7 @@ def cmd_csv_all(chat_id: int):
             bot.send_document(
                 chat_id,
                 f,
-                caption=f"📂 Общий CSV всех операций чата {chat_id}"
+                caption=f"📂 Общий CSV: {get_chat_display_name(chat_id)}"
             )
     except Exception as e:
         log_error(f"cmd_csv_all: {e}")
@@ -6113,7 +6118,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
                 ))
             write_csv_rows_with_day_gaps(w, [row[1:] for row in rows], 8)
         with open(tmp_name, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}")
+            bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}: {get_chat_display_name(chat_id)}")
     except Exception as e:
         log_error(f"cmd_csv_day: {e}")
     finally:
@@ -6521,7 +6526,7 @@ def update_chat_info_from_message(msg):
         kc = owner_store.setdefault("known_chats", {})
 
         new_known = {
-            "title": info.get("title") or f"Чат {chat_id}",
+            "title": info.get("title") or get_chat_display_name(chat_id),
             "username": info.get("username"),
             "type": info.get("type"),
         }
@@ -6537,7 +6542,7 @@ def update_chat_info_from_message(msg):
         if was_new_chat and OWNER_ID and str(chat_id) != str(OWNER_ID):
             maybe_prompt_owner_for_new_chat_auto_backup(chat_id)
     except Exception as e:
-        log_error(f"new chat auto-backup prompt failed for {chat_id}: {e}")
+        log_error(f"new chat auto-backup prompt failed for {get_chat_display_name(chat_id)}: {e}")
 
 
 def maybe_prompt_owner_for_new_chat_auto_backup(chat_id: int):
@@ -6557,7 +6562,6 @@ def maybe_prompt_owner_for_new_chat_auto_backup(chat_id: int):
     text = (
         "🆕 Новый чат появился в картотеке\n\n"
         f"{title}\n"
-        f"ID: {chat_id}\n\n"
         "Автоматически обновлять JSON/CSV бэкапы по этому чату?"
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -7223,7 +7227,7 @@ def handle_document(msg):
 
                 if int(inner_chat_id) != int(chat_id):
                     raise RuntimeError(
-                        f"JSON относится к чату {inner_chat_id}, а не к текущему {chat_id}"
+                        f"JSON относится к чату {get_chat_display_name(int(inner_chat_id))}, а не к текущему {get_chat_display_name(chat_id)}"
                     )
 
                 restore_from_json(chat_id, tmp_path)
@@ -7237,7 +7241,7 @@ def handle_document(msg):
                 restore_mode = None
                 send_and_auto_delete(
                     chat_id,
-                    f"🟢 JSON чата {chat_id} восстановлен"
+                    f"🟢 JSON чата {get_chat_display_name(chat_id)} восстановлен"
                 )
                 return
 
@@ -7477,7 +7481,7 @@ def build_diag_text() -> str:
         lines.append("")
         lines.append("Последние ошибки:")
         for e in errors:
-            lines.append(f"• {e.get('ts','')} — {e.get('msg','')[:160]}")
+            lines.append(f"• {e.get('ts','')} — {format_error_for_owner(e.get('msg',''))[:160]}")
     return "\n".join(lines)
 
 
@@ -7512,7 +7516,7 @@ def cmd_errors(msg):
         return
     lines = ["🧯 Последние ошибки бота:"]
     for e in errors:
-        lines.append(f"\n• {e.get('ts','')}\n{e.get('msg','')[:700]}")
+        lines.append(f"\n• {e.get('ts','')}\n{format_error_for_owner(e.get('msg',''))[:700]}")
     send_and_auto_delete(chat_id, "\n".join(lines), 90)
 
 
