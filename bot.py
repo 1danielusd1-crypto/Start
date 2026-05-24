@@ -8,6 +8,7 @@ import logging
 import sqlite3
 import threading
 import time
+import zipfile
 import subprocess
 import shutil
 import tempfile
@@ -121,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (30)__mega_autorestore"
+VERSION = "bot (31)__xlsx_channel_backup"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1969,6 +1970,8 @@ def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
 def chat_csv_file(chat_id: int) -> str:
     return f"data_{chat_id}.csv"
+def chat_xlsx_file(chat_id: int) -> str:
+    return f"data_{chat_id}.xlsx"
 def chat_meta_file(chat_id: int) -> str:
     return f"csv_meta_{chat_id}.json"
     
@@ -2059,6 +2062,120 @@ def collect_forward_menu_chats() -> dict:
 
     return result
 
+
+def _xlsx_col_name(n: int) -> str:
+    """1 -> A, 27 -> AA."""
+    out = ""
+    n = int(n)
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        out = chr(65 + rem) + out
+    return out or "A"
+
+
+def _xlsx_xml_escape(value) -> str:
+    text = "" if value is None else str(value)
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;")
+    )
+
+
+def _xlsx_cell_xml(row_idx: int, col_idx: int, value, style: int | None = None) -> str:
+    ref = f"{_xlsx_col_name(col_idx)}{row_idx}"
+    s_attr = f' s="{int(style)}"' if style is not None else ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f'<c r="{ref}"{s_attr}><v>{value}</v></c>'
+    return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(value)}</t></is></c>'
+
+
+def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данные") -> None:
+    """Минимальный XLSX без внешних библиотек: дата / сумма / заметка."""
+    rows = rows or [["date", "amount", "note"]]
+    sheet_rows = []
+    for r_idx, row in enumerate(rows, start=1):
+        cells = []
+        for c_idx, value in enumerate(row, start=1):
+            cells.append(_xlsx_cell_xml(r_idx, c_idx, value, style=1 if r_idx == 1 else None))
+        sheet_rows.append(f'<row r="{r_idx}">' + "".join(cells) + '</row>')
+
+    sheet_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+<cols><col min="1" max="1" width="13" customWidth="1"/><col min="2" max="2" width="14" customWidth="1"/><col min="3" max="3" width="42" customWidth="1"/></cols>
+<sheetData>""" + "".join(sheet_rows) + """</sheetData>
+</worksheet>"""
+
+    workbook_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="{_xlsx_xml_escape(sheet_name)[:31]}" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"""
+
+    rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+
+    workbook_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"""
+
+    content_types_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"""
+
+    styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>
+<fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>"""
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types_xml)
+        z.writestr("_rels/.rels", rels_xml)
+        z.writestr("xl/workbook.xml", workbook_xml)
+        z.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        z.writestr("xl/styles.xml", styles_xml)
+
+
+def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = None) -> str | None:
+    """Создаёт Excel .xlsx для чата с теми же данными, что CSV, плюс числовая сумма."""
+    try:
+        store = store or data.get("chats", {}).get(str(chat_id)) or get_chat_store(chat_id)
+        path = path or chat_xlsx_file(chat_id)
+        rows = [["date", "amount", "note"]]
+        daily = store.get("daily_records", {}) or {}
+        for dk in sorted(daily.keys()):
+            recs_sorted = sorted(daily.get(dk, []) or [], key=lambda r: r.get("timestamp", ""))
+            for r in recs_sorted:
+                try:
+                    amount = float(r.get("amount", 0) or 0)
+                    if amount.is_integer():
+                        amount = int(amount)
+                except Exception:
+                    amount = r.get("amount", 0)
+                rows.append([dk, amount, r.get("note", "")])
+        _write_simple_xlsx(path, rows, sheet_name="Данные")
+        return path
+    except Exception as e:
+        log_error(f"save_chat_xlsx({chat_id}): {e}")
+        return None
+
 def save_chat_json(chat_id: int):
     """
     Save per-chat JSON, CSV and META for one chat.
@@ -2069,8 +2186,9 @@ def save_chat_json(chat_id: int):
             store = get_chat_store(chat_id)
         chat_path_json = chat_json_file(chat_id)
         chat_path_csv = chat_csv_file(chat_id)
+        chat_path_xlsx = chat_xlsx_file(chat_id)
         chat_path_meta = chat_meta_file(chat_id)
-        for p in (chat_path_json, chat_path_csv, chat_path_meta):
+        for p in (chat_path_json, chat_path_csv, chat_path_xlsx, chat_path_meta):
             if not os.path.exists(p):
                 with open(p, "a", encoding="utf-8"):
                     pass
@@ -2099,6 +2217,7 @@ def save_chat_json(chat_id: int):
                         r.get("note", "")
                     ))
             write_csv_rows_with_day_gaps(w, rows, 3)
+        save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
@@ -3062,6 +3181,7 @@ def send_backup_to_channel(chat_id: int):
     • обновляет/создаёт:
         - data_<chat_id>.json
         - data_<chat_id>.csv
+        - data_<chat_id>.xlsx
     """
     try:
         if not BACKUP_CHAT_ID:
@@ -3090,8 +3210,10 @@ def send_backup_to_channel(chat_id: int):
                 )
         json_path = chat_json_file(chat_id)
         csv_path = chat_csv_file(chat_id)
+        xlsx_path = chat_xlsx_file(chat_id)
         send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
         send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
+        send_backup_to_channel_for_file(xlsx_path, f"xlsx_{chat_id}", chat_title)
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
 def _owner_data_file() -> str | None:
