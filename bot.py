@@ -118,7 +118,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (26)__stabilize_finance_changed"
+VERSION = "bot (27)__deep_cleanup"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1870,14 +1870,7 @@ def restore_from_json(chat_id: int, path: str):
 
         rebuild_global_records()
         save_data(data)
-
-        for cid_str in list(data.get("chats", {}).keys()):
-            try:
-                save_chat_json(int(cid_str))
-            except Exception as e:
-                log_error(f"restore_from_json: save_chat_json({cid_str}) failed: {e}")
-
-        export_global_csv(data)
+        schedule_all_finance_backups(delay=0.5)
         log_info("restore_from_json: global data restored")
         return
 
@@ -1901,8 +1894,7 @@ def restore_from_json(chat_id: int, path: str):
         rebuild_global_records()
 
         save_data(data)
-        save_chat_json(chat_id)
-        export_global_csv(data)
+        finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day", today_key()), reason="restore_json_core", delay=0.1)
 
         log_info(f"restore_from_json: chat {chat_id} restored from per-chat JSON")
         return
@@ -1950,8 +1942,7 @@ def restore_from_csv(chat_id: int, path: str):
     rebuild_global_records()
 
     save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
+    finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day", today_key()), reason="restore_csv_core", delay=0.1)
 
     log_info(f"restore_from_csv: chat {chat_id} restored from CSV")
 
@@ -2439,8 +2430,8 @@ def on_any_message(msg):
                 store["balance"] = sum(r["amount"] for r in store.get("records", []))
                 clear_edit_wait_state(chat_id)
                 save_data(data)
+                finance_changed(chat_id, day_key, reason="edit_wait", delay=0.1)
 
-                update_or_send_day_window(chat_id, day_key)
                 send_and_auto_delete(
                     chat_id,
                     f"✅ Запись R{rid} обновлена: {fmt_num(amount)} {note}",
@@ -2543,8 +2534,7 @@ def handle_finance_edit(msg):
         f"[EDIT-FIN] updated record R{target['id']} "
         f"amount={amount} note={note}"
     )
-    day_key = target.get("day_key") or today_key()
-    update_or_send_day_window(chat_id, day_key)
+    save_data(data)
     return True
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0):
     with locked_chat(dst_chat_id):
@@ -4108,6 +4098,7 @@ def clear_edit_delete_selection(chat_id: int, day_key: str | None = None):
 
 
 def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str) -> bool:
+    """v27: только меняет данные. Окна/бэкапы делает finance_changed()."""
     store = get_chat_store(chat_id)
     target = next((r for r in store.get("records", []) if int(r.get("id", -1)) == int(rid)), None)
     if not target:
@@ -4123,8 +4114,6 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str) -> b
     rebuild_month_short_ids(chat_id)
     rebuild_global_records()
     save_data(data)
-    save_chat_json(chat_id)
-    export_global_csv(data)
     return True
 
 
@@ -4156,9 +4145,7 @@ def delete_selected_records(chat_id: int, day_key: str) -> int:
         recalc_balance(chat_id)
         rebuild_global_records()
         save_data(data)
-        save_chat_json(chat_id)
-        export_global_csv(data)
-        schedule_finalize(chat_id, day_key, delay=0.1)
+        finance_changed(chat_id, day_key, reason="delete_selected", delay=0.1)
         return deleted
 
 def build_fin_windows_chat_menu(day_key: str):
@@ -6631,11 +6618,7 @@ def _apply_json_restore_from_owner_prompt(owner_chat_id: int, tmp_path: str, fna
     # Восстанавливаем именно тот чат, к которому относится файл, даже если файл прислан владельцу.
     restore_from_json(target_chat_id, tmp_path)
     day_key = get_chat_store(target_chat_id).get("current_view_day", today_key())
-    update_or_send_day_window(target_chat_id, day_key)
-    save_chat_json(target_chat_id)
-    export_global_csv(data)
-    schedule_backup_flush(target_chat_id, 0.1)
-    refresh_owner_after_chat_change(target_chat_id)
+    finance_changed(target_chat_id, day_key, reason="owner_json_restore", delay=0.1)
     restore_mode = None
     return f"🟢 JSON чата обновлён: {get_chat_display_name(target_chat_id)}"
 
@@ -6747,6 +6730,109 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
             pass
 
 
+
+# ─────────────────────────────────────────────────────────────
+# v27: единая модель финансовых записей
+# ─────────────────────────────────────────────────────────────
+def _record_day_key(rec: dict) -> str:
+    """Безопасно возвращает day_key для записи."""
+    dk = rec.get("day_key")
+    if dk:
+        return str(dk)[:10]
+    ts = rec.get("timestamp") or ""
+    if isinstance(ts, str) and len(ts) >= 10 and re.match(r"\d{4}-\d{2}-\d{2}", ts[:10]):
+        rec["day_key"] = ts[:10]
+        return ts[:10]
+    rec["day_key"] = today_key()
+    return rec["day_key"]
+
+
+def normalize_chat_records(chat_id: int) -> None:
+    """
+    v27 cleanup: records — основной источник, daily_records строится из него.
+    Если records пустой, но daily_records есть — аккуратно восстанавливаем records.
+    """
+    store = get_chat_store(chat_id)
+    records = store.get("records")
+    daily = store.get("daily_records") or {}
+
+    if not isinstance(records, list) or not records:
+        rebuilt = []
+        for dk in sorted(daily.keys()):
+            for rec in daily.get(dk, []) or []:
+                if isinstance(rec, dict):
+                    rec.setdefault("day_key", dk)
+                    rebuilt.append(rec)
+        records = rebuilt
+
+    clean = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        rec.setdefault("timestamp", now_local().isoformat(timespec="seconds"))
+        rec.setdefault("amount", 0)
+        rec.setdefault("note", "")
+        rec.setdefault("owner", "")
+        _record_day_key(rec)
+        clean.append(rec)
+
+    clean.sort(key=lambda r: (str(r.get("day_key", "")), str(r.get("timestamp", "")), int(r.get("id", 0) or 0)))
+    store["records"] = clean
+
+    rebuilt_daily = {}
+    for rec in clean:
+        rebuilt_daily.setdefault(_record_day_key(rec), []).append(rec)
+    store["daily_records"] = rebuilt_daily
+
+
+def recalc_balance(chat_id: int):
+    normalize_chat_records(chat_id)
+    store = get_chat_store(chat_id)
+    store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
+
+
+def rebuild_month_short_ids(chat_id: int):
+    """Пересчитывает short_id как месячную нумерацию: R1, R2... в каждом месяце."""
+    normalize_chat_records(chat_id)
+    store = get_chat_store(chat_id)
+    daily = store.get("daily_records", {}) or {}
+    month_counters = {}
+
+    for dk in sorted(daily.keys()):
+        month_key = dk[:7]
+        month_counters.setdefault(month_key, 1)
+        recs = sorted(daily.get(dk, []) or [], key=lambda r: (str(r.get("timestamp", "")), int(r.get("id", 0) or 0)))
+        daily[dk] = recs
+        for r in recs:
+            r["short_id"] = f"R{month_counters[month_key]}"
+            month_counters[month_key] += 1
+
+    store["records"] = [r for dk in sorted(daily.keys()) for r in daily.get(dk, [])]
+
+
+def calc_day_balance(store: dict, day_key: str) -> float:
+    total = 0.0
+    daily = store.get("daily_records", {}) or {}
+    for dk in sorted(daily.keys()):
+        if dk > day_key:
+            break
+        for r in daily.get(dk, []) or []:
+            total += float(r.get("amount", 0) or 0)
+    return total
+
+
+def rebuild_global_records():
+    with data_lock:
+        all_recs = []
+        for cid, st in list((data.get("chats", {}) or {}).items()):
+            try:
+                normalize_chat_records(int(cid))
+            except Exception:
+                pass
+            all_recs.extend(st.get("records", []) or [])
+        data["records"] = all_recs
+        data["overall_balance"] = sum(float(r.get("amount", 0) or 0) for r in all_recs)
+
 _finalize_timers = {}
 _backup_timers = {}
 _balance_panel_refresh_timers = {}
@@ -6810,7 +6896,7 @@ def _flush_dirty_backups():
                     continue
                 if not is_auto_backup_enabled(cid):
                     continue
-                save_chat_json(cid)
+                # send_backup_to_chat/send_backup_to_channel сами готовят per-chat файлы.
                 if not is_finance_output_suppressed(cid):
                     send_backup_to_chat(cid)
                 # Канал-бэкап делается для всех фин-чатов, включая скрытые.
@@ -6973,58 +7059,26 @@ def force_new_day_window(chat_id: int, day_key: str):
     set_active_window_id(chat_id, day_key, sent.message_id)
     schedule_balance_panel_refresh(chat_id, 0.5)
 def reset_chat_data(chat_id: int):
-    """
-    Полное обнуление данных чата:
-      • баланс
-      • записи / daily_records
-      • next_id
-      • active_windows
-      • edit_wait / edit_target
-      • обновление окна дня
-      • бэкап
-    """
+    """v27: обнуление данных чата без ручного дублирования окон/бэкапов."""
     try:
-        store = get_chat_store(chat_id)
-        cleanup_forward_links(chat_id)
-        store["balance"] = 0
-        store["records"] = []
-        store["daily_records"] = {}
-        store["next_id"] = 1
-        store["active_windows"] = {}
-        clear_edit_wait_state(chat_id, delete_prompt=True)
-        store["edit_target"] = None
-        store["reset_wait"] = False
-        store["reset_time"] = 0
-        save_data(data)
-        save_chat_json(chat_id)
-        export_global_csv(data)
-        if is_auto_backup_enabled(chat_id):
-            if not is_finance_output_suppressed(chat_id):
-                send_backup_to_chat(chat_id)
-            send_backup_to_channel(chat_id)
-        day_key = store.get("current_view_day", today_key())
-        if not is_finance_output_suppressed(chat_id):
-            update_or_send_day_window(chat_id, day_key)
-        try:
-            day_key = get_chat_store(chat_id).get("current_view_day", today_key())
-            if not is_finance_output_suppressed(chat_id):
-                update_or_send_day_window(chat_id, day_key)
-        except Exception:
-            pass
-        if not is_finance_output_suppressed(chat_id):
-            refresh_total_message_if_any(chat_id)
-            schedule_balance_panel_refresh(chat_id, 1.0)
-        if OWNER_ID and str(chat_id) != str(OWNER_ID):
-            try:
-                refresh_total_message_if_any(int(OWNER_ID))
-            except Exception:
-                pass
-            try:
-                refresh_owner_after_chat_change(chat_id)
-            except Exception:
-                pass
+        with locked_chat(chat_id):
+            store = get_chat_store(chat_id)
+            cleanup_forward_links(chat_id)
+            store["balance"] = 0
+            store["records"] = []
+            store["daily_records"] = {}
+            store["next_id"] = 1
+            store["active_windows"] = {}
+            clear_edit_wait_state(chat_id, delete_prompt=True)
+            store["edit_target"] = None
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            day_key = store.get("current_view_day", today_key())
+            save_data(data)
+        finance_changed(chat_id, day_key, reason="reset", delay=0.1)
     except Exception as e:
         log_error(f"reset_chat_data({chat_id}): {e}")
+
 
 @bot.message_handler(content_types=["document"])
 def handle_document(msg):
@@ -7125,9 +7179,7 @@ def handle_document(msg):
                     "current_view_day",
                     today_key()
                 )
-                update_or_send_day_window(chat_id, day_key)
-                send_backup_to_chat(chat_id)
-                send_backup_to_channel(chat_id)
+                finance_changed(chat_id, day_key, reason="restore_json", delay=0.1)
 
                 restore_mode = None
                 send_and_auto_delete(
@@ -7143,9 +7195,7 @@ def handle_document(msg):
                     "current_view_day",
                     today_key()
                 )
-                update_or_send_day_window(chat_id, day_key)
-                send_backup_to_chat(chat_id)
-                send_backup_to_channel(chat_id)
+                finance_changed(chat_id, day_key, reason="restore_csv", delay=0.1)
 
                 restore_mode = None
                 send_and_auto_delete(
