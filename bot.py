@@ -122,13 +122,14 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (31)__xlsx_channel_backup 🥳"
+VERSION = "bot (32)__settings_mega_monthly_backup"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
 DATA_FILE = "data.json"
 CSV_FILE = "data.csv"
 CSV_META_FILE = "csv_meta.json"
+SETTINGS_JSON_FILE = "bot_settings.json"
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -572,6 +573,11 @@ def set_quick_balance_behavior(chat_id: int, behavior: str):
         behavior = "mini"
     settings["quick_balance_behavior"] = behavior
     save_data(data)
+    try:
+        mark_settings_changed()
+        schedule_backup_flush(chat_id, delay=2.0)
+    except Exception:
+        pass
     if behavior == "first":
         schedule_quick_balance_first_recreate(chat_id)
 
@@ -602,6 +608,11 @@ def set_quick_balance_enabled(chat_id: int, enabled: bool):
     store["balance_panel_id"] = None
     store["balance_panel_mode"] = "mini"
     save_data(data)
+    try:
+        mark_settings_changed()
+        schedule_backup_flush(chat_id, delay=2.0)
+    except Exception:
+        pass
 
 
 def is_hidden_finance_mode(chat_id: int) -> bool:
@@ -632,6 +643,11 @@ def set_auto_backup_enabled(chat_id: int, enabled: bool):
     store = get_chat_store(chat_id)
     store.setdefault("settings", {})["auto_backup_enabled"] = bool(enabled)
     save_data(data)
+    try:
+        mark_settings_changed()
+        schedule_backup_flush(chat_id, delay=2.0)
+    except Exception:
+        pass
 
 
 def set_hidden_finance_mode(chat_id: int, enabled: bool):
@@ -657,6 +673,11 @@ def set_hidden_finance_mode(chat_id: int, enabled: bool):
         except Exception:
             pass
     save_data(data)
+    try:
+        mark_settings_changed()
+        schedule_backup_flush(chat_id, delay=2.0)
+    except Exception:
+        pass
 
 
 def force_recreate_balance_panel(chat_id: int):
@@ -1606,14 +1627,50 @@ def mega_login_if_needed() -> bool:
 def mega_ensure_remote_dir() -> bool:
     if not mega_login_if_needed():
         return False
-    parts = [p for p in MEGA_BACKUP_DIR.strip("/").split("/") if p]
+    return mega_ensure_dir(MEGA_BACKUP_DIR)
+
+def mega_ensure_dir(remote_dir: str) -> bool:
+    """Создаёт удалённую папку MEGA по частям. Ошибка 'уже существует' игнорируется."""
+    if not mega_login_if_needed():
+        return False
+    remote_dir = (remote_dir or MEGA_BACKUP_DIR).strip() or MEGA_BACKUP_DIR
+    parts = [p for p in remote_dir.strip("/").split("/") if p]
     current = ""
     for part in parts:
         current += "/" + part
-        # Если папка уже есть, mega-mkdir может вернуть ошибку — это нормально.
         _mega_run("mega-mkdir", [current], check=False, timeout=30)
     return True
 
+def mega_upload_file(local_path: str, remote_dir: str, remote_name: str | None = None, replace: bool = True) -> bool:
+    """Загружает файл в MEGA. При replace=True обновляет файл, не плодя дубли."""
+    if not mega_is_configured():
+        return False
+    if not local_path or not os.path.exists(local_path):
+        log_error(f"[MEGA UPLOAD SKIP] file not found: {local_path}")
+        return False
+    try:
+        mega_ensure_dir(remote_dir)
+        upload_path = local_path
+        tmp_to_remove = None
+        if remote_name and os.path.basename(local_path) != remote_name:
+            os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+            upload_path = os.path.join(MEGA_LOCAL_TMP_DIR, remote_name)
+            shutil.copyfile(local_path, upload_path)
+            tmp_to_remove = upload_path
+        remote_file = remote_dir.rstrip("/") + "/" + os.path.basename(upload_path)
+        if replace:
+            _mega_run("mega-rm", [remote_file], check=False, timeout=30)
+        _mega_run("mega-put", [upload_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+        if tmp_to_remove:
+            try:
+                os.remove(tmp_to_remove)
+            except Exception:
+                pass
+        log_info(f"[MEGA] uploaded: {remote_file}")
+        return True
+    except Exception as e:
+        log_error(f"[MEGA UPLOAD ERROR] {local_path}: {e}")
+        return False
 
 def make_global_backup_payload() -> dict:
     """Глобальный JSON для восстановления всего бота."""
@@ -1637,6 +1694,54 @@ def save_global_backup_snapshot(path: str) -> str:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return path
 
+def make_settings_backup_payload() -> dict:
+    """Отдельный JSON настроек: пересылка, финрежимы, скрытые финансы, быстрый остаток."""
+    with data_lock:
+        chats_payload = {}
+        for cid, store in (data.get("chats", {}) or {}).items():
+            st = store or {}
+            try:
+                display = get_chat_display_name(int(cid))
+            except Exception:
+                display = str(cid)
+            chats_payload[str(cid)] = {
+                "chat_id": str(cid),
+                "display_name": display,
+                "info": st.get("info", {}) or {},
+                "finance_mode": bool(st.get("finance_mode", False)),
+                "settings": st.get("settings", {}) or {},
+                "balance": st.get("balance", 0),
+                "current_view_day": st.get("current_view_day"),
+            }
+        return {
+            "_backup_meta": {
+                "kind": "bot_settings",
+                "version": VERSION,
+                "created_at": now_local().isoformat(timespec="seconds"),
+            },
+            "backup_flags": dict(backup_flags),
+            "finance_active_chats": {str(x): True for x in list(finance_active_chats)},
+            "forward_rules": data.get("forward_rules", {}) or {},
+            "forward_finance": data.get("forward_finance", {}) or {},
+            "forward_index": data.get("forward_index", {}) or {},
+            "chats": chats_payload,
+        }
+
+def save_settings_json(path: str | None = None) -> str:
+    path = path or settings_json_file()
+    payload = make_settings_backup_payload()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return path
+
+def send_settings_backup_to_channel() -> None:
+    if not BACKUP_CHAT_ID:
+        return
+    try:
+        path = save_settings_json()
+        send_backup_to_channel_for_file(path, "bot_settings", "bot_settings")
+    except Exception as e:
+        log_error(f"send_settings_backup_to_channel: {e}")
 
 def mega_upload_latest_global_backup() -> bool:
     """Загружает latest_global.json в MEGA. Не ломает основной бот при ошибке."""
@@ -1974,6 +2079,53 @@ def chat_xlsx_file(chat_id: int) -> str:
     return f"data_{chat_id}.xlsx"
 def chat_meta_file(chat_id: int) -> str:
     return f"csv_meta_{chat_id}.json"
+def settings_json_file() -> str:
+    return SETTINGS_JSON_FILE
+
+def month_key_from_day(day_key: str | None = None) -> str:
+    try:
+        if day_key:
+            return datetime.strptime(str(day_key)[:10], "%Y-%m-%d").strftime("%Y-%m")
+    except Exception:
+        pass
+    return now_local().strftime("%Y-%m")
+
+def month_bounds(month_key: str | None = None):
+    month_key = month_key_from_day(month_key + "-01" if month_key and len(str(month_key)) == 7 else month_key)
+    start = datetime.strptime(month_key + "-01", "%Y-%m-%d").date()
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1, day=1) - timedelta(days=1)
+    else:
+        end = start.replace(month=start.month + 1, day=1) - timedelta(days=1)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+def _safe_name_for_backup(value, fallback: str = "chat") -> str:
+    raw = str(value or fallback).strip()
+    raw = raw.replace("@", "")
+    raw = raw.replace(" ", "_")
+    raw = re.sub(r"[^0-9A-Za-zА-Яа-я_\-]+", "", raw)
+    raw = re.sub(r"_+", "_", raw).strip("_")
+    return (raw or fallback)[:48]
+
+def chat_backup_base_name(chat_id: int) -> str:
+    try:
+        info = get_chat_store(chat_id).get("info", {}) or {}
+        base = info.get("username") or info.get("title") or get_chat_display_name(chat_id) or str(chat_id)
+        return _safe_name_for_backup(base, f"chat_{chat_id}")
+    except Exception:
+        return _safe_name_for_backup(str(chat_id), f"chat_{chat_id}")
+
+def chat_monthly_json_file(chat_id: int, month_key: str | None = None) -> str:
+    mk = month_key_from_day(month_key + "-01" if month_key and len(str(month_key)) == 7 else month_key)
+    return f"{chat_backup_base_name(chat_id)}_{mk}.json"
+
+def chat_monthly_csv_file(chat_id: int, month_key: str | None = None) -> str:
+    mk = month_key_from_day(month_key + "-01" if month_key and len(str(month_key)) == 7 else month_key)
+    return f"{chat_backup_base_name(chat_id)}_{mk}.csv"
+
+def chat_monthly_xlsx_file(chat_id: int, month_key: str | None = None) -> str:
+    mk = month_key_from_day(month_key + "-01" if month_key and len(str(month_key)) == 7 else month_key)
+    return f"{chat_backup_base_name(chat_id)}_{mk}.xlsx"
     
 def get_chat_store(chat_id: int) -> dict:
     """
@@ -2193,13 +2345,27 @@ def save_chat_json(chat_id: int):
                 with open(p, "a", encoding="utf-8"):
                     pass
         payload = {
+            "_backup_meta": {
+                "kind": "chat_latest",
+                "version": VERSION,
+                "created_at": now_local().isoformat(timespec="seconds"),
+            },
             "chat_id": chat_id,
+            "display_name": get_chat_display_name(chat_id),
             "balance": store.get("balance", 0),
             "records": store.get("records", []),
             "daily_records": store.get("daily_records", {}),
             "next_id": store.get("next_id", 1),
             "info": store.get("info", {}),
             "known_chats": store.get("known_chats", {}),
+            "finance_mode": bool(store.get("finance_mode", False)),
+            "settings": store.get("settings", {}) or {},
+            "forward_rules_from": (data.get("forward_rules", {}) or {}).get(str(chat_id), {}),
+            "forward_rules_all": data.get("forward_rules", {}) or {},
+            "forward_finance_from": (data.get("forward_finance", {}) or {}).get(str(chat_id), {}),
+            "forward_finance_all": data.get("forward_finance", {}) or {},
+            "backup_flags": dict(backup_flags),
+            "finance_active_chats": {str(x): True for x in list(finance_active_chats)},
         }
         _save_json(chat_path_json, payload)
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
@@ -2226,6 +2392,121 @@ def save_chat_json(chat_id: int):
         log_info(f"Per-chat files saved for chat {chat_id}")
     except Exception as e:
         log_error(f"save_chat_json({chat_id}): {e}")
+
+def calc_opening_balance_for_month(chat_id: int, month_key: str | None = None) -> float:
+    """Остаток на начало месяца: сумма всех операций до 1-го числа месяца."""
+    store = get_chat_store(chat_id)
+    start, _ = month_bounds(month_key)
+    total = 0.0
+    for r in (store.get("records", []) or []):
+        dk = (r.get("day_key") or str(r.get("timestamp", ""))[:10] or today_key())[:10]
+        if dk < start:
+            try:
+                total += float(r.get("amount", 0) or 0)
+            except Exception:
+                pass
+    return total
+
+def collect_month_records(chat_id: int, month_key: str | None = None):
+    store = get_chat_store(chat_id)
+    start, end = month_bounds(month_key)
+    out = []
+    for r in (store.get("records", []) or []):
+        dk = (r.get("day_key") or str(r.get("timestamp", ""))[:10] or today_key())[:10]
+        if start <= dk <= end:
+            out.append(r)
+    out.sort(key=lambda r: ((r.get("day_key") or ""), (r.get("timestamp") or ""), int(r.get("id", 0) or 0)))
+    return out
+
+def save_chat_monthly_backups(chat_id: int, month_key: str | None = None) -> dict:
+    """Создаёт месячные JSON/CSV/XLSX. Первый ряд — остаток на начало месяца."""
+    month_key = month_key_from_day(month_key + "-01" if month_key and len(str(month_key)) == 7 else month_key)
+    start, end = month_bounds(month_key)
+    store = get_chat_store(chat_id)
+    opening = calc_opening_balance_for_month(chat_id, month_key)
+    records = collect_month_records(chat_id, month_key)
+    monthly_delta = sum(float(r.get("amount", 0) or 0) for r in records)
+    closing = opening + monthly_delta
+
+    json_path = chat_monthly_json_file(chat_id, month_key)
+    csv_path = chat_monthly_csv_file(chat_id, month_key)
+    xlsx_path = chat_monthly_xlsx_file(chat_id, month_key)
+
+    payload = {
+        "_backup_meta": {
+            "kind": "chat_monthly",
+            "version": VERSION,
+            "created_at": now_local().isoformat(timespec="seconds"),
+            "month": month_key,
+            "period_start": start,
+            "period_end": end,
+        },
+        "chat_id": chat_id,
+        "display_name": get_chat_display_name(chat_id),
+        "opening_balance": opening,
+        "monthly_delta": monthly_delta,
+        "closing_balance": closing,
+        "records": records,
+        "finance_mode": bool(store.get("finance_mode", False)),
+        "settings": store.get("settings", {}) or {},
+        "forward_rules_all": data.get("forward_rules", {}) or {},
+        "forward_finance_all": data.get("forward_finance", {}) or {},
+    }
+    _save_json(json_path, payload)
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["date", "amount", "note"])
+        w.writerow([start, opening, "Остаток на начало месяца"])
+        for r in records:
+            w.writerow([r.get("day_key") or "", fmt_csv_amount(r.get("amount", 0)), r.get("note", "")])
+        w.writerow([end, closing, "Остаток на конец месяца"])
+
+    rows = [["date", "amount", "note"], [start, opening, "Остаток на начало месяца"]]
+    for r in records:
+        try:
+            amt = float(r.get("amount", 0) or 0)
+        except Exception:
+            amt = 0
+        rows.append([r.get("day_key") or "", amt, r.get("note", "")])
+    rows.append([end, closing, "Остаток на конец месяца"])
+    _write_simple_xlsx(xlsx_path, rows, sheet_name=month_key)
+
+    return {"json": json_path, "csv": csv_path, "xlsx": xlsx_path, "month": month_key}
+
+def mega_upload_settings_backup() -> bool:
+    if not mega_is_configured():
+        return False
+    try:
+        path = save_settings_json()
+        return mega_upload_file(path, MEGA_BACKUP_DIR.rstrip("/") + "/settings", os.path.basename(path), replace=True)
+    except Exception as e:
+        log_error(f"mega_upload_settings_backup: {e}")
+        return False
+
+def mega_upload_chat_backups(chat_id: int, month_key: str | None = None) -> bool:
+    """MEGA: отдельная папка/файлы для каждого чата + месячные JSON/CSV/XLSX."""
+    if not mega_is_configured():
+        return False
+    ok = True
+    try:
+        save_chat_json(chat_id)
+        mk = month_key_from_day(month_key + "-01" if month_key and len(str(month_key)) == 7 else month_key)
+        monthly = save_chat_monthly_backups(chat_id, mk)
+        base = chat_backup_base_name(chat_id)
+        current_dir = MEGA_BACKUP_DIR.rstrip("/") + f"/chats/{base}/latest"
+        monthly_dir = MEGA_BACKUP_DIR.rstrip("/") + f"/chats/{base}/monthly/{mk}"
+        ok = mega_upload_file(chat_json_file(chat_id), current_dir, f"{base}_latest.json", replace=True) and ok
+        ok = mega_upload_file(chat_csv_file(chat_id), current_dir, f"{base}_latest.csv", replace=True) and ok
+        ok = mega_upload_file(chat_xlsx_file(chat_id), current_dir, f"{base}_latest.xlsx", replace=True) and ok
+        ok = mega_upload_file(monthly["json"], monthly_dir, os.path.basename(monthly["json"]), replace=True) and ok
+        ok = mega_upload_file(monthly["csv"], monthly_dir, os.path.basename(monthly["csv"]), replace=True) and ok
+        ok = mega_upload_file(monthly["xlsx"], monthly_dir, os.path.basename(monthly["xlsx"]), replace=True) and ok
+        return ok
+    except Exception as e:
+        log_error(f"mega_upload_chat_backups({chat_id}): {e}")
+        return False
+
 def restore_from_json(chat_id: int, path: str):
     """
     Восстановление из JSON.
@@ -3214,6 +3495,15 @@ def send_backup_to_channel(chat_id: int):
         send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
         send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
         send_backup_to_channel_for_file(xlsx_path, f"xlsx_{chat_id}", chat_title)
+
+        # Месячные файлы: в новом месяце создаётся новая тройка файлов
+        # с остатком на начало месяца (переносом предыдущего остатка).
+        mk = now_local().strftime("%Y-%m")
+        monthly = save_chat_monthly_backups(chat_id, mk)
+        safe_title = chat_backup_base_name(chat_id)
+        send_backup_to_channel_for_file(monthly["json"], f"monthly_json_{chat_id}_{mk}", f"{safe_title}_{mk}")
+        send_backup_to_channel_for_file(monthly["csv"], f"monthly_csv_{chat_id}_{mk}", f"{safe_title}_{mk}")
+        send_backup_to_channel_for_file(monthly["xlsx"], f"monthly_xlsx_{chat_id}_{mk}", f"{safe_title}_{mk}")
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
 def _owner_data_file() -> str | None:
@@ -3284,6 +3574,10 @@ def persist_forward_rules_to_owner():
             payload["forward_finance"] = data.get("forward_finance", {})
             _save_json(path, payload)
             log_info(f"forward_rules snapshot persisted to {path}")
+        try:
+            mark_settings_changed()
+        except Exception:
+            pass
     except Exception as e:
         log_error(f"persist_forward_rules_to_owner: {e}")
         
@@ -6143,6 +6437,11 @@ def set_finance_mode(chat_id: int, enabled: bool):
         store["balance_panel_id"] = None
         store["balance_panel_mode"] = "mini"
     save_data(data)
+    try:
+        mark_settings_changed()
+        schedule_backup_flush(chat_id, delay=2.0)
+    except Exception:
+        pass
 
 def require_finance(chat_id: int) -> bool:
     """
@@ -7291,9 +7590,17 @@ def _flush_dirty_backups():
     except Exception as e:
         log_error(f"_flush_dirty_backups global export/save: {e}")
 
+    # Отдельный JSON настроек: пересылка, финрежимы, скрытые финансы и т.д.
+    try:
+        save_settings_json()
+        send_settings_backup_to_channel()
+    except Exception as e:
+        log_error(f"_flush_dirty_backups settings backup: {e}")
+
     # MEGA latest_global.json — внешний бэкап для автовосстановления после Render deploy/restart.
     try:
         mega_upload_latest_global_backup()
+        mega_upload_settings_backup()
     except Exception as e:
         log_error(f"_flush_dirty_backups mega upload: {e}")
 
@@ -7309,6 +7616,8 @@ def _flush_dirty_backups():
                     send_backup_to_chat(cid)
                 # Канал-бэкап делается для всех фин-чатов, включая скрытые.
                 send_backup_to_channel(cid)
+                # MEGA: отдельные файлы каждого чата + месячные JSON/CSV/XLSX.
+                mega_upload_chat_backups(cid, now_local().strftime("%Y-%m"))
         except Exception as e:
             log_error(f"_flush_dirty_backups chat {cid}: {e}")
 
@@ -7332,6 +7641,46 @@ def schedule_backup_flush(chat_id: int, delay: float = 8.0):
         t = threading.Timer(delay, _flush_dirty_backups)
         _backup_global_timer = t
         t.start()
+
+_settings_backup_timer = None
+
+def schedule_settings_backup_flush(delay: float = 5.0):
+    """Debounced backup для изменений настроек/пересылки, даже если сумм не было."""
+    global _settings_backup_timer
+    try:
+        save_settings_json()
+    except Exception as e:
+        log_error(f"schedule_settings_backup_flush save_settings_json: {e}")
+    with timer_lock:
+        prev = _settings_backup_timer
+        if prev and getattr(prev, "is_alive", lambda: False)():
+            try:
+                prev.cancel()
+            except Exception:
+                pass
+        def _job():
+            global _settings_backup_timer
+            try:
+                with timer_lock:
+                    _settings_backup_timer = None
+                with data_lock:
+                    export_global_csv(data)
+                    save_data(data)
+                send_settings_backup_to_channel()
+                mega_upload_latest_global_backup()
+                mega_upload_settings_backup()
+                for cid in collect_finance_chat_ids():
+                    schedule_backup_flush(cid, delay=1.0)
+            except Exception as e:
+                log_error(f"schedule_settings_backup_flush job: {e}")
+        _settings_backup_timer = threading.Timer(delay, _job)
+        _settings_backup_timer.start()
+
+def mark_settings_changed():
+    try:
+        schedule_settings_backup_flush(3.0)
+    except Exception as e:
+        log_error(f"mark_settings_changed: {e}")
     
 def _safe_stabilize(action_name, func):
     try:
