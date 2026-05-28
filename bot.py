@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (32)__mega_monthly_settings_backup"
+VERSION = "bot (33)__ordered_quick_csv_finwin"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -407,6 +407,79 @@ def fmt_date_ddmmyy(day_key: str) -> str:
         return d.strftime("%d.%m.%y")
     except Exception:
         return str(day_key)
+
+def fmt_date_backup(day_key: str) -> str:
+    """Формат даты для backup-файлов: DD:MM:YY. Внутренний day_key YYYY-MM-DD сохраняем отдельно."""
+    try:
+        d = datetime.strptime(str(day_key)[:10], "%Y-%m-%d")
+        return d.strftime("%d:%m:%y")
+    except Exception:
+        return str(day_key)
+
+
+def backup_record_copy(rec: dict) -> dict:
+    """Копия записи для JSON-бэкапа: добавляем date в формате DD:MM:YY, не ломая day_key для восстановления."""
+    try:
+        rr = json.loads(json.dumps(rec or {}, ensure_ascii=False, default=str))
+    except Exception:
+        rr = dict(rec or {})
+    dk = rr.get("day_key") or _record_day_key(rr) if isinstance(rr, dict) else today_key()
+    rr["date"] = fmt_date_backup(dk)
+    return rr
+
+
+def backup_records_list(records) -> list:
+    return [backup_record_copy(r) for r in (records or []) if isinstance(r, dict)]
+
+
+def backup_daily_records(daily: dict) -> dict:
+    """JSON-friendly daily_records с прежними ключами YYYY-MM-DD и дополнительными date в записях."""
+    out = {}
+    for dk in sorted((daily or {}).keys()):
+        out[str(dk)] = backup_records_list((daily or {}).get(dk, []))
+    return out
+
+
+def message_timestamp_iso(source_msg=None) -> str:
+    """Для хронологии берём Telegram msg.date, а не время обработки потока."""
+    try:
+        msg_date = getattr(source_msg, "date", None)
+        if msg_date:
+            return datetime.fromtimestamp(int(msg_date), tz=get_tz()).isoformat(timespec="seconds")
+    except Exception:
+        pass
+    return now_local().isoformat(timespec="seconds")
+
+
+def record_sort_key(rec: dict):
+    """Устойчивая сортировка: дата → время Telegram → исходный message_id → внутренний id."""
+    try:
+        order_msg = int(rec.get("source_order_msg_id") or rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or 0)
+    except Exception:
+        order_msg = 0
+    try:
+        rid = int(rec.get("id", 0) or 0)
+    except Exception:
+        rid = 0
+    return (str(rec.get("day_key", "")), str(rec.get("timestamp", "")), order_msg, rid)
+
+
+def compose_edit_input_value(amount, note: str = "") -> str:
+    """Готовая строка для ручного редактирования записи."""
+    try:
+        amount = float(amount or 0)
+    except Exception:
+        amount = 0.0
+    note = (note or "").strip()
+    if amount > 0:
+        base = "+" + fmt_num_compact(amount)
+    elif amount < 0:
+        # Для расхода можно отправить без минуса: парсер всё равно считает это расходом.
+        base = fmt_num_compact(abs(amount))
+    else:
+        base = "0"
+    return (base + (" " + note if note else "")).strip()
+
 def fmt_num_compact(v) -> str:
     """
     Число без .0, с минусом при необходимости.
@@ -687,25 +760,27 @@ def force_recreate_balance_panel(chat_id: int):
 
 
 def bump_quick_balance_recreate_counter(chat_id: int, count: int = 1):
-    """После 3 обычных/пересланных сообщений быстрый остаток пересоздаётся внизу чата."""
+    """После 3 сообщений не пересоздаём окно сразу в шквале, а ждём короткую паузу."""
     try:
         if is_hidden_finance_mode(chat_id):
             return
         if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
             return
+
+        # Режим «всегда первым»: отдельный минутный таймер после последнего сообщения.
         if get_quick_balance_behavior(chat_id) == "first":
             schedule_quick_balance_first_recreate(chat_id)
+
         store = get_chat_store(chat_id)
         cur = int(store.get("balance_panel_msg_count", 0) or 0) + int(count or 1)
+        store["balance_panel_msg_count"] = cur
+        save_data(data)
+
+        # Если сообщений уже 3 или больше — ставим debounce, а не удаляем/создаём в шквале.
         if cur >= 3:
-            store["balance_panel_msg_count"] = 0
-            save_data(data)
-            force_recreate_balance_panel(chat_id)
-        else:
-            store["balance_panel_msg_count"] = cur
-            save_data(data)
+            schedule_quick_balance_recreate_after_quiet(chat_id, delay=4.0)
     except Exception as e:
-        log_error(f"bump_quick_balance_recreate_counter({chat_id}): {e}")
+        log_error(f"bump_quick_balance_recreate_counter({get_chat_display_name(chat_id)}): {e}")
 
 
 def schedule_quick_balance_first_recreate(chat_id: int, delay: float = 60.0):
@@ -743,6 +818,42 @@ def schedule_quick_balance_first_recreate(chat_id: int, delay: float = 60.0):
                 pass
         t = threading.Timer(delay, _job)
         _balance_panel_first_timers[chat_id] = t
+        t.start()
+
+
+
+def schedule_quick_balance_recreate_after_quiet(chat_id: int, delay: float = 4.0):
+    """Debounce для быстрого остатка: пересоздать только когда поток сообщений стих."""
+    try:
+        chat_id = int(chat_id)
+    except Exception:
+        return
+    if is_hidden_finance_mode(chat_id):
+        return
+    if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
+        return
+
+    def _job():
+        try:
+            with locked_chat(chat_id):
+                store = get_chat_store(chat_id)
+                if int(store.get("balance_panel_msg_count", 0) or 0) < 3:
+                    return
+                store["balance_panel_msg_count"] = 0
+                save_data(data)
+                force_recreate_balance_panel(chat_id)
+        except Exception as e:
+            log_error(f"schedule_quick_balance_recreate_after_quiet({get_chat_display_name(chat_id)}): {e}")
+
+    with timer_lock:
+        prev = _balance_panel_recreate_timers.get(chat_id)
+        if prev and prev.is_alive():
+            try:
+                prev.cancel()
+            except Exception:
+                pass
+        t = threading.Timer(delay, _job)
+        _balance_panel_recreate_timers[chat_id] = t
         t.start()
 
 
@@ -1782,24 +1893,26 @@ def build_chat_monthly_backup_payload(chat_id: int, month_key: str | None = None
     month_key = month_key or current_month_key()
     store = get_chat_store(chat_id)
     opening = calc_opening_balance_for_month(store, month_key)
-    recs = month_records_for_chat(store, month_key)
+    recs = sorted(month_records_for_chat(store, month_key), key=record_sort_key)
     total_income = 0.0
     total_expense = 0.0
     clean_recs = []
     for r in recs:
-        rr = json.loads(json.dumps(r, ensure_ascii=False, default=str))
+        rr = backup_record_copy(r)
         amt = float(r.get("amount", 0) or 0)
         if amt >= 0:
             total_income += amt
         else:
             total_expense += -amt
         rr["day_key"] = _record_day_key(r)
+        rr["date"] = fmt_date_backup(rr["day_key"])
         clean_recs.append(rr)
     closing = opening + total_income - total_expense
     return {
         "kind": "chat_monthly_backup",
         "version": VERSION,
         "created_at": now_local().isoformat(timespec="seconds"),
+        "date_format": "DD:MM:YY",
         "month": month_key,
         "chat_id": int(chat_id),
         "chat_name": get_chat_display_name(chat_id),
@@ -1839,7 +1952,7 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         w.writerow(["date", "amount", "note", "id", "short_id", "timestamp", "owner"])
         for r in payload.get("records", []):
             w.writerow([
-                r.get("day_key"),
+                r.get("date") or fmt_date_backup(r.get("day_key")),
                 r.get("amount"),
                 r.get("note", ""),
                 r.get("id", ""),
@@ -1860,7 +1973,7 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
     ]
     for r in payload.get("records", []):
         rows.append([
-            r.get("day_key"),
+            r.get("date") or fmt_date_backup(r.get("day_key")),
             r.get("amount"),
             r.get("note", ""),
             r.get("id", ""),
@@ -1931,6 +2044,13 @@ def make_global_backup_payload() -> dict:
     payload.setdefault("chats", {})
     payload.setdefault("forward_rules", data.get("forward_rules", {}) if isinstance(data, dict) else {})
     payload.setdefault("forward_finance", data.get("forward_finance", {}) if isinstance(data, dict) else {})
+    try:
+        for _cid, _store in (payload.get("chats", {}) or {}).items():
+            if isinstance(_store, dict):
+                _store["records"] = backup_records_list(_store.get("records", []))
+                _store["daily_records_by_date"] = {fmt_date_backup(k): backup_records_list(v) for k, v in (_store.get("daily_records", {}) or {}).items()}
+    except Exception as e:
+        log_error(f"make_global_backup_payload date annotate: {e}")
     payload["_backup_meta"] = {
         "kind": "mega_latest_global",
         "version": VERSION,
@@ -2469,14 +2589,14 @@ def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данн�
 
 
 def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = None) -> str | None:
-    """Создаёт Excel .xlsx для чата с теми же данными, что CSV, плюс числовая сумма."""
+    """Создаёт Excel .xlsx для чата; date в формате DD:MM:YY."""
     try:
         store = store or data.get("chats", {}).get(str(chat_id)) or get_chat_store(chat_id)
         path = path or chat_xlsx_file(chat_id)
         rows = [["date", "amount", "note"]]
         daily = store.get("daily_records", {}) or {}
         for dk in sorted(daily.keys()):
-            recs_sorted = sorted(daily.get(dk, []) or [], key=lambda r: r.get("timestamp", ""))
+            recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
             for r in recs_sorted:
                 try:
                     amount = float(r.get("amount", 0) or 0)
@@ -2484,21 +2604,20 @@ def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = N
                         amount = int(amount)
                 except Exception:
                     amount = r.get("amount", 0)
-                rows.append([dk, amount, r.get("note", "")])
+                rows.append([fmt_date_backup(dk), amount, r.get("note", "")])
         _write_simple_xlsx(path, rows, sheet_name="Данные")
         return path
     except Exception as e:
-        log_error(f"save_chat_xlsx({chat_id}): {e}")
+        log_error(f"save_chat_xlsx({get_chat_display_name(chat_id)}): {e}")
         return None
 
 def save_chat_json(chat_id: int):
-    """
-    Save per-chat JSON, CSV and META for one chat.
-    """
+    """Save per-chat JSON, CSV, XLSX and META for one chat."""
     try:
         store = data.get("chats", {}).get(str(chat_id))
         if not store:
             store = get_chat_store(chat_id)
+        normalize_chat_records(chat_id)
         chat_path_json = chat_json_file(chat_id)
         chat_path_csv = chat_csv_file(chat_id)
         chat_path_xlsx = chat_xlsx_file(chat_id)
@@ -2511,42 +2630,39 @@ def save_chat_json(chat_id: int):
             "kind": "chat_full_backup",
             "version": VERSION,
             "created_at": now_local().isoformat(timespec="seconds"),
+            "date_format": "DD:MM:YY",
             "chat_id": chat_id,
             "chat_name": get_chat_display_name(chat_id),
             "balance": store.get("balance", 0),
-            "records": store.get("records", []),
-            "daily_records": store.get("daily_records", {}),
+            "records": backup_records_list(store.get("records", [])),
+            "daily_records": backup_daily_records(store.get("daily_records", {})),
+            "daily_records_by_date": {fmt_date_backup(k): backup_records_list(v) for k, v in (store.get("daily_records", {}) or {}).items()},
             "next_id": store.get("next_id", 1),
             "info": store.get("info", {}),
             "known_chats": store.get("known_chats", {}),
-            # Важное: теперь в per-chat JSON сохраняются настройки финучёта и пересылки.
             "settings_backup": build_chat_settings_backup_payload(chat_id, store),
         }
         _save_json(chat_path_json, payload)
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["date", "amount", "note"])  # Простой заголовок
-            daily = store.get("daily_records", {})
+            w.writerow(["date", "amount", "note"])
+            daily = store.get("daily_records", {}) or {}
             rows = []
             for dk in sorted(daily.keys()):
-                recs = daily.get(dk, [])
-                recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
+                recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
                 for r in recs_sorted:
-                    rows.append((
-                        dk,
-                        fmt_csv_amount(r.get("amount")),
-                        r.get("note", "")
-                    ))
+                    rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             write_csv_rows_with_day_gaps(w, rows, 3)
         save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
+            "date_format": "DD:MM:YY",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
         }
         _save_json(chat_path_meta, meta)
-        log_info(f"Per-chat files saved for chat {chat_id}")
+        log_info(f"Per-chat files saved for chat {get_chat_display_name(chat_id)}")
     except Exception as e:
-        log_error(f"save_chat_json({chat_id}): {e}")
+        log_error(f"save_chat_json({get_chat_display_name(chat_id)}): {e}")
 def restore_from_json(chat_id: int, path: str):
     """
     Восстановление из JSON.
@@ -3266,7 +3382,7 @@ def handle_finance_edit(msg):
     )
     save_data(data)
     return True
-def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0):
+def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0, source_msg=None):
     with locked_chat(dst_chat_id):
         if not is_finance_mode(dst_chat_id):
             if text_has_any_digit(text):
@@ -3285,7 +3401,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 existing = r
                 break
 
-        entry_day = today_key()
+        entry_day = day_key_from_message(source_msg) if source_msg is not None else today_key()
         store["current_view_day"] = entry_day
 
         if text and looks_like_amount(text):
@@ -3299,12 +3415,19 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 if existing:
                     existing["amount"] = amount
                     existing["note"] = note
+                    existing["timestamp"] = message_timestamp_iso(source_msg)
+                    if source_msg is not None:
+                        existing["source_order_msg_id"] = getattr(source_msg, "message_id", existing.get("source_order_msg_id", 0))
                     entry_day = existing.get("day_key") or entry_day
                     rebuild_month_short_ids(dst_chat_id)
                     rebuild_global_records()
-                    store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+                    store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
                 else:
-                    shadow_msg = type("ForwardShadowMsg", (), {"message_id": dst_msg_id, "date": int(time.time())})()
+                    shadow_msg = type("ForwardShadowMsg", (), {
+                        "message_id": int(dst_msg_id),
+                        "date": getattr(source_msg, "date", int(time.time())) if source_msg is not None else int(time.time()),
+                        "forward_source_msg_id": getattr(source_msg, "message_id", int(dst_msg_id)) if source_msg is not None else int(dst_msg_id),
+                    })()
                     add_record_to_chat(
                         dst_chat_id,
                         amount,
@@ -3323,30 +3446,27 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             entry_day = existing.get("day_key") or entry_day
             rebuild_month_short_ids(dst_chat_id)
             rebuild_global_records()
-            store["balance"] = sum(r.get("amount", 0) for r in store.get("records", []))
+            store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
         else:
             if text_has_any_digit(text):
                 log_error(f"[FWD FINANCE SKIP] amount not recognized: dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}")
             return False
 
-        schedule_finalize(dst_chat_id, entry_day)
-        return True
+    schedule_finalize(dst_chat_id, entry_day)
+    return True
 
 def export_global_csv(d: dict):
-    """Legacy global CSV with all chats (for backup channel)."""
+    """Legacy global CSV with all chats (for backup channel), date DD:MM:YY."""
     try:
         with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["date", "amount", "note"])  # Простой заголовок
+            w.writerow(["date", "amount", "note"])
             rows = []
             for cid, cdata in d.get("chats", {}).items():
-                for dk, records in cdata.get("daily_records", {}).items():
-                    for r in records:
-                        rows.append((
-                            dk,
-                            fmt_csv_amount(r.get("amount")),
-                            r.get("note", "")
-                        ))
+                for dk, records in (cdata.get("daily_records", {}) or {}).items():
+                    for r in records or []:
+                        rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            # Сортируем по исходной дате, если можем восстановить из DD:MM:YY.
             rows.sort(key=lambda row: str(row[0]))
             write_csv_rows_with_day_gaps(w, rows, 3)
     except Exception as e:
@@ -3910,7 +4030,7 @@ def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_m
             raise RuntimeError(f"Edited sync unsupported for content_type={ct}")
 
         if finance_enabled and text and is_finance_mode(dst_chat_id):
-            sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text, owner_id)
+            sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text, owner_id, source_msg=msg)
         return dst_msg_id
 
     except Exception as e:
@@ -4085,7 +4205,7 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
     if finance_enabled and text_for_finance:
         try:
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
-            ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
+            ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=msg)
             if not ok_fin and text_has_any_digit(text_for_finance):
                 log_error(f"[FWD FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
         except Exception as e:
@@ -4160,7 +4280,7 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                 if finance_enabled and text_for_finance:
                     try:
                         owner_id = src_msg.from_user.id if getattr(src_msg, "from_user", None) else 0
-                        ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id)
+                        ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=src_msg)
                         if not ok_fin and text_has_any_digit(text_for_finance):
                             log_error(f"[FWD MEDIA FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{src_msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
                     except Exception as e:
@@ -4693,8 +4813,8 @@ def build_quick_balance_chat_menu(day_key: str):
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
         if owner_item and int_cid == owner_item[0]:
             continue
-        enabled = is_quick_balance_enabled(int_cid)
-        icon = "✅" if enabled else "❌"
+        visible_qb = bool(is_finance_mode(int_cid) and is_quick_balance_enabled(int_cid) and not is_hidden_finance_mode(int_cid))
+        icon = "✅" if visible_qb else "❌"
         buttons.append(types.InlineKeyboardButton(
             f'{icon} {title}',
             callback_data=f"d:{day_key}:qb_cfg_{int_cid}"
@@ -4703,8 +4823,8 @@ def build_quick_balance_chat_menu(day_key: str):
     add_buttons_in_rows(kb, buttons, 3)
 
     if owner_item:
-        enabled = is_quick_balance_enabled(owner_item[0])
-        icon = "✅" if enabled else "❌"
+        visible_qb = bool(is_finance_mode(owner_item[0]) and is_quick_balance_enabled(owner_item[0]) and not is_hidden_finance_mode(owner_item[0]))
+        icon = "✅" if visible_qb else "❌"
         kb.row(types.InlineKeyboardButton(
             f'{icon} {owner_item[1]}',
             callback_data=f"d:{day_key}:qb_cfg_{owner_item[0]}"
@@ -4911,8 +5031,8 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
 
     kb.row(
         types.InlineKeyboardButton("📝 Редактировать", callback_data=f"fv:{target_chat_id}:{day_key}:edit_list:{owner_day_key}"),
-        types.InlineKeyboardButton("📂 CSV", callback_data=f"fv:{target_chat_id}:{day_key}:csv_all:{owner_day_key}"),
-        types.InlineKeyboardButton("📊 Статьи", callback_data="cat_today"),
+        types.InlineKeyboardButton("📂 CSV", callback_data=f"fv:{target_chat_id}:{day_key}:csv_menu:{owner_day_key}"),
+        types.InlineKeyboardButton("📊 Статьи", callback_data=f"fvcat_today:{target_chat_id}:{owner_day_key}"),
     )
     kb.row(
         types.InlineKeyboardButton("📅 Календарь", callback_data=f"fv:{target_chat_id}:{day_key}:calendar:{owner_day_key}"),
@@ -4928,6 +5048,151 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
 def build_fin_window_menu_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
     """Совместимость: отдельного меню больше нет."""
     return build_fin_window_view_keyboard(target_chat_id, day_key, owner_day_key)
+
+def build_fin_window_csv_menu(target_chat_id: int, day_key: str, owner_day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    buttons = [
+        types.InlineKeyboardButton("📅 За день", callback_data=f"fv:{target_chat_id}:{day_key}:csv_day:{owner_day_key}"),
+        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"fv:{target_chat_id}:{day_key}:csv_week:{owner_day_key}"),
+        types.InlineKeyboardButton("📆 За месяц", callback_data=f"fv:{target_chat_id}:{day_key}:csv_month:{owner_day_key}"),
+        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"fv:{target_chat_id}:{day_key}:csv_wedthu:{owner_day_key}"),
+        types.InlineKeyboardButton("📂 Всё время", callback_data=f"fv:{target_chat_id}:{day_key}:csv_all:{owner_day_key}"),
+    ]
+    add_buttons_in_rows(kb, buttons, 3)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
+    return kb
+
+
+def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str):
+    """Отправляет CSV владельцу, но данные берёт из target_chat_id."""
+    try:
+        store = get_chat_store(target_chat_id)
+        rows = []
+        caption = f"📂 CSV: {get_chat_display_name(target_chat_id)}"
+        if mode == "all":
+            save_chat_json(target_chat_id)
+            path = chat_csv_file(target_chat_id)
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    bot.send_document(recipient_chat_id, f, caption=caption)
+                return
+        elif mode == "day":
+            for r in store.get("daily_records", {}).get(day_key, []) or []:
+                rows.append((fmt_date_backup(day_key), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            caption = f"📅 CSV за день {fmt_date_backup(day_key)}: {get_chat_display_name(target_chat_id)}"
+        elif mode == "week":
+            base = datetime.strptime(day_key, "%Y-%m-%d")
+            start = base - timedelta(days=6)
+            for i in range(7):
+                dk = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+                for r in store.get("daily_records", {}).get(dk, []) or []:
+                    rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            caption = f"🗓 CSV за неделю: {get_chat_display_name(target_chat_id)}"
+        elif mode == "month":
+            base = datetime.strptime(day_key, "%Y-%m-%d")
+            start = base.replace(day=1)
+            for dk, recs in (store.get("daily_records", {}) or {}).items():
+                try:
+                    dt = datetime.strptime(dk, "%Y-%m-%d")
+                except Exception:
+                    continue
+                if start <= dt <= base:
+                    for r in recs or []:
+                        rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            caption = f"📆 CSV за месяц: {get_chat_display_name(target_chat_id)}"
+        elif mode == "wedthu":
+            base = datetime.strptime(day_key, "%Y-%m-%d")
+            while base.weekday() != 2:
+                base -= timedelta(days=1)
+            for i in range(2):
+                dk = (base + timedelta(days=i)).strftime("%Y-%m-%d")
+                for r in store.get("daily_records", {}).get(dk, []) or []:
+                    rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            caption = f"📊 CSV Ср–Чт: {get_chat_display_name(target_chat_id)}"
+
+        if not rows:
+            send_and_auto_delete(recipient_chat_id, "Нет данных для CSV.", 8)
+            return
+        tmp_name = f"fv_csv_{target_chat_id}_{mode}_{int(time.time())}.csv"
+        with open(tmp_name, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "amount", "note"])
+            write_csv_rows_with_day_gaps(w, rows, 3)
+        with open(tmp_name, "rb") as f:
+            bot.send_document(recipient_chat_id, f, caption=caption)
+        try:
+            os.remove(tmp_name)
+        except Exception:
+            pass
+    except Exception as e:
+        log_error(f"send_csv_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
+
+
+def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start: str, end: str, owner_day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    buttons = []
+    for cat in get_ordered_category_names(include_all=True):
+        slug = EXPENSE_CATEGORY_SLUGS.get(cat)
+        if slug:
+            buttons.append(types.InlineKeyboardButton(cat, callback_data=f"fvcat_show:{target_chat_id}:{start}:{end}:{slug}:{owner_day_key}"))
+    add_buttons_in_rows(kb, buttons, 3)
+    if mode == "wthu":
+        prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+        kb.row(
+            types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"fvcat_wthu:{target_chat_id}:{prev_key}:{owner_day_key}"),
+            types.InlineKeyboardButton("📅 Сегодня", callback_data=f"fvcat_today:{target_chat_id}:{owner_day_key}"),
+            types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=f"fvcat_wthu:{target_chat_id}:{next_key}:{owner_day_key}"),
+        )
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
+    return kb
+
+
+def handle_finwindow_categories_callback(call, data_str: str) -> bool:
+    if not data_str.startswith("fvcat_"):
+        return False
+    owner_chat_id = call.message.chat.id
+    if not OWNER_ID or str(owner_chat_id) != str(OWNER_ID):
+        return True
+    try:
+        parts = data_str.split(":")
+        action = parts[0]
+        target_chat_id = int(parts[1])
+    except Exception:
+        return True
+    store = get_chat_store(target_chat_id)
+    if action == "fvcat_today":
+        owner_day_key = parts[2] if len(parts) > 2 else today_key()
+        return handle_finwindow_categories_callback(call, f"fvcat_wthu:{target_chat_id}:{today_key()}:{owner_day_key}")
+    if action == "fvcat_wthu":
+        ref = parts[2] if len(parts) > 2 else today_key()
+        owner_day_key = parts[3] if len(parts) > 3 else today_key()
+        start_key = week_start_thursday(ref)
+        start, end = week_bounds_thu_wed(start_key)
+        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
+        text, _ = summarize_categories(store, start, end, label)
+        text = f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + text
+        safe_edit(bot, call, text, reply_markup=build_fin_categories_summary_keyboard(target_chat_id, "wthu", start, end, owner_day_key), parse_mode="HTML")
+        return True
+    if action == "fvcat_show":
+        try:
+            _, target_s, start, end, slug, owner_day_key = data_str.split(":", 5)
+            target_chat_id = int(target_s)
+        except Exception:
+            return True
+        category = CATEGORY_BY_SLUG.get(slug)
+        if not category:
+            return True
+        label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
+        text = f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + build_category_detail_text(store, start, end, category, label)
+        kb = types.InlineKeyboardMarkup(row_width=3)
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}"))
+        kb.row(types.InlineKeyboardButton("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
+        safe_edit(bot, call, text, reply_markup=kb, parse_mode="HTML")
+        return True
+    return True
+
+
 def render_fin_window_text(target_chat_id: int, day_key: str):
     txt, _ = render_day_window(target_chat_id, day_key)
     return f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n\n{txt}"
@@ -5438,6 +5703,9 @@ def on_callback(call):
             month_key = data_str.split(":", 1)[1].strip()
             open_report_window(chat_id, month_key, call.message.message_id)
             return
+        if data_str.startswith("fvcat_"):
+            if handle_finwindow_categories_callback(call, data_str):
+                return
         if data_str == "cat_months" or data_str.startswith("cat_"):
             if handle_categories_callback(call, data_str):
                 return
@@ -5767,15 +6035,18 @@ def on_callback(call):
                 save_data(data)
                 schedule_cancel_finwin_edit(chat_id, sent.message_id, delay=40)
                 return
-            if action == "csv_all":
-                try:
-                    save_chat_json(target_chat_id)
-                    path = chat_csv_file(target_chat_id)
-                    if os.path.exists(path):
-                        with open(path, "rb") as f:
-                            bot.send_document(chat_id, f, caption=f"📂 CSV: {get_chat_display_name(target_chat_id)}")
-                except Exception as e:
-                    log_error(f"finwin csv_all: {e}")
+            if action == "csv_menu":
+                safe_edit(
+                    bot,
+                    call,
+                    f"📂 CSV: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:",
+                    reply_markup=build_fin_window_csv_menu(target_chat_id, view_day, owner_day_key),
+                    parse_mode="HTML"
+                )
+                return
+            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu"}:
+                mode = action.replace("csv_", "")
+                send_csv_for_chat_to(chat_id, target_chat_id, mode, view_day)
                 return
             return
         if not data_str.startswith("d:"):
@@ -6210,7 +6481,7 @@ def send_csv_week(chat_id: int, day_key: str):
         for i in range(7):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             for r in store.get("daily_records", {}).get(d, []):
-                rows.append((d, fmt_csv_amount(r["amount"]), r.get("note", "")))
+                rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных за неделю")
@@ -6244,7 +6515,7 @@ def send_csv_month(chat_id: int, day_key: str):
             dt = datetime.strptime(d, "%Y-%m-%d")
             if dt >= start and dt <= base:
                 for r in recs:
-                    rows.append((d, fmt_csv_amount(r["amount"]), r.get("note", "")))
+                    rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных за месяц")
@@ -6281,7 +6552,7 @@ def send_csv_wedthu(chat_id: int, day_key: str):
         for i in range(2):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             for r in store.get("daily_records", {}).get(d, []):
-                rows.append((d, fmt_csv_amount(r["amount"]), r.get("note", "")))
+                rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных Ср–Чт")
@@ -6316,24 +6587,31 @@ def add_record_to_chat(
         if not day_key:
             day_key = day_key_from_message(source_msg)
 
+        source_msg_id = getattr(source_msg, "message_id", None) if source_msg else None
+        source_order_msg_id = (
+            getattr(source_msg, "source_order_msg_id", None)
+            or getattr(source_msg, "forward_source_msg_id", None)
+            or source_msg_id
+        )
+
         rec = {
             "id": rid,
             "short_id": "",
-            "timestamp": now_local().isoformat(timespec="seconds"),
+            "timestamp": message_timestamp_iso(source_msg),
             "amount": amount,
             "note": note,
-            "source_msg_id": source_msg.message_id if source_msg else None,
+            "source_msg_id": source_msg_id,
+            "source_order_msg_id": source_order_msg_id,
             "owner": owner,
-            "msg_id": source_msg.message_id if source_msg else None,
-            "origin_msg_id": source_msg.message_id if source_msg else None,
+            "msg_id": source_msg_id,
+            "origin_msg_id": source_msg_id,
             "day_key": day_key,
         }
 
         store.setdefault("records", []).append(rec)
-        store.setdefault("daily_records", {}).setdefault(day_key, []).append(rec)
-
-        store["next_id"] = rid + 1
-        store["balance"] = sum(r["amount"] for r in store["records"])
+        normalize_chat_records(chat_id)
+        store["next_id"] = max([int(r.get("id", 0) or 0) for r in store.get("records", [])] + [0]) + 1
+        store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
 
         rebuild_month_short_ids(chat_id)
         rebuild_global_records()
@@ -6356,32 +6634,21 @@ def delete_record_in_chat(chat_id: int, rid: int):
         rebuild_global_records()
 
 def renumber_chat_records(chat_id: int):
-    """
-    Перенумеровывает внутренние id по реальному порядку:
-      • сортируем по day_key и timestamp
-      • id = 1,2,3... по всему чату
-      • short_id = R1,R2,... заново в каждом месяце
-      • обновляем store["records"] и next_id
-    """
+    """Перенумеровывает записи по реальной хронологии поступления сообщений."""
     store = get_chat_store(chat_id)
-    daily = store.get("daily_records", {}) or {}
+    normalize_chat_records(chat_id)
+    all_recs = list(store.get("records", []) or [])
+    all_recs.sort(key=record_sort_key)
 
-    all_recs = []
-    for dk in sorted(daily.keys()):
-        recs = daily.get(dk, [])
-        recs_sorted = sorted(recs, key=lambda r: r.get("timestamp", ""))
-        daily[dk] = recs_sorted
-        for r in recs_sorted:
-            all_recs.append(r)
-
-    new_id = 1
-    for r in all_recs:
+    for new_id, r in enumerate(all_recs, 1):
         r["id"] = new_id
-        new_id += 1
 
-    store["records"] = list(all_recs)
-    store["next_id"] = new_id
-
+    store["records"] = all_recs
+    rebuilt_daily = {}
+    for r in all_recs:
+        rebuilt_daily.setdefault(_record_day_key(r), []).append(r)
+    store["daily_records"] = rebuilt_daily
+    store["next_id"] = len(all_recs) + 1
     rebuild_month_short_ids(chat_id)
     
 def get_or_create_active_windows(chat_id: int) -> dict:
@@ -6769,15 +7036,13 @@ def cmd_csv_all(chat_id: int):
     except Exception as e:
         log_error(f"cmd_csv_all: {e}")
 def cmd_csv_day(chat_id: int, day_key: str):
-    """
-    CSV только за один день для текущего чата.
-    """
+    """CSV только за один день для текущего чата, date DD:MM:YY."""
     if is_finance_output_suppressed(chat_id):
         return
     if not require_finance(chat_id):
         return
     store = get_chat_store(chat_id)
-    day_recs = store.get("daily_records", {}).get(day_key, [])
+    day_recs = sorted(store.get("daily_records", {}).get(day_key, []) or [], key=record_sort_key)
     if not day_recs:
         send_info(chat_id, "Нет записей за этот день.")
         return
@@ -6785,12 +7050,12 @@ def cmd_csv_day(chat_id: int, day_key: str):
     try:
         with open(tmp_name, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["chat_id", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
+            w.writerow(["date", "chat", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
             rows = []
             for r in day_recs:
                 rows.append((
-                    day_key,
-                    chat_id,
+                    fmt_date_backup(day_key),
+                    get_chat_display_name(chat_id),
                     r.get("id"),
                     r.get("short_id"),
                     r.get("timestamp"),
@@ -6799,9 +7064,9 @@ def cmd_csv_day(chat_id: int, day_key: str):
                     r.get("owner"),
                     day_key,
                 ))
-            write_csv_rows_with_day_gaps(w, [row[1:] for row in rows], 8)
+            write_csv_rows_with_day_gaps(w, rows, 9)
         with open(tmp_name, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"📅 CSV за день {day_key}: {get_chat_display_name(chat_id)}")
+            bot.send_document(chat_id, f, caption=f"📅 CSV за день {fmt_date_backup(day_key)}: {get_chat_display_name(chat_id)}")
     except Exception as e:
         log_error(f"cmd_csv_day: {e}")
     finally:
@@ -7478,8 +7743,8 @@ def _record_day_key(rec: dict) -> str:
 
 def normalize_chat_records(chat_id: int) -> None:
     """
-    v27 cleanup: records — основной источник, daily_records строится из него.
-    Если records пустой, но daily_records есть — аккуратно восстанавливаем records.
+    v33: records — основной источник, daily_records строится из него.
+    Сортировка стабильная: Telegram date + исходный message_id, чтобы 1 2 3 4 не превращалось в 1 2 4 3.
     """
     store = get_chat_store(chat_id)
     records = store.get("records")
@@ -7502,10 +7767,11 @@ def normalize_chat_records(chat_id: int) -> None:
         rec.setdefault("amount", 0)
         rec.setdefault("note", "")
         rec.setdefault("owner", "")
+        rec.setdefault("source_order_msg_id", rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or rec.get("id") or 0)
         _record_day_key(rec)
         clean.append(rec)
 
-    clean.sort(key=lambda r: (str(r.get("day_key", "")), str(r.get("timestamp", "")), int(r.get("id", 0) or 0)))
+    clean.sort(key=record_sort_key)
     store["records"] = clean
 
     rebuilt_daily = {}
@@ -7521,7 +7787,7 @@ def recalc_balance(chat_id: int):
 
 
 def rebuild_month_short_ids(chat_id: int):
-    """Пересчитывает short_id как месячную нумерацию: R1, R2... в каждом месяце."""
+    """Пересчитывает short_id как месячную нумерацию по стабильной хронологии."""
     normalize_chat_records(chat_id)
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {}) or {}
@@ -7530,7 +7796,7 @@ def rebuild_month_short_ids(chat_id: int):
     for dk in sorted(daily.keys()):
         month_key = dk[:7]
         month_counters.setdefault(month_key, 1)
-        recs = sorted(daily.get(dk, []) or [], key=lambda r: (str(r.get("timestamp", "")), int(r.get("id", 0) or 0)))
+        recs = sorted(daily.get(dk, []) or [], key=record_sort_key)
         daily[dk] = recs
         for r in recs:
             r["short_id"] = f"R{month_counters[month_key]}"
@@ -7567,6 +7833,7 @@ _backup_timers = {}
 _balance_panel_refresh_timers = {}
 _balance_panel_collapse_timers = {}
 _balance_panel_first_timers = {}
+_balance_panel_recreate_timers = {}
 _total_message_timers = {}
 _backup_dirty_chats = set()
 _backup_global_timer = None
