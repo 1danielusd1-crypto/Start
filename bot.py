@@ -988,6 +988,16 @@ def is_owner_chat(chat_id: int) -> bool:
     return bool(OWNER_ID and str(chat_id) == str(OWNER_ID))
 
 
+def is_backup_channel_chat(chat_id: int) -> bool:
+    """True только для служебного backup-канала, если он задан."""
+    return bool(BACKUP_CHAT_ID and str(chat_id) == str(BACKUP_CHAT_ID))
+
+
+def can_receive_direct_json_backup(chat_id: int) -> bool:
+    """JSON прямо в чат отправляем только владельцу или в backup-канал."""
+    return is_owner_chat(chat_id) or is_backup_channel_chat(chat_id)
+
+
 def schedule_command_delete(msg):
     try:
         delete_message_later(msg.chat.id, msg.message_id, COMMAND_DELETE_DELAY)
@@ -1987,7 +1997,7 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
 
 
 def mega_upload_chat_backup_bundle(chat_id: int, month_key: str | None = None) -> bool:
-    """MEGA-бэкап одного чата: latest JSON/CSV/XLSX + месячный JSON/CSV/XLSX."""
+    """MEGA-бэкап одного чата: только JSON (latest + месячный JSON)."""
     if not mega_is_configured():
         return False
     try:
@@ -1995,21 +2005,23 @@ def mega_upload_chat_backup_bundle(chat_id: int, month_key: str | None = None) -
         slug = mega_chat_slug(chat_id)
         remote_chat_dir = mega_remote_chat_dir(chat_id)
         ok = True
-        latest_map = {
-            "json": (chat_json_file(chat_id), f"latest_{slug}.json"),
-            "csv": (chat_csv_file(chat_id), f"latest_{slug}.csv"),
-            "xlsx": (chat_xlsx_file(chat_id), f"latest_{slug}.xlsx"),
-        }
-        for _, (src, remote_name) in latest_map.items():
-            ok = mega_put_replace(src, remote_chat_dir, remote_name) and ok
+
+        # В MEGA больше не грузим CSV/XLSX — только JSON.
+        ok = mega_put_replace(
+            chat_json_file(chat_id),
+            remote_chat_dir,
+            f"latest_{slug}.json"
+        ) and ok
 
         month_key = month_key or current_month_key()
         month_files = save_chat_monthly_backup_files(chat_id, month_key)
         remote_month_dir = mega_remote_month_dir(month_key)
-        for kind, src in month_files.items():
-            ok = mega_put_replace(src, remote_month_dir, os.path.basename(src)) and ok
+        json_month_path = month_files.get("json")
+        if json_month_path:
+            ok = mega_put_replace(json_month_path, remote_month_dir, os.path.basename(json_month_path)) and ok
+
         if ok:
-            log_info(f"[MEGA] chat backup uploaded: {get_chat_display_name(chat_id)} / {month_key}")
+            log_info(f"[MEGA] JSON-only chat backup uploaded: {get_chat_display_name(chat_id)} / {month_key}")
         return ok
     except Exception as e:
         log_error(f"[MEGA CHAT BACKUP ERROR] {chat_id}: {e}")
@@ -2225,11 +2237,15 @@ def _save_chat_backup_meta(meta: dict) -> None:
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
 def send_backup_to_chat(chat_id: int) -> None:
+    # JSON-бэкап прямо в чат больше не рассылаем пользователям/группам.
+    # Разрешено только владельцу и, если эта функция будет вызвана напрямую, backup-каналу.
+    if not can_receive_direct_json_backup(chat_id):
+        return
     if is_finance_output_suppressed(chat_id) or not is_auto_backup_enabled(chat_id):
         return
     """
-    Универсальный авто-бэкап JSON прямо в чате.
-    Работает одинаково для владельца, групп, каналов, всех чатов.
+    Авто-бэкап JSON прямо в чат.
+    Работает только для владельца и служебного backup-канала.
     Логика:
     • гарантируем актуальный data_<chat_id>.json
     • читаем meta-файл chat_backup_meta.json
@@ -3619,10 +3635,10 @@ def send_backup_to_channel(chat_id: int):
     Делает:
     • проверку флага backup_flags["channel"]
     • один раз (на первый бэкап чата) отправляет chat_id эмодзи в канал
-    • обновляет/создаёт:
+    • обновляет/создаёт в канале только:
         - data_<chat_id>.json
-        - data_<chat_id>.csv
         - data_<chat_id>.xlsx
+      CSV в backup-канал больше не отправляется.
     """
     try:
         if not BACKUP_CHAT_ID:
@@ -3650,10 +3666,9 @@ def send_backup_to_channel(chat_id: int):
                     f"в канал: {e}"
                 )
         json_path = chat_json_file(chat_id)
-        csv_path = chat_csv_file(chat_id)
         xlsx_path = chat_xlsx_file(chat_id)
+        # В backup-канал отправляем только JSON и Excel. CSV убран по требованию.
         send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
-        send_backup_to_channel_for_file(csv_path, f"csv_{chat_id}", chat_title)
         send_backup_to_channel_for_file(xlsx_path, f"xlsx_{chat_id}", chat_title)
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
@@ -7900,12 +7915,12 @@ def _flush_dirty_backups():
                     continue
                 if not is_auto_backup_enabled(cid):
                     continue
-                # send_backup_to_chat/send_backup_to_channel сами готовят per-chat файлы.
+                # send_backup_to_chat теперь отправляет JSON прямо в чат только владельцу/backup-каналу.
                 if not is_finance_output_suppressed(cid):
                     send_backup_to_chat(cid)
-                # Канал-бэкап делается для всех фин-чатов, включая скрытые.
+                # Канал-бэкап: только JSON + XLSX для всех фин-чатов, включая скрытые.
                 send_backup_to_channel(cid)
-                # MEGA: отдельный latest-бэкап чата + месячный файл YYYY-MM с входящим остатком.
+                # MEGA: только JSON (latest + месячный JSON).
                 try:
                     mega_upload_chat_backup_bundle(cid, month_key_for_mega)
                 except Exception as e:
