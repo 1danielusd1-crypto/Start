@@ -331,6 +331,78 @@ def get_recent_errors(limit: int = 20):
         return []
 
 
+
+
+def _process_trace_enabled() -> bool:
+    return _env_bool("FIN_PROCESS_TRACE", "1")
+
+
+def _trace_timestamp() -> str:
+    try:
+        return now_local().strftime("%H:%M:%S.%f")[:-3]
+    except Exception:
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+
+def _trace_delete_delay() -> int:
+    try:
+        return int(os.getenv("FIN_PROCESS_TRACE_DELETE_SECONDS", "120"))
+    except Exception:
+        return 120
+
+
+class ProcessTrace:
+    """Лёгкий Telegram-трейс: одно стартовое сообщение и одно финальное обновление, чтобы не замедлять бота."""
+
+    def __init__(self, chat_id: int, title: str):
+        self.chat_id = int(chat_id)
+        self.title = str(title or "Процесс")
+        self.lines = []
+        self.message_id = None
+        self.enabled = False
+        try:
+            self.enabled = bool(_process_trace_enabled() and not is_finance_output_suppressed(self.chat_id))
+        except Exception:
+            self.enabled = bool(_process_trace_enabled())
+
+    def start(self):
+        self.step("старт")
+        if not self.enabled:
+            return self
+        try:
+            sent = bot.send_message(self.chat_id, self._render(running=True))
+            self.message_id = sent.message_id
+        except Exception as e:
+            log_error(f"ProcessTrace start({self.chat_id}): {e}")
+            self.enabled = False
+        return self
+
+    def step(self, label: str):
+        self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {label}")
+        return self
+
+    def _render(self, running: bool = False) -> str:
+        head = "⏳" if running else "✅"
+        return head + " " + self.title + "\n" + "\n".join(self.lines[-25:])
+
+    def finish(self, final_label: str = "завершено"):
+        self.step(final_label)
+        if not self.enabled:
+            return
+        text = self._render(running=False)
+        try:
+            if self.message_id:
+                bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id)
+                delete_message_later(self.chat_id, self.message_id, _trace_delete_delay())
+            else:
+                send_and_auto_delete(self.chat_id, text, _trace_delete_delay())
+        except Exception as e:
+            log_error(f"ProcessTrace finish({self.chat_id}): {e}")
+
+    def fail(self, err: Exception):
+        self.step(f"ошибка: {str(err)[:160]}")
+        self.finish("остановлено")
+
 def format_error_for_owner(raw) -> str:
     """Для /errors: по возможности заменяет известные chat_id на имена чатов/пользователей."""
     text = str(raw or "")
@@ -698,17 +770,80 @@ def is_finance_output_suppressed(chat_id: int) -> bool:
         return False
 
 
-def is_auto_backup_enabled(chat_id: int) -> bool:
+def _backup_target_setting_key(target: str) -> str:
+    target = str(target or "").strip().lower()
+    if target in {"chat", "owner", "self"}:
+        return "auto_backup_to_chat_enabled"
+    if target in {"channel", "backup_channel"}:
+        return "auto_backup_to_channel_enabled"
+    if target in {"mega", "cloud"}:
+        return "auto_backup_to_mega_enabled"
+    return "auto_backup_enabled"
+
+
+def _ensure_backup_settings(chat_id: int) -> dict:
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    legacy = bool(settings.get("auto_backup_enabled", True))
+    settings.setdefault("auto_backup_enabled", legacy)
+    settings.setdefault("auto_backup_to_chat_enabled", legacy)
+    settings.setdefault("auto_backup_to_channel_enabled", legacy)
+    settings.setdefault("auto_backup_to_mega_enabled", legacy)
+    return settings
+
+
+def is_backup_target_enabled(chat_id: int, target: str) -> bool:
     try:
-        store = get_chat_store(chat_id)
-        return bool(store.setdefault("settings", {}).get("auto_backup_enabled", True))
+        settings = _ensure_backup_settings(chat_id)
+        return bool(settings.get(_backup_target_setting_key(target), True))
     except Exception:
         return True
 
 
+def is_backup_to_chat_enabled(chat_id: int) -> bool:
+    return is_backup_target_enabled(chat_id, "chat")
+
+
+def is_backup_to_channel_enabled(chat_id: int) -> bool:
+    return is_backup_target_enabled(chat_id, "channel")
+
+
+def is_backup_to_mega_enabled(chat_id: int) -> bool:
+    return is_backup_target_enabled(chat_id, "mega")
+
+
+def is_auto_backup_enabled(chat_id: int) -> bool:
+    """Legacy master: True если включён хотя бы один тип авто-бэкапа."""
+    try:
+        return any((
+            is_backup_to_chat_enabled(chat_id),
+            is_backup_to_channel_enabled(chat_id),
+            is_backup_to_mega_enabled(chat_id),
+        ))
+    except Exception:
+        return True
+
+
+def set_backup_target_enabled(chat_id: int, target: str, enabled: bool):
+    settings = _ensure_backup_settings(chat_id)
+    settings[_backup_target_setting_key(target)] = bool(enabled)
+    settings["auto_backup_enabled"] = any((
+        bool(settings.get("auto_backup_to_chat_enabled", True)),
+        bool(settings.get("auto_backup_to_channel_enabled", True)),
+        bool(settings.get("auto_backup_to_mega_enabled", True)),
+    ))
+    save_data(data)
+    schedule_config_backup_for_chats(chat_id)
+
+
 def set_auto_backup_enabled(chat_id: int, enabled: bool):
-    store = get_chat_store(chat_id)
-    store.setdefault("settings", {})["auto_backup_enabled"] = bool(enabled)
+    """Совместимость: старое включение/выключение теперь меняет все три бэкапа сразу."""
+    settings = _ensure_backup_settings(chat_id)
+    enabled = bool(enabled)
+    settings["auto_backup_enabled"] = enabled
+    settings["auto_backup_to_chat_enabled"] = enabled
+    settings["auto_backup_to_channel_enabled"] = enabled
+    settings["auto_backup_to_mega_enabled"] = enabled
     save_data(data)
     schedule_config_backup_for_chats(chat_id)
 
@@ -2000,6 +2135,8 @@ def mega_upload_chat_backup_bundle(chat_id: int, month_key: str | None = None) -
     """MEGA-бэкап одного чата: только JSON (latest + месячный JSON)."""
     if not mega_is_configured():
         return False
+    if not is_backup_to_mega_enabled(chat_id):
+        return False
     try:
         save_chat_json(chat_id)
         slug = mega_chat_slug(chat_id)
@@ -2193,19 +2330,40 @@ def mega_status_text() -> str:
             lines.append("whoami/login: ERROR — " + str(e)[:300])
     return "\n".join(lines)
 def _load_csv_meta():
+    # Сначала берём meta из data: она попадает в latest_global.json и переживает deploy/autorestore.
+    try:
+        meta_from_data = (data or {}).get("csv_meta")
+        if isinstance(meta_from_data, dict) and meta_from_data:
+            return meta_from_data
+    except Exception:
+        pass
     meta = SQLITE.get_meta("csv_meta", "main", None)
-    if isinstance(meta, dict):
+    if isinstance(meta, dict) and meta:
+        try:
+            data["csv_meta"] = meta
+        except Exception:
+            pass
         return meta
     legacy = _load_json(CSV_META_FILE, {})
     if isinstance(legacy, dict) and legacy:
         SQLITE.set_meta("csv_meta", "main", legacy)
+        try:
+            data["csv_meta"] = legacy
+        except Exception:
+            pass
     return legacy if isinstance(legacy, dict) else {}
 
 def _save_csv_meta(meta: dict):
     try:
-        SQLITE.set_meta("csv_meta", "main", meta or {})
-        _save_json(CSV_META_FILE, meta or {})
-        log_info("csv_meta updated in sqlite")
+        meta = meta or {}
+        SQLITE.set_meta("csv_meta", "main", meta)
+        try:
+            data["csv_meta"] = meta
+            save_data(data)
+        except Exception:
+            pass
+        _save_json(CSV_META_FILE, meta)
+        log_info("csv_meta updated in sqlite/data")
     except Exception as e:
         log_error(f"_save_csv_meta: {e}")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -2214,26 +2372,43 @@ log_info(f"chat_backup_meta.json PATH = {CHAT_BACKUP_META_FILE}")
 def _load_chat_backup_meta() -> dict:
     """Загрузка meta-файла бэкапов для всех чатов."""
     try:
+        meta_from_data = (data or {}).get("chat_backup_meta")
+        if isinstance(meta_from_data, dict) and meta_from_data:
+            return meta_from_data
         meta = SQLITE.get_meta("chat_backup_meta", "main", None)
-        if isinstance(meta, dict):
+        if isinstance(meta, dict) and meta:
+            try:
+                data["chat_backup_meta"] = meta
+            except Exception:
+                pass
             return meta
         if not os.path.exists(CHAT_BACKUP_META_FILE):
             return {}
         legacy = _load_json(CHAT_BACKUP_META_FILE, {})
         if isinstance(legacy, dict) and legacy:
             SQLITE.set_meta("chat_backup_meta", "main", legacy)
+            try:
+                data["chat_backup_meta"] = legacy
+            except Exception:
+                pass
         return legacy if isinstance(legacy, dict) else {}
     except Exception as e:
         log_error(f"_load_chat_backup_meta: {e}")
         return {}
 
 def _save_chat_backup_meta(meta: dict) -> None:
-    """Сохранение meta-файла и sqlite-копии."""
+    """Сохранение meta-файла, sqlite-копии и data-копии для MEGA autorestore."""
     try:
-        SQLITE.set_meta("chat_backup_meta", "main", meta or {})
+        meta = meta or {}
+        SQLITE.set_meta("chat_backup_meta", "main", meta)
+        try:
+            data["chat_backup_meta"] = meta
+            save_data(data)
+        except Exception:
+            pass
         log_info(f"SAVING META TO: {os.path.abspath(CHAT_BACKUP_META_FILE)}")
-        _save_json(CHAT_BACKUP_META_FILE, meta or {})
-        log_info("chat_backup_meta updated in sqlite")
+        _save_json(CHAT_BACKUP_META_FILE, meta)
+        log_info("chat_backup_meta updated in sqlite/data")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
 def send_backup_to_chat(chat_id: int) -> None:
@@ -2241,7 +2416,7 @@ def send_backup_to_chat(chat_id: int) -> None:
     # Разрешено только владельцу и, если эта функция будет вызвана напрямую, backup-каналу.
     if not can_receive_direct_json_backup(chat_id):
         return
-    if is_finance_output_suppressed(chat_id) or not is_auto_backup_enabled(chat_id):
+    if is_finance_output_suppressed(chat_id) or not is_backup_to_chat_enabled(chat_id):
         return
     """
     Авто-бэкап JSON прямо в чат.
@@ -2252,7 +2427,7 @@ def send_backup_to_chat(chat_id: int) -> None:
     • если есть msg_id → edit_message_media()
     • если нет / не найдено → отправляем новое сообщение
     • обновляем meta-файл в рабочей директории (Render-friendly)
-    • при смене дня (после 00:00) создаётся НОВОЕ сообщение с файлом
+    • старое сообщение обновляется всегда; новое создаётся только если старое удалено/недоступно
     """
     try:
         if not chat_id:
@@ -2278,15 +2453,10 @@ def send_backup_to_chat(chat_id: int) -> None:
             f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        last_ts = meta.get(ts_key)
+        # Важно: не создаём новый документ каждый день/после deploy.
+        # Если msg_id есть — всегда пытаемся обновить старое сообщение.
+        # Новый документ создаётся только если старое сообщение удалено или Telegram не дал его отредактировать.
         msg_id = meta.get(msg_key)
-        if msg_id and last_ts:
-            try:
-                prev_dt = datetime.fromisoformat(last_ts)
-                if prev_dt.date() != now_local().date():
-                    msg_id = None
-            except Exception as e:
-                log_error(f"send_backup_to_chat: bad timestamp for chat {chat_id}: {e}")
 
         def _open_file() -> io.BytesIO | None:
             """Чтение JSON в BytesIO с правильным именем файла."""
@@ -2356,6 +2526,8 @@ def default_data():
         "forward_finance": {},
         "forward_index": {},
         "bot_errors": [],
+        "csv_meta": {},
+        "chat_backup_meta": {},
     }
 def load_data():
     _import_legacy_global_json_to_db(DATA_FILE, force=False)
@@ -2453,7 +2625,10 @@ def get_chat_store(chat_id: int) -> dict:
                     "quick_balance_enabled": True,
                     "quick_balance_behavior": "open",
                     "hidden_finance": False,
-                    "auto_backup_enabled": True
+                    "auto_backup_enabled": True,
+                    "auto_backup_to_chat_enabled": True,
+                    "auto_backup_to_channel_enabled": True,
+                    "auto_backup_to_mega_enabled": True
                 },
             }
         )
@@ -2463,6 +2638,10 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("quick_balance_behavior", "open")
         store.setdefault("settings", {}).setdefault("hidden_finance", False)
         store.setdefault("settings", {}).setdefault("auto_backup_enabled", True)
+        legacy_backup_enabled = bool(store.setdefault("settings", {}).get("auto_backup_enabled", True))
+        store.setdefault("settings", {}).setdefault("auto_backup_to_chat_enabled", legacy_backup_enabled)
+        store.setdefault("settings", {}).setdefault("auto_backup_to_channel_enabled", legacy_backup_enabled)
+        store.setdefault("settings", {}).setdefault("auto_backup_to_mega_enabled", legacy_backup_enabled)
         store.setdefault("finance_mode", False)
 
         if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -3628,7 +3807,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
     except Exception as e:
         log_error(f"send_backup_to_channel_for_file({base_path}): {e}")
 def send_backup_to_channel(chat_id: int):
-    if not is_auto_backup_enabled(chat_id):
+    if not is_backup_to_channel_enabled(chat_id):
         return
     """
     Общий бэкап файлов чата в BACKUP_CHAT_ID.
@@ -3655,11 +3834,15 @@ def send_backup_to_channel(chat_id: int):
         # обновляем только файлы конкретного чата, без тяжёлого глобального экспорта.
         save_chat_json(chat_id)
         chat_title = _get_chat_title_for_backup(chat_id)
-        if chat_id not in backup_channel_notified_chats:
+        meta = _load_csv_meta()
+        notify_key = f"emoji_notified_{chat_id}"
+        if not meta.get(notify_key):
             try:
                 emoji_id = format_chat_id_emoji(chat_id)
                 bot.send_message(backup_chat_id, emoji_id)
                 backup_channel_notified_chats.add(chat_id)
+                meta[notify_key] = True
+                _save_csv_meta(meta)
             except Exception as e:
                 log_error(
                     f"send_backup_to_channel: не удалось отправить emoji chat_id "
@@ -4661,16 +4844,45 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
     kb.row(*bottom_row)
     return kb
 
-def build_csv_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    buttons = [
-        types.InlineKeyboardButton("📅 За день", callback_data=f"d:{day_key}:csv_day"),
-        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"d:{day_key}:csv_week"),
-        types.InlineKeyboardButton("📆 За месяц", callback_data=f"d:{day_key}:csv_month"),
-        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"d:{day_key}:csv_wedthu"),
-        types.InlineKeyboardButton("📂 Всё время", callback_data=f"d:{day_key}:csv_all_real"),
+def _backup_toggle_label(chat_id: int, target: str, label: str) -> str:
+    icon = "✅" if is_backup_target_enabled(chat_id, target) else "❌"
+    return f"{icon} {label}"
+
+
+def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | None = None, target_chat_id: int | None = None):
+    """Ряды: слева период, справа CSV и Excel."""
+    periods = [
+        ("📅 День", "day"),
+        ("🗓 Неделя", "week"),
+        ("📆 Месяц", "month"),
+        ("📊 Ср–Чт", "wedthu"),
+        ("📂 Всё время", "all"),
     ]
-    add_buttons_in_rows(kb, buttons, 3)
+    for label, mode in periods:
+        if prefix == "fv":
+            csv_cb = f"fv:{target_chat_id}:{day_key}:csv_{mode}:{owner_day_key}"
+            xlsx_cb = f"fv:{target_chat_id}:{day_key}:xlsx_{mode}:{owner_day_key}"
+        else:
+            csv_action = "csv_all_real" if mode == "all" else f"csv_{mode}"
+            xlsx_action = "xlsx_all" if mode == "all" else f"xlsx_{mode}"
+            csv_cb = f"d:{day_key}:{csv_action}"
+            xlsx_cb = f"d:{day_key}:{xlsx_action}"
+        kb.row(
+            types.InlineKeyboardButton(label, callback_data="none"),
+            types.InlineKeyboardButton("CSV", callback_data=csv_cb),
+            types.InlineKeyboardButton("Excel", callback_data=xlsx_cb),
+        )
+
+
+def build_csv_menu(day_key: str, chat_id: int | None = None):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    _add_export_period_rows(kb, day_key, "d")
+    if chat_id is not None:
+        kb.row(
+            types.InlineKeyboardButton(_backup_toggle_label(chat_id, "chat", "Бэкап в чат"), callback_data=f"d:{day_key}:bk_chat"),
+            types.InlineKeyboardButton(_backup_toggle_label(chat_id, "channel", "в канал"), callback_data=f"d:{day_key}:bk_channel"),
+            types.InlineKeyboardButton(_backup_toggle_label(chat_id, "mega", "в MEGA"), callback_data=f"d:{day_key}:bk_mega"),
+        )
     kb.row(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"d:{day_key}:edit_menu"))
     return kb
 
@@ -5066,14 +5278,12 @@ def build_fin_window_menu_keyboard(target_chat_id: int, day_key: str, owner_day_
 
 def build_fin_window_csv_menu(target_chat_id: int, day_key: str, owner_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
-    buttons = [
-        types.InlineKeyboardButton("📅 За день", callback_data=f"fv:{target_chat_id}:{day_key}:csv_day:{owner_day_key}"),
-        types.InlineKeyboardButton("🗓 За неделю", callback_data=f"fv:{target_chat_id}:{day_key}:csv_week:{owner_day_key}"),
-        types.InlineKeyboardButton("📆 За месяц", callback_data=f"fv:{target_chat_id}:{day_key}:csv_month:{owner_day_key}"),
-        types.InlineKeyboardButton("📊 Ср–Чт", callback_data=f"fv:{target_chat_id}:{day_key}:csv_wedthu:{owner_day_key}"),
-        types.InlineKeyboardButton("📂 Всё время", callback_data=f"fv:{target_chat_id}:{day_key}:csv_all:{owner_day_key}"),
-    ]
-    add_buttons_in_rows(kb, buttons, 3)
+    _add_export_period_rows(kb, day_key, "fv", owner_day_key=owner_day_key, target_chat_id=target_chat_id)
+    kb.row(
+        types.InlineKeyboardButton(_backup_toggle_label(target_chat_id, "chat", "Бэкап в чат"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_chat:{owner_day_key}"),
+        types.InlineKeyboardButton(_backup_toggle_label(target_chat_id, "channel", "в канал"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_channel:{owner_day_key}"),
+        types.InlineKeyboardButton(_backup_toggle_label(target_chat_id, "mega", "в MEGA"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_mega:{owner_day_key}"),
+    )
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
     return kb
 
@@ -5142,6 +5352,104 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
     except Exception as e:
         log_error(f"send_csv_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
 
+
+
+
+def _period_export_rows(chat_id: int, mode: str, day_key: str):
+    """Возвращает rows для CSV/XLSX по периоду: date, amount, note."""
+    store = get_chat_store(chat_id)
+    mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
+    if mode == "all_real":
+        mode = "all"
+    rows = []
+
+    def _append_day(dk: str):
+        for r in sorted(store.get("daily_records", {}).get(dk, []) or [], key=record_sort_key):
+            rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+
+    if mode == "day":
+        _append_day(day_key)
+        label = f"за день {fmt_date_backup(day_key)}"
+    elif mode == "week":
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+        start = base - timedelta(days=6)
+        for i in range(7):
+            _append_day((start + timedelta(days=i)).strftime("%Y-%m-%d"))
+        label = "за неделю"
+    elif mode == "month":
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+        start = base.replace(day=1)
+        for dk in sorted((store.get("daily_records", {}) or {}).keys()):
+            try:
+                dt = datetime.strptime(dk, "%Y-%m-%d")
+            except Exception:
+                continue
+            if start <= dt <= base:
+                _append_day(dk)
+        label = "за месяц"
+    elif mode == "wedthu":
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+        while base.weekday() != 2:
+            base -= timedelta(days=1)
+        for i in range(2):
+            _append_day((base + timedelta(days=i)).strftime("%Y-%m-%d"))
+        label = "Ср–Чт"
+    else:
+        for dk in sorted((store.get("daily_records", {}) or {}).keys()):
+            _append_day(dk)
+        label = "за всё время"
+
+    return rows, label
+
+
+def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv"):
+    """Отправка CSV или Excel по выбранному периоду. Работает для обычного чата и для меню владельца по чужому чату."""
+    try:
+        file_type = str(file_type or "csv").lower().lstrip(".")
+        mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
+        if mode == "all_real":
+            mode = "all"
+
+        if mode == "all":
+            save_chat_json(target_chat_id)
+            path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
+            label = "за всё время"
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    bot.send_document(
+                        recipient_chat_id,
+                        f,
+                        caption=f"📂 {'Excel' if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}"
+                    )
+                return
+
+        rows, label = _period_export_rows(target_chat_id, mode, day_key)
+        if not rows:
+            send_info(recipient_chat_id, f"Нет данных {label}.")
+            return
+
+        ext = "xlsx" if file_type == "xlsx" else "csv"
+        tmp_name = f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}"
+        if ext == "xlsx":
+            _write_simple_xlsx(tmp_name, [["date", "amount", "note"]] + [list(r) for r in rows], sheet_name="Экспорт")
+        else:
+            with open(tmp_name, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["date", "amount", "note"])
+                write_csv_rows_with_day_gaps(w, rows, 3)
+
+        with open(tmp_name, "rb") as f:
+            bot.send_document(
+                recipient_chat_id,
+                f,
+                caption=f"📂 {'Excel' if ext == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}"
+            )
+        try:
+            os.remove(tmp_name)
+        except Exception:
+            pass
+    except Exception as e:
+        log_error(f"send_export_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
 
 def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start: str, end: str, owner_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
@@ -5581,6 +5889,36 @@ def handle_categories_callback(call, data_str: str) -> bool:
 
     return False
     
+
+_callback_debounce_state = {}
+
+
+def _callback_should_debounce(call, data_str: str, min_interval: float = 0.45) -> bool:
+    """Защита от частых кликов: Telegram уже получил answer_callback_query, поэтому «Загрузка» не висит."""
+    try:
+        chat_id = int(call.message.chat.id)
+        msg_id = int(call.message.message_id)
+        data_str = str(data_str or "")
+        if data_str == "none":
+            return True
+        # Для навигации/экспорта/редактирования достаточно одного клика раз в ~0.45 сек на одно окно.
+        hot = False
+        if data_str.startswith("d:"):
+            parts = data_str.split(":", 2)
+            action = parts[2] if len(parts) > 2 else ""
+            hot = action in {"prev", "next", "today", "open", "back_main", "calendar", "csv_all"}
+        elif data_str.startswith("fv:") or data_str.startswith("c:") or data_str.startswith("fc:"):
+            hot = True
+        if not hot:
+            return False
+        key = (chat_id, msg_id, data_str.split(":", 1)[0], data_str.split(":")[-1])
+        now_ts = time.time()
+        prev_ts = _callback_debounce_state.get(key, 0)
+        _callback_debounce_state[key] = now_ts
+        return (now_ts - prev_ts) < float(min_interval)
+    except Exception:
+        return False
+
 @bot.callback_query_handler(func=lambda c: True)
 
 def on_callback(call):
@@ -5592,6 +5930,9 @@ def on_callback(call):
     try:
         data_str = call.data or ""
         chat_id = call.message.chat.id
+
+        if _callback_should_debounce(call, data_str):
+            return
 
         try:
             update_chat_info_from_message(call.message)
@@ -6054,14 +6395,26 @@ def on_callback(call):
                 safe_edit(
                     bot,
                     call,
-                    f"📂 CSV: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:",
+                    f"📂 CSV / Excel: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:",
                     reply_markup=build_fin_window_csv_menu(target_chat_id, view_day, owner_day_key),
                     parse_mode="HTML"
                 )
                 return
-            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu"}:
-                mode = action.replace("csv_", "")
-                send_csv_for_chat_to(chat_id, target_chat_id, mode, view_day)
+            if action in {"bk_chat", "bk_channel", "bk_mega"}:
+                target = action.replace("bk_", "")
+                set_backup_target_enabled(target_chat_id, target, not is_backup_target_enabled(target_chat_id, target))
+                safe_edit(
+                    bot,
+                    call,
+                    f"📂 CSV / Excel: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:",
+                    reply_markup=build_fin_window_csv_menu(target_chat_id, view_day, owner_day_key),
+                    parse_mode="HTML"
+                )
+                return
+            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu", "xlsx_all", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu"}:
+                file_type = "xlsx" if action.startswith("xlsx_") else "csv"
+                mode = action.replace("csv_", "").replace("xlsx_", "")
+                send_export_for_chat_to(chat_id, target_chat_id, mode, view_day, file_type)
                 return
             return
         if not data_str.startswith("d:"):
@@ -6081,7 +6434,8 @@ def on_callback(call):
                 schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "prev":
-            d = datetime.strptime(day_key, "%Y-%m-%d") - timedelta(days=1)
+            base_day_key = store.get("current_view_day") or day_key
+            d = datetime.strptime(base_day_key, "%Y-%m-%d") - timedelta(days=1)
             nd = d.strftime("%Y-%m-%d")
             store["current_view_day"] = nd
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -6094,7 +6448,8 @@ def on_callback(call):
                 schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "next":
-            d = datetime.strptime(day_key, "%Y-%m-%d") + timedelta(days=1)
+            base_day_key = store.get("current_view_day") or day_key
+            d = datetime.strptime(base_day_key, "%Y-%m-%d") + timedelta(days=1)
             nd = d.strftime("%Y-%m-%d")
             store["current_view_day"] = nd
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
@@ -6217,7 +6572,7 @@ def on_callback(call):
                 schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "csv_all":
-            kb = build_csv_menu(day_key)
+            kb = build_csv_menu(day_key, chat_id)
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(
                 bot,
@@ -6227,23 +6582,19 @@ def on_callback(call):
                 parse_mode="HTML"
             )
             return
-        if cmd == "csv_day":
-            cmd_csv_day(chat_id, day_key)
+        if cmd in {"bk_chat", "bk_channel", "bk_mega"}:
+            target = cmd.replace("bk_", "")
+            set_backup_target_enabled(chat_id, target, not is_backup_target_enabled(chat_id, target))
+            kb = build_csv_menu(day_key, chat_id)
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
             return
-        if cmd == "csv_all_real":
-            cmd_csv_all(chat_id)
-            return
-
-        if cmd == "csv_week":
-            send_csv_week(chat_id, day_key)
-            return
-
-        if cmd == "csv_month":
-            send_csv_month(chat_id, day_key)
-            return
-
-        if cmd == "csv_wedthu":
-            send_csv_wedthu(chat_id, day_key)
+        if cmd in {"csv_day", "csv_week", "csv_month", "csv_wedthu", "csv_all_real", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsx_all"}:
+            file_type = "xlsx" if cmd.startswith("xlsx_") else "csv"
+            mode = cmd.replace("csv_", "").replace("xlsx_", "")
+            if mode == "all_real":
+                mode = "all"
+            send_export_for_chat_to(chat_id, chat_id, mode, day_key, file_type)
             return
         if cmd == "reset":
             if not require_finance(chat_id):
@@ -7852,6 +8203,7 @@ _balance_panel_recreate_timers = {}
 _total_message_timers = {}
 _backup_dirty_chats = set()
 _backup_global_timer = None
+_backup_run_lock = threading.Lock()
 
 def collect_finance_chat_ids():
     ids = set()
@@ -7884,49 +8236,86 @@ def schedule_all_finance_backups(delay: float = 10.0):
 
 def _flush_dirty_backups():
     global _backup_global_timer
-    with timer_lock:
-        dirty = sorted(int(x) for x in _backup_dirty_chats)
-        _backup_dirty_chats.clear()
-        _backup_global_timer = None
-
-    if not dirty:
+    if not _backup_run_lock.acquire(blocking=False):
+        # Если предыдущий бэкап ещё идёт, не блокируем бота: переносим пачку немного позже.
+        with timer_lock:
+            if _backup_dirty_chats:
+                t = threading.Timer(5.0, _flush_dirty_backups)
+                _backup_global_timer = t
+                t.start()
         return
 
-    # Глобальный CSV делаем один раз на пачку, а не после каждой операции.
     try:
-        with data_lock:
+        with timer_lock:
+            dirty = sorted(int(x) for x in _backup_dirty_chats)
+            _backup_dirty_chats.clear()
+            _backup_global_timer = None
+
+        if not dirty:
+            return
+
+        # Локальное сохранение/глобальный снимок — без chat_lock и без сетевых вызовов.
+        try:
             export_global_csv(data)
             save_data(data)
-    except Exception as e:
-        log_error(f"_flush_dirty_backups global export/save: {e}")
+        except Exception as e:
+            log_error(f"_flush_dirty_backups global export/save: {e}")
 
-    # MEGA latest_global.json — внешний бэкап для автовосстановления после Render deploy/restart.
-    try:
-        mega_upload_latest_global_backup()
-    except Exception as e:
-        log_error(f"_flush_dirty_backups mega global upload: {e}")
+        any_mega = any(is_backup_to_mega_enabled(cid) for cid in dirty)
+        if any_mega:
+            try:
+                mega_upload_latest_global_backup()
+            except Exception as e:
+                log_error(f"_flush_dirty_backups mega global upload: {e}")
 
-    month_key_for_mega = current_month_key()
+        month_key_for_mega = current_month_key()
 
-    for cid in dirty:
-        try:
-            with locked_chat(cid):
+        for cid in dirty:
+            trace = ProcessTrace(cid, f"Бэкап: {get_chat_display_name(cid)}").start()
+            try:
                 if not is_finance_mode(cid):
+                    trace.step("финрежим выключен — пропуск")
+                    trace.finish("бэкап завершён")
                     continue
                 if not is_auto_backup_enabled(cid):
+                    trace.step("все авто-бэкапы выключены — пропуск")
+                    trace.finish("бэкап завершён")
                     continue
-                # send_backup_to_chat теперь отправляет JSON прямо в чат только владельцу/backup-каналу.
-                if not is_finance_output_suppressed(cid):
+
+                trace.step("создаёт локальные JSON/CSV/Excel")
+                save_chat_json(cid)
+
+                if is_backup_to_chat_enabled(cid) and can_receive_direct_json_backup(cid) and not is_finance_output_suppressed(cid):
+                    trace.step("обновляет прямой JSON-бэкап в чат")
                     send_backup_to_chat(cid)
-                # Канал-бэкап: только JSON + XLSX для всех фин-чатов, включая скрытые.
-                send_backup_to_channel(cid)
-                # MEGA: только JSON (latest + месячный JSON).
-                try:
-                    mega_upload_chat_backup_bundle(cid, month_key_for_mega)
-                except Exception as e:
-                    log_error(f"_flush_dirty_backups mega chat {cid}: {e}")
-        except Exception as e:
-            log_error(f"_flush_dirty_backups chat {cid}: {e}")
+                else:
+                    trace.step("прямой бэкап в чат выключен/не разрешён — пропуск")
+
+                if is_backup_to_channel_enabled(cid):
+                    trace.step("обновляет backup-канал JSON+Excel")
+                    send_backup_to_channel(cid)
+                else:
+                    trace.step("бэкап в канал выключен — пропуск")
+
+                if is_backup_to_mega_enabled(cid):
+                    trace.step("грузит JSON в MEGA")
+                    try:
+                        mega_upload_chat_backup_bundle(cid, month_key_for_mega)
+                    except Exception as e:
+                        log_error(f"_flush_dirty_backups mega chat {cid}: {e}")
+                else:
+                    trace.step("бэкап в MEGA выключен — пропуск")
+
+                trace.finish("бэкап завершён")
+            except Exception as e:
+                log_error(f"_flush_dirty_backups chat {cid}: {e}")
+                trace.fail(e)
+    finally:
+        try:
+            _backup_run_lock.release()
+        except Exception:
+            pass
+
 
 def schedule_backup_flush(chat_id: int, delay: float = 8.0):
     """Debounced backup queue: много операций за короткое время = один flush."""
@@ -7959,44 +8348,63 @@ def _safe_stabilize(action_name, func):
 
 def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str = "change"):
     """
-    Единая точка после любого фин-изменения: add/edit/delete/forward/restore.
-    Здесь собраны пересчёт, сохранение, окна, быстрый остаток и бэкап-очередь.
+    Единая точка после фин-изменения.
+    Важно: Telegram-отправки/редактирования окон и бэкапы не держат chat_lock,
+    чтобы кнопки в этом же чате не висели «Загрузка».
     """
     chat_id = int(chat_id)
     day_key = day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
+    trace = ProcessTrace(chat_id, f"Фин-процесс: {get_chat_display_name(chat_id)} / {reason}").start()
 
-    with locked_chat(chat_id):
-        store = get_chat_store(chat_id)
-        store["current_view_day"] = day_key
+    try:
+        with locked_chat(chat_id):
+            store = get_chat_store(chat_id)
+            store["current_view_day"] = day_key
 
-        _safe_stabilize("recalc_balance", lambda: recalc_balance(chat_id))
-        _safe_stabilize("rebuild_global_records", rebuild_global_records)
-        _safe_stabilize("save_data", lambda: save_data(data))
+            trace.step("вычисляет остатки")
+            _safe_stabilize("recalc_balance", lambda: recalc_balance(chat_id))
 
-        hidden = is_finance_output_suppressed(chat_id)
+            trace.step("пересобирает общие записи")
+            _safe_stabilize("rebuild_global_records", rebuild_global_records)
+
+            trace.step("сохраняет SQLite/data")
+            _safe_stabilize("save_data", lambda: save_data(data))
+
+            hidden = is_finance_output_suppressed(chat_id)
+
+        # Ниже тяжёлые Telegram-вызовы уже вне chat_lock.
         if not hidden:
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
+                trace.step("обновляет окно владельца")
                 _safe_stabilize("owner_window", lambda: backup_window_for_owner(chat_id, day_key, None))
             else:
+                trace.step("обновляет окно дня")
                 _safe_stabilize("day_window", lambda: update_or_send_day_window(chat_id, day_key))
 
+            trace.step("обновляет общий итог")
             _safe_stabilize("refresh_total", lambda: refresh_total_message_if_any(chat_id))
+
+            trace.step("обновляет быстрый остаток")
             _safe_stabilize("quick_balance_now", lambda: refresh_balance_panel_now(chat_id))
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
-        # Бэкап всегда через очередь. Для скрытых чатов в сам чат ничего не уйдёт,
-        # но send_backup_to_channel() всё равно сработает в flush.
+        trace.step("ставит бэкап в отдельную очередь")
         _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, 8.0))
 
-    # Окно владельца — после выхода из lock рабочего чата, чтобы не было deadlock.
-    if OWNER_ID and str(chat_id) != str(OWNER_ID):
-        try:
-            owner_id = int(OWNER_ID)
-            with locked_chat(owner_id):
+        # Окно владельца — отдельно от рабочего чата.
+        if OWNER_ID and str(chat_id) != str(OWNER_ID):
+            try:
+                owner_id = int(OWNER_ID)
+                trace.step("обновляет сводку владельца")
                 _safe_stabilize("owner_total_after_change", lambda: refresh_total_message_if_any(owner_id))
                 _safe_stabilize("owner_window_after_change", lambda: refresh_owner_after_chat_change(chat_id))
-        except Exception as e:
-            log_error(f"_finance_changed_now owner refresh: {e}")
+            except Exception as e:
+                log_error(f"_finance_changed_now owner refresh: {e}")
+
+        trace.finish("финобработка завершена")
+    except Exception as e:
+        trace.fail(e)
+        raise
 
 
 def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.8):
