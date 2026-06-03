@@ -334,6 +334,7 @@ def get_recent_errors(limit: int = 20):
 
 
 def _process_trace_enabled() -> bool:
+    """Глобальный рубильник PROCESS через Render env. По чатам всё равно по умолчанию выключено."""
     return _env_bool("FIN_PROCESS_TRACE", "1")
 
 
@@ -352,7 +353,7 @@ def _trace_delete_delay() -> int:
 
 
 class ProcessTrace:
-    """Лёгкий Telegram-трейс: одно стартовое сообщение и одно финальное обновление, чтобы не замедлять бота."""
+    """PROCESS-трейс: одно сообщение, которое редактируется и пополняется строками по мере старта этапов."""
 
     def __init__(self, chat_id: int, title: str):
         self.chat_id = int(chat_id)
@@ -360,18 +361,22 @@ class ProcessTrace:
         self.lines = []
         self.message_id = None
         self.enabled = False
+        self._last_text = ""
+        self._last_edit_ts = 0.0
         try:
-            self.enabled = bool(_process_trace_enabled() and not is_finance_output_suppressed(self.chat_id))
+            self.enabled = bool(_process_trace_enabled() and is_process_trace_enabled(self.chat_id))
         except Exception:
-            self.enabled = bool(_process_trace_enabled())
+            self.enabled = False
 
     def start(self):
-        self.step("старт")
+        self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — старт")
         if not self.enabled:
             return self
         try:
             sent = bot.send_message(self.chat_id, self._render(running=True))
             self.message_id = sent.message_id
+            self._last_text = self._render(running=True)
+            self._last_edit_ts = time.time()
         except Exception as e:
             log_error(f"ProcessTrace start({self.chat_id}): {e}")
             self.enabled = False
@@ -379,28 +384,45 @@ class ProcessTrace:
 
     def step(self, label: str):
         self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {label}")
+        self._update_message(running=True)
         return self
 
     def _render(self, running: bool = False) -> str:
         head = "⏳" if running else "✅"
-        return head + " " + self.title + "\n" + "\n".join(self.lines[-25:])
+        # Telegram message limit запасом: показываем последние 35 строк, чтобы сообщение всегда редактировалось.
+        return head + " " + self.title + "\n" + "\n".join(self.lines[-35:])
+
+    def _update_message(self, running: bool = True, force: bool = False):
+        if not self.enabled or not self.message_id:
+            return
+        text = self._render(running=running)
+        if text == self._last_text and not force:
+            return
+        # Редактируем это же сообщение на каждом этапе, чтобы было видно, где именно бот сейчас занят.
+        try:
+            bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id)
+            self._last_text = text
+            self._last_edit_ts = time.time()
+        except Exception as e:
+            err = str(e).lower()
+            if "message is not modified" not in err:
+                log_error(f"ProcessTrace update({self.chat_id}): {e}")
 
     def finish(self, final_label: str = "завершено"):
-        self.step(final_label)
+        self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {final_label}")
         if not self.enabled:
             return
-        text = self._render(running=False)
         try:
             if self.message_id:
-                bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id)
+                self._update_message(running=False, force=True)
                 delete_message_later(self.chat_id, self.message_id, _trace_delete_delay())
             else:
-                send_and_auto_delete(self.chat_id, text, _trace_delete_delay())
+                send_and_auto_delete(self.chat_id, self._render(running=False), _trace_delete_delay())
         except Exception as e:
             log_error(f"ProcessTrace finish({self.chat_id}): {e}")
 
     def fail(self, err: Exception):
-        self.step(f"ошибка: {str(err)[:160]}")
+        self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — ошибка: {str(err)[:160]}")
         self.finish("остановлено")
 
 def format_error_for_owner(raw) -> str:
@@ -846,6 +868,36 @@ def set_auto_backup_enabled(chat_id: int, enabled: bool):
     settings["auto_backup_to_mega_enabled"] = enabled
     save_data(data)
     schedule_config_backup_for_chats(chat_id)
+
+
+def _ensure_process_settings(chat_id: int) -> dict:
+    """Настройка PROCESS по чатам. По умолчанию выключено, но сохраняется в JSON/SQLite."""
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    settings.setdefault("process_trace_enabled", False)
+    return settings
+
+
+def is_process_trace_enabled(chat_id: int) -> bool:
+    try:
+        settings = _ensure_process_settings(chat_id)
+        return bool(settings.get("process_trace_enabled", False))
+    except Exception:
+        return False
+
+
+def set_process_trace_enabled(chat_id: int, enabled: bool):
+    settings = _ensure_process_settings(chat_id)
+    settings["process_trace_enabled"] = bool(enabled)
+    save_data(data)
+    # Настройка тоже должна уехать в JSON-бэкап, но сам PROCESS при этом не блокирует основной поток.
+    schedule_config_backup_for_chats(chat_id)
+
+
+def toggle_process_trace(chat_id: int) -> bool:
+    new_value = not is_process_trace_enabled(chat_id)
+    set_process_trace_enabled(chat_id, new_value)
+    return new_value
 
 
 def set_hidden_finance_mode(chat_id: int, enabled: bool):
@@ -2023,6 +2075,7 @@ def build_chat_settings_backup_payload(chat_id: int, store: dict | None = None) 
         "hidden_finance": is_hidden_finance_mode(chat_id),
         "quick_balance_enabled": is_quick_balance_enabled(chat_id),
         "quick_balance_behavior": get_quick_balance_behavior(chat_id),
+        "process_trace_enabled": is_process_trace_enabled(chat_id),
         "forward_rules_outgoing": outgoing_rules,
         "forward_rules_incoming": incoming_rules,
         "forward_finance_outgoing": outgoing_finance,
@@ -4603,6 +4656,66 @@ def render_day_window(chat_id: int, day_key: str):
         visible = visible[1:]
 
 
+def _collect_process_menu_items():
+    """Чаты для меню PROCESS: известные чаты + владелец, без дублей."""
+    items = {}
+    try:
+        known = collect_forward_menu_chats()
+        for cid, ch in (known or {}).items():
+            try:
+                int_cid = int(cid)
+            except Exception:
+                continue
+            title = (ch or {}).get("title") or get_chat_display_name(int_cid)
+            items[int_cid] = title
+    except Exception as e:
+        log_error(f"_collect_process_menu_items known: {e}")
+
+    try:
+        for cid in (data.get("chats", {}) or {}).keys():
+            try:
+                int_cid = int(cid)
+            except Exception:
+                continue
+            items.setdefault(int_cid, get_chat_display_name(int_cid))
+    except Exception as e:
+        log_error(f"_collect_process_menu_items data: {e}")
+
+    if OWNER_ID:
+        try:
+            owner_id = int(OWNER_ID)
+            items.setdefault(owner_id, get_chat_display_name(owner_id))
+        except Exception:
+            pass
+
+    return sorted(items.items(), key=lambda x: (x[1] or "").lower())
+
+
+def build_process_menu(day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    buttons = []
+    for cid, title in _collect_process_menu_items():
+        icon = "✅" if is_process_trace_enabled(cid) else "❌"
+        buttons.append(types.InlineKeyboardButton(
+            f"{icon} {title}",
+            callback_data=f"d:{day_key}:process_toggle_{cid}"
+        ))
+    if buttons:
+        add_buttons_in_rows(kb, buttons, 3)
+    else:
+        kb.row(types.InlineKeyboardButton("Нет чатов", callback_data="none"))
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+
+def build_process_menu_text() -> str:
+    return (
+        "🧪 PROCESS\n"
+        "Включает диагностическое сообщение процесса для выбранного чата.\n"
+        "По умолчанию у всех чатов выключено. Когда включено, бот пишет одно сообщение и редактирует его, добавляя этапы по времени ЧЧ:ММ:СС.мс."
+    )
+
+
 def build_main_keyboard(day_key: str, chat_id=None):
     """Главное окно без отдельной кнопки «Меню»: все основные функции сразу на виду."""
     kb = types.InlineKeyboardMarkup(row_width=3)
@@ -4639,6 +4752,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
         kb.row(
             types.InlineKeyboardButton("🙈 Скрытые финансы", callback_data=f"d:{day_key}:hidden_finance_menu"),
             types.InlineKeyboardButton("🪟 Фин окна чатов", callback_data=f"d:{day_key}:fin_windows_menu"),
+            types.InlineKeyboardButton("🧪 PROCESS", callback_data=f"d:{day_key}:process_menu"),
         )
 
     return kb
@@ -6551,6 +6665,33 @@ def on_callback(call):
             except Exception:
                 pass
             open_info_window(chat_id)
+            return
+        if cmd == "process_menu":
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                try:
+                    bot.answer_callback_query(call.id, "PROCESS доступен только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            safe_edit(bot, call, build_process_menu_text(), reply_markup=build_process_menu(day_key))
+            return
+        if cmd.startswith("process_toggle_"):
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                try:
+                    bot.answer_callback_query(call.id, "PROCESS доступен только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            try:
+                target_chat_id = int(cmd.rsplit("_", 1)[1])
+            except Exception:
+                return
+            enabled = toggle_process_trace(target_chat_id)
+            try:
+                bot.answer_callback_query(call.id, "PROCESS включён" if enabled else "PROCESS выключен")
+            except Exception:
+                pass
+            safe_edit(bot, call, build_process_menu_text(), reply_markup=build_process_menu(day_key))
             return
         if cmd in ("edit_menu", "menu"):
             clear_edit_delete_selection(chat_id, day_key)
