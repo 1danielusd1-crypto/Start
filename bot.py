@@ -373,9 +373,13 @@ class ProcessTrace:
         if not self.enabled:
             return self
         try:
-            sent = bot.send_message(self.chat_id, self._render(running=True))
+            text = self._render(running=True)
+            if "_tg_call_retry" in globals():
+                sent = _tg_call_retry(bot.send_message, self.chat_id, text, purpose="process_trace_start")
+            else:
+                sent = bot.send_message(self.chat_id, text)
             self.message_id = sent.message_id
-            self._last_text = self._render(running=True)
+            self._last_text = text
             self._last_edit_ts = time.time()
         except Exception as e:
             log_error(f"ProcessTrace start({self.chat_id}): {e}")
@@ -389,8 +393,15 @@ class ProcessTrace:
 
     def _render(self, running: bool = False) -> str:
         head = "⏳" if running else "✅"
-        # Telegram message limit запасом: показываем последние 35 строк, чтобы сообщение всегда редактировалось.
-        return head + " " + self.title + "\n" + "\n".join(self.lines[-35:])
+        # Telegram лимит ~4096. Держим одно сообщение, но если строк очень много — оставляем хвост и пометку.
+        lines = list(self.lines)
+        hidden = 0
+        while lines and len(head + " " + self.title + "\n" + "\n".join(lines)) > 3900:
+            lines.pop(0)
+            hidden += 1
+        if hidden:
+            lines.insert(0, f"… скрыто ранних этапов: {hidden}")
+        return head + " " + self.title + "\n" + "\n".join(lines)
 
     def _update_message(self, running: bool = True, force: bool = False):
         if not self.enabled or not self.message_id:
@@ -400,7 +411,10 @@ class ProcessTrace:
             return
         # Редактируем это же сообщение на каждом этапе, чтобы было видно, где именно бот сейчас занят.
         try:
-            bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id)
+            if "_tg_call_retry" in globals():
+                _tg_call_retry(bot.edit_message_text, text, chat_id=self.chat_id, message_id=self.message_id, purpose="process_trace_edit")
+            else:
+                bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id)
             self._last_text = text
             self._last_edit_ts = time.time()
         except Exception as e:
@@ -1535,6 +1549,79 @@ def resolve_reply_target_message_id(source_chat_id: int, reply_to_message_id: in
     return None
 
 
+_telegram_send_last_ts = {}
+_telegram_send_rate_lock = threading.RLock()
+
+
+def _telegram_retry_after_seconds(err: Exception):
+    """Достаёт retry_after из Telegram 429: Too Many Requests."""
+    try:
+        result_json = getattr(err, "result_json", None) or {}
+        params = result_json.get("parameters") or {}
+        if "retry_after" in params:
+            return int(params.get("retry_after") or 0)
+    except Exception:
+        pass
+    text = str(err or "")
+    m = re.search(r"retry after\s+(\d+)", text, re.I)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            pass
+    return None
+
+
+def _telegram_rate_limit_chat(chat_id, min_gap: float = 0.35):
+    """Мягкий лимит отправки в один чат, чтобы реже получать 429 при шквале пересылок."""
+    try:
+        cid = int(chat_id)
+    except Exception:
+        return
+    with _telegram_send_rate_lock:
+        now_ts = time.time()
+        prev_ts = float(_telegram_send_last_ts.get(cid, 0) or 0)
+        wait = float(min_gap) - (now_ts - prev_ts)
+        if wait > 0:
+            time.sleep(wait)
+        _telegram_send_last_ts[cid] = time.time()
+
+
+def _tg_first_chat_id(args, kwargs):
+    if "chat_id" in kwargs:
+        return kwargs.get("chat_id")
+    if args:
+        return args[0]
+    return None
+
+
+def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **kwargs):
+    """
+    Telegram API wrapper: если Telegram вернул 429, ждём retry_after и повторяем.
+    Это нужно, чтобы пересылка не терялась, а доставлялась позже.
+    """
+    last_err = None
+    for attempt in range(1, int(attempts) + 1):
+        try:
+            chat_id = _tg_first_chat_id(args, kwargs)
+            if chat_id is not None:
+                _telegram_rate_limit_chat(chat_id)
+            return func(*args, **kwargs)
+        except TypeError:
+            raise
+        except Exception as e:
+            last_err = e
+            retry_after = _telegram_retry_after_seconds(e)
+            if retry_after is None:
+                raise
+            wait = max(1, int(retry_after)) + 1
+            log_info(f"[TG 429 RETRY] {purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}")
+            if attempt >= int(attempts):
+                break
+            time.sleep(wait)
+    raise last_err
+
+
 def _call_with_optional_reply(send_func, *args, reply_to_message_id=None, **kwargs):
     if reply_to_message_id:
         for extra in (
@@ -1543,10 +1630,10 @@ def _call_with_optional_reply(send_func, *args, reply_to_message_id=None, **kwar
             {},
         ):
             try:
-                return send_func(*args, **kwargs, **extra)
+                return _tg_call_retry(send_func, *args, purpose="send_with_reply", **kwargs, **extra)
             except TypeError:
                 continue
-    return send_func(*args, **kwargs)
+    return _tg_call_retry(send_func, *args, purpose="send", **kwargs)
 
 
 def build_balance_panel_keyboard(chat_id: int):
@@ -2167,13 +2254,11 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         ["total_expense", payload.get("total_expense")],
         ["closing_balance", payload.get("closing_balance")],
         [],
-        ["date", "amount", "note", "id", "short_id", "timestamp", "owner"],
+        ["Дата", "Описание", "Приход", "Расход", "ID", "Номер", "Время", "Автор"],
     ]
     for r in payload.get("records", []):
-        rows.append([
-            r.get("date") or fmt_date_backup(r.get("day_key")),
-            r.get("amount"),
-            r.get("note", ""),
+        base_row = _xlsx_record_row(r.get("date") or fmt_date_backup(r.get("day_key")), r.get("amount"), r.get("note", ""))
+        rows.append(base_row + [
             r.get("id", ""),
             r.get("short_id", ""),
             r.get("timestamp", ""),
@@ -2539,13 +2624,15 @@ def send_backup_to_chat(chat_id: int) -> None:
             if not fobj:
                 return
             try:
-                bot.edit_message_media(
+                _tg_call_retry(
+                    bot.edit_message_media,
                     chat_id=chat_id,
                     message_id=msg_id,
                     media=types.InputMediaDocument(
                         media=fobj,
                         caption=caption
-                    )
+                    ),
+                    purpose="backup_edit_message_media"
                 )
                 log_info(f"Chat backup UPDATED in chat {chat_id}")
                 meta[ts_key] = now_local().isoformat(timespec="seconds")
@@ -2558,7 +2645,7 @@ def send_backup_to_chat(chat_id: int) -> None:
         fobj = _open_file()
         if not fobj:
             return
-        sent = bot.send_document(chat_id, fobj, caption=caption)
+        sent = _tg_call_retry(bot.send_document, chat_id, fobj, caption=caption, purpose="backup_send_document")
         meta[msg_key] = sent.message_id
         meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
@@ -2788,7 +2875,7 @@ def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данн�
     sheet_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
-<cols><col min="1" max="1" width="13" customWidth="1"/><col min="2" max="2" width="14" customWidth="1"/><col min="3" max="3" width="42" customWidth="1"/></cols>
+<cols><col min="1" max="1" width="13" customWidth="1"/><col min="2" max="2" width="42" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="14" customWidth="1"/><col min="5" max="10" width="18" customWidth="1"/></cols>
 <sheetData>""" + "".join(sheet_rows) + """</sheetData>
 </worksheet>"""
 
@@ -2836,23 +2923,36 @@ def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данн�
         z.writestr("xl/styles.xml", styles_xml)
 
 
+def _xlsx_income_expense_values(amount):
+    """Возвращает (приход, расход) для Excel: сумма разбита по двум колонкам."""
+    try:
+        v = float(amount or 0)
+    except Exception:
+        v = 0.0
+    if v >= 0:
+        income = int(v) if float(v).is_integer() else v
+        return income, ""
+    expense = abs(v)
+    expense = int(expense) if float(expense).is_integer() else expense
+    return "", expense
+
+
+def _xlsx_record_row(date_value, amount, note):
+    income, expense = _xlsx_income_expense_values(amount)
+    return [date_value, note or "", income, expense]
+
+
 def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = None) -> str | None:
     """Создаёт Excel .xlsx для чата; date в формате DD:MM:YY."""
     try:
         store = store or data.get("chats", {}).get(str(chat_id)) or get_chat_store(chat_id)
         path = path or chat_xlsx_file(chat_id)
-        rows = [["date", "amount", "note"]]
+        rows = [["Дата", "Описание", "Приход", "Расход"]]
         daily = store.get("daily_records", {}) or {}
         for dk in sorted(daily.keys()):
             recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
             for r in recs_sorted:
-                try:
-                    amount = float(r.get("amount", 0) or 0)
-                    if amount.is_integer():
-                        amount = int(amount)
-                except Exception:
-                    amount = r.get("amount", 0)
-                rows.append([fmt_date_backup(dk), amount, r.get("note", "")])
+                rows.append(_xlsx_record_row(fmt_date_backup(dk), r.get("amount", 0), r.get("note", "")))
         _write_simple_xlsx(path, rows, sheet_name="Данные")
         return path
     except Exception as e:
@@ -3829,13 +3929,15 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
                 fobj = _open_for_telegram()
                 if not fobj:
                     return
-                bot.edit_message_media(
+                _tg_call_retry(
+                    bot.edit_message_media,
                     chat_id=int(BACKUP_CHAT_ID),
                     message_id=meta[msg_key],
                     media=types.InputMediaDocument(
                         media=fobj,
                         caption=caption
-                    )
+                    ),
+                    purpose="backup_channel_edit_message_media"
                 )
                 sent = True
                 log_info(f"[BACKUP] channel file updated: {base_path}")
@@ -3846,10 +3948,12 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
             fobj = _open_for_telegram()
             if not fobj:
                 return
-            sent_msg = bot.send_document(
+            sent_msg = _tg_call_retry(
+                bot.send_document,
                 int(BACKUP_CHAT_ID),
                 fobj,
-                caption=caption
+                caption=caption,
+                purpose="backup_channel_send_document"
             )
             meta[msg_key] = sent_msg.message_id
             log_info(f"[BACKUP] channel file sent new: {base_path}")
@@ -3892,7 +3996,7 @@ def send_backup_to_channel(chat_id: int):
         if not meta.get(notify_key):
             try:
                 emoji_id = format_chat_id_emoji(chat_id)
-                bot.send_message(backup_chat_id, emoji_id)
+                _tg_call_retry(bot.send_message, backup_chat_id, emoji_id, purpose="backup_channel_send_chat_marker")
                 backup_channel_notified_chats.add(chat_id)
                 meta[notify_key] = True
                 _save_csv_meta(meta)
@@ -4406,6 +4510,9 @@ def _fallback_send_single(dst_chat_id: int, msg, reply_to_message_id=None):
 
 
 def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool):
+    trace_chat_id = int(source_chat_id) if is_process_trace_enabled(source_chat_id) else (int(dst_chat_id) if is_process_trace_enabled(dst_chat_id) else int(source_chat_id))
+    trace = ProcessTrace(trace_chat_id, f"Пересылка: {get_chat_display_name(source_chat_id)} → {get_chat_display_name(dst_chat_id)}").start()
+    trace.step(f"получено сообщение {getattr(msg, 'message_id', '?')} type={getattr(msg, 'content_type', '?')}")
     reply_to_target_id = None
     try:
         reply_to_msg = getattr(msg, "reply_to_message", None)
@@ -4420,40 +4527,53 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
 
     try:
         if reply_to_target_id:
+            trace.step(f"ищет reply-связь: target_reply={reply_to_target_id}")
             try:
-                sent = bot.copy_message(
+                sent = _tg_call_retry(
+                    bot.copy_message,
                     dst_chat_id,
                     source_chat_id,
                     msg.message_id,
                     reply_to_message_id=reply_to_target_id,
-                    allow_sending_without_reply=True
+                    allow_sending_without_reply=True,
+                    purpose="forward_copy_message"
                 )
             except TypeError:
                 try:
-                    sent = bot.copy_message(
+                    sent = _tg_call_retry(
+                        bot.copy_message,
                         dst_chat_id,
                         source_chat_id,
                         msg.message_id,
-                        reply_to_message_id=reply_to_target_id
+                        reply_to_message_id=reply_to_target_id,
+                        purpose="forward_copy_message"
                     )
                 except TypeError:
-                    sent = bot.copy_message(dst_chat_id, source_chat_id, msg.message_id)
+                    sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, purpose="forward_copy_message")
         else:
-            sent = bot.copy_message(dst_chat_id, source_chat_id, msg.message_id)
+            trace.step("копирует сообщение через Telegram copy_message")
+            sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, purpose="forward_copy_message")
         dst_msg_id = sent.message_id
+        trace.step(f"доставлено в целевой чат message_id={dst_msg_id}")
     except Exception:
+        trace.step("copy_message не сработал — пробует fallback send")
         try:
             sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=reply_to_target_id)
             dst_msg_id = sent_msg.message_id
+            trace.step(f"fallback-доставка успешна message_id={dst_msg_id}")
         except Exception as e_send:
+            trace.fail(e_send)
             _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e_send)
             return None
 
+    trace.step("сохраняет связь оригинал → копия")
     _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
+    trace.step("обновляет счётчик быстрого остатка целевого чата")
     bump_quick_balance_recreate_counter(dst_chat_id)
 
     text_for_finance = _message_text_for_finance(msg)
     if finance_enabled and text_for_finance:
+        trace.step("включён финучёт пересылки — синхронизирует сумму")
         try:
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
             ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=msg)
@@ -4462,6 +4582,7 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
         except Exception as e:
             log_error(f"_forward_single_to_target finance sync {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
 
+    trace.finish("пересылка завершена")
     return dst_msg_id
 
 
@@ -4511,14 +4632,14 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
             try:
                 if reply_to_target_id:
                     try:
-                        sent_group = bot.send_media_group(dst_chat_id, media, reply_to_message_id=reply_to_target_id, allow_sending_without_reply=True)
+                        sent_group = _tg_call_retry(bot.send_media_group, dst_chat_id, media, reply_to_message_id=reply_to_target_id, allow_sending_without_reply=True, purpose="forward_media_group")
                     except TypeError:
                         try:
-                            sent_group = bot.send_media_group(dst_chat_id, media, reply_to_message_id=reply_to_target_id)
+                            sent_group = _tg_call_retry(bot.send_media_group, dst_chat_id, media, reply_to_message_id=reply_to_target_id, purpose="forward_media_group")
                         except TypeError:
-                            sent_group = bot.send_media_group(dst_chat_id, media)
+                            sent_group = _tg_call_retry(bot.send_media_group, dst_chat_id, media, purpose="forward_media_group")
                 else:
-                    sent_group = bot.send_media_group(dst_chat_id, media)
+                    sent_group = _tg_call_retry(bot.send_media_group, dst_chat_id, media, purpose="forward_media_group")
                 sent_ids = [m.message_id for m in sent_group]
             except Exception as e:
                 log_error(f"_flush_media_group_forward send_media_group failed {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
@@ -4716,6 +4837,35 @@ def build_process_menu_text() -> str:
     )
 
 
+def _collect_backup_menu_items():
+    """Чаты для меню BACKUP: известные чаты + владелец, без дублей."""
+    return _collect_process_menu_items()
+
+
+def build_backup_owner_menu(day_key: str):
+    """Меню владельца BACKUP: канал/MEGA для всех чатов, прямой бэкап в чат только для владельца."""
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    owner_id = int(OWNER_ID) if OWNER_ID else None
+    for cid, title in _collect_backup_menu_items():
+        kb.row(types.InlineKeyboardButton(f"💬 {title}", callback_data="none"))
+        row = []
+        if owner_id is not None and int(cid) == owner_id:
+            row.append(types.InlineKeyboardButton(_backup_toggle_label(cid, "chat", "в чат"), callback_data=f"d:{day_key}:backup_toggle_chat_{cid}"))
+        row.append(types.InlineKeyboardButton(_backup_toggle_label(cid, "channel", "канал"), callback_data=f"d:{day_key}:backup_toggle_channel_{cid}"))
+        row.append(types.InlineKeyboardButton(_backup_toggle_label(cid, "mega", "MEGA"), callback_data=f"d:{day_key}:backup_toggle_mega_{cid}"))
+        kb.row(*row)
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+
+def build_backup_owner_menu_text() -> str:
+    return (
+        "💾 BACKUP\n"
+        "Настройка авто-бэкапов по чатам. По умолчанию все бэкапы включены.\n"
+        "Канал = JSON + Excel. MEGA = только JSON. В чат = только для владельца, чтобы JSON не уходил пользователям."
+    )
+
+
 def build_main_keyboard(day_key: str, chat_id=None):
     """Главное окно без отдельной кнопки «Меню»: все основные функции сразу на виду."""
     kb = types.InlineKeyboardMarkup(row_width=3)
@@ -4753,6 +4903,9 @@ def build_main_keyboard(day_key: str, chat_id=None):
             types.InlineKeyboardButton("🙈 Скрытые финансы", callback_data=f"d:{day_key}:hidden_finance_menu"),
             types.InlineKeyboardButton("🪟 Фин окна чатов", callback_data=f"d:{day_key}:fin_windows_menu"),
             types.InlineKeyboardButton("🧪 PROCESS", callback_data=f"d:{day_key}:process_menu"),
+        )
+        kb.row(
+            types.InlineKeyboardButton("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"),
         )
 
     return kb
@@ -5518,51 +5671,72 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
 
 def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv"):
     """Отправка CSV или Excel по выбранному периоду. Работает для обычного чата и для меню владельца по чужому чату."""
+    trace = ProcessTrace(recipient_chat_id, f"Экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
     try:
+        trace.step("читает режим периода")
         file_type = str(file_type or "csv").lower().lstrip(".")
         mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
         if mode == "all_real":
             mode = "all"
 
         if mode == "all":
+            trace.step("экспорт за всё время — обновляет локальные файлы")
             save_chat_json(target_chat_id)
             path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
             label = "за всё время"
             if os.path.exists(path):
+                trace.step("отправляет готовый файл в Telegram")
                 with open(path, "rb") as f:
-                    bot.send_document(
+                    _tg_call_retry(
+                        bot.send_document,
                         recipient_chat_id,
                         f,
-                        caption=f"📂 {'Excel' if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}"
+                        caption=f"📂 {'Excel' if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                        purpose="export_send_document"
                     )
+                trace.finish("экспорт завершён")
                 return
 
+        trace.step("собирает строки за выбранный период")
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
         if not rows:
+            trace.step("строк нет — отправляет уведомление")
             send_info(recipient_chat_id, f"Нет данных {label}.")
+            trace.finish("экспорт завершён без данных")
             return
 
         ext = "xlsx" if file_type == "xlsx" else "csv"
         tmp_name = f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}"
         if ext == "xlsx":
-            _write_simple_xlsx(tmp_name, [["date", "amount", "note"]] + [list(r) for r in rows], sheet_name="Экспорт")
+            trace.step("создаёт временный Excel файл")
+            xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
+            for date_v, amount_v, note_v in rows:
+                xlsx_rows.append(_xlsx_record_row(date_v, parse_csv_amount(amount_v), note_v))
+            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Экспорт")
         else:
+            trace.step("создаёт временный CSV файл")
             with open(tmp_name, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["date", "amount", "note"])
                 write_csv_rows_with_day_gaps(w, rows, 3)
 
+        trace.step("отправляет файл в Telegram")
         with open(tmp_name, "rb") as f:
-            bot.send_document(
+            _tg_call_retry(
+                bot.send_document,
                 recipient_chat_id,
                 f,
-                caption=f"📂 {'Excel' if ext == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}"
+                caption=f"📂 {'Excel' if ext == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                purpose="export_send_document"
             )
+        trace.step("удаляет временный файл")
         try:
             os.remove(tmp_name)
         except Exception:
             pass
+        trace.finish("экспорт завершён")
     except Exception as e:
+        trace.fail(e)
         log_error(f"send_export_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
 
 def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start: str, end: str, owner_day_key: str):
@@ -6692,6 +6866,41 @@ def on_callback(call):
             except Exception:
                 pass
             safe_edit(bot, call, build_process_menu_text(), reply_markup=build_process_menu(day_key))
+            return
+        if cmd == "backup_menu":
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                try:
+                    bot.answer_callback_query(call.id, "BACKUP доступен только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            safe_edit(bot, call, build_backup_owner_menu_text(), reply_markup=build_backup_owner_menu(day_key))
+            return
+        if cmd.startswith("backup_toggle_"):
+            if not OWNER_ID or str(chat_id) != str(OWNER_ID):
+                try:
+                    bot.answer_callback_query(call.id, "BACKUP доступен только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            try:
+                tail = cmd[len("backup_toggle_"):]
+                target, cid_s = tail.rsplit("_", 1)
+                target_chat_id = int(cid_s)
+            except Exception:
+                return
+            if target == "chat" and not is_owner_chat(target_chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Бэкап в сам чат разрешён только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            set_backup_target_enabled(target_chat_id, target, not is_backup_target_enabled(target_chat_id, target))
+            try:
+                bot.answer_callback_query(call.id, "Бэкап включён" if is_backup_target_enabled(target_chat_id, target) else "Бэкап выключен")
+            except Exception:
+                pass
+            safe_edit(bot, call, build_backup_owner_menu_text(), reply_markup=build_backup_owner_menu(day_key))
             return
         if cmd in ("edit_menu", "menu"):
             clear_edit_delete_selection(chat_id, day_key)
@@ -8423,8 +8632,12 @@ def _flush_dirty_backups():
                     trace.finish("бэкап завершён")
                     continue
 
-                trace.step("создаёт локальные JSON/CSV/Excel")
+                trace.step("проверяет настройки бэкапов чата")
+                trace.step("создаёт локальный JSON")
+                trace.step("создаёт локальный CSV")
+                trace.step("создаёт локальный Excel")
                 save_chat_json(cid)
+                trace.step("локальные файлы готовы")
 
                 if is_backup_to_chat_enabled(cid) and can_receive_direct_json_backup(cid) and not is_finance_output_suppressed(cid):
                     trace.step("обновляет прямой JSON-бэкап в чат")
@@ -8502,15 +8715,25 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             store = get_chat_store(chat_id)
             store["current_view_day"] = day_key
 
+            trace.step("получает хранилище чата")
+            trace.step("фиксирует текущую дату окна")
+            trace.step("нормализует записи чата")
+            _safe_stabilize("normalize_chat_records", lambda: normalize_chat_records(chat_id))
+
             trace.step("вычисляет остатки")
             _safe_stabilize("recalc_balance", lambda: recalc_balance(chat_id))
+
+            trace.step("пересчитывает месячные номера R")
+            _safe_stabilize("rebuild_month_short_ids", lambda: rebuild_month_short_ids(chat_id))
 
             trace.step("пересобирает общие записи")
             _safe_stabilize("rebuild_global_records", rebuild_global_records)
 
+            trace.step("записывает финрежимы в общий словарь")
             trace.step("сохраняет SQLite/data")
             _safe_stabilize("save_data", lambda: save_data(data))
 
+            trace.step("проверяет скрытый финрежим")
             hidden = is_finance_output_suppressed(chat_id)
 
         # Ниже тяжёлые Telegram-вызовы уже вне chat_lock.
