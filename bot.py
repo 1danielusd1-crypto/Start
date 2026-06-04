@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot (33)__ordered_quick_csv_finwin"
+VERSION = "bot_v37_journal_categories_excel_fix"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -315,6 +315,11 @@ def log_info(msg: str):
 def log_error(msg: str):
     logger.error(msg)
     try:
+        if 'bot_journal' in globals():
+            bot_journal("error", None, str(msg), "ERROR")
+    except Exception:
+        pass
+    try:
         with error_log_lock:
             BOT_ERROR_LOG.append({
                 "ts": now_local().strftime("%Y-%m-%d %H:%M:%S") if "now_local" in globals() else time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -330,6 +335,97 @@ def get_recent_errors(limit: int = 20):
     except Exception:
         return []
 
+
+# ─────────────────────────────────────────────────────────────
+# 📓 Журнал действий всего бота
+# ─────────────────────────────────────────────────────────────
+BOT_JOURNAL_MAX = int(os.getenv("BOT_JOURNAL_MAX", "5000") or "5000")
+BOT_JOURNAL_FILE = os.getenv("BOT_JOURNAL_FILE", "bot_journal.jsonl").strip() or "bot_journal.jsonl"
+BOT_ACTION_LOG = deque(maxlen=BOT_JOURNAL_MAX)
+bot_journal_lock = threading.RLock()
+
+
+def _journal_ts() -> str:
+    try:
+        return now_local().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
+    """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
+    try:
+        row = {
+            "ts": _journal_ts(),
+            "level": str(level or "INFO"),
+            "action": str(action or "")[:160],
+            "chat_id": str(chat_id) if chat_id is not None else "",
+            "chat_name": "",
+            "detail": str(detail or "")[:1800],
+        }
+        try:
+            if chat_id is not None:
+                row["chat_name"] = get_chat_display_name(int(chat_id))
+        except Exception:
+            pass
+        with bot_journal_lock:
+            BOT_ACTION_LOG.append(row)
+            try:
+                with open(BOT_JOURNAL_FILE, "a", encoding="utf-8") as jf:
+                    jf.write(json.dumps(row, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        return row
+    except Exception:
+        return None
+
+
+def get_recent_journal(limit: int = 200):
+    try:
+        with bot_journal_lock:
+            return list(BOT_ACTION_LOG)[-int(limit):]
+    except Exception:
+        return []
+
+
+def format_journal_text(limit: int = 120) -> str:
+    rows = get_recent_journal(limit)
+    if not rows:
+        return "📓 Журнал пока пуст."
+    lines = [f"📓 Журнал действий бота, последние {len(rows)} записей:"]
+    for r in rows:
+        chat = r.get("chat_name") or r.get("chat_id") or "-"
+        detail = r.get("detail") or ""
+        if len(detail) > 500:
+            detail = detail[:500] + "…"
+        lines.append(f"\n• {r.get('ts','')} [{r.get('level','')}] {r.get('action','')}\n  чат: {chat}\n  {detail}".rstrip())
+    text = "\n".join(lines)
+    return text[-3900:] if len(text) > 3900 else text
+
+
+def send_journal_file_to_owner(chat_id: int, limit: int = 2000):
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "📓 Журнал доступен только владельцу.", HELPER_DELETE_DELAY)
+        return
+    bot_journal("journal_export_requested", chat_id, f"limit={limit}")
+    rows = get_recent_journal(limit)
+    if not rows and os.path.exists(BOT_JOURNAL_FILE):
+        try:
+            with open(BOT_JOURNAL_FILE, "r", encoding="utf-8") as f:
+                raw = f.readlines()[-int(limit):]
+            rows = [json.loads(x) for x in raw if x.strip()]
+        except Exception:
+            rows = []
+    text_lines = ["📓 Журнал действий бота", f"Создан: {_journal_ts()}", ""]
+    for r in rows:
+        text_lines.append(
+            f"{r.get('ts','')} | {r.get('level','')} | {r.get('action','')} | "
+            f"chat={r.get('chat_name') or r.get('chat_id')} | {r.get('detail','')}"
+        )
+    payload = "\n".join(text_lines).encode("utf-8")
+    buf = io.BytesIO(payload)
+    buf.name = f"bot_journal_{now_local().strftime('%Y%m%d_%H%M%S')}.txt" if 'now_local' in globals() else "bot_journal.txt"
+    _tg_call_retry(bot.send_document, chat_id, buf, caption="📓 Журнал действий бота", purpose="journal_send_document")
 
 
 
@@ -370,6 +466,10 @@ class ProcessTrace:
 
     def start(self):
         self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — старт")
+        try:
+            bot_journal("process_start", self.chat_id, self.title)
+        except Exception:
+            pass
         if not self.enabled:
             return self
         try:
@@ -388,6 +488,10 @@ class ProcessTrace:
 
     def step(self, label: str):
         self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {label}")
+        try:
+            bot_journal("process_step", self.chat_id, f"{self.title}: {label}")
+        except Exception:
+            pass
         self._update_message(running=True)
         return self
 
@@ -424,6 +528,10 @@ class ProcessTrace:
 
     def finish(self, final_label: str = "завершено"):
         self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {final_label}")
+        try:
+            bot_journal("process_finish", self.chat_id, f"{self.title}: {final_label}")
+        except Exception:
+            pass
         if not self.enabled:
             return
         try:
@@ -1201,6 +1309,10 @@ def can_receive_direct_json_backup(chat_id: int) -> bool:
 
 def schedule_command_delete(msg):
     try:
+        bot_journal("command_received", msg.chat.id, getattr(msg, "text", ""))
+    except Exception:
+        pass
+    try:
         delete_message_later(msg.chat.id, msg.message_id, COMMAND_DELETE_DELAY)
     except Exception:
         pass
@@ -1272,6 +1384,7 @@ def build_help_text(chat_id: int) -> str:
             "/backup_channel_on / _off — включить/выключить бэкап в канал",
             "/diag — диагностика бота",
             "/errors — последние ошибки",
+            "/journal — скачать журнал действий бота",
             "/mega_status — статус MEGA/MEGAcmd",
             "/mega_backup_now — сразу загрузить latest_global.json в MEGA",
         ])
@@ -1606,6 +1719,10 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
             chat_id = _tg_first_chat_id(args, kwargs)
             if chat_id is not None:
                 _telegram_rate_limit_chat(chat_id)
+            try:
+                bot_journal("telegram_api_call", chat_id, f"{purpose}: {getattr(func, '__name__', str(func))} attempt={attempt}/{attempts}")
+            except Exception:
+                pass
             return func(*args, **kwargs)
         except TypeError:
             raise
@@ -1616,6 +1733,10 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
                 raise
             wait = max(1, int(retry_after)) + 1
             log_info(f"[TG 429 RETRY] {purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}")
+            try:
+                bot_journal("telegram_429_retry", chat_id if 'chat_id' in locals() else None, f"{purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}", "WARN")
+            except Exception:
+                pass
             if attempt >= int(attempts):
                 break
             time.sleep(wait)
@@ -3236,10 +3357,127 @@ EXPENSE_CATEGORY_ORDER = [
     "ПЕРЕВОДЫ",
 ]
 
-def resolve_expense_category(note: str):
+
+def _custom_category_list(store: dict | None) -> list:
+    if not isinstance(store, dict):
+        return []
+    settings = store.setdefault("settings", {})
+    raw = settings.setdefault("expense_categories_custom", [])
+    if isinstance(raw, dict):
+        raw = list(raw.values())
+        settings["expense_categories_custom"] = raw
+    if not isinstance(raw, list):
+        settings["expense_categories_custom"] = []
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip().upper()
+        keywords = [str(x).strip().lower() for x in (item.get("keywords") or []) if str(x).strip()]
+        slug = str(item.get("slug") or "").strip()
+        if not name or not keywords:
+            continue
+        if not slug:
+            slug = make_custom_category_slug(name, raw)
+            item["slug"] = slug
+        out.append({"name": name, "slug": slug, "keywords": keywords})
+    return out
+
+
+def make_custom_category_slug(name: str, existing=None) -> str:
+    base = re.sub(r"[^0-9a-zA-Zа-яА-Я]+", "_", str(name or "").lower()).strip("_")[:32] or "cat"
+    slug = "custom_" + base
+    used = set(EXPENSE_CATEGORY_SLUGS.values())
+    for item in existing or []:
+        if isinstance(item, dict) and item.get("slug"):
+            used.add(str(item.get("slug")))
+    if slug not in used:
+        return slug
+    i = 2
+    while f"{slug}_{i}" in used:
+        i += 1
+    return f"{slug}_{i}"
+
+
+def get_expense_category_order(store: dict | None = None) -> list[str]:
+    names = list(EXPENSE_CATEGORY_ORDER)
+    for item in _custom_category_list(store):
+        if item["name"] not in names:
+            names.append(item["name"])
+    return names
+
+
+def get_expense_category_slug(category: str, store: dict | None = None) -> str | None:
+    category = str(category or "").strip().upper()
+    if category in EXPENSE_CATEGORY_SLUGS:
+        return EXPENSE_CATEGORY_SLUGS.get(category)
+    for item in _custom_category_list(store):
+        if item["name"] == category:
+            return item["slug"]
+    return None
+
+
+def get_category_by_slug(slug: str, store: dict | None = None) -> str | None:
+    slug = str(slug or "").strip()
+    if slug in CATEGORY_BY_SLUG:
+        return CATEGORY_BY_SLUG.get(slug)
+    for item in _custom_category_list(store):
+        if item["slug"] == slug:
+            return item["name"]
+    return None
+
+
+def parse_category_definition(text: str):
+    raw = str(text or "").strip()
+    if not raw:
+        raise ValueError("empty")
+    if raw.lower() in {"отмена", "cancel", "/cancel"}:
+        return None, None
+    sep = ":" if ":" in raw else "|" if "|" in raw else "-" if " - " in raw else None
+    if not sep:
+        raise ValueError("format")
+    name, keys = raw.split(sep, 1)
+    name = re.sub(r"\s+", " ", name.strip()).upper()
+    keywords = [re.sub(r"\s+", " ", x.strip().lower()) for x in re.split(r"[,;]", keys) if x.strip()]
+    if not name or not keywords:
+        raise ValueError("format")
+    return name, keywords
+
+
+def add_custom_expense_category(chat_id: int, name: str, keywords: list[str]) -> dict:
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    custom = settings.setdefault("expense_categories_custom", [])
+    if not isinstance(custom, list):
+        custom = []
+        settings["expense_categories_custom"] = custom
+    name = str(name or "").strip().upper()
+    keywords = [str(x).strip().lower() for x in (keywords or []) if str(x).strip()]
+    for item in custom:
+        if isinstance(item, dict) and str(item.get("name", "")).strip().upper() == name:
+            item["keywords"] = sorted(set((item.get("keywords") or []) + keywords))
+            save_data(data)
+            schedule_config_backup_for_chats(chat_id)
+            bot_journal("category_updated", chat_id, f"{name}: {', '.join(item['keywords'])}")
+            return item
+    item = {"name": name, "slug": make_custom_category_slug(name, custom), "keywords": sorted(set(keywords))}
+    custom.append(item)
+    save_data(data)
+    schedule_config_backup_for_chats(chat_id)
+    bot_journal("category_added", chat_id, f"{name}: {', '.join(item['keywords'])}")
+    return item
+
+
+def resolve_expense_category(note: str, store: dict | None = None):
     if not note:
         return None
     n = str(note).lower()
+    # Сначала пользовательские статьи: они важнее стандартных, если ключ совпал.
+    for item in _custom_category_list(store):
+        for kw in item.get("keywords", []):
+            if kw and kw in n:
+                return item.get("name")
     for cat in EXPENSE_CATEGORY_ORDER:
         keywords = EXPENSE_CATEGORIES.get(cat, [])
         for kw in keywords:
@@ -3258,7 +3496,7 @@ def calc_categories_for_period(store: dict, start: str, end: str) -> dict:
             amt = float(r.get("amount", 0) or 0)
             if amt >= 0:
                 continue
-            cat = resolve_expense_category(r.get("note", ""))
+            cat = resolve_expense_category(r.get("note", ""), store)
             if not cat:
                 continue
             out[cat] = out.get(cat, 0) + (-amt)
@@ -3277,21 +3515,23 @@ def collect_items_for_category(store: dict, start: str, end: str, category: str)
             if amt >= 0:
                 continue
             note = r.get("note", "")
-            if resolve_expense_category(note) == category:
+            if resolve_expense_category(note, store) == category:
                 items.append((day, -amt, note))
     return items
 
 
-def get_ordered_category_names(include_all: bool = False, cats: dict | None = None):
+def get_ordered_category_names(include_all: bool = False, cats: dict | None = None, store: dict | None = None):
     names = []
     seen = set()
+    order = get_expense_category_order(store)
     if include_all:
-        for cat in EXPENSE_CATEGORY_ORDER:
-            names.append(cat)
-            seen.add(cat)
+        for cat in order:
+            if cat not in seen:
+                names.append(cat)
+                seen.add(cat)
     elif cats:
-        for cat in EXPENSE_CATEGORY_ORDER:
-            if cat in cats:
+        for cat in order:
+            if cat in cats and cat not in seen:
                 names.append(cat)
                 seen.add(cat)
         for cat in sorted(cats.keys()):
@@ -3311,15 +3551,15 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
     if not cats:
         lines.append("Нет данных по статьям за этот период.")
     else:
-        for cat in get_ordered_category_names(cats=cats):
+        for cat in get_ordered_category_names(cats=cats, store=store):
             lines.append(f"{cat}: {fmt_num_plain(cats.get(cat, 0))}")
     return "\n".join(lines), cats
 
-def build_categories_buttons(start: str, end: str):
+def build_categories_buttons(start: str, end: str, store: dict | None = None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     buttons = []
-    for cat in get_ordered_category_names(include_all=True):
-        slug = EXPENSE_CATEGORY_SLUGS.get(cat)
+    for cat in get_ordered_category_names(include_all=True, store=store):
+        slug = get_expense_category_slug(cat, store)
         if not slug:
             continue
         buttons.append(
@@ -3335,8 +3575,8 @@ def build_categories_buttons(start: str, end: str):
     return kb
 
 
-def build_categories_summary_keyboard(mode: str, start: str, end: str):
-    kb = build_categories_buttons(start, end)
+def build_categories_summary_keyboard(mode: str, start: str, end: str, store: dict | None = None):
+    kb = build_categories_buttons(start, end, store=store)
 
     if mode == "wthu":
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -3372,6 +3612,7 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str):
             types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
         )
 
+    kb.row(types.InlineKeyboardButton("➕ Добавить статью", callback_data="cat_add"))
     kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close"))
     return kb
 
@@ -3397,8 +3638,8 @@ def build_category_detail_text(store: dict, start: str, end: str, category: str,
 
     return "\n".join(lines)
 
-def build_category_detail_keyboard(start: str, end: str, back_callback: str, mode: str | None = None, slug: str | None = None):
-    kb = build_categories_buttons(start, end)
+def build_category_detail_keyboard(start: str, end: str, back_callback: str, mode: str | None = None, slug: str | None = None, store: dict | None = None):
+    kb = build_categories_buttons(start, end, store=store)
 
     if mode == "wthu" and slug:
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -3438,6 +3679,73 @@ def describe_msg_for_log(msg) -> str:
         return f"chat={getattr(getattr(msg, 'chat', None), 'id', '?')} msg={getattr(msg, 'message_id', '?')} type={getattr(msg, 'content_type', '?')}"
     except Exception:
         return "msg=?"
+
+
+def _category_add_prompt_text(target_chat_id: int) -> str:
+    return (
+        f"➕ Добавление статьи расходов для: {get_chat_display_name(target_chat_id)}\n\n"
+        "Отправь одним сообщением в формате:\n"
+        "Название статьи: ключ1, ключ2, ключ3\n\n"
+        "Пример:\n"
+        "РЕМОНТ: гипсокартон, шпаклевка, краска, инструмент\n\n"
+        "Бот будет относить расход к статье, если в описании расхода найден любой ключ.\n"
+        "Для отмены напиши: отмена"
+    )
+
+
+def start_category_add_wait(owner_chat_id: int, target_chat_id: int, owner_day_key: str | None = None):
+    store = get_chat_store(owner_chat_id)
+    store["category_add_wait"] = {
+        "type": "expense_category_add",
+        "target_chat_id": int(target_chat_id),
+        "owner_day_key": owner_day_key or today_key(),
+        "started_at": now_local().isoformat(timespec="seconds"),
+    }
+    save_data(data)
+    sent = _tg_call_retry(bot.send_message, owner_chat_id, _category_add_prompt_text(target_chat_id), purpose="category_add_prompt")
+    store["category_add_wait"]["prompt_msg_id"] = sent.message_id
+    save_data(data)
+    bot_journal("category_add_wait_start", owner_chat_id, f"target={get_chat_display_name(target_chat_id)}")
+
+
+def handle_category_add_message(msg) -> bool:
+    if getattr(msg, "content_type", None) != "text":
+        return False
+    chat_id = int(msg.chat.id)
+    store = get_chat_store(chat_id)
+    wait = store.get("category_add_wait")
+    if not wait or wait.get("type") != "expense_category_add":
+        return False
+    text = (msg.text or "").strip()
+    target_chat_id = int(wait.get("target_chat_id") or chat_id)
+    try:
+        name, keywords = parse_category_definition(text)
+        if name is None:
+            store["category_add_wait"] = None
+            save_data(data)
+            send_and_auto_delete(chat_id, "❎ Добавление статьи отменено.", 10)
+            return True
+        item = add_custom_expense_category(target_chat_id, name, keywords)
+        store["category_add_wait"] = None
+        save_data(data)
+        send_and_auto_delete(
+            chat_id,
+            f"✅ Статья добавлена: {item.get('name')}\nКлючи: {', '.join(item.get('keywords', []))}",
+            20
+        )
+        try:
+            bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        send_and_auto_delete(
+            chat_id,
+            "❌ Не понял формат. Пример:\nРЕМОНТ: гипсокартон, шпаклевка, краска\n\nДля отмены напиши: отмена",
+            20
+        )
+        return True
+
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -3459,10 +3767,22 @@ def on_any_message(msg):
         pass
 
     try:
+        bot_journal("message_received", chat_id, describe_msg_for_log(msg))
+    except Exception:
+        pass
+
+    try:
         if not getattr(getattr(msg, "from_user", None), "is_bot", False):
             bump_quick_balance_recreate_counter(chat_id)
     except Exception:
         pass
+
+    if msg.content_type == "text":
+        try:
+            if handle_category_add_message(msg):
+                return
+        except Exception as e:
+            log_error(f"category_add_message handler error: {e}")
 
     if msg.content_type == "text":
         try:
@@ -3644,6 +3964,7 @@ def handle_finance_text(msg):
     """
 
     chat_id = msg.chat.id
+    bot_journal("finance_text_start", chat_id, describe_msg_for_log(msg))
     text = _message_text_for_finance(msg)
     if not text:
         return False
@@ -3964,6 +4285,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
     except Exception as e:
         log_error(f"send_backup_to_channel_for_file({base_path}): {e}")
 def send_backup_to_channel(chat_id: int):
+    bot_journal("backup_to_channel_start", chat_id, "send_backup_to_channel")
     if not is_backup_to_channel_enabled(chat_id):
         return
     """
@@ -4843,17 +5165,19 @@ def _collect_backup_menu_items():
 
 
 def build_backup_owner_menu(day_key: str):
-    """Меню владельца BACKUP: канал/MEGA для всех чатов, прямой бэкап в чат только для владельца."""
-    kb = types.InlineKeyboardMarkup(row_width=3)
+    """Меню владельца BACKUP: каждая строка = чат | в чат | канал | MEGA."""
+    kb = types.InlineKeyboardMarkup(row_width=4)
     owner_id = int(OWNER_ID) if OWNER_ID else None
     for cid, title in _collect_backup_menu_items():
-        kb.row(types.InlineKeyboardButton(f"💬 {title}", callback_data="none"))
-        row = []
-        if owner_id is not None and int(cid) == owner_id:
-            row.append(types.InlineKeyboardButton(_backup_toggle_label(cid, "chat", "в чат"), callback_data=f"d:{day_key}:backup_toggle_chat_{cid}"))
-        row.append(types.InlineKeyboardButton(_backup_toggle_label(cid, "channel", "канал"), callback_data=f"d:{day_key}:backup_toggle_channel_{cid}"))
-        row.append(types.InlineKeyboardButton(_backup_toggle_label(cid, "mega", "MEGA"), callback_data=f"d:{day_key}:backup_toggle_mega_{cid}"))
-        kb.row(*row)
+        chat_btn = types.InlineKeyboardButton(f"💬 {title}", callback_data="none")
+        chat_label = _backup_toggle_label(cid, "chat", "чат") if (owner_id is not None and int(cid) == owner_id) else "➖ чат"
+        chat_cb = f"d:{day_key}:backup_toggle_chat_{cid}" if (owner_id is not None and int(cid) == owner_id) else "none"
+        kb.row(
+            chat_btn,
+            types.InlineKeyboardButton(chat_label, callback_data=chat_cb),
+            types.InlineKeyboardButton(_backup_toggle_label(cid, "channel", "канал"), callback_data=f"d:{day_key}:backup_toggle_channel_{cid}"),
+            types.InlineKeyboardButton(_backup_toggle_label(cid, "mega", "MEGA"), callback_data=f"d:{day_key}:backup_toggle_mega_{cid}"),
+        )
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
@@ -5328,7 +5652,7 @@ def build_quick_balance_chat_menu(day_key: str):
     return kb
 
 def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
-    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb = types.InlineKeyboardMarkup(row_width=1)
     enabled = is_quick_balance_enabled(target_chat_id)
     behavior = get_quick_balance_behavior(target_chat_id)
 
@@ -5336,11 +5660,9 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     open_icon = "✅" if enabled and behavior == "open" else "❌"
     first_icon = "✅" if enabled and behavior == "first" else "❌"
 
-    kb.row(
-        types.InlineKeyboardButton(f"{normal_icon} Как обычно", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"),
-        types.InlineKeyboardButton(f"{open_icon} Открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"),
-        types.InlineKeyboardButton(f"{first_icon} Всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"),
-    )
+    kb.row(types.InlineKeyboardButton(f"{normal_icon} Как обычно", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"))
+    kb.row(types.InlineKeyboardButton(f"{open_icon} Открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"))
+    kb.row(types.InlineKeyboardButton(f"{first_icon} Всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:quick_balance_menu"))
     return kb
 
@@ -5436,6 +5758,7 @@ def clear_edit_delete_selection(chat_id: int, day_key: str | None = None):
 
 def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str) -> bool:
     """v27: только меняет данные. Окна/бэкапы делает finance_changed()."""
+    bot_journal("record_update_start", chat_id, f"rid={rid} amount={amount} note={note}")
     store = get_chat_store(chat_id)
     target = next((r for r in store.get("records", []) if int(r.get("id", -1)) == int(rid)), None)
     if not target:
@@ -5740,10 +6063,11 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         log_error(f"send_export_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
 
 def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start: str, end: str, owner_day_key: str):
+    store = get_chat_store(target_chat_id)
     kb = types.InlineKeyboardMarkup(row_width=3)
     buttons = []
-    for cat in get_ordered_category_names(include_all=True):
-        slug = EXPENSE_CATEGORY_SLUGS.get(cat)
+    for cat in get_ordered_category_names(include_all=True, store=store):
+        slug = get_expense_category_slug(cat, store)
         if slug:
             buttons.append(types.InlineKeyboardButton(cat, callback_data=f"fvcat_show:{target_chat_id}:{start}:{end}:{slug}:{owner_day_key}"))
     add_buttons_in_rows(kb, buttons, 3)
@@ -5755,6 +6079,7 @@ def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start:
             types.InlineKeyboardButton("📅 Сегодня", callback_data=f"fvcat_today:{target_chat_id}:{owner_day_key}"),
             types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=f"fvcat_wthu:{target_chat_id}:{next_key}:{owner_day_key}"),
         )
+    kb.row(types.InlineKeyboardButton("➕ Добавить статью", callback_data=f"fvcat_add:{target_chat_id}:{start}:{owner_day_key}"))
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
     return kb
 
@@ -5775,6 +6100,18 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
     if action == "fvcat_today":
         owner_day_key = parts[2] if len(parts) > 2 else today_key()
         return handle_finwindow_categories_callback(call, f"fvcat_wthu:{target_chat_id}:{today_key()}:{owner_day_key}")
+    if action == "fvcat_add":
+        try:
+            owner_day_key = parts[3] if len(parts) > 3 else today_key()
+        except Exception:
+            owner_day_key = today_key()
+        start_category_add_wait(owner_chat_id, target_chat_id, owner_day_key=owner_day_key)
+        try:
+            bot.answer_callback_query(call.id, "Напиши название и ключи статьи", show_alert=False)
+        except Exception:
+            pass
+        return True
+
     if action == "fvcat_wthu":
         ref = parts[2] if len(parts) > 2 else today_key()
         owner_day_key = parts[3] if len(parts) > 3 else today_key()
@@ -5791,7 +6128,7 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
             target_chat_id = int(target_s)
         except Exception:
             return True
-        category = CATEGORY_BY_SLUG.get(slug)
+        category = get_category_by_slug(slug, store)
         if not category:
             return True
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
@@ -6010,6 +6347,8 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
 def open_info_window(chat_id: int):
     info_text = build_info_text(chat_id)
     kb = types.InlineKeyboardMarkup()
+    if is_owner_chat(chat_id):
+        kb.row(types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"))
     kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
     send_or_edit_stored_window(
         chat_id,
@@ -6038,13 +6377,21 @@ def handle_categories_callback(call, data_str: str) -> bool:
     if data_str == "cat_today":
         return handle_categories_callback(call, f"cat_wthu:{today_key()}")
 
+    if data_str == "cat_add":
+        start_category_add_wait(chat_id, chat_id)
+        try:
+            bot.answer_callback_query(call.id, "Напиши название и ключи статьи", show_alert=False)
+        except Exception:
+            pass
+        return True
+
     if data_str.startswith("cat_wthu:"):
         ref = data_str.split(":", 1)[1] or today_key()
         start_key = week_start_thursday(ref)
         start, end = week_bounds_thu_wed(start_key)
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
         text, _ = summarize_categories(store, start, end, label)
-        kb = build_categories_summary_keyboard("wthu", start, end)
+        kb = build_categories_summary_keyboard("wthu", start, end, store=store)
         send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
@@ -6053,7 +6400,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         start, end = week_bounds_from_start(start_key)
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн–Вс)"
         text, _ = summarize_categories(store, start, end, label)
-        kb = build_categories_summary_keyboard("wk", start, end)
+        kb = build_categories_summary_keyboard("wk", start, end, store=store)
         send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
@@ -6112,13 +6459,13 @@ def handle_categories_callback(call, data_str: str) -> bool:
         end = f"{y}-{m:02d}-{b:02d}"
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
         text, _ = summarize_categories(store, start, end, label)
-        kb = build_categories_summary_keyboard("rng", start, end)
+        kb = build_categories_summary_keyboard("rng", start, end, store=store)
         send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
     if data_str.startswith("cat_show_wthu:"):
         _, ref, slug = data_str.split(":", 2)
-        category = CATEGORY_BY_SLUG.get(slug)
+        category = get_category_by_slug(slug, store)
         if not category:
             return True
 
@@ -6126,13 +6473,13 @@ def handle_categories_callback(call, data_str: str) -> bool:
         start, end = week_bounds_thu_wed(start_key)
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
         text = build_category_detail_text(store, start, end, category, label)
-        kb = build_category_detail_keyboard(start, end, f"cat_wthu:{start}", mode="wthu", slug=slug)
+        kb = build_category_detail_keyboard(start, end, f"cat_wthu:{start}", mode="wthu", slug=slug, store=store)
         send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
     if data_str.startswith("cat_show_wk:"):
         _, ref, slug = data_str.split(":", 2)
-        category = CATEGORY_BY_SLUG.get(slug)
+        category = get_category_by_slug(slug, store)
         if not category:
             return True
 
@@ -6140,13 +6487,13 @@ def handle_categories_callback(call, data_str: str) -> bool:
         start, end = week_bounds_from_start(start_key)
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Пн–Вс)"
         text = build_category_detail_text(store, start, end, category, label)
-        kb = build_category_detail_keyboard(start, end, f"cat_wk:{start}", mode="wk", slug=slug)
+        kb = build_category_detail_keyboard(start, end, f"cat_wk:{start}", mode="wk", slug=slug, store=store)
         send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
     if data_str.startswith("cat_show:"):
         _, start, end, slug = data_str.split(":", 3)
-        category = CATEGORY_BY_SLUG.get(slug)
+        category = get_category_by_slug(slug, store)
         if not category:
             return True
 
@@ -6171,7 +6518,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             mode = "wk"
 
         text = build_category_detail_text(store, start, end, category, label)
-        kb = build_category_detail_keyboard(start, end, back_callback, mode=mode, slug=slug)
+        kb = build_category_detail_keyboard(start, end, back_callback, mode=mode, slug=slug, store=store)
         send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
@@ -6203,7 +6550,13 @@ def _callback_should_debounce(call, data_str: str, min_interval: float = 0.45) -
         now_ts = time.time()
         prev_ts = _callback_debounce_state.get(key, 0)
         _callback_debounce_state[key] = now_ts
-        return (now_ts - prev_ts) < float(min_interval)
+        skipped = (now_ts - prev_ts) < float(min_interval)
+        if skipped:
+            try:
+                bot_journal("button_debounced", chat_id, data_str)
+            except Exception:
+                pass
+        return skipped
     except Exception:
         return False
 
@@ -6218,6 +6571,10 @@ def on_callback(call):
     try:
         data_str = call.data or ""
         chat_id = call.message.chat.id
+        try:
+            bot_journal("button_pressed", chat_id, str(data_str)[:500])
+        except Exception:
+            pass
 
         if _callback_should_debounce(call, data_str):
             return
@@ -6533,6 +6890,27 @@ def on_callback(call):
                 reply_markup=build_fin_calendar_keyboard(target_chat_id, center_dt, owner_day_key),
                 parse_mode="HTML"
             )
+            return
+        if data_str == "journal_open":
+            if not is_owner_chat(chat_id):
+                return
+            kb = types.InlineKeyboardMarkup()
+            kb.row(types.InlineKeyboardButton("📄 Скачать TXT", callback_data="journal_file"))
+            kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="journal_back"), types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
+            safe_edit(bot, call, format_journal_text(120), reply_markup=kb)
+            return
+        if data_str == "journal_file":
+            if not is_owner_chat(chat_id):
+                return
+            send_journal_file_to_owner(chat_id, 3000)
+            return
+        if data_str == "journal_back":
+            if not is_owner_chat(chat_id):
+                return
+            kb = types.InlineKeyboardMarkup()
+            kb.row(types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"))
+            kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=kb)
             return
         if data_str == "info_close":
             try:
@@ -7296,6 +7674,7 @@ def add_record_to_chat(
     source_msg=None,
     day_key=None
 ):
+    bot_journal("record_add_start", chat_id, f"amount={amount} note={note}")
     with locked_chat(chat_id):
         store = get_chat_store(chat_id)
         rid = store.get("next_id", 1)
@@ -8774,6 +9153,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
 def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.8):
     """Debounced универсальный финальный пересчёт для одного чата."""
     chat_id = int(chat_id)
+    bot_journal("finance_changed_scheduled", chat_id, f"day={day_key} reason={reason} delay={delay}")
     day_key = day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
 
     def _job():
@@ -9323,6 +9703,22 @@ def cmd_errors(msg):
     send_and_auto_delete(chat_id, "\n".join(lines), 90)
 
 
+
+
+@bot.message_handler(commands=["journal", "log", "logs"])
+def cmd_journal(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    bot_journal("command_journal", chat_id, getattr(msg, "text", ""))
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    send_journal_file_to_owner(chat_id, 3000)
+
 @bot.message_handler(commands=["sqlite", "db"])
 def cmd_sqlite_dump(msg):
     try:
@@ -9378,6 +9774,11 @@ def telegram_webhook():
                 log_info("WEBHOOK: получен update с message")
             elif "callback_query" in payload:
                 log_info("WEBHOOK: получен update с callback_query")
+            try:
+                upd_type = "edited_message" if "edited_message" in payload else "message" if "message" in payload else "callback_query" if "callback_query" in payload else "other"
+                bot_journal("webhook_update", _extract_update_chat_id(payload), upd_type)
+            except Exception:
+                pass
 
         update = telebot.types.Update.de_json(payload)
         update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
