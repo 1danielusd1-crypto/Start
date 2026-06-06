@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v40_finview_articles_stable"
+VERSION = "bot_v37_journal_categories_excel_fix"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -843,24 +843,24 @@ def format_finance_mode_label(chat_id: int) -> str:
 def is_quick_balance_enabled(chat_id: int) -> bool:
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
-    return bool(settings.get("quick_balance_enabled", False))
+    return bool(settings.get("quick_balance_enabled", True))
 
 
 def get_quick_balance_behavior(chat_id: int) -> str:
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
-    behavior = (settings.get("quick_balance_behavior") or "normal").strip().lower()
-    if behavior in {"normal", "mini", "open", "first"}:
+    behavior = (settings.get("quick_balance_behavior") or "open").strip().lower()
+    if behavior in {"open", "first"}:
         return behavior
-    return "normal"
+    return "mini"
 
 
 def set_quick_balance_behavior(chat_id: int, behavior: str):
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
-    behavior = str(behavior or "normal").strip().lower()
-    if behavior not in {"normal", "mini", "open", "first"}:
-        behavior = "normal"
+    behavior = str(behavior or "mini").strip().lower()
+    if behavior not in {"mini", "open", "first"}:
+        behavior = "mini"
     settings["quick_balance_behavior"] = behavior
     save_data(data)
     schedule_config_backup_for_chats(chat_id)
@@ -893,8 +893,7 @@ def set_quick_balance_enabled(chat_id: int, enabled: bool):
         except Exception:
             pass
     store["balance_panel_id"] = None
-    store["balance_panel_mode"] = "normal"
-    settings["quick_balance_behavior"] = "normal"
+    store["balance_panel_mode"] = "mini"
     save_data(data)
     schedule_config_backup_for_chats(chat_id)
 
@@ -1023,70 +1022,6 @@ def toggle_process_trace(chat_id: int) -> bool:
     return new_value
 
 
-def _is_bot_removed_error(err) -> bool:
-    text = str(err or "").lower()
-    needles = (
-        "bot was kicked",
-        "bot was blocked",
-        "user is deactivated",
-        "chat not found",
-        "forbidden",
-        "not enough rights",
-        "have no rights",
-    )
-    return any(n in text for n in needles)
-
-
-def set_chat_bot_removed(chat_id: int, removed: bool = True, reason: str = ""):
-    try:
-        store = get_chat_store(int(chat_id))
-        settings = store.setdefault("settings", {})
-        if bool(settings.get("bot_removed", False)) == bool(removed) and not reason:
-            return
-        settings["bot_removed"] = bool(removed)
-        if removed:
-            settings["bot_removed_reason"] = str(reason or "bot removed")[:300]
-            settings["bot_removed_at"] = now_local().isoformat(timespec="seconds")
-        else:
-            settings.pop("bot_removed_reason", None)
-            settings.pop("bot_removed_at", None)
-        save_data(data)
-        try:
-            bot_journal("bot_removed_state", int(chat_id), f"removed={removed} {reason}")
-        except Exception:
-            pass
-    except Exception as e:
-        log_error(f"set_chat_bot_removed({chat_id}): {e}")
-
-
-def is_chat_bot_removed(chat_id: int) -> bool:
-    try:
-        store = get_chat_store(int(chat_id))
-        return bool(store.setdefault("settings", {}).get("bot_removed", False))
-    except Exception:
-        return False
-
-
-def chat_button_title(chat_id: int, title: str | None = None) -> str:
-    title = title or get_chat_display_name(chat_id)
-    return ("➖ " if is_chat_bot_removed(chat_id) else "") + str(title)
-
-
-def answer_removed_chat(call, target_chat_id: int) -> bool:
-    if not is_chat_bot_removed(target_chat_id):
-        return False
-    txt = f"➖ Бот удалён из чата: {get_chat_display_name(target_chat_id)}"
-    try:
-        bot.answer_callback_query(call.id, txt, show_alert=True)
-    except Exception:
-        pass
-    try:
-        send_and_auto_delete(call.message.chat.id, txt, 12)
-    except Exception:
-        pass
-    return True
-
-
 def set_hidden_finance_mode(chat_id: int, enabled: bool):
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
@@ -1095,7 +1030,7 @@ def set_hidden_finance_mode(chat_id: int, enabled: bool):
 
     if enabled:
         set_finance_mode(chat_id, True)
-        # Скрытый режим независим от меню быстрого остатка: не меняем выбранный режим.
+        settings["quick_balance_enabled"] = False
         panel_id = store.get("balance_panel_id")
         if panel_id:
             try:
@@ -1133,68 +1068,12 @@ def force_recreate_balance_panel(chat_id: int):
     send_minimized_balance_panel(chat_id)
 
 
-def is_normal_finance_window_mode(chat_id: int) -> bool:
-    """Как обычно: финокно чата, без быстрого остатка, пересоздаётся после 10 сообщений."""
-    try:
-        return (not is_quick_balance_enabled(chat_id)) or get_quick_balance_behavior(chat_id) == "normal"
-    except Exception:
-        return True
-
-
-def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
-    try:
-        chat_id = int(chat_id)
-    except Exception:
-        return
-    if is_hidden_finance_mode(chat_id):
-        return
-    if not is_finance_mode(chat_id):
-        return
-
-    def _job():
-        try:
-            with locked_chat(chat_id):
-                store = get_chat_store(chat_id)
-                if int(store.get("main_window_msg_count", 0) or 0) < 10:
-                    return
-                store["main_window_msg_count"] = 0
-                day_key = store.get("current_view_day") or today_key()
-                save_data(data)
-            # Пересоздание/обновление окна — вне lock чата.
-            update_or_send_day_window(chat_id, day_key)
-        except Exception as e:
-            log_error(f"schedule_main_window_recreate_after_quiet({get_chat_display_name(chat_id)}): {e}")
-
-    with timer_lock:
-        prev = _balance_panel_recreate_timers.get(("main", chat_id))
-        if prev and prev.is_alive():
-            try:
-                prev.cancel()
-            except Exception:
-                pass
-        t = threading.Timer(delay, _job)
-        _balance_panel_recreate_timers[("main", chat_id)] = t
-        t.start()
-
-
 def bump_quick_balance_recreate_counter(chat_id: int, count: int = 1):
-    """Сообщения после ввода: обычное окно через 10 сообщений или быстрый остаток по выбранному режиму."""
+    """После 3 сообщений не пересоздаём окно сразу в шквале, а ждём короткую паузу."""
     try:
         if is_hidden_finance_mode(chat_id):
             return
-        if not is_finance_mode(chat_id):
-            return
-
-        if is_normal_finance_window_mode(chat_id):
-            store = get_chat_store(chat_id)
-            cur = int(store.get("main_window_msg_count", 0) or 0) + int(count or 1)
-            store["main_window_msg_count"] = cur
-            save_data(data)
-            if cur >= 10:
-                schedule_main_window_recreate_after_quiet(chat_id, delay=4.0)
-            return
-
-        if not is_quick_balance_enabled(chat_id):
+        if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
             return
 
         # Режим «всегда первым»: отдельный минутный таймер после последнего сообщения.
@@ -1506,7 +1385,6 @@ def build_help_text(chat_id: int) -> str:
             "/diag — диагностика бота",
             "/errors — последние ошибки",
             "/journal — скачать журнал действий бота",
-            "/articles — описание статей: статья = ключевые слова",
             "/mega_status — статус MEGA/MEGAcmd",
             "/mega_backup_now — сразу загрузить latest_global.json в MEGA",
         ])
@@ -1852,12 +1730,6 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
             last_err = e
             retry_after = _telegram_retry_after_seconds(e)
             if retry_after is None:
-                try:
-                    chat_id_for_mark = _tg_first_chat_id(args, kwargs)
-                    if chat_id_for_mark is not None and _is_bot_removed_error(e):
-                        set_chat_bot_removed(int(chat_id_for_mark), True, str(e)[:240])
-                except Exception:
-                    pass
                 raise
             wait = max(1, int(retry_after)) + 1
             log_info(f"[TG 429 RETRY] {purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}")
@@ -3011,8 +2883,8 @@ def get_chat_store(chat_id: int) -> dict:
                 "finance_mode": False,
                 "settings": {
                     "auto_add": True,
-                    "quick_balance_enabled": False,
-                    "quick_balance_behavior": "normal",
+                    "quick_balance_enabled": True,
+                    "quick_balance_behavior": "open",
                     "hidden_finance": False,
                     "auto_backup_enabled": True,
                     "auto_backup_to_chat_enabled": True,
@@ -3023,8 +2895,8 @@ def get_chat_store(chat_id: int) -> dict:
         )
 
         store.setdefault("settings", {}).setdefault("auto_add", True)
-        store.setdefault("settings", {}).setdefault("quick_balance_enabled", False)
-        store.setdefault("settings", {}).setdefault("quick_balance_behavior", "normal")
+        store.setdefault("settings", {}).setdefault("quick_balance_enabled", True)
+        store.setdefault("settings", {}).setdefault("quick_balance_behavior", "open")
         store.setdefault("settings", {}).setdefault("hidden_finance", False)
         store.setdefault("settings", {}).setdefault("auto_backup_enabled", True)
         legacy_backup_enabled = bool(store.setdefault("settings", {}).get("auto_backup_enabled", True))
@@ -3458,13 +3330,6 @@ def split_amount_and_note(text: str):
     amount = parse_amount(raw_number)
     note = text.replace(raw_number, " ").strip()
     note = re.sub(r"\s+", " ", note).lower()
-
-    # Приход без знака "+": слова "обмен" и "возврат" считаем приходом.
-    # Примеры: "1000 возврат", "500 обмен", "возврат 300".
-    income_words = ("обмен", "возврат")
-    if amount < 0 and any(w in note for w in income_words):
-        amount = abs(amount)
-
     return amount, note
 
 
@@ -3676,27 +3541,6 @@ def get_ordered_category_names(include_all: bool = False, cats: dict | None = No
     return names
 
 
-def build_articles_description_text(chat_id: int | None = None) -> str:
-    """Описание статей: статья = ключевые слова. Для владельца показывает стандартные + пользовательские по выбранному чату."""
-    try:
-        store = get_chat_store(chat_id) if chat_id is not None else None
-    except Exception:
-        store = None
-    lines = ["📚 Описание статей расходов", ""]
-    for cat in EXPENSE_CATEGORY_ORDER:
-        keys = EXPENSE_CATEGORIES.get(cat, []) or []
-        lines.append(f"{cat}: {', '.join(keys) if keys else '—'}")
-    custom = _custom_category_list(store)
-    if custom:
-        lines.append("")
-        lines.append("Пользовательские статьи:")
-        for item in custom:
-            lines.append(f"{item.get('name')}: {', '.join(item.get('keywords') or [])}")
-    lines.append("")
-    lines.append("Добавить новую статью можно в окне 📊 Статьи → ➕ Добавить статью.")
-    return "\n".join(lines)
-
-
 def summarize_categories(store: dict, start: str, end: str, label: str):
     cats = calc_categories_for_period(store, start, end)
     lines = [
@@ -3711,88 +3555,6 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{cat}: {fmt_num_plain(cats.get(cat, 0))}")
     return "\n".join(lines), cats
 
-
-
-# ─────────────────────────────────────────────────────────────
-# Короткие callback-и для меню статей
-# Telegram ограничивает callback_data 64 байтами. В статьях есть даты,
-# chat_id и пользовательские slug-и, поэтому длинные callback-и могут
-# приводить к BUTTON_DATA_INVALID и меню «не открывается».
-# Здесь длинная команда кладётся во временную карту, а в кнопку идёт короткий токен.
-# ─────────────────────────────────────────────────────────────
-_short_callback_lock = threading.RLock()
-_short_callback_store = {}
-_short_callback_counter = 0
-SHORT_CALLBACK_TTL_SECONDS = 6 * 60 * 60
-
-
-def base36(num: int) -> str:
-    try:
-        num = int(num)
-    except Exception:
-        num = 0
-    alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
-    if num == 0:
-        return "0"
-    neg = num < 0
-    num = abs(num)
-    out = ""
-    while num:
-        num, rem = divmod(num, 36)
-        out = alphabet[rem] + out
-    return ("-" if neg else "") + out
-
-
-def make_short_callback(data_str: str, prefix: str | None = None) -> str:
-    global _short_callback_counter
-    data_str = str(data_str or "")
-    try:
-        if len(data_str.encode("utf-8")) <= 54:
-            return data_str
-    except Exception:
-        pass
-    if not prefix:
-        if data_str.startswith("fvcat_"):
-            prefix = "fvcatx"
-        elif data_str.startswith("cat_"):
-            prefix = "catx"
-        else:
-            prefix = "cbx"
-    with _short_callback_lock:
-        _short_callback_counter += 1
-        token = base36(_short_callback_counter) + base36(int(time.time() * 1000) % 46656)
-        _short_callback_store[token] = {
-            "data": data_str,
-            "ts": time.time(),
-        }
-        # Лёгкая чистка старых токенов, чтобы память не росла бесконечно.
-        if len(_short_callback_store) > 2000:
-            cutoff = time.time() - SHORT_CALLBACK_TTL_SECONDS
-            for k in list(_short_callback_store.keys())[:500]:
-                if _short_callback_store.get(k, {}).get("ts", 0) < cutoff:
-                    _short_callback_store.pop(k, None)
-    return f"{prefix}:{token}"
-
-
-def resolve_short_callback(data_str: str) -> str | None:
-    data_str = str(data_str or "")
-    if not (data_str.startswith("catx:") or data_str.startswith("fvcatx:") or data_str.startswith("cbx:")):
-        return data_str
-    token = data_str.split(":", 1)[1]
-    with _short_callback_lock:
-        item = _short_callback_store.get(token)
-    if not item:
-        return None
-    return str(item.get("data") or "")
-
-
-def cat_callback(data_str: str) -> str:
-    return make_short_callback(data_str, "catx")
-
-
-def fvcat_callback(data_str: str) -> str:
-    return make_short_callback(data_str, "fvcatx")
-
 def build_categories_buttons(start: str, end: str, store: dict | None = None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     buttons = []
@@ -3803,7 +3565,7 @@ def build_categories_buttons(start: str, end: str, store: dict | None = None):
         buttons.append(
             types.InlineKeyboardButton(
                 cat,
-                callback_data=cat_callback(f"cat_show:{start}:{end}:{slug}")
+                callback_data=f"cat_show:{start}:{end}:{slug}"
             )
         )
 
@@ -3819,39 +3581,39 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
     if mode == "wthu":
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=cat_callback(f"cat_wthu:{prev_key}"))]
+        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_wthu:{prev_key}")]
         if start != week_start_thursday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")))
-        row.append(types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=cat_callback(f"cat_wthu:{next_key}")))
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
+        row.append(types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=f"cat_wthu:{next_key}"))
         kb.row(*row)
         kb.row(
             types.InlineKeyboardButton(
                 "⬜ Пн–Вс",
-                callback_data=cat_callback(f"cat_wk:{week_start_monday(start)}")
+                callback_data=f"cat_wk:{week_start_monday(start)}"
             ),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data=cat_callback("cat_months"))
+            types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
         )
     elif mode == "wk":
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Пн–Вс", callback_data=cat_callback(f"cat_wk:{prev_key}"))]
+        row = [types.InlineKeyboardButton("⬅️ Пн–Вс", callback_data=f"cat_wk:{prev_key}")]
         if start != week_start_monday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")))
-        row.append(types.InlineKeyboardButton("Пн–Вс ➡️", callback_data=cat_callback(f"cat_wk:{next_key}")))
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
+        row.append(types.InlineKeyboardButton("Пн–Вс ➡️", callback_data=f"cat_wk:{next_key}"))
         kb.row(*row)
         thu_ref = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
         kb.row(
-            types.InlineKeyboardButton("🟦 Чт–Ср", callback_data=cat_callback(f"cat_wthu:{thu_ref}")),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data=cat_callback("cat_months"))
+            types.InlineKeyboardButton("🟦 Чт–Ср", callback_data=f"cat_wthu:{thu_ref}"),
+            types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
         )
     else:
         kb.row(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data=cat_callback("cat_months"))
+            types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"),
+            types.InlineKeyboardButton("📆 Выбор недели", callback_data="cat_months")
         )
 
-    kb.row(types.InlineKeyboardButton("➕ Добавить статью", callback_data=cat_callback("cat_add")))
-    kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close")))
+    kb.row(types.InlineKeyboardButton("➕ Добавить статью", callback_data="cat_add"))
+    kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close"))
     return kb
 
 
@@ -3882,22 +3644,22 @@ def build_category_detail_keyboard(start: str, end: str, back_callback: str, mod
     if mode == "wthu" and slug:
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=cat_callback(f"cat_show_wthu:{prev_key}:{slug}"))]
+        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"cat_show_wthu:{prev_key}:{slug}")]
         if start != week_start_thursday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback(f"cat_show_wthu:{today_key()}:{slug}")))
-        row.append(types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=cat_callback(f"cat_show_wthu:{next_key}:{slug}")))
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"cat_show_wthu:{today_key()}:{slug}"))
+        row.append(types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=f"cat_show_wthu:{next_key}:{slug}"))
         kb.row(*row)
     elif mode == "wk" and slug:
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Пн–Вс", callback_data=cat_callback(f"cat_show_wk:{prev_key}:{slug}"))]
+        row = [types.InlineKeyboardButton("⬅️ Пн–Вс", callback_data=f"cat_show_wk:{prev_key}:{slug}")]
         if start != week_start_monday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback(f"cat_show_wk:{today_key()}:{slug}")))
-        row.append(types.InlineKeyboardButton("Пн–Вс ➡️", callback_data=cat_callback(f"cat_show_wk:{next_key}:{slug}")))
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"cat_show_wk:{today_key()}:{slug}"))
+        row.append(types.InlineKeyboardButton("Пн–Вс ➡️", callback_data=f"cat_show_wk:{next_key}:{slug}"))
         kb.row(*row)
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=cat_callback(back_callback) if str(back_callback).startswith("cat") else back_callback))
-    kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close")))
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=back_callback))
+    kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close"))
     return kb
 
 def looks_like_amount(text):
@@ -3940,9 +3702,7 @@ def start_category_add_wait(owner_chat_id: int, target_chat_id: int, owner_day_k
         "started_at": now_local().isoformat(timespec="seconds"),
     }
     save_data(data)
-    kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data=cat_callback("cat_add_cancel")))
-    sent = _tg_call_retry(bot.send_message, owner_chat_id, _category_add_prompt_text(target_chat_id), reply_markup=kb, purpose="category_add_prompt")
+    sent = _tg_call_retry(bot.send_message, owner_chat_id, _category_add_prompt_text(target_chat_id), purpose="category_add_prompt")
     store["category_add_wait"]["prompt_msg_id"] = sent.message_id
     save_data(data)
     bot_journal("category_add_wait_start", owner_chat_id, f"target={get_chat_display_name(target_chat_id)}")
@@ -4043,50 +3803,6 @@ def on_any_message(msg):
                     return
         except Exception as e:
             log_error(f"reset_wait handler error: {e}")
-
-    if msg.content_type == "text":
-        try:
-            store = get_chat_store(chat_id)
-            finwin_reset_wait = store.get("finwin_reset_wait")
-            if finwin_reset_wait and finwin_reset_wait.get("type") == "finwin_reset":
-                text_up = (msg.text or "").strip().upper()
-                target_chat_id = int(finwin_reset_wait.get("target_chat_id"))
-                fin_window_msg_id = finwin_reset_wait.get("fin_window_msg_id")
-                owner_day_key = finwin_reset_wait.get("owner_day_key") or today_key()
-                if text_up == "ДА":
-                    store["finwin_reset_wait"] = None
-                    save_data(data)
-                    cleanup_forward_links(target_chat_id)
-                    reset_chat_data(target_chat_id)
-                    send_and_auto_delete(chat_id, f"✅ Данные чата {get_chat_display_name(target_chat_id)} обнулены.", 10)
-                    try:
-                        bot.delete_message(chat_id, msg.message_id)
-                    except Exception:
-                        pass
-                    if fin_window_msg_id:
-                        try:
-                            safe_txt = render_fin_window_text(target_chat_id, today_key())
-                            bot.edit_message_text(
-                                safe_txt,
-                                chat_id=chat_id,
-                                message_id=int(fin_window_msg_id),
-                                reply_markup=build_fin_window_view_keyboard(target_chat_id, today_key(), owner_day_key),
-                                parse_mode="HTML"
-                            )
-                        except Exception as e:
-                            log_error(f"finwin reset refresh failed: {e}")
-                    return
-                elif text_up in {"НЕТ", "ОТМЕНА", "CANCEL"}:
-                    store["finwin_reset_wait"] = None
-                    save_data(data)
-                    send_and_auto_delete(chat_id, "❎ Обнуление отменено.", 8)
-                    try:
-                        bot.delete_message(chat_id, msg.message_id)
-                    except Exception:
-                        pass
-                    return
-        except Exception as e:
-            log_error(f"finwin_reset_wait handler error: {e}")
 
     if msg.content_type == "text":
         try:
@@ -5046,8 +4762,6 @@ def _cleanup_forward_storage_for_chat(chat_id: int):
 
 
 def _notify_forward_failure(source_chat_id: int, msg_id: int, dst_chat_id: int, err: Exception):
-    if _is_bot_removed_error(err):
-        set_chat_bot_removed(dst_chat_id, True, str(err)[:240])
     src_name = get_chat_display_name(source_chat_id)
     dst_name = get_chat_display_name(dst_chat_id)
     text = (
@@ -5426,7 +5140,7 @@ def build_process_menu(day_key: str):
     for cid, title in _collect_process_menu_items():
         icon = "✅" if is_process_trace_enabled(cid) else "❌"
         buttons.append(types.InlineKeyboardButton(
-            f"{icon} {chat_button_title(cid, title)}",
+            f"{icon} {title}",
             callback_data=f"d:{day_key}:process_toggle_{cid}"
         ))
     if buttons:
@@ -5455,12 +5169,9 @@ def build_backup_owner_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=4)
     owner_id = int(OWNER_ID) if OWNER_ID else None
     for cid, title in _collect_backup_menu_items():
-        # Если бот удалён из чата, название остаётся с ➖ и само нажатие на название
-        # показывает владельцу понятное сообщение, а не молчит через callback_data="none".
-        title_cb = f"d:{day_key}:removed_{cid}" if is_chat_bot_removed(cid) else "none"
-        chat_btn = types.InlineKeyboardButton(f"💬 {chat_button_title(cid, title)}", callback_data=title_cb)
+        chat_btn = types.InlineKeyboardButton(f"💬 {title}", callback_data="none")
         chat_label = _backup_toggle_label(cid, "chat", "чат") if (owner_id is not None and int(cid) == owner_id) else "➖ чат"
-        chat_cb = f"d:{day_key}:backup_toggle_chat_{cid}" if (owner_id is not None and int(cid) == owner_id) else (f"d:{day_key}:removed_{cid}" if is_chat_bot_removed(cid) else "none")
+        chat_cb = f"d:{day_key}:backup_toggle_chat_{cid}" if (owner_id is not None and int(cid) == owner_id) else "none"
         kb.row(
             chat_btn,
             types.InlineKeyboardButton(chat_label, callback_data=chat_cb),
@@ -5499,7 +5210,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
     kb.row(
         types.InlineKeyboardButton("📝 Редактировать", callback_data=f"d:{day_key}:edit_list"),
         types.InlineKeyboardButton("📂 CSV", callback_data=f"d:{day_key}:csv_all"),
-        types.InlineKeyboardButton("📊 Статьи", callback_data=cat_callback("cat_today")),
+        types.InlineKeyboardButton("📊 Статьи", callback_data="cat_today"),
     )
     kb.row(
         types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"d:{day_key}:reset"),
@@ -5828,13 +5539,13 @@ def build_forward_source_menu(day_key: str | None = None):
 
     items, owner_item = _collect_forward_picker_items(include_owner=True)
     buttons = [
-        types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_src:{cid}")
+        types.InlineKeyboardButton(title, callback_data=f"fw_src:{cid}")
         for cid, title in items
     ]
     add_buttons_in_rows(kb, buttons, 3)
 
     if owner_item:
-        kb.row(types.InlineKeyboardButton(chat_button_title(owner_item[0], owner_item[1]), callback_data=f"fw_src:{owner_item[0]}"))
+        kb.row(types.InlineKeyboardButton(owner_item[1], callback_data=f"fw_src:{owner_item[0]}"))
 
     if day_key:
         kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
@@ -5852,12 +5563,12 @@ def build_forward_target_menu(src_id: int):
     for int_cid, title in items:
         if int_cid == src_id:
             continue
-        buttons.append(types.InlineKeyboardButton(chat_button_title(int_cid, title), callback_data=f"fw_tgt:{src_id}:{int_cid}"))
+        buttons.append(types.InlineKeyboardButton(title, callback_data=f"fw_tgt:{src_id}:{int_cid}"))
 
     add_buttons_in_rows(kb, buttons, 3)
 
     if owner_item and owner_item[0] != src_id:
-        kb.row(types.InlineKeyboardButton(chat_button_title(owner_item[0], owner_item[1]), callback_data=f"fw_tgt:{src_id}:{owner_item[0]}"))
+        kb.row(types.InlineKeyboardButton(owner_item[1], callback_data=f"fw_tgt:{src_id}:{owner_item[0]}"))
 
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src"))
     return kb
@@ -5887,7 +5598,7 @@ def build_finance_toggle_chat_menu(day_key: str):
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
         enabled = is_finance_mode(int_cid)
         buttons.append(types.InlineKeyboardButton(
-            f'{"✅" if enabled else "❌"} {chat_button_title(int_cid, title)}',
+            f'{"✅" if enabled else "❌"} {title}',
             callback_data=f"d:{day_key}:fw_finmode_pick_{int_cid}"
         ))
 
@@ -5920,20 +5631,20 @@ def build_quick_balance_chat_menu(day_key: str):
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
         if owner_item and int_cid == owner_item[0]:
             continue
-        visible_qb = bool(is_finance_mode(int_cid) and is_quick_balance_enabled(int_cid))
+        visible_qb = bool(is_finance_mode(int_cid) and is_quick_balance_enabled(int_cid) and not is_hidden_finance_mode(int_cid))
         icon = "✅" if visible_qb else "❌"
         buttons.append(types.InlineKeyboardButton(
-            f'{icon} {chat_button_title(int_cid, title)}',
+            f'{icon} {title}',
             callback_data=f"d:{day_key}:qb_cfg_{int_cid}"
         ))
 
     add_buttons_in_rows(kb, buttons, 3)
 
     if owner_item:
-        visible_qb = bool(is_finance_mode(owner_item[0]) and is_quick_balance_enabled(owner_item[0]))
+        visible_qb = bool(is_finance_mode(owner_item[0]) and is_quick_balance_enabled(owner_item[0]) and not is_hidden_finance_mode(owner_item[0]))
         icon = "✅" if visible_qb else "❌"
         kb.row(types.InlineKeyboardButton(
-            f'{icon} {chat_button_title(owner_item[0], owner_item[1])}',
+            f'{icon} {owner_item[1]}',
             callback_data=f"d:{day_key}:qb_cfg_{owner_item[0]}"
         ))
 
@@ -5945,13 +5656,13 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     enabled = is_quick_balance_enabled(target_chat_id)
     behavior = get_quick_balance_behavior(target_chat_id)
 
-    normal_icon = "✅" if (not enabled or behavior == "normal") else "❌"
+    normal_icon = "✅" if enabled and behavior == "mini" else "❌"
     open_icon = "✅" if enabled and behavior == "open" else "❌"
     first_icon = "✅" if enabled and behavior == "first" else "❌"
 
-    kb.row(types.InlineKeyboardButton(f"{normal_icon} Как обычно — окно через 10 сообщений", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"))
-    kb.row(types.InlineKeyboardButton(f"{open_icon} Быстрый остаток: открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"))
-    kb.row(types.InlineKeyboardButton(f"{first_icon} Быстрый остаток: всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"))
+    kb.row(types.InlineKeyboardButton(f"{normal_icon} Как обычно", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"))
+    kb.row(types.InlineKeyboardButton(f"{open_icon} Открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"))
+    kb.row(types.InlineKeyboardButton(f"{first_icon} Всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:quick_balance_menu"))
     return kb
 
@@ -5979,7 +5690,7 @@ def build_hidden_finance_chat_menu(day_key: str):
         enabled = is_hidden_finance_mode(int_cid)
         icon = "✅" if enabled else "❌"
         buttons.append(types.InlineKeyboardButton(
-            f"{icon} {chat_button_title(int_cid, title)}",
+            f"{icon} {title}",
             callback_data=f"d:{day_key}:hf_pick_{int_cid}"
         ))
 
@@ -6112,7 +5823,7 @@ def build_fin_windows_chat_menu(day_key: str):
         items.append((int_cid, get_chat_display_name(int_cid)))
 
     buttons = [
-        types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"d:{day_key}:finwin_open_{cid}")
+        types.InlineKeyboardButton(title, callback_data=f"d:{day_key}:finwin_open_{cid}")
         for cid, title in sorted(items, key=lambda x: x[1].lower())
     ]
 
@@ -6138,7 +5849,7 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
     kb.row(
         types.InlineKeyboardButton("📝 Редактировать", callback_data=f"fv:{target_chat_id}:{day_key}:edit_list:{owner_day_key}"),
         types.InlineKeyboardButton("📂 CSV", callback_data=f"fv:{target_chat_id}:{day_key}:csv_menu:{owner_day_key}"),
-        types.InlineKeyboardButton("📊 Статьи", callback_data=fvcat_callback(f"fvcat_today:{target_chat_id}:{owner_day_key}")),
+        types.InlineKeyboardButton("📊 Статьи", callback_data=f"fvcat_today:{target_chat_id}:{owner_day_key}"),
     )
     kb.row(
         types.InlineKeyboardButton("📅 Календарь", callback_data=f"fv:{target_chat_id}:{day_key}:calendar:{owner_day_key}"),
@@ -6146,7 +5857,6 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
         types.InlineKeyboardButton("💰 Общий итог", callback_data=f"fv:{target_chat_id}:{day_key}:total:{owner_day_key}"),
     )
     kb.row(
-        types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"fv:{target_chat_id}:{day_key}:reset:{owner_day_key}"),
         types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"fv:{target_chat_id}:{day_key}:info:{owner_day_key}"),
         types.InlineKeyboardButton("🔙 Назад к списку", callback_data=f"d:{owner_day_key}:fin_windows_menu"),
     )
@@ -6359,18 +6069,17 @@ def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start:
     for cat in get_ordered_category_names(include_all=True, store=store):
         slug = get_expense_category_slug(cat, store)
         if slug:
-            buttons.append(types.InlineKeyboardButton(cat, callback_data=fvcat_callback(f"fvcat_show:{target_chat_id}:{start}:{end}:{slug}:{owner_day_key}")))
+            buttons.append(types.InlineKeyboardButton(cat, callback_data=f"fvcat_show:{target_chat_id}:{start}:{end}:{slug}:{owner_day_key}"))
     add_buttons_in_rows(kb, buttons, 3)
     if mode == "wthu":
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
         kb.row(
-            types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{prev_key}:{owner_day_key}")),
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=fvcat_callback(f"fvcat_today:{target_chat_id}:{owner_day_key}")),
-            types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{next_key}:{owner_day_key}")),
+            types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=f"fvcat_wthu:{target_chat_id}:{prev_key}:{owner_day_key}"),
+            types.InlineKeyboardButton("📅 Сегодня", callback_data=f"fvcat_today:{target_chat_id}:{owner_day_key}"),
+            types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=f"fvcat_wthu:{target_chat_id}:{next_key}:{owner_day_key}"),
         )
-    kb.row(types.InlineKeyboardButton("➕ Добавить статью", callback_data=fvcat_callback(f"fvcat_add:{target_chat_id}:{start}:{owner_day_key}")))
-    kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
+    kb.row(types.InlineKeyboardButton("➕ Добавить статью", callback_data=f"fvcat_add:{target_chat_id}:{start}:{owner_day_key}"))
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
     return kb
 
@@ -6410,8 +6119,8 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
         start, end = week_bounds_thu_wed(start_key)
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
         text, _ = summarize_categories(store, start, end, label)
-        text = f"👁 {get_chat_display_name(target_chat_id)}\n" + text
-        safe_edit(bot, call, text, reply_markup=build_fin_categories_summary_keyboard(target_chat_id, "wthu", start, end, owner_day_key), parse_mode=None)
+        text = f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + text
+        safe_edit(bot, call, text, reply_markup=build_fin_categories_summary_keyboard(target_chat_id, "wthu", start, end, owner_day_key), parse_mode="HTML")
         return True
     if action == "fvcat_show":
         try:
@@ -6423,11 +6132,11 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
         if not category:
             return True
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
-        text = f"👁 {get_chat_display_name(target_chat_id)}\n" + build_category_detail_text(store, start, end, category, label)
-        kb = build_fin_categories_summary_keyboard(target_chat_id, "detail", start, end, owner_day_key)
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}")))
+        text = f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + build_category_detail_text(store, start, end, category, label)
+        kb = types.InlineKeyboardMarkup(row_width=3)
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}"))
         kb.row(types.InlineKeyboardButton("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
-        safe_edit(bot, call, text, reply_markup=kb, parse_mode=None)
+        safe_edit(bot, call, text, reply_markup=kb, parse_mode="HTML")
         return True
     return True
 
@@ -6484,8 +6193,8 @@ def build_forward_mode_menu(A: int, B: int):
     """
     kb = types.InlineKeyboardMarkup()
 
-    name_a = chat_button_title(A)
-    name_b = chat_button_title(B)
+    name_a = get_chat_display_name(A)
+    name_b = get_chat_display_name(B)
 
     fr = data.get("forward_rules", {}) or {}
     ab_link = str(B) in fr.get(str(A), {})
@@ -6640,7 +6349,6 @@ def open_info_window(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     if is_owner_chat(chat_id):
         kb.row(types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"))
-        kb.row(types.InlineKeyboardButton("📚 Описание статей", callback_data="articles_desc"))
     kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
     send_or_edit_stored_window(
         chat_id,
@@ -6654,19 +6362,6 @@ def handle_categories_callback(call, data_str: str) -> bool:
     """UI окна расходов по статьям."""
     chat_id = call.message.chat.id
     store = get_chat_store(chat_id)
-
-    if data_str == "cat_add_cancel":
-        store["category_add_wait"] = None
-        save_data(data)
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except Exception:
-            pass
-        try:
-            bot.answer_callback_query(call.id, "Добавление статьи отменено")
-        except Exception:
-            pass
-        return True
 
     if data_str == "cat_close":
         mid = store.get("categories_msg_id")
@@ -6714,10 +6409,10 @@ def handle_categories_callback(call, data_str: str) -> bool:
         current_month = now_local().month
         for m in range(1, 13):
             label = datetime(2000, m, 1).strftime("%b")
-            kb.add(types.InlineKeyboardButton(label, callback_data=cat_callback(f"cat_m:{m}")))
+            kb.add(types.InlineKeyboardButton(label, callback_data=f"cat_m:{m}"))
         kb.row(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")),
-            types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close"))
+            types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"),
+            types.InlineKeyboardButton("❌ Закрыть статьи", callback_data="cat_close")
         )
         send_or_edit_categories_window(chat_id, "📦 Выберите месяц:", reply_markup=kb)
         return True
@@ -6733,12 +6428,12 @@ def handle_categories_callback(call, data_str: str) -> bool:
         for a, b in weeks:
             kb.add(types.InlineKeyboardButton(
                 f"{a:02d}–{b:02d}",
-                callback_data=cat_callback(f"cat_rng:{year}:{month}:{a}:{b}")
+                callback_data=f"cat_rng:{year}:{month}:{a}:{b}"
             ))
         row = []
         if month != now_local().month:
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")))
-        row.append(types.InlineKeyboardButton("🔙 Назад", callback_data=cat_callback("cat_months")))
+            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="cat_today"))
+        row.append(types.InlineKeyboardButton("🔙 Назад", callback_data="cat_months"))
         kb.row(*row)
         send_or_edit_categories_window(chat_id, "📆 Выберите неделю:", reply_markup=kb)
         return True
@@ -6874,20 +6569,10 @@ def on_callback(call):
         pass
 
     try:
-        raw_data_str = call.data or ""
-        data_str = resolve_short_callback(raw_data_str)
+        data_str = call.data or ""
         chat_id = call.message.chat.id
-        if data_str is None:
-            try:
-                bot.answer_callback_query(call.id, "Кнопка устарела. Открой меню заново.", show_alert=True)
-            except Exception:
-                pass
-            return
         try:
-            if raw_data_str != data_str:
-                bot_journal("button_pressed", chat_id, f"{raw_data_str} -> {str(data_str)[:500]}")
-            else:
-                bot_journal("button_pressed", chat_id, str(data_str)[:500])
+            bot_journal("button_pressed", chat_id, str(data_str)[:500])
         except Exception:
             pass
 
@@ -6965,16 +6650,6 @@ def on_callback(call):
             except Exception:
                 pass
             return
-
-        # Статьи должны работать во всех режимах: обычное окно, быстрый остаток,
-        # скрытый финрежим и просмотр владельцем чужих фин-окон. Поэтому обрабатываем
-        # их ДО guard_non_owner_finance_for_callback, который может скрывать фин-вывод.
-        if data_str.startswith("fvcat_"):
-            if handle_finwindow_categories_callback(call, data_str):
-                return
-        if data_str == "cat_months" or data_str.startswith("cat_"):
-            if handle_categories_callback(call, data_str):
-                return
 
         if guard_non_owner_finance_for_callback(chat_id, data_str):
             return
@@ -7080,8 +6755,6 @@ def on_callback(call):
                     A = int(data_str.split(":", 1)[1])
                 except Exception:
                     return
-                if answer_removed_chat(call, A):
-                    return
                 kb = build_forward_target_menu(A)
                 safe_edit(
                     bot,
@@ -7094,8 +6767,6 @@ def on_callback(call):
                 try:
                     A = int(data_str.split(":", 1)[1])
                 except Exception:
-                    return
-                if answer_removed_chat(call, A):
                     return
                 kb = build_forward_target_menu(A)
                 safe_edit(
@@ -7114,8 +6785,6 @@ def on_callback(call):
                     A = int(A_str)
                     B = int(B_str)
                 except Exception:
-                    return
-                if answer_removed_chat(call, A) or answer_removed_chat(call, B):
                     return
                 kb = build_forward_mode_menu(A, B)
                 safe_edit(
@@ -7136,8 +6805,6 @@ def on_callback(call):
                     A = int(A_str)
                     B = int(B_str)
                 except Exception:
-                    return
-                if answer_removed_chat(call, A) or answer_removed_chat(call, B):
                     return
 
                 if which == "ab":
@@ -7162,8 +6829,6 @@ def on_callback(call):
                     A = int(A_str)
                     B = int(B_str)
                 except Exception:
-                    return
-                if answer_removed_chat(call, A) or answer_removed_chat(call, B):
                     return
 
                 if mode == "to":
@@ -7226,14 +6891,6 @@ def on_callback(call):
                 parse_mode="HTML"
             )
             return
-        if data_str == "articles_desc":
-            if not is_owner_chat(chat_id):
-                return
-            kb = types.InlineKeyboardMarkup()
-            kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="journal_back"))
-            safe_edit(bot, call, build_articles_description_text(chat_id), reply_markup=kb)
-            return
-
         if data_str == "journal_open":
             if not is_owner_chat(chat_id):
                 return
@@ -7252,7 +6909,6 @@ def on_callback(call):
                 return
             kb = types.InlineKeyboardMarkup()
             kb.row(types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"))
-            kb.row(types.InlineKeyboardButton("📚 Описание статей", callback_data="articles_desc"))
             kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=kb)
             return
@@ -7337,24 +6993,7 @@ def on_callback(call):
                 safe_edit(bot, call, text, reply_markup=build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key), parse_mode="HTML")
                 return
             if action == "info":
-                kb_info = build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key)
-                safe_edit(bot, call, build_info_text(target_chat_id) + "\n\n" + build_articles_description_text(target_chat_id), reply_markup=kb_info)
-                return
-            if action == "reset":
-                owner_store = get_chat_store(chat_id)
-                owner_store["finwin_reset_wait"] = {
-                    "type": "finwin_reset",
-                    "target_chat_id": target_chat_id,
-                    "owner_day_key": owner_day_key,
-                    "fin_window_msg_id": call.message.message_id,
-                    "expires_at": time.time() + 20,
-                }
-                save_data(data)
-                send_and_auto_delete(
-                    chat_id,
-                    f"⚠️ Обнулить данные чата {get_chat_display_name(target_chat_id)}? Напишите ДА в течение 20 секунд или ОТМЕНА.",
-                    20
-                )
+                safe_edit(bot, call, build_info_text(target_chat_id), reply_markup=build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key))
                 return
             if action == "cancel_edit":
                 clear_finwin_edit_wait_state(chat_id, call.message.message_id, delete_prompt=True)
@@ -7448,13 +7087,6 @@ def on_callback(call):
             return
         _, day_key, cmd = data_str.split(":", 2)
         store = get_chat_store(chat_id)
-        if cmd.startswith("removed_"):
-            try:
-                removed_chat_id = int(cmd.rsplit("_", 1)[1])
-            except Exception:
-                return
-            answer_removed_chat(call, removed_chat_id)
-            return
         if cmd == "open":
             clear_edit_delete_selection(chat_id, day_key)
             store["current_view_day"] = day_key
@@ -7606,8 +7238,6 @@ def on_callback(call):
                 target_chat_id = int(cmd.rsplit("_", 1)[1])
             except Exception:
                 return
-            if answer_removed_chat(call, target_chat_id):
-                return
             enabled = toggle_process_trace(target_chat_id)
             try:
                 bot.answer_callback_query(call.id, "PROCESS включён" if enabled else "PROCESS выключен")
@@ -7636,8 +7266,6 @@ def on_callback(call):
                 target, cid_s = tail.rsplit("_", 1)
                 target_chat_id = int(cid_s)
             except Exception:
-                return
-            if answer_removed_chat(call, target_chat_id):
                 return
             if target == "chat" and not is_owner_chat(target_chat_id):
                 try:
@@ -7812,8 +7440,6 @@ def on_callback(call):
             return
         if cmd.startswith("hf_pick_"):
             tgt = int(cmd.split("_")[-1])
-            if answer_removed_chat(call, tgt):
-                return
             set_hidden_finance_mode(tgt, not is_hidden_finance_mode(tgt))
             kb = build_hidden_finance_chat_menu(day_key)
             safe_edit(
@@ -7834,8 +7460,6 @@ def on_callback(call):
             return
         if cmd.startswith("finwin_open_"):
             tgt = int(cmd.split("_")[-1])
-            if answer_removed_chat(call, tgt):
-                return
             target_store = get_chat_store(tgt)
             view_day = target_store.get("current_view_day", today_key())
             safe_edit(
@@ -7848,8 +7472,6 @@ def on_callback(call):
             return
         if cmd.startswith("qb_cfg_"):
             tgt = int(cmd.split("_")[-1])
-            if answer_removed_chat(call, tgt):
-                return
             kb = build_quick_balance_mode_menu(day_key, tgt)
             safe_edit(
                 bot,
@@ -7860,54 +7482,58 @@ def on_callback(call):
             return
         if cmd.startswith("qb_mode_normal_"):
             tgt = int(cmd.split("_")[-1])
-            if answer_removed_chat(call, tgt):
-                return
-            set_quick_balance_behavior(tgt, "normal")
-            set_quick_balance_enabled(tgt, False)
+            if is_quick_balance_enabled(tgt) and get_quick_balance_behavior(tgt) == "mini":
+                set_quick_balance_enabled(tgt, False)
+            else:
+                set_quick_balance_behavior(tgt, "mini")
+                set_quick_balance_enabled(tgt, True)
             if OWNER_ID and str(tgt) != str(OWNER_ID):
                 refresh_owner_after_chat_change(tgt)
+            kb = build_quick_balance_chat_menu(day_key)
             safe_edit(
                 bot,
                 call,
-                f"Быстрый остаток:\n{get_chat_display_name(tgt)}\n\nВыберите режим:",
-                reply_markup=build_quick_balance_mode_menu(day_key, tgt)
+                build_forward_status_text("Быстрый остаток:\nВыберите чат для настройки режима."),
+                reply_markup=kb
             )
             return
         if cmd.startswith("qb_mode_open_"):
             tgt = int(cmd.split("_")[-1])
-            if answer_removed_chat(call, tgt):
-                return
-            set_quick_balance_behavior(tgt, "open")
-            set_quick_balance_enabled(tgt, True)
+            if is_quick_balance_enabled(tgt) and get_quick_balance_behavior(tgt) == "open":
+                set_quick_balance_enabled(tgt, False)
+            else:
+                set_quick_balance_behavior(tgt, "open")
+                set_quick_balance_enabled(tgt, True)
             if OWNER_ID and str(tgt) != str(OWNER_ID):
                 refresh_owner_after_chat_change(tgt)
+            kb = build_quick_balance_chat_menu(day_key)
             safe_edit(
                 bot,
                 call,
-                f"Быстрый остаток:\n{get_chat_display_name(tgt)}\n\nВыберите режим:",
-                reply_markup=build_quick_balance_mode_menu(day_key, tgt)
+                build_forward_status_text("Быстрый остаток:\nВыберите чат для настройки режима."),
+                reply_markup=kb
             )
             return
         if cmd.startswith("qb_mode_first_"):
             tgt = int(cmd.split("_")[-1])
-            if answer_removed_chat(call, tgt):
-                return
-            set_quick_balance_behavior(tgt, "first")
-            set_quick_balance_enabled(tgt, True)
-            schedule_quick_balance_first_recreate(tgt, 60.0)
+            if is_quick_balance_enabled(tgt) and get_quick_balance_behavior(tgt) == "first":
+                set_quick_balance_enabled(tgt, False)
+            else:
+                set_quick_balance_behavior(tgt, "first")
+                set_quick_balance_enabled(tgt, True)
+                schedule_quick_balance_first_recreate(tgt, 60.0)
             if OWNER_ID and str(tgt) != str(OWNER_ID):
                 refresh_owner_after_chat_change(tgt)
+            kb = build_quick_balance_chat_menu(day_key)
             safe_edit(
                 bot,
                 call,
-                f"Быстрый остаток:\n{get_chat_display_name(tgt)}\n\nВыберите режим:",
-                reply_markup=build_quick_balance_mode_menu(day_key, tgt)
+                build_forward_status_text("Быстрый остаток:\nВыберите чат для настройки режима."),
+                reply_markup=kb
             )
             return
         if cmd.startswith("fw_finmode_pick_"):
             tgt = int(cmd.split("_")[-1])
-            if answer_removed_chat(call, tgt):
-                return
             new_state = not is_finance_mode(tgt)
             set_finance_mode(tgt, new_state)
             save_data(data)
@@ -8194,15 +7820,6 @@ def set_finance_mode(chat_id: int, enabled: bool):
 
     if enabled:
         finance_active_chats.add(chat_id)
-        # Фин-режим сам по себе = "как обычно": основное окно через 10 сообщений,
-        # без быстрого остатка. Если владелец уже отдельно выбрал быстрый остаток
-        # open/first, эту настройку не трогаем.
-        settings = store.setdefault("settings", {})
-        if not settings.get("quick_balance_enabled", False):
-            settings["quick_balance_enabled"] = False
-            settings["quick_balance_behavior"] = "normal"
-            store["balance_panel_id"] = None
-            store["balance_panel_mode"] = "normal"
     else:
         finance_active_chats.discard(chat_id)
         panel_id = store.get("balance_panel_id")
@@ -8362,18 +7979,6 @@ def cmd_help(msg):
     stop_dozvon_for_target(chat_id)
     help_text = build_help_text(chat_id)
     send_and_auto_delete(chat_id, help_text, HELPER_DELETE_DELAY)
-
-@bot.message_handler(commands=["articles", "статьи"])
-def cmd_articles(msg):
-    try:
-        update_chat_info_from_message(msg)
-    except Exception:
-        pass
-    schedule_command_delete(msg)
-    chat_id = msg.chat.id
-    if is_finance_output_suppressed(chat_id):
-        return
-    send_and_auto_delete(chat_id, build_articles_description_text(chat_id), 40)
     
 @bot.message_handler(commands=["restore"])
 def cmd_restore(msg):
@@ -8927,14 +8532,6 @@ def update_chat_info_from_message(msg):
     except Exception:
         pass
     store = get_chat_store(chat_id)
-    try:
-        if store.setdefault("settings", {}).get("bot_removed"):
-            store["settings"]["bot_removed"] = False
-            store["settings"].pop("bot_removed_reason", None)
-            store["settings"].pop("bot_removed_at", None)
-            save_data(data)
-    except Exception:
-        pass
     info = store.setdefault("info", {})
     # У каналов/чатов username может отсутствовать. Не обращаемся к ключам напрямую,
     # чтобы не ловить KeyError: 'username' на channel_post / edited_channel_post.
@@ -9476,22 +9073,9 @@ def schedule_backup_flush(chat_id: int, delay: float = 8.0):
     
 def _safe_stabilize(action_name, func):
     try:
-        try:
-            bot_journal("process_call_start", None, str(action_name))
-        except Exception:
-            pass
-        res = func()
-        try:
-            bot_journal("process_call_done", None, str(action_name))
-        except Exception:
-            pass
-        return res
+        return func()
     except Exception as e:
         log_error(f"[STABILIZE ERROR] {action_name}: {e}")
-        try:
-            bot_journal("process_call_error", None, f"{action_name}: {e}", "ERROR")
-        except Exception:
-            pass
         return None
 
 
