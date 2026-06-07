@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v46_tz_start_edit_articles_windows"
+VERSION = "bot_v48_qb10_edit_insert_v22_proposals"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1326,8 +1326,9 @@ def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
                 store["main_window_msg_count"] = 0
                 day_key = store.get("current_view_day") or today_key()
                 save_data(data)
-            # Пересоздание/обновление окна — вне lock чата.
-            update_or_send_day_window(chat_id, day_key)
+            # Режим «как обычно»: после 10 сообщений нужно именно ПЕРЕСОЗДАТЬ О1,
+            # а не просто отредактировать старое окно. Так окно снова становится последним/видимым.
+            recreate_main_window_now(chat_id, day_key)
         except Exception as e:
             log_error(f"schedule_main_window_recreate_after_quiet({get_chat_display_name(chat_id)}): {e}")
 
@@ -1920,6 +1921,10 @@ def build_forward_status_text(title: str | None = None) -> str:
     lines = []
     if title:
         lines.append(title)
+        lines.append("")
+    # Короткая подсказка для окна В22, чтобы установка пересылки была понятнее.
+    if title and "Пересылка" in str(title):
+        lines.append("Шаги: 1) выберите чат A → 2) выберите чат B → 3) включите направление и при необходимости финучёт.")
         lines.append("")
     lines.append("Текущие связи:")
     lines.extend(build_forward_status_lines())
@@ -6292,7 +6297,13 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
     """Совместимость со старыми callback: отдельного подменю больше нет."""
     return build_main_keyboard(day_key, chat_id)
 def make_copy_or_inline_button(label: str, text: str):
-    """Лучший доступный вариант для готового текста: CopyTextButton без имени бота, иначе inline-вставка Telegram."""
+    """
+    Готовый текст для редактирования.
+    Важно: Telegram Bot API не умеет после callback-кнопки напрямую вставлять обычный текст
+    в поле ввода без участия пользователя. Поэтому используем лучший доступный вариант:
+    • CopyTextButton — копирует текст без @имени бота, если telebot/Bot API поддерживает;
+    • switch_inline_query_current_chat — старый fallback, Telegram может показать @имя_бота.
+    """
     try:
         if hasattr(types, "CopyTextButton"):
             return types.InlineKeyboardButton(label, copy_text=types.CopyTextButton(str(text)[:1024]))
@@ -8223,6 +8234,8 @@ def on_callback(call):
                     "owner_day_key": owner_day_key,
                     "prompt_msg_id": prompt_id,
                     "fin_window_msg_id": call.message.message_id,
+                    "insert_text": insert_value,
+                    "countdown_base_text": prompt_text,
                     "expires_at": time.time() + 40,
                 }
                 save_data(data)
@@ -8677,6 +8690,11 @@ def on_callback(call):
                 return
             set_quick_balance_behavior(tgt, "normal")
             set_quick_balance_enabled(tgt, False)
+            try:
+                get_chat_store(tgt)["main_window_msg_count"] = 0
+                save_data(data)
+            except Exception:
+                pass
             try:
                 if is_finance_mode(tgt) and not is_hidden_finance_mode(tgt):
                     recreate_main_window_now(tgt, get_chat_store(tgt).get("current_view_day") or today_key())
