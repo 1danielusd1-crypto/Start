@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v44_o_tags_excel_articles"
+VERSION = "bot_v45_fix_xlsx_period_exports"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -832,16 +832,29 @@ def fmt_csv_amount(v) -> str:
 
 
 def parse_csv_amount(raw) -> float:
-    """Понимает новый CSV-формат и старые +/- значения."""
+    """Понимает новый CSV-формат и старые +/- значения.
+
+    ВАЖНО: fmt_csv_amount() пишет приход как "+ 123".
+    Раньше здесь было s[5:], из-за чего для "+ 123" получалась пустая строка
+    и Excel-экспорт по периодам падал с ошибкой: could not convert string to float: ''.
+    """
     s = str(raw or "").strip()
     if not s:
         return 0.0
-    low = s.lower()
-    if low.startswith("+"):
-        num = s[5:].strip()
+
+    # Поддержка возможных визуальных плюсов/минусов из старых выгрузок.
+    s = s.replace("➕", "+").replace("➖", "-").strip()
+
+    if s.startswith("+"):
+        num = s[1:].strip()
+        if not num:
+            return 0.0
         return abs(parse_amount("+" + num))
-    if s.startswith(("+", "-", "–")):
+
+    if s.startswith(("-", "–")):
         return parse_amount(s)
+
+    # Если вдруг в CSV пришло число без знака — это расход, как и в обычном вводе.
     return -abs(parse_amount(s))
 
 def write_csv_rows_with_day_gaps(writer, rows, width: int | None = None):
@@ -6515,7 +6528,12 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             trace.step("создаёт временный Excel файл")
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
             for date_v, amount_v, note_v in rows:
-                xlsx_rows.append(_xlsx_record_row(date_v, parse_csv_amount(amount_v), note_v))
+                try:
+                    parsed_amount = parse_csv_amount(amount_v)
+                except Exception as e_amount:
+                    log_error(f"xlsx export amount parse skip: chat={get_chat_display_name(target_chat_id)} amount={amount_v!r} note={note_v!r}: {e_amount}")
+                    parsed_amount = 0.0
+                xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
             _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Экспорт")
         else:
             trace.step("создаёт временный CSV файл")
