@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v42_v37_tz_final_stable🪂"
+VERSION = "bot_v43_articles_excel_window_tags"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -399,7 +399,7 @@ def format_journal_text(limit: int = 120) -> str:
         if len(detail) > 500:
             detail = detail[:500] + "…"
         lines.append(f"\n• {r.get('ts','')} [{r.get('level','')}] {r.get('action','')}\n  чат: {chat}\n  {detail}".rstrip())
-    text = "\n".join(lines)
+    text = wm_owner("\n".join(lines), 9)
     return text[-3900:] if len(text) > 3900 else text
 
 
@@ -589,6 +589,38 @@ def now_local():
     return datetime.now(get_tz())
 def today_key() -> str:
     return now_local().strftime("%Y-%m-%d")
+
+
+# ─────────────────────────────────────────────────────────────
+# Метки окон для ориентира при отладке
+# о1/о2/... — общие окна, доступные обычным чатам и владельцу.
+# в1/в2/... — окна/меню только владельца.
+# Метка добавляется внизу справа обычным текстом и не меняет callback-логику.
+# ─────────────────────────────────────────────────────────────
+def window_mark(text: str, code: str, html_mode: bool = False) -> str:
+    try:
+        text = str(text or "")
+        code = str(code or "").strip()
+        if not code:
+            return text
+        # Не дублируем метку, если окно уже было помечено.
+        tail = text[-80:]
+        if code in tail:
+            return text
+        pad = " " * 26
+        if html_mode:
+            return text + "\n\n" + pad + f"<i>{html.escape(code)}</i>"
+        return text + "\n\n" + pad + code
+    except Exception:
+        return str(text or "")
+
+
+def wm_common(text: str, n: int, html_mode: bool = False) -> str:
+    return window_mark(text, f"о{int(n)}", html_mode=html_mode)
+
+
+def wm_owner(text: str, n: int, html_mode: bool = False) -> str:
+    return window_mark(text, f"в{int(n)}", html_mode=html_mode)
 
 DAY_WINDOW_MAX_RECORDS = 35
 DAY_WINDOW_MAX_CHARS = 3500
@@ -1844,6 +1876,17 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
                 _telegram_rate_limit_chat(chat_id)
             try:
                 bot_journal("telegram_api_call", chat_id, f"{purpose}: {getattr(func, '__name__', str(func))} attempt={attempt}/{attempts}")
+            except Exception:
+                pass
+            # Важно для send_document/edit_media: при повторной попытке после 429
+            # файловый объект может уже быть прочитан. Возвращаем указатель в начало.
+            try:
+                for _obj in list(args) + list(kwargs.values()):
+                    if hasattr(_obj, "seek"):
+                        try:
+                            _obj.seek(0)
+                        except Exception:
+                            pass
             except Exception:
                 pass
             return func(*args, **kwargs)
@@ -3697,7 +3740,7 @@ def build_articles_description_text(chat_id: int | None = None) -> str:
             lines.append(f"{item.get('name')}: {', '.join(item.get('keywords') or [])}")
     lines.append("")
     lines.append("Добавить новую статью можно в окне 📊 Статьи → ➕ Добавить статью.")
-    return "\n".join(lines)
+    return wm_common("\n".join(lines), 10)
 
 
 def summarize_categories(store: dict, start: str, end: str, label: str):
@@ -3712,7 +3755,7 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
     else:
         for cat in get_ordered_category_names(cats=cats, store=store):
             lines.append(f"{cat}: {fmt_num_plain(cats.get(cat, 0))}")
-    return "\n".join(lines), cats
+    return wm_common("\n".join(lines), 7), cats
 
 
 
@@ -3877,7 +3920,7 @@ def build_category_detail_text(store: dict, start: str, end: str, category: str,
             note_i = (note_i or "").strip()
             lines.append(f"• {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {note_i}".rstrip())
 
-    return "\n".join(lines)
+    return wm_common("\n".join(lines), 8)
 
 def build_category_detail_keyboard(start: str, end: str, back_callback: str, mode: str | None = None, slug: str | None = None, store: dict | None = None):
     kb = build_categories_buttons(start, end, store=store)
@@ -3923,7 +3966,7 @@ def describe_msg_for_log(msg) -> str:
 
 
 def _category_add_prompt_text(target_chat_id: int) -> str:
-    return (
+    return wm_common((
         f"➕ Добавление статьи расходов для: {get_chat_display_name(target_chat_id)}\n\n"
         "Отправь одним сообщением в формате:\n"
         "Название статьи: ключ1, ключ2, ключ3\n\n"
@@ -3931,7 +3974,7 @@ def _category_add_prompt_text(target_chat_id: int) -> str:
         "РЕМОНТ: гипсокартон, шпаклевка, краска, инструмент\n\n"
         "Бот будет относить расход к статье, если в описании расхода найден любой ключ.\n"
         "Для отмены напиши: отмена"
-    )
+    ), 11)
 
 
 def start_category_add_wait(owner_chat_id: int, target_chat_id: int, owner_day_key: str | None = None):
@@ -5362,7 +5405,7 @@ def render_day_window(chat_id: int, day_key: str):
     total = total_income - total_expense
 
     if not all_record_lines:
-        return "\n".join(header + ["Нет записей за этот день."] + footer), total
+        return wm_common("\n".join(header + ["Нет записей за этот день."] + footer), 1, html_mode=True), total
 
     hidden = 0
     visible = list(all_record_lines)
@@ -5379,10 +5422,10 @@ def render_day_window(chat_id: int, day_key: str):
         text = "\n".join(header + prefix + visible + footer)
 
         if len(text) <= DAY_WINDOW_MAX_CHARS:
-            return text, total
+            return wm_common(text, 1, html_mode=True), total
 
         if len(visible) <= 5:
-            return text[:DAY_WINDOW_MAX_CHARS], total
+            return wm_common(text[:DAY_WINDOW_MAX_CHARS], 1, html_mode=True), total
 
         hidden += 1
         visible = visible[1:]
@@ -5441,11 +5484,11 @@ def build_process_menu(day_key: str):
 
 
 def build_process_menu_text() -> str:
-    return (
+    return wm_owner((
         "🧪 PROCESS\n"
         "Включает диагностическое сообщение процесса для выбранного чата.\n"
         "По умолчанию у всех чатов выключено. Когда включено, бот пишет одно сообщение и редактирует его, добавляя этапы по времени ЧЧ:ММ:СС.мс."
-    )
+    ), 8)
 
 
 def _collect_backup_menu_items():
@@ -5475,11 +5518,11 @@ def build_backup_owner_menu(day_key: str):
 
 
 def build_backup_owner_menu_text() -> str:
-    return (
+    return wm_owner((
         "💾 BACKUP\n"
         "Настройка авто-бэкапов по чатам. По умолчанию все бэкапы включены.\n"
         "Канал = JSON + Excel. MEGA = только JSON. В чат = только для владельца, чтобы JSON не уходил пользователям."
-    )
+    ), 7)
 
 
 def build_main_keyboard(day_key: str, chat_id=None):
@@ -5643,7 +5686,7 @@ def build_month_report_text(chat_id: int, month_key: str = None):
     if not has_any:
         lines.append("Нет данных за этот месяц.")
 
-    return "<pre>" + html.escape("\n".join(lines)) + "</pre>", month_key
+    return wm_common("<pre>" + html.escape("\n".join(lines)) + "</pre>", 3, html_mode=True), month_key
 
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
     """
@@ -6315,13 +6358,14 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
 
         trace.step("собирает строки за выбранный период")
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
-        if not rows:
+        ext = "xlsx" if file_type == "xlsx" else "csv"
+        if not rows and ext != "xlsx":
             trace.step("строк нет — отправляет уведомление")
             send_info(recipient_chat_id, f"Нет данных {label}.")
             trace.finish("экспорт завершён без данных")
             return
-
-        ext = "xlsx" if file_type == "xlsx" else "csv"
+        if not rows and ext == "xlsx":
+            trace.step("строк нет — создаёт пустой Excel с заголовками")
         tmp_name = f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}"
         if ext == "xlsx":
             trace.step("создаёт временный Excel файл")
@@ -6437,7 +6481,7 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
 
 def render_fin_window_text(target_chat_id: int, day_key: str):
     txt, _ = render_day_window(target_chat_id, day_key)
-    return f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n\n{txt}"
+    return wm_owner(f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n\n{txt}", 6, html_mode=True)
 
 
 def build_fin_calendar_keyboard(target_chat_id: int, center_day: datetime, owner_day_key: str):
@@ -6572,16 +6616,17 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
     mid = store.get("categories_msg_id")
 
     candidates = []
+    # Сначала пробуем текущее сообщение, из которого нажали кнопку «Статьи».
+    # Так окно открывается явно в том же месте и не теряется среди сообщений.
+    if preferred_message_id is not None:
+        try:
+            pref_int = int(preferred_message_id)
+            candidates.append(pref_int)
+        except Exception:
+            pass
     if mid:
         try:
             mid_int = int(mid)
-            if preferred_message_id is not None:
-                try:
-                    pref_int = int(preferred_message_id)
-                except Exception:
-                    pref_int = None
-                if pref_int is not None and pref_int == mid_int:
-                    candidates.append(pref_int)
             if mid_int not in candidates:
                 candidates.append(mid_int)
         except Exception:
@@ -6597,21 +6642,21 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
                 parse_mode=parse_mode
             )
             store["categories_msg_id"] = target_id
-            save_chat_json(chat_id)
+            save_data(data)
             return target_id
         except Exception as e:
             if "message is not modified" in str(e).lower():
                 store["categories_msg_id"] = target_id
-                save_chat_json(chat_id)
+                save_data(data)
                 return target_id
             log_error(f"send_or_edit_categories_window edit failed {chat_id}:{target_id}: {e}")
             if store.get("categories_msg_id") == target_id:
                 store["categories_msg_id"] = None
-                save_chat_json(chat_id)
+                save_data(data)
 
     sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
     store["categories_msg_id"] = sent.message_id
-    save_chat_json(chat_id)
+    save_data(data)
     return sent.message_id
 
 def open_report_window(chat_id: int, month_key: str = None, message_id: int = None):
@@ -6639,7 +6684,7 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
 
 
 def open_info_window(chat_id: int):
-    info_text = build_info_text(chat_id)
+    info_text = wm_common(build_info_text(chat_id), 9)
     kb = types.InlineKeyboardMarkup()
     if is_owner_chat(chat_id):
         kb.row(types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"))
@@ -6679,7 +6724,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             except Exception:
                 pass
         store["categories_msg_id"] = None
-        save_chat_json(chat_id)
+        save_data(data)
         return True
 
     if data_str == "cat_today":
@@ -7210,7 +7255,7 @@ def on_callback(call):
                 center_dt = now_local()
 
             kb = build_calendar_keyboard(center_dt, chat_id)
-            safe_edit(bot, call, "📅 Выберите день:", reply_markup=kb)
+            safe_edit(bot, call, wm_common("📅 Выберите день:", 2), reply_markup=kb)
             return
         if data_str.startswith("fc:"):
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
@@ -7425,7 +7470,7 @@ def on_callback(call):
                 safe_edit(
                     bot,
                     call,
-                    f"📂 CSV / Excel: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:",
+                    wm_common(f"📂 CSV / Excel: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:", 5),
                     reply_markup=build_fin_window_csv_menu(target_chat_id, view_day, owner_day_key),
                     parse_mode="HTML"
                 )
@@ -7436,7 +7481,7 @@ def on_callback(call):
                 safe_edit(
                     bot,
                     call,
-                    f"📂 CSV / Excel: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:",
+                    wm_common(f"📂 CSV / Excel: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:", 5),
                     reply_markup=build_fin_window_csv_menu(target_chat_id, view_day, owner_day_key),
                     parse_mode="HTML"
                 )
@@ -7516,7 +7561,7 @@ def on_callback(call):
             except Exception:
                 cdt = now_local()
             kb = build_calendar_keyboard(cdt, chat_id)
-            safe_edit(bot, call, "📅 Выберите день:", reply_markup=kb)
+            safe_edit(bot, call, wm_common("📅 Выберите день:", 2), reply_markup=kb)
             return
         if cmd == "report":
             try:
@@ -7529,7 +7574,7 @@ def on_callback(call):
             chat_bal = store.get("balance", 0)
 
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-                text = f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}"
+                text = wm_common(f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}", 4)
                 final_id = send_or_edit_stored_window(
                     chat_id,
                     "total_msg_id",
@@ -8247,7 +8292,7 @@ def refresh_total_message_if_any(chat_id: int):
     try:
         chat_bal = store.get("balance", 0)
         if not OWNER_ID or str(chat_id) != str(OWNER_ID):
-            text = f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}"
+            text = wm_common(f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}", 4)
         else:
             lines = []
             info = store.get("info", {})
