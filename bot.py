@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v48_qb10_edit_insert_v22_proposals"
+VERSION = "bot_v49_removed_mark_edit_insert_owner_isolated"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1743,7 +1743,7 @@ def build_dozvon_menu(chat_id: int):
     buttons = []
     for cid in get_connected_chat_ids(chat_id):
         buttons.append(types.InlineKeyboardButton(
-            get_chat_display_name(cid),
+            chat_button_title(cid, get_chat_display_name(cid)),
             callback_data=f"dzv:{cid}"
         ))
     if buttons:
@@ -2061,7 +2061,13 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
                             pass
             except Exception:
                 pass
-            return func(*args, **kwargs)
+            _res = func(*args, **kwargs)
+            try:
+                if chat_id is not None and is_chat_bot_removed(int(chat_id)):
+                    set_chat_bot_removed(int(chat_id), False, "telegram api success")
+            except Exception:
+                pass
+            return _res
         except TypeError:
             raise
         except Exception as e:
@@ -4498,12 +4504,14 @@ def on_any_message(msg):
 
     if msg.content_type == "text":
         try:
+            if handle_direct_edit_insert_message(msg):
+                return
             if handle_category_edit_message(msg):
                 return
             if handle_category_add_message(msg):
                 return
         except Exception as e:
-            log_error(f"category_add/edit message handler error: {e}")
+            log_error(f"category_add/edit/direct-edit message handler error: {e}")
 
     if msg.content_type == "text":
         try:
@@ -6312,6 +6320,80 @@ def make_copy_or_inline_button(label: str, text: str):
     return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(text)[:240])
 
 
+
+
+DIRECT_EDIT_TOKEN = "EDITREC"
+
+
+def compose_direct_edit_insert_value(target_chat_id: int, rid: int, day_key: str, amount, note: str = "") -> str:
+    """Текст для быстрой вставки редактирования записи через inline-поле Telegram.
+    Пользователь может оставить служебный префикс — бот обновит запись по нему.
+    """
+    value = compose_edit_input_value(amount, note)
+    return f"{DIRECT_EDIT_TOKEN}|{int(target_chat_id)}|{int(rid)}|{str(day_key)[:10]}| {value}"
+
+
+def make_direct_edit_insert_button(label: str, insert_text: str):
+    """Кнопка, которая сразу открывает поле ввода Telegram с подготовленным текстом.
+    В Bot API это возможно только через inline-query текущего чата; обычный callback не умеет
+    принудительно вставлять текст в поле ввода.
+    """
+    return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(insert_text)[:240])
+
+
+def handle_direct_edit_insert_message(msg) -> bool:
+    """Обрабатывает отправленный пользователем текст, который был вставлен кнопкой ✏️ из О6.
+    Формат: EDITREC|chat_id|rid|day_key| сумма описание
+    """
+    try:
+        if getattr(msg, "content_type", None) != "text":
+            return False
+        chat_id = int(msg.chat.id)
+        text = (msg.text or "").strip()
+        if DIRECT_EDIT_TOKEN + "|" not in text:
+            return False
+        # На случай если клиент оставил перед токеном лишний текст.
+        text = text[text.find(DIRECT_EDIT_TOKEN + "|"):]
+        parts = text.split("|", 4)
+        if len(parts) < 5:
+            return False
+        _, target_s, rid_s, day_key, value_text = parts
+        target_chat_id = int(target_s)
+        rid = int(rid_s)
+        day_key = (day_key or today_key())[:10]
+        value_text = (value_text or "").strip()
+        if not value_text:
+            send_and_auto_delete(chat_id, "❌ Нет нового значения для редактирования.", 10)
+            return True
+
+        # Обычный пользователь может редактировать только запись своего чата.
+        # Владелец может редактировать любой просматриваемый чат.
+        if not is_owner_chat(chat_id) and int(chat_id) != int(target_chat_id):
+            send_and_auto_delete(chat_id, "⛔ Нельзя редактировать запись другого чата.", 10)
+            return True
+
+        amount, note = split_amount_and_note(value_text)
+        with locked_chat(target_chat_id):
+            ok = update_record_in_chat(target_chat_id, rid, amount, note)
+        if not ok:
+            send_and_auto_delete(chat_id, "❌ Запись для редактирования не найдена.", 10)
+            return True
+
+        try:
+            bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            pass
+        finance_changed(target_chat_id, day_key, reason="direct_edit_insert", delay=0.1)
+        send_and_auto_delete(chat_id, f"✅ Запись обновлена: {fmt_num(amount)} {note}", 8)
+        return True
+    except Exception as e:
+        log_error(f"handle_direct_edit_insert_message: {e}")
+        try:
+            send_and_auto_delete(msg.chat.id, "❌ Не удалось применить вставленное редактирование.", 10)
+        except Exception:
+            pass
+        return True
+
 def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None):
     kb = types.InlineKeyboardMarkup()
     # Прямо вставить обычный текст без @имени бота Telegram Bot API не разрешает.
@@ -6575,14 +6657,15 @@ def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str = "d", o
         lbl = f" {fmt_num(r['amount'])}"
         del_icon = "☑️" if rid in selected else "❌"
         if prefix == "fv":
-            edit_cb = f"fv:{chat_id}:{day_key}:edit_rec_{rid}:{owner_day_key or today_key()}"
+            # Кнопка ✏️ сразу вставляет подготовленный текст в поле ввода владельца.
+            # Старый callback edit_rec_* оставлен ниже в обработчике для совместимости со старыми окнами.
             del_cb = f"fv:{chat_id}:{day_key}:del_toggle_{rid}:{owner_day_key or today_key()}"
         else:
-            edit_cb = f"d:{day_key}:edit_rec_{rid}"
             del_cb = f"d:{day_key}:del_toggle_{rid}"
+        insert_text = compose_direct_edit_insert_value(chat_id, rid, day_key, r.get("amount", 0), r.get("note", ""))
         kb.row(
             types.InlineKeyboardButton(lbl, callback_data="none"),
-            types.InlineKeyboardButton("✏️", callback_data=edit_cb),
+            make_direct_edit_insert_button("✏️", insert_text),
             types.InlineKeyboardButton(del_icon, callback_data=del_cb)
         )
 
@@ -7269,28 +7352,32 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
         except Exception:
             pass
     try:
-        bot.edit_message_text(
+        _tg_call_retry(
+            bot.edit_message_text,
             text,
             chat_id=chat_id,
             message_id=msg_id,
             reply_markup=reply_markup,
-            parse_mode=parse_mode
+            parse_mode=parse_mode,
+            purpose="safe_edit_text"
         )
         return
     except Exception:
         pass
     try:
-        bot.edit_message_caption(
+        _tg_call_retry(
+            bot.edit_message_caption,
             chat_id=chat_id,
             message_id=msg_id,
             caption=text,
             reply_markup=reply_markup,
-            parse_mode=parse_mode
+            parse_mode=parse_mode,
+            purpose="safe_edit_caption"
         )
         return
     except Exception:
         pass
-    bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_send_fallback")
 
 def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None, preferred_message_id=None):
     """Отдельное окно для отчёта по статьям расходов (одно сообщение на чат)."""
@@ -8700,8 +8787,7 @@ def on_callback(call):
                     recreate_main_window_now(tgt, get_chat_store(tgt).get("current_view_day") or today_key())
             except Exception as e:
                 log_error(f"qb_mode_normal recreate main window {get_chat_display_name(tgt)}: {e}")
-            if OWNER_ID and str(tgt) != str(OWNER_ID):
-                refresh_owner_after_chat_change(tgt)
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
             safe_edit(
                 bot,
                 call,
@@ -8715,8 +8801,7 @@ def on_callback(call):
                 return
             set_quick_balance_behavior(tgt, "open")
             set_quick_balance_enabled(tgt, True)
-            if OWNER_ID and str(tgt) != str(OWNER_ID):
-                refresh_owner_after_chat_change(tgt)
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
             safe_edit(
                 bot,
                 call,
@@ -8731,8 +8816,7 @@ def on_callback(call):
             set_quick_balance_behavior(tgt, "first")
             set_quick_balance_enabled(tgt, True)
             schedule_quick_balance_first_recreate(tgt, 60.0)
-            if OWNER_ID and str(tgt) != str(OWNER_ID):
-                refresh_owner_after_chat_change(tgt)
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
             safe_edit(
                 bot,
                 call,
@@ -10523,15 +10607,8 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
         trace.step("ставит бэкап в отдельную очередь")
         _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, 8.0))
 
-        # Окно владельца — отдельно от рабочего чата.
-        if OWNER_ID and str(chat_id) != str(OWNER_ID):
-            try:
-                owner_id = int(OWNER_ID)
-                trace.step("обновляет сводку владельца")
-                _safe_stabilize("owner_total_after_change", lambda: refresh_total_message_if_any(owner_id))
-                _safe_stabilize("owner_window_after_change", lambda: refresh_owner_after_chat_change(chat_id))
-            except Exception as e:
-                log_error(f"_finance_changed_now owner refresh: {e}")
+        # Важно: действия в других чатах не должны менять личное окно владельца.
+        # Поэтому здесь не вызываем backup_window_for_owner/refresh_owner_after_chat_change.
 
         trace.finish("финобработка завершена")
     except Exception as e:
