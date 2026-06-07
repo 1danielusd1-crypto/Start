@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v43_articles_excel_window_tags"
+VERSION = "bot_v44_o_tags_excel_articles"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -597,15 +597,27 @@ def today_key() -> str:
 # в1/в2/... — окна/меню только владельца.
 # Метка добавляется внизу справа обычным текстом и не меняет callback-логику.
 # ─────────────────────────────────────────────────────────────
+WINDOW_MARK_RE = re.compile(r"(?:^|\s)([ов]\d{1,3})\s*$")
+
+
+def has_window_mark(text: str) -> bool:
+    """True, если внизу окна уже есть метка о1/в1 и т.п."""
+    try:
+        tail = str(text or "")[-120:]
+        tail = re.sub(r"<[^>]+>", "", tail)
+        return bool(WINDOW_MARK_RE.search(tail))
+    except Exception:
+        return False
+
+
 def window_mark(text: str, code: str, html_mode: bool = False) -> str:
     try:
         text = str(text or "")
         code = str(code or "").strip()
         if not code:
             return text
-        # Не дублируем метку, если окно уже было помечено.
-        tail = text[-80:]
-        if code in tail:
+        # Не дублируем и не смешиваем метки: если окно уже помечено, оставляем как есть.
+        if has_window_mark(text):
             return text
         pad = " " * 26
         if html_mode:
@@ -621,6 +633,71 @@ def wm_common(text: str, n: int, html_mode: bool = False) -> str:
 
 def wm_owner(text: str, n: int, html_mode: bool = False) -> str:
     return window_mark(text, f"в{int(n)}", html_mode=html_mode)
+
+
+def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
+    """Запасная маркировка для любых переходных окон, которые забыли пометить вручную."""
+    d = str(data_str or "")
+    try:
+        d = resolve_short_callback(d) or d
+    except Exception:
+        pass
+    # Общие окна.
+    if d.startswith("cat_") or d.startswith("catx:"):
+        if "cat_show" in d:
+            return "о8"
+        return "о7"
+    if d.startswith("d:"):
+        action = d.split(":", 2)[2] if d.count(":") >= 2 else ""
+        if action in {"open", "prev", "next", "today", "back_main", "edit_menu", "menu"}:
+            return "о1"
+        if action == "calendar":
+            return "о2"
+        if action == "report":
+            return "о3"
+        if action == "total":
+            return "о4"
+        if action.startswith(("csv", "xlsx", "bk_")):
+            return "о5"
+        if action.startswith("edit") or action.startswith("del_") or action in {"cancel_edit"}:
+            return "о6"
+        if action == "info":
+            return "о9"
+        if action.startswith(("process", "backup", "forward", "fw_", "qb_", "hf_", "finwin")):
+            return "в99" if owner_chat else "о99"
+    # Окна владельца.
+    if d.startswith("fvcat_") or d.startswith("fvcatx:"):
+        if "fvcat_show" in d:
+            return "в10"
+        return "в9"
+    if d.startswith("fv:"):
+        parts = d.split(":")
+        action = parts[3] if len(parts) > 3 else ""
+        if action == "open":
+            return "в6"
+        if action in {"csv_menu"} or action.startswith(("csv_", "xlsx_", "bk_")):
+            return "в11"
+        if action == "calendar":
+            return "в12"
+        if action == "report":
+            return "в13"
+        if action == "total":
+            return "в14"
+        if action.startswith("edit") or action.startswith("del_"):
+            return "в15"
+        if action == "info":
+            return "в16"
+        return "в6"
+    if d.startswith(("fw_", "journal_", "articles_desc")):
+        return "в99" if owner_chat else "о99"
+    return "в99" if owner_chat else "о99"
+
+
+def auto_window_mark(text: str, data_str: str = "", owner_chat: bool = False, html_mode: bool = False) -> str:
+    if has_window_mark(text):
+        return text
+    code = window_code_for_callback(data_str, owner_chat=owner_chat)
+    return window_mark(text, code, html_mode=html_mode)
 
 DAY_WINDOW_MAX_RECORDS = 35
 DAY_WINDOW_MAX_CHARS = 3500
@@ -3740,7 +3817,7 @@ def build_articles_description_text(chat_id: int | None = None) -> str:
             lines.append(f"{item.get('name')}: {', '.join(item.get('keywords') or [])}")
     lines.append("")
     lines.append("Добавить новую статью можно в окне 📊 Статьи → ➕ Добавить статью.")
-    return wm_common("\n".join(lines), 10)
+    return wm_common("\n".join(lines), 7)
 
 
 def summarize_categories(store: dict, start: str, end: str, label: str):
@@ -3896,6 +3973,7 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
             types.InlineKeyboardButton("📆 Выбор недели", callback_data=cat_callback("cat_months"))
         )
 
+    kb.row(types.InlineKeyboardButton("📚 Описание статей", callback_data=cat_callback("cat_desc")))
     kb.row(types.InlineKeyboardButton("➕ Добавить статью", callback_data=cat_callback("cat_add")))
     kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close")))
     return kb
@@ -4519,6 +4597,68 @@ def get_chat_name_for_filename(chat_id: int) -> str:
     except Exception as e:
         log_error(f"get_chat_name_for_filename({chat_id}): {e}")
         return _safe_chat_title_for_filename(str(chat_id))
+
+def _safe_export_name_part(value, fallback: str = "chat") -> str:
+    try:
+        value = str(value or "").strip()
+    except Exception:
+        value = ""
+    if not value:
+        value = fallback
+    value = value.replace(" ", "_")
+    value = re.sub(r"[^0-9A-Za-zА-Яа-я_@.\-]+", "", value)
+    value = value.strip("._-")
+    return (value or fallback)[:70]
+
+
+def export_period_date_label(mode: str, day_key: str) -> str:
+    """Дата/период для имени экспортируемого файла."""
+    mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
+    if mode == "all_real":
+        mode = "all"
+    try:
+        if mode == "day":
+            return fmt_date_backup(day_key).replace(":", "-")
+        if mode == "week":
+            base = datetime.strptime(day_key, "%Y-%m-%d")
+            start = base - timedelta(days=6)
+            return f"{fmt_date_backup(start.strftime('%Y-%m-%d')).replace(':','-')}_{fmt_date_backup(day_key).replace(':','-')}"
+        if mode == "month":
+            base = datetime.strptime(day_key, "%Y-%m-%d")
+            return base.strftime("%m-%y")
+        if mode == "wedthu":
+            base = datetime.strptime(day_key, "%Y-%m-%d")
+            while base.weekday() != 2:
+                base -= timedelta(days=1)
+            end = base + timedelta(days=1)
+            return f"{fmt_date_backup(base.strftime('%Y-%m-%d')).replace(':','-')}_{fmt_date_backup(end.strftime('%Y-%m-%d')).replace(':','-')}"
+    except Exception:
+        pass
+    return "all"
+
+
+def export_display_filename(chat_id: int, mode: str, day_key: str, ext: str) -> str:
+    """Имя файла для CSV/Excel: имя_чата + дата/период файла."""
+    chat_name = _safe_export_name_part(get_chat_name_for_filename(chat_id) or get_chat_display_name(chat_id), f"chat_{chat_id}")
+    date_part = export_period_date_label(mode, day_key)
+    ext = str(ext or "csv").lower().lstrip(".")
+    return f"{chat_name}_{date_part}.{ext}"
+
+
+def file_bytesio_named(path: str, file_name: str) -> io.BytesIO | None:
+    try:
+        with open(path, "rb") as f:
+            payload = f.read()
+        if not payload:
+            return None
+        buf = io.BytesIO(payload)
+        buf.name = file_name
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        log_error(f"file_bytesio_named({path}): {e}")
+        return None
+
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """
     Берём название чата из store["info"], чтобы подписывать бэкап.
@@ -6224,8 +6364,9 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
             save_chat_json(target_chat_id)
             path = chat_csv_file(target_chat_id)
             if os.path.exists(path):
-                with open(path, "rb") as f:
-                    bot.send_document(recipient_chat_id, f, caption=caption)
+                fobj = file_bytesio_named(path, export_display_filename(target_chat_id, mode, day_key, "csv"))
+                if fobj:
+                    _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, purpose="send_csv_for_chat_to")
                 return
         elif mode == "day":
             for r in store.get("daily_records", {}).get(day_key, []) or []:
@@ -6264,13 +6405,14 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
         if not rows:
             send_and_auto_delete(recipient_chat_id, "Нет данных для CSV.", 8)
             return
-        tmp_name = f"fv_csv_{target_chat_id}_{mode}_{int(time.time())}.csv"
+        tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"fv_csv_{target_chat_id}_{mode}_{int(time.time())}.csv")
         with open(tmp_name, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["date", "amount", "note"])
             write_csv_rows_with_day_gaps(w, rows, 3)
-        with open(tmp_name, "rb") as f:
-            bot.send_document(recipient_chat_id, f, caption=caption)
+        fobj = file_bytesio_named(tmp_name, export_display_filename(target_chat_id, mode, day_key, "csv"))
+        if fobj:
+            _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, purpose="send_csv_for_chat_to")
         try:
             os.remove(tmp_name)
         except Exception:
@@ -6345,11 +6487,12 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             label = "за всё время"
             if os.path.exists(path):
                 trace.step("отправляет готовый файл в Telegram")
-                with open(path, "rb") as f:
+                fobj = file_bytesio_named(path, export_display_filename(target_chat_id, mode, day_key, "xlsx" if file_type == "xlsx" else "csv"))
+                if fobj:
                     _tg_call_retry(
                         bot.send_document,
                         recipient_chat_id,
-                        f,
+                        fobj,
                         caption=f"📂 {'Excel' if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
                         purpose="export_send_document"
                     )
@@ -6366,7 +6509,8 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             return
         if not rows and ext == "xlsx":
             trace.step("строк нет — создаёт пустой Excel с заголовками")
-        tmp_name = f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}"
+        tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}")
+        display_name = export_display_filename(target_chat_id, mode, day_key, ext)
         if ext == "xlsx":
             trace.step("создаёт временный Excel файл")
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
@@ -6381,11 +6525,12 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 write_csv_rows_with_day_gaps(w, rows, 3)
 
         trace.step("отправляет файл в Telegram")
-        with open(tmp_name, "rb") as f:
+        fobj = file_bytesio_named(tmp_name, display_name)
+        if fobj:
             _tg_call_retry(
                 bot.send_document,
                 recipient_chat_id,
-                f,
+                fobj,
                 caption=f"📂 {'Excel' if ext == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
                 purpose="export_send_document"
             )
@@ -6416,6 +6561,7 @@ def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start:
             types.InlineKeyboardButton("📅 Сегодня", callback_data=fvcat_callback(f"fvcat_today:{target_chat_id}:{owner_day_key}")),
             types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{next_key}:{owner_day_key}")),
         )
+    kb.row(types.InlineKeyboardButton("📚 Описание статей", callback_data=fvcat_callback(f"fvcat_desc:{target_chat_id}:{start}:{owner_day_key}")))
     kb.row(types.InlineKeyboardButton("➕ Добавить статью", callback_data=fvcat_callback(f"fvcat_add:{target_chat_id}:{start}:{owner_day_key}")))
     kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
@@ -6438,6 +6584,15 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
     if action == "fvcat_today":
         owner_day_key = parts[2] if len(parts) > 2 else today_key()
         return handle_finwindow_categories_callback(call, f"fvcat_wthu:{target_chat_id}:{today_key()}:{owner_day_key}")
+    if action == "fvcat_desc":
+        ref = parts[2] if len(parts) > 2 else today_key()
+        owner_day_key = parts[3] if len(parts) > 3 else today_key()
+        kb = types.InlineKeyboardMarkup()
+        kb.row(types.InlineKeyboardButton("🔙 Назад к статьям", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{ref}:{owner_day_key}")))
+        kb.row(types.InlineKeyboardButton("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{ref}:open:{owner_day_key}"))
+        safe_edit(bot, call, f"👁 {get_chat_display_name(target_chat_id)}\n" + build_articles_description_text(target_chat_id), reply_markup=kb, parse_mode=None)
+        return True
+
     if action == "fvcat_add":
         try:
             owner_day_key = parts[3] if len(parts) > 3 else today_key()
@@ -6583,9 +6738,20 @@ def _one_button_keyboard(label: str, callback_data: str):
     return kb
 
 def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
-    """Безопасное обновление: edit_text → edit_caption → send_message."""
+    """Безопасное обновление: edit_text → edit_caption → send_message.
+    Все окна, которые открываются кнопками, получают метку о*/в*, если она ещё не проставлена вручную.
+    """
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
+    try:
+        text = auto_window_mark(
+            text,
+            getattr(call, "data", ""),
+            owner_chat=is_owner_chat(chat_id),
+            html_mode=(str(parse_mode or "").upper() == "HTML")
+        )
+    except Exception:
+        pass
     try:
         bot.edit_message_text(
             text,
@@ -6612,6 +6778,10 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
 
 def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None, preferred_message_id=None):
     """Отдельное окно для отчёта по статьям расходов (одно сообщение на чат)."""
+    try:
+        text = window_mark(text, "о7", html_mode=(str(parse_mode or "").upper() == "HTML"))
+    except Exception:
+        pass
     store = get_chat_store(chat_id)
     mid = store.get("categories_msg_id")
 
@@ -6688,7 +6858,6 @@ def open_info_window(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     if is_owner_chat(chat_id):
         kb.row(types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"))
-        kb.row(types.InlineKeyboardButton("📚 Описание статей", callback_data="articles_desc"))
     kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
     send_or_edit_stored_window(
         chat_id,
@@ -6738,6 +6907,13 @@ def handle_categories_callback(call, data_str: str) -> bool:
             pass
         return True
 
+    if data_str == "cat_desc":
+        kb = types.InlineKeyboardMarkup()
+        kb.row(types.InlineKeyboardButton("🔙 Назад к статьям", callback_data=cat_callback(f"cat_wthu:{today_key()}")))
+        kb.row(types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close")))
+        send_or_edit_categories_window(chat_id, build_articles_description_text(chat_id), reply_markup=kb, preferred_message_id=call.message.message_id)
+        return True
+
     if data_str.startswith("cat_wthu:"):
         ref = data_str.split(":", 1)[1] or today_key()
         start_key = week_start_thursday(ref)
@@ -6767,7 +6943,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")),
             types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close"))
         )
-        send_or_edit_categories_window(chat_id, "📦 Выберите месяц:", reply_markup=kb)
+        send_or_edit_categories_window(chat_id, wm_common("📦 Выберите месяц:", 12), reply_markup=kb)
         return True
 
     if data_str.startswith("cat_m:"):
@@ -6788,7 +6964,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")))
         row.append(types.InlineKeyboardButton("🔙 Назад", callback_data=cat_callback("cat_months")))
         kb.row(*row)
-        send_or_edit_categories_window(chat_id, "📆 Выберите неделю:", reply_markup=kb)
+        send_or_edit_categories_window(chat_id, wm_common("📆 Выберите неделю:", 13), reply_markup=kb)
         return True
 
     if data_str.startswith("cat_rng:"):
@@ -7300,7 +7476,6 @@ def on_callback(call):
                 return
             kb = types.InlineKeyboardMarkup()
             kb.row(types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"))
-            kb.row(types.InlineKeyboardButton("📚 Описание статей", callback_data="articles_desc"))
             kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"))
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=kb)
             return
