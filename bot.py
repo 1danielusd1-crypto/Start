@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v50_tz_finmode_probe_journal_edit"
+VERSION = "bot_v51_o6_probe_v24_back_o7_fixed"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1319,10 +1319,58 @@ def collect_all_known_chat_ids(include_owner: bool = True) -> list[int]:
     return sorted(ids, key=lambda cid: get_chat_display_name(cid).lower())
 
 
-def probe_bot_in_chat(chat_id: int) -> bool:
-    """Проверяет, видит ли бот чат. При ошибке помечает как удалённый, при успехе снимает отметку."""
+def update_chat_info_from_chat_object(chat_obj) -> bool:
+    """Обновляет карточку чата по результату Telegram getChat: title/username/type."""
     try:
-        _tg_call_retry(bot.get_chat, int(chat_id), attempts=2, purpose="probe_get_chat")
+        chat_id = int(getattr(chat_obj, "id"))
+    except Exception:
+        return False
+    store = get_chat_store(chat_id)
+    info = store.setdefault("info", {})
+    prev_title = info.get("title") or ""
+    chat_type = getattr(chat_obj, "type", None)
+    title = (getattr(chat_obj, "title", None) or "").strip()
+    username = (getattr(chat_obj, "username", None) or "").strip().lstrip("@") or None
+    if not title:
+        first = (getattr(chat_obj, "first_name", None) or "").strip()
+        last = (getattr(chat_obj, "last_name", None) or "").strip()
+        title = (first + " " + last).strip() or (f"@{username}" if username else prev_title or f"Чат {chat_id}")
+
+    changed = False
+    if info.get("title") != title:
+        info["title"] = title
+        changed = True
+    if info.get("username") != username:
+        info["username"] = username
+        changed = True
+    if info.get("type") != chat_type:
+        info["type"] = chat_type
+        changed = True
+
+    if OWNER_ID and str(chat_id) != str(OWNER_ID):
+        owner_store = get_chat_store(int(OWNER_ID))
+        kc = owner_store.setdefault("known_chats", {})
+        new_known = {"title": title, "username": username, "type": chat_type}
+        if kc.get(str(chat_id)) != new_known:
+            kc[str(chat_id)] = new_known
+            changed = True
+
+    if changed:
+        save_data(data)
+        try:
+            ids_for_backup = [chat_id]
+            if OWNER_ID:
+                ids_for_backup.append(int(OWNER_ID))
+            schedule_config_backup_for_chats(*ids_for_backup, delay=2.0)
+        except Exception as e:
+            log_error(f"update_chat_info_from_chat_object backup {chat_id}: {e}")
+    return changed
+
+def probe_bot_in_chat(chat_id: int) -> bool:
+    """Проверяет, видит ли бот чат. При успехе обновляет имя/username, при ошибке помечает как удалённый."""
+    try:
+        chat_obj = _tg_call_retry(bot.get_chat, int(chat_id), attempts=2, purpose="probe_get_chat")
+        update_chat_info_from_chat_object(chat_obj)
         set_chat_bot_removed(int(chat_id), False, "probe ok")
         return True
     except Exception as e:
@@ -4188,7 +4236,6 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
         types.InlineKeyboardButton("🗑 Удалить", callback_data=cat_callback("cat_del_menu")),
     )
     kb.row(
-        types.InlineKeyboardButton("⏪ Назад", callback_data=f"d:{today_key()}:back_main"),
         types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
         types.InlineKeyboardButton("❌ Закрыть", callback_data=cat_callback("cat_close")),
     )
@@ -4724,7 +4771,7 @@ def on_any_message(msg):
             store = get_chat_store(chat_id)
             finwin_wait = store.get("finwin_edit_wait")
             if finwin_wait and finwin_wait.get("type") == "finwin_edit":
-                text = (msg.text or "").strip()
+                text = sanitize_telegram_inserted_text((msg.text or "").strip())
                 try:
                     amount, note = split_amount_and_note(text)
                 except Exception:
@@ -4773,7 +4820,7 @@ def on_any_message(msg):
             edit_wait = store.get("edit_wait")
 
             if edit_wait and edit_wait.get("type") == "edit":
-                text = (msg.text or "").strip()
+                text = sanitize_telegram_inserted_text((msg.text or "").strip())
                 if not text:
                     return
 
@@ -6173,12 +6220,9 @@ def build_main_keyboard(day_key: str, chat_id=None):
             types.InlineKeyboardButton("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu"),
             types.InlineKeyboardButton("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
         )
+        # Скрытые финансы и Фин окно перенесены внутрь: Фин режим → выбор чата → настройки чата.
         kb.row(
-            types.InlineKeyboardButton("🙈 Скрытые финансы", callback_data=f"d:{day_key}:hidden_finance_menu"),
-            types.InlineKeyboardButton("🪟 Фин окна чатов", callback_data=f"d:{day_key}:fin_windows_menu"),
             types.InlineKeyboardButton("🧪 PROCESS", callback_data=f"d:{day_key}:process_menu"),
-        )
-        kb.row(
             types.InlineKeyboardButton("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"),
         )
 
@@ -6411,22 +6455,38 @@ def build_edit_menu_keyboard(day_key: str, chat_id=None):
     """Совместимость со старыми callback: отдельного подменю больше нет."""
     return build_main_keyboard(day_key, chat_id)
 def make_copy_or_inline_button(label: str, text: str):
+    """Кнопка-вставка в поле ввода через inline current chat.
+    Если Telegram добавит @имя_бота, обработчики редактирования очищают его перед сохранением.
     """
-    Готовый текст для редактирования.
-    Важно: Telegram Bot API не умеет после callback-кнопки напрямую вставлять обычный текст
-    в поле ввода без участия пользователя. Поэтому используем лучший доступный вариант:
-    • CopyTextButton — копирует текст без @имени бота, если telebot/Bot API поддерживает;
-    • switch_inline_query_current_chat — старый fallback, Telegram может показать @имя_бота.
-    """
-    try:
-        if hasattr(types, "CopyTextButton"):
-            return types.InlineKeyboardButton(label, copy_text=types.CopyTextButton(str(text)[:1024]))
-    except Exception:
-        pass
     return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(text)[:240])
 
 
 
+
+_BOT_USERNAME_CACHE = None
+
+def get_bot_username_cached() -> str:
+    """Имя бота нужно только для очистки текста, вставленного через inline-поле Telegram."""
+    global _BOT_USERNAME_CACHE
+    if _BOT_USERNAME_CACHE is not None:
+        return _BOT_USERNAME_CACHE
+    try:
+        me = bot.get_me()
+        _BOT_USERNAME_CACHE = (getattr(me, "username", "") or "").lstrip("@")
+    except Exception:
+        _BOT_USERNAME_CACHE = ""
+    return _BOT_USERNAME_CACHE
+
+def sanitize_telegram_inserted_text(text: str) -> str:
+    """Убирает @имя_бота, которое Telegram может добавить при inline-вставке."""
+    s = str(text or "").strip()
+    username = get_bot_username_cached()
+    if username:
+        s = re.sub(rf"(?im)^\s*@{re.escape(username)}\b[:\s,]*", "", s)
+        s = re.sub(rf"(?i)\s*@{re.escape(username)}\b", "", s)
+    # Запасной вариант: если Telegram поставил любое @имя в самое начало перед суммой/служебной скобкой.
+    s = re.sub(r"(?m)^\s*@[A-Za-z0-9_]{3,}\s+(?=(?:\(|[+\-–]?\s*\d))", "", s)
+    return re.sub(r"[ \t]+", " ", s).strip()
 
 DIRECT_EDIT_TOKEN = "EDITREC"
 
@@ -6483,6 +6543,7 @@ def handle_direct_edit_insert_message(msg) -> bool:
         target_chat_id = int(target_s)
         rid = int(rid_s)
         day_key = (day_key or today_key())[:10]
+        value_text = sanitize_telegram_inserted_text(value_text)
         if not value_text:
             send_and_auto_delete(chat_id, "❌ Нет нового значения для редактирования.", 10)
             return True
@@ -6517,11 +6578,9 @@ def handle_direct_edit_insert_message(msg) -> bool:
 
 def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None):
     kb = types.InlineKeyboardMarkup()
-    # Прямо вставить обычный текст без @имени бота Telegram Bot API не разрешает.
-    # Если библиотека поддерживает CopyTextButton — даём кнопку копирования без имени бота;
-    # иначе оставляем старую inline-вставку как запасной рабочий вариант.
+    # Кнопка открывает поле ввода через inline current chat; возможное @имя_бота очищается обработчиком перед сохранением.
     if insert_text:
-        kb.row(make_copy_or_inline_button("✍️ Вставить/скопировать текст", str(insert_text)))
+        kb.row(make_copy_or_inline_button("✍️ Вставить текст", str(insert_text)))
     kb.row(
         types.InlineKeyboardButton("❌ Закрыть", callback_data=f"d:{day_key}:cancel_edit"),
         types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"),
@@ -6532,7 +6591,7 @@ def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None):
 def build_finwin_cancel_edit_keyboard(target_chat_id: int, day_key: str, owner_day_key: str, insert_text: str | None = None):
     kb = types.InlineKeyboardMarkup()
     if insert_text:
-        kb.row(make_copy_or_inline_button("✍️ Вставить/скопировать текст", str(insert_text)))
+        kb.row(make_copy_or_inline_button("✍️ Вставить текст", str(insert_text)))
     kb.row(
         types.InlineKeyboardButton("❌ Закрыть", callback_data=f"fv:{target_chat_id}:{day_key}:cancel_edit:{owner_day_key}"),
         types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"),
@@ -6735,9 +6794,16 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     open_icon = "✅3️⃣" if enabled and behavior == "open" else "❌"
     first_icon = "✅🥇" if enabled and behavior == "first" else "❌"
 
+    hidden_icon = "🙈" if is_hidden_finance_mode(target_chat_id) else "👁"
+    finwin_icon = "🪟✅" if is_finance_mode(target_chat_id) else "🪟❌"
+
     kb.row(types.InlineKeyboardButton(f"{normal_icon} Как обычно — фин окно через 10 сообщений", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton(f"{open_icon} Фин режим + быстрый остаток: открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton(f"{first_icon} Фин режим + быстрый остаток: всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"))
+    kb.row(
+        types.InlineKeyboardButton(f"{hidden_icon} Скрытые финансы", callback_data=f"d:{day_key}:qb_hidden_toggle_{target_chat_id}"),
+        types.InlineKeyboardButton(f"{finwin_icon} Фин окно", callback_data=f"d:{day_key}:qb_finwin_open_{target_chat_id}"),
+    )
     kb.row(types.InlineKeyboardButton("❌ Выключить фин режим", callback_data=f"d:{day_key}:fin_mode_off_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton("🔙 Назад к чатам", callback_data=f"d:{day_key}:forward_finmode_menu"))
     return kb
@@ -6753,9 +6819,12 @@ def build_finance_mode_config_text(target_chat_id: int) -> str:
     qb = "без быстрого остатка"
     if is_quick_balance_enabled(target_chat_id):
         qb = "быстрый остаток: всегда первым" if get_quick_balance_behavior(target_chat_id) == "first" else "быстрый остаток: открывать окно"
+    hidden = "🙈 скрытые финансы ВКЛ" if is_hidden_finance_mode(target_chat_id) else "👁 скрытые финансы ВЫКЛ"
+    finwin = "фин окно доступно" if is_finance_mode(target_chat_id) else "фин окно недоступно, финрежим выключен"
     return (
         f"💰 Фин режим: {get_chat_display_name(target_chat_id)}\n"
-        f"Сейчас: {status}, {qb}.\n\n"
+        f"Сейчас: {status}, {qb}.\n"
+        f"{hidden}; {finwin}.\n\n"
         "Выберите один из режимов:"
     )
 
@@ -8777,6 +8846,10 @@ def on_callback(call):
             cancel_pending_window_commands(chat_id, delete_prompt=False)
             clear_edit_delete_selection(chat_id, day_key)
             store["current_view_day"] = day_key
+            try:
+                close_previous_main_window_before_back(chat_id, day_key, call.message.message_id)
+            except Exception:
+                pass
             if OWNER_ID and str(chat_id) == str(OWNER_ID):
                 backup_window_for_owner(chat_id, day_key, call.message.message_id)
             else:
@@ -9029,6 +9102,32 @@ def on_callback(call):
                 reply_markup=build_finance_mode_config_menu(day_key, tgt)
             )
             return
+        if cmd.startswith("qb_hidden_toggle_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            set_hidden_finance_mode(tgt, not is_hidden_finance_mode(tgt))
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
+        if cmd.startswith("qb_finwin_open_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            target_store = get_chat_store(tgt)
+            view_day = target_store.get("current_view_day", today_key())
+            safe_edit(
+                bot,
+                call,
+                render_fin_window_text(tgt, view_day),
+                reply_markup=build_fin_window_view_keyboard(tgt, view_day, day_key),
+                parse_mode="HTML"
+            )
+            return
         if cmd.startswith("fw_finmode_pick_"):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
@@ -9264,6 +9363,31 @@ def set_active_window_id(chat_id: int, day_key: str, message_id: int):
 def get_active_window_id(chat_id: int, day_key: str):
     aw = get_or_create_active_windows(chat_id)
     return aw.get(day_key)
+
+def clear_active_window_id(chat_id: int, day_key: str):
+    try:
+        aw = get_or_create_active_windows(chat_id)
+        if str(day_key) in aw:
+            aw.pop(str(day_key), None)
+            save_data(data)
+    except Exception as e:
+        log_error(f"clear_active_window_id({chat_id},{day_key}): {e}")
+
+def close_previous_main_window_before_back(chat_id: int, day_key: str, current_message_id: int | None = None):
+    """При возврате в основное окно удаляет прежнее О1, чтобы не оставалось дубля."""
+    try:
+        old_mid = get_active_window_id(chat_id, day_key)
+        if not old_mid:
+            return
+        if current_message_id is not None and int(old_mid) == int(current_message_id):
+            return
+        try:
+            bot.delete_message(int(chat_id), int(old_mid))
+        except Exception:
+            pass
+        clear_active_window_id(chat_id, day_key)
+    except Exception as e:
+        log_error(f"close_previous_main_window_before_back({chat_id},{day_key}): {e}")
 def update_or_send_day_window(chat_id: int, day_key: str):
     if is_hidden_finance_mode(chat_id) and not is_owner_chat(chat_id):
         return
