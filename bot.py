@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v54_v24_clean_v22_links"
+VERSION = "bot_v55_v22_status_v98_backclose"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -772,6 +772,52 @@ def auto_window_mark(text: str, data_str: str = "", owner_chat: bool = False, ht
     if has_window_mark(text):
         text = strip_window_mark(text)
     return window_mark(text, code, html_mode=html_mode)
+
+
+_v98_auto_close_timers = {}
+_v98_auto_close_lock = threading.RLock()
+
+
+def _cancel_v98_auto_close(chat_id: int, message_id: int):
+    key = (int(chat_id), int(message_id))
+    with _v98_auto_close_lock:
+        t = _v98_auto_close_timers.pop(key, None)
+    if t and getattr(t, "is_alive", lambda: False)():
+        try:
+            t.cancel()
+        except Exception:
+            pass
+
+
+def _schedule_v98_auto_close(chat_id: int, message_id: int, delay: int = 60):
+    """Окна о98/в98 закрываются через минуту бездействия. Любая новая кнопка на этом же окне сбрасывает таймер."""
+    chat_id = int(chat_id)
+    message_id = int(message_id)
+    _cancel_v98_auto_close(chat_id, message_id)
+
+    def _job():
+        with _v98_auto_close_lock:
+            _v98_auto_close_timers.pop((chat_id, message_id), None)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+
+    t = threading.Timer(int(delay), _job)
+    with _v98_auto_close_lock:
+        _v98_auto_close_timers[(chat_id, message_id)] = t
+    t.start()
+
+
+def _touch_v98_auto_close_for_callback(chat_id: int, message_id: int, data_str: str):
+    try:
+        code = window_code_for_callback(data_str, owner_chat=is_owner_chat(chat_id))
+        if code in {"о98", "в98"}:
+            _schedule_v98_auto_close(chat_id, message_id, 60)
+        else:
+            _cancel_v98_auto_close(chat_id, message_id)
+    except Exception:
+        pass
 
 DAY_WINDOW_MAX_RECORDS = 35
 DAY_WINDOW_MAX_CHARS = 3500
@@ -2008,18 +2054,34 @@ def _direction_state_label(enabled: bool, left: str, arrow: str, right: str) -> 
     return f"{icon} {left} {arrow} {right}"
 
 
-def build_forward_status_lines() -> list[str]:
-    """Статус В22: показывает именно связи пересылки и финучёта пересылки по направлениям.
+def _forward_arrow_icon(ab_on: bool, ba_on: bool) -> str:
+    if ab_on and ba_on:
+        return "🔄"
+    if ab_on:
+        return "⏩️"
+    if ba_on:
+        return "⏪️"
+    return "❌"
 
-    Было слишком сжато одной строкой и смешивало общий финрежим чатов с финучётом пересылки.
-    Теперь видно то же самое, что переключается в меню пересылки:
-    • 📨 A→B / B→A — сама пересылка;
-    • 💰 A→B / B→A — финучёт пересланных сообщений.
+
+def _forward_fin_icon(ab_fin: bool, ba_fin: bool) -> str:
+    if ab_fin and ba_fin:
+        return "💰🔄"
+    if ab_fin:
+        return "💰▶️"
+    if ba_fin:
+        return "💰◀️"
+    return "❌"
+
+
+def build_forward_status_lines() -> list[str]:
+    """Статус В22: короткая схема связей.
+    Всегда показываем Чат A первым:
+    Чат A -(⏩️/⏪️/🔄)-(💰▶️/💰◀️/💰🔄/❌)-Чат B
     """
     lines = []
     fr = data.get("forward_rules", {}) or {}
     ff = data.get("forward_finance", {}) or {}
-
     seen_pairs = set()
 
     def _sorted_pair(a: int, b: int):
@@ -2040,46 +2102,27 @@ def build_forward_status_lines() -> list[str]:
                 dst_id = int(dst)
             except Exception:
                 continue
-            all_pairs.add((src_id, dst_id))
+            all_pairs.add(_sorted_pair(src_id, dst_id))
 
-    for src_id, dst_id in sorted(all_pairs, key=lambda p: (_sorted_pair(p[0], p[1])[0], _sorted_pair(p[0], p[1])[1])):
-        left_id, right_id = _sorted_pair(src_id, dst_id)
-        pair_key = (left_id, right_id)
+    for a_id, b_id in sorted(all_pairs, key=lambda p: (get_chat_display_name(p[0]).lower(), get_chat_display_name(p[1]).lower())):
+        pair_key = (a_id, b_id)
         if pair_key in seen_pairs:
             continue
         seen_pairs.add(pair_key)
 
-        ab_on = str(right_id) in (fr.get(str(left_id), {}) or {})
-        ba_on = str(left_id) in (fr.get(str(right_id), {}) or {})
+        ab_on = str(b_id) in (fr.get(str(a_id), {}) or {})
+        ba_on = str(a_id) in (fr.get(str(b_id), {}) or {})
         if not (ab_on or ba_on):
             continue
 
-        ab_fin = bool((ff.get(str(left_id), {}) or {}).get(str(right_id), False))
-        ba_fin = bool((ff.get(str(right_id), {}) or {}).get(str(left_id), False))
-
-        left_name = chat_button_title(left_id)
-        right_name = chat_button_title(right_id)
-        left_fin_mode = "✅" if is_finance_mode(left_id) else "❌"
-        right_fin_mode = "✅" if is_finance_mode(right_id) else "❌"
-
-        lines.append(
-            "\n".join([
-                f"• {left_name} ⇄ {right_name}",
-                "  📨 пересылка: "
-                + _direction_state_label(ab_on, left_name, "→", right_name)
-                + " | "
-                + _direction_state_label(ba_on, right_name, "→", left_name),
-                "  💰 финучёт пересылки: "
-                + _direction_state_label(ab_fin, left_name, "→", right_name)
-                + " | "
-                + _direction_state_label(ba_fin, right_name, "→", left_name),
-                f"  💼 финрежим чатов: {left_name} {left_fin_mode} | {right_name} {right_fin_mode}",
-            ])
-        )
+        ab_fin = bool((ff.get(str(a_id), {}) or {}).get(str(b_id), False))
+        ba_fin = bool((ff.get(str(b_id), {}) or {}).get(str(a_id), False))
+        name_a = chat_button_title(a_id)
+        name_b = chat_button_title(b_id)
+        lines.append(f"• {name_a} -({_forward_arrow_icon(ab_on, ba_on)})-({_forward_fin_icon(ab_fin, ba_fin)})-{name_b}")
 
     if not lines:
         lines.append("• Связи пересылки не настроены")
-
     return lines
 
 def build_forward_status_text(title: str | None = None) -> str:
@@ -7622,6 +7665,7 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
             parse_mode=parse_mode,
             purpose="safe_edit_text"
         )
+        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
         return
     except Exception:
         pass
@@ -7635,10 +7679,15 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
             parse_mode=parse_mode,
             purpose="safe_edit_caption"
         )
+        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
         return
     except Exception:
         pass
-    _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_send_fallback")
+    sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_send_fallback")
+    try:
+        _touch_v98_auto_close_for_callback(chat_id, sent.message_id, getattr(call, "data", ""))
+    except Exception:
+        pass
 
 
 def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
@@ -7672,6 +7721,7 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
             parse_mode=parse_mode,
             purpose="safe_edit_current_only_text"
         )
+        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
         return True
     except Exception as e1:
         if "message is not modified" in str(e1).lower():
@@ -7686,6 +7736,7 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
             parse_mode=parse_mode,
             purpose="safe_edit_current_only_caption"
         )
+        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
         return True
     except Exception as e2:
         if "message is not modified" in str(e2).lower():
@@ -8959,18 +9010,7 @@ def on_callback(call):
             cancel_pending_window_commands(chat_id, delete_prompt=False)
             clear_edit_delete_selection(chat_id, day_key)
             store["current_view_day"] = day_key
-            try:
-                close_previous_main_window_before_back(chat_id, day_key, call.message.message_id)
-            except Exception:
-                pass
-            if OWNER_ID and str(chat_id) == str(OWNER_ID):
-                backup_window_for_owner(chat_id, day_key, call.message.message_id)
-            else:
-                txt, _ = render_day_window(chat_id, day_key)
-                kb = build_main_keyboard(day_key, chat_id)
-                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
-                set_active_window_id(chat_id, day_key, call.message.message_id)
-                schedule_balance_panel_refresh(chat_id, 0.1)
+            return_to_main_window_closing_previous(chat_id, day_key, call.message.message_id)
             return
         if cmd == "csv_all":
             kb = build_csv_menu(day_key, chat_id)
@@ -11213,6 +11253,36 @@ def force_new_day_window(chat_id: int, day_key: str):
     sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
     set_active_window_id(chat_id, day_key, sent.message_id)
     schedule_balance_panel_refresh(chat_id, 0.5)
+
+
+def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
+    """Назад в основное окно: закрываем текущее переходное окно и создаём чистое О1.
+    Старое сохранённое О1 тоже удаляется, чтобы не было дублей.
+    """
+    try:
+        if current_message_id is not None:
+            _cancel_v98_auto_close(int(chat_id), int(current_message_id))
+    except Exception:
+        pass
+    try:
+        close_previous_main_window_before_back(chat_id, day_key, current_message_id)
+    except Exception:
+        pass
+    try:
+        if current_message_id is not None:
+            bot.delete_message(int(chat_id), int(current_message_id))
+    except Exception:
+        pass
+    try:
+        aw = get_or_create_active_windows(chat_id)
+        if aw.get(day_key) == current_message_id:
+            aw.pop(day_key, None)
+            save_data(data)
+    except Exception:
+        pass
+    force_new_day_window(chat_id, day_key)
+
+
 def reset_chat_data(chat_id: int):
     """v27: обнуление данных чата без ручного дублирования окон/бэкапов."""
     try:
