@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v52_v24_modes_removed_lists"
+VERSION = "bot_v54_v24_clean_v22_links"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -382,7 +382,7 @@ def toggle_journal_registration() -> bool:
 
 
 def journal_toggle_label() -> str:
-    return ("✅ Журнал" if is_journal_registration_enabled() else "❌ Журнал")
+    return ("✅ Журнал ВКЛ" if is_journal_registration_enabled() else "❌ Журнал ВЫКЛ")
 
 
 def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
@@ -2003,7 +2003,19 @@ def start_dozvon(source_chat_id: int, target_chat_id: int):
     threading.Thread(target=_run_dozvon_session, args=(session_key,), daemon=True).start()
 
 
+def _direction_state_label(enabled: bool, left: str, arrow: str, right: str) -> str:
+    icon = "✅" if enabled else "❌"
+    return f"{icon} {left} {arrow} {right}"
+
+
 def build_forward_status_lines() -> list[str]:
+    """Статус В22: показывает именно связи пересылки и финучёта пересылки по направлениям.
+
+    Было слишком сжато одной строкой и смешивало общий финрежим чатов с финучётом пересылки.
+    Теперь видно то же самое, что переключается в меню пересылки:
+    • 📨 A→B / B→A — сама пересылка;
+    • 💰 A→B / B→A — финучёт пересланных сообщений.
+    """
     lines = []
     fr = data.get("forward_rules", {}) or {}
     ff = data.get("forward_finance", {}) or {}
@@ -2017,7 +2029,7 @@ def build_forward_status_lines() -> list[str]:
             return a, b
         return b, a
 
-    all_ids = set()
+    all_pairs = set()
     for src, dsts in fr.items():
         try:
             src_id = int(src)
@@ -2028,9 +2040,9 @@ def build_forward_status_lines() -> list[str]:
                 dst_id = int(dst)
             except Exception:
                 continue
-            all_ids.add((src_id, dst_id))
+            all_pairs.add((src_id, dst_id))
 
-    for src_id, dst_id in sorted(all_ids, key=lambda p: (_sorted_pair(p[0], p[1])[0], _sorted_pair(p[0], p[1])[1])):
+    for src_id, dst_id in sorted(all_pairs, key=lambda p: (_sorted_pair(p[0], p[1])[0], _sorted_pair(p[0], p[1])[1])):
         left_id, right_id = _sorted_pair(src_id, dst_id)
         pair_key = (left_id, right_id)
         if pair_key in seen_pairs:
@@ -2039,37 +2051,36 @@ def build_forward_status_lines() -> list[str]:
 
         ab_on = str(right_id) in (fr.get(str(left_id), {}) or {})
         ba_on = str(left_id) in (fr.get(str(right_id), {}) or {})
-
-        if ab_on and ba_on:
-            mail_dir = "↔️"
-        elif ab_on:
-            mail_dir = "➡️"
-        elif ba_on:
-            mail_dir = "⬅️"
-        else:
+        if not (ab_on or ba_on):
             continue
 
         ab_fin = bool((ff.get(str(left_id), {}) or {}).get(str(right_id), False))
         ba_fin = bool((ff.get(str(right_id), {}) or {}).get(str(left_id), False))
-        if ab_fin and ba_fin:
-            fin_dir = "↔️"
-        elif ab_fin:
-            fin_dir = "➡️"
-        elif ba_fin:
-            fin_dir = "⬅️"
-        else:
-            fin_dir = "ВЫКЛ"
 
-        fin_mode = "ВКЛ ✅" if (is_finance_mode(left_id) and is_finance_mode(right_id)) else "ВЫКЛ ❌"
-        left_name = get_chat_display_name(left_id)
-        right_name = get_chat_display_name(right_id)
-        lines.append(f"• {left_name}-📨{mail_dir}-💰{fin_mode}-💸{fin_dir}-{right_name}")
+        left_name = chat_button_title(left_id)
+        right_name = chat_button_title(right_id)
+        left_fin_mode = "✅" if is_finance_mode(left_id) else "❌"
+        right_fin_mode = "✅" if is_finance_mode(right_id) else "❌"
+
+        lines.append(
+            "\n".join([
+                f"• {left_name} ⇄ {right_name}",
+                "  📨 пересылка: "
+                + _direction_state_label(ab_on, left_name, "→", right_name)
+                + " | "
+                + _direction_state_label(ba_on, right_name, "→", left_name),
+                "  💰 финучёт пересылки: "
+                + _direction_state_label(ab_fin, left_name, "→", right_name)
+                + " | "
+                + _direction_state_label(ba_fin, right_name, "→", left_name),
+                f"  💼 финрежим чатов: {left_name} {left_fin_mode} | {right_name} {right_fin_mode}",
+            ])
+        )
 
     if not lines:
         lines.append("• Связи пересылки не настроены")
 
     return lines
-
 
 def build_forward_status_text(title: str | None = None) -> str:
     lines = []
@@ -2078,7 +2089,7 @@ def build_forward_status_text(title: str | None = None) -> str:
         lines.append("")
     # Короткая подсказка для окна В22, чтобы установка пересылки была понятнее.
     if title and "Пересылка" in str(title):
-        lines.append("Шаги: 1) выберите чат A → 2) выберите чат B → 3) включите направление и при необходимости финучёт.")
+        lines.append("Шаги: 1) выберите чат A → 2) выберите чат B → 3) включите 📨 пересылку и 💰 финучёт пересылки по нужным направлениям.")
         lines.append("")
     lines.append("Текущие связи:")
     lines.extend(build_forward_status_lines())
@@ -6710,6 +6721,43 @@ def build_forward_target_menu(src_id: int):
 
 
 
+
+def finance_mode_compact_icon(chat_id: int) -> str:
+    """Короткий знак режима для В24 в списке чатов."""
+    try:
+        if not is_finance_mode(chat_id):
+            return "❌"
+        if is_hidden_finance_mode(chat_id):
+            return "🙈"
+        if is_quick_balance_enabled(chat_id):
+            behavior = get_quick_balance_behavior(chat_id)
+            if behavior == "first":
+                return "✅🥇"
+            if behavior == "open":
+                return "✅3️⃣"
+        # Финрежим включён, быстрый остаток выключен: основное окно через 10 сообщений.
+        return "✅🔟"
+    except Exception:
+        return "❌"
+
+
+def finance_mode_state_lines(chat_id: int) -> list[str]:
+    """Строки В24: только чат и текущие режимы с понятными знаками."""
+    fin_on = is_finance_mode(chat_id)
+    hidden_on = bool(fin_on and is_hidden_finance_mode(chat_id))
+    qb_on = bool(fin_on and (not hidden_on) and is_quick_balance_enabled(chat_id))
+    behavior = get_quick_balance_behavior(chat_id) if fin_on else "normal"
+    return [
+        f"Чат: {chat_button_title(chat_id)}",
+        "",
+        f"{'✅' if fin_on else '❌'} Фин режим",
+        f"{'🙈' if hidden_on else '❌'} Скрытые финансы",
+        f"{'✅🔟' if (fin_on and (not hidden_on) and (not qb_on or behavior == 'normal')) else '❌'} Как обычно — окно через 10 сообщений",
+        f"{'✅3️⃣' if (fin_on and (not hidden_on) and qb_on and behavior == 'open') else '❌'} Быстрый остаток — открывать окно",
+        f"{'✅🥇' if (fin_on and (not hidden_on) and qb_on and behavior == 'first') else '❌'} Быстрый остаток — всегда первым",
+    ]
+
+
 def build_finance_toggle_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
     known = collect_forward_menu_chats()
@@ -6733,9 +6781,9 @@ def build_finance_toggle_chat_menu(day_key: str):
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
         if is_chat_bot_removed(int_cid) and not (OWNER_ID and str(int_cid) == str(OWNER_ID)):
             continue
-        enabled = is_finance_mode(int_cid)
+        icon = finance_mode_compact_icon(int_cid)
         buttons.append(types.InlineKeyboardButton(
-            f'{("🙈" if is_hidden_finance_mode(int_cid) else ("✅" if enabled else "❌"))} {chat_button_title(int_cid, title)}',
+            f'{icon} {chat_button_title(int_cid, title)}',
             callback_data=f"d:{day_key}:fw_finmode_pick_{int_cid}"
         ))
 
@@ -6822,22 +6870,7 @@ def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
 
 
 def build_finance_mode_config_text(target_chat_id: int) -> str:
-    fin_on = is_finance_mode(target_chat_id)
-    hidden_on = bool(fin_on and is_hidden_finance_mode(target_chat_id))
-    status = "ВКЛ" if fin_on else "ВЫКЛ"
-    qb = "без быстрого остатка"
-    if fin_on and (not hidden_on) and is_quick_balance_enabled(target_chat_id):
-        qb = "быстрый остаток: всегда первым" if get_quick_balance_behavior(target_chat_id) == "first" else "быстрый остаток: открывать окно"
-    if hidden_on:
-        qb = "скрытый финрежим, без окон в чате"
-    hidden = "🙈 скрытые финансы ВКЛ" if hidden_on else "👁 скрытые финансы ВЫКЛ"
-    finwin = "фин окно доступно" if fin_on else "фин окно недоступно, финрежим выключен"
-    return (
-        f"💰 Фин режим: {get_chat_display_name(target_chat_id)}\n"
-        f"Сейчас: {status}, {qb}.\n"
-        f"{hidden}; {finwin}.\n\n"
-        "Выберите один из режимов:"
-    )
+    return "💰 Фин режим / В24\n" + "\n".join(finance_mode_state_lines(target_chat_id))
 
 def build_hidden_finance_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -7607,6 +7640,62 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
         pass
     _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_send_fallback")
 
+
+def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
+    """Редактирует только текущее окно.
+    Используется для долгих действий вроде «Проверить чаты», чтобы при ошибке edit
+    не плодить новое окно через send_message.
+    """
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
+    try:
+        text = auto_window_mark(
+            text,
+            getattr(call, "data", ""),
+            owner_chat=is_owner_chat(chat_id),
+            html_mode=(str(parse_mode or "").upper() == "HTML")
+        )
+    except Exception:
+        pass
+    if reply_markup is None:
+        try:
+            reply_markup = default_window_nav_keyboard(chat_id)
+        except Exception:
+            pass
+    try:
+        _tg_call_retry(
+            bot.edit_message_text,
+            text,
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+            purpose="safe_edit_current_only_text"
+        )
+        return True
+    except Exception as e1:
+        if "message is not modified" in str(e1).lower():
+            return True
+    try:
+        _tg_call_retry(
+            bot.edit_message_caption,
+            chat_id=chat_id,
+            message_id=msg_id,
+            caption=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+            purpose="safe_edit_current_only_caption"
+        )
+        return True
+    except Exception as e2:
+        if "message is not modified" in str(e2).lower():
+            return True
+        try:
+            bot.answer_callback_query(call.id, "Окно не удалось обновить, но новое окно не создаю.", show_alert=False)
+        except Exception:
+            pass
+        return False
+
 def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None, preferred_message_id=None):
     """Отдельное окно для отчёта по статьям расходов (одно сообщение на чат)."""
     try:
@@ -8178,11 +8267,20 @@ def on_callback(call):
                     pass
                 return
             if data_str == "fw_probe_all":
+                owner_store = get_chat_store(int(OWNER_ID))
+                owner_day_key = owner_store.get("current_view_day", today_key())
+                # Сначала обновляем это же окно, но не создаём новое окно даже если edit не получится.
+                safe_edit_current_only(
+                    bot,
+                    call,
+                    build_forward_status_text("📡 Проверяю чаты...\nОкно не будет плодиться, результат появится здесь же."),
+                    reply_markup=build_forward_source_menu(owner_day_key)
+                )
                 ok, bad = probe_all_known_chats()
                 owner_store = get_chat_store(int(OWNER_ID))
                 owner_day_key = owner_store.get("current_view_day", today_key())
                 kb = build_forward_source_menu(owner_day_key)
-                safe_edit(
+                safe_edit_current_only(
                     bot,
                     call,
                     build_forward_status_text(f"📡 Проверка чатов завершена. Доступно: {ok}. Удалено/нет доступа: {bad}.\n\nПересылка:\nВыберите чат A:"),
@@ -8208,7 +8306,7 @@ def on_callback(call):
                 status = "✅ бот снова доступен" if ok else "➖ бот удалён/нет доступа"
                 owner_store = get_chat_store(int(OWNER_ID))
                 owner_day_key = owner_store.get("current_view_day", today_key())
-                safe_edit(
+                safe_edit_current_only(
                     bot,
                     call,
                     f"🗑 Удалённые чаты\n{get_chat_display_name(cid)}: {status}",
@@ -8993,7 +9091,7 @@ def on_callback(call):
             safe_edit(
                 bot,
                 call,
-                build_forward_status_text("Фин режим:\nВыберите чат, потом выберите режим работы:"),
+                "💰 Фин режим / В24\nВыберите чат. Значок рядом с чатом показывает текущий режим:\n❌ выкл | 🙈 скрыто | ✅🔟 как обычно | ✅3️⃣ открыть окно | ✅🥇 всегда первым",
                 reply_markup=kb
             )
             return
