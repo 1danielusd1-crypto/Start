@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v51_o6_probe_v24_back_o7_fixed"
+VERSION = "bot_v52_v24_modes_removed_lists"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -6631,7 +6631,7 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
 def build_forward_root_menu(day_key: str):
     """Старое корневое меню пересылки убрано; открываем сразу выбор чата A."""
     return build_forward_source_menu(day_key)
-def _collect_forward_picker_items(include_owner: bool = True):
+def _collect_forward_picker_items(include_owner: bool = True, include_removed: bool = False):
     known = collect_forward_menu_chats()
     items = []
     owner_item = None
@@ -6645,6 +6645,9 @@ def _collect_forward_picker_items(include_owner: bool = True):
         if OWNER_ID and str(int_cid) == str(OWNER_ID):
             owner_item = (int_cid, title)
         else:
+            # Удалённые чаты не держим в общем списке — они показываются только в меню «Удалённые».
+            if (not include_removed) and is_chat_bot_removed(int_cid):
+                continue
             items.append((int_cid, title))
 
     if include_owner and OWNER_ID:
@@ -6728,6 +6731,8 @@ def build_finance_toggle_chat_menu(day_key: str):
 
     buttons = []
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
+        if is_chat_bot_removed(int_cid) and not (OWNER_ID and str(int_cid) == str(OWNER_ID)):
+            continue
         enabled = is_finance_mode(int_cid)
         buttons.append(types.InlineKeyboardButton(
             f'{("🙈" if is_hidden_finance_mode(int_cid) else ("✅" if enabled else "❌"))} {chat_button_title(int_cid, title)}',
@@ -6787,16 +6792,20 @@ def build_quick_balance_chat_menu(day_key: str):
 
 def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
-    enabled = is_quick_balance_enabled(target_chat_id)
-    behavior = get_quick_balance_behavior(target_chat_id)
+    fin_on = is_finance_mode(target_chat_id)
+    hidden_on = bool(fin_on and is_hidden_finance_mode(target_chat_id))
+    enabled = bool(fin_on and (not hidden_on) and is_quick_balance_enabled(target_chat_id))
+    behavior = get_quick_balance_behavior(target_chat_id) if fin_on else "normal"
 
-    normal_icon = "✅" if (is_finance_mode(target_chat_id) and (not enabled or behavior == "normal")) else "❌"
-    open_icon = "✅3️⃣" if enabled and behavior == "open" else "❌"
-    first_icon = "✅🥇" if enabled and behavior == "first" else "❌"
+    fin_icon = "✅" if fin_on else "❌"
+    normal_icon = "✅" if (fin_on and (not hidden_on) and (not enabled or behavior == "normal")) else "❌"
+    open_icon = "✅3️⃣" if (fin_on and (not hidden_on) and enabled and behavior == "open") else "❌"
+    first_icon = "✅🥇" if (fin_on and (not hidden_on) and enabled and behavior == "first") else "❌"
 
-    hidden_icon = "🙈" if is_hidden_finance_mode(target_chat_id) else "👁"
-    finwin_icon = "🪟✅" if is_finance_mode(target_chat_id) else "🪟❌"
+    hidden_icon = "🙈" if hidden_on else "👁"
+    finwin_icon = "🪟✅" if fin_on else "🪟❌"
 
+    kb.row(types.InlineKeyboardButton(f"{fin_icon} Фин режим ВКЛ/ВЫКЛ", callback_data=f"d:{day_key}:fin_mode_toggle_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton(f"{normal_icon} Как обычно — фин окно через 10 сообщений", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton(f"{open_icon} Фин режим + быстрый остаток: открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton(f"{first_icon} Фин режим + быстрый остаток: всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"))
@@ -6804,10 +6813,8 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
         types.InlineKeyboardButton(f"{hidden_icon} Скрытые финансы", callback_data=f"d:{day_key}:qb_hidden_toggle_{target_chat_id}"),
         types.InlineKeyboardButton(f"{finwin_icon} Фин окно", callback_data=f"d:{day_key}:qb_finwin_open_{target_chat_id}"),
     )
-    kb.row(types.InlineKeyboardButton("❌ Выключить фин режим", callback_data=f"d:{day_key}:fin_mode_off_{target_chat_id}"))
     kb.row(types.InlineKeyboardButton("🔙 Назад к чатам", callback_data=f"d:{day_key}:forward_finmode_menu"))
     return kb
-
 
 def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
     """Подменю после: Фин режим → выбор чата. Объединяет финрежим и старый быстрый остаток."""
@@ -6815,12 +6822,16 @@ def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
 
 
 def build_finance_mode_config_text(target_chat_id: int) -> str:
-    status = "ВКЛ" if is_finance_mode(target_chat_id) else "ВЫКЛ"
+    fin_on = is_finance_mode(target_chat_id)
+    hidden_on = bool(fin_on and is_hidden_finance_mode(target_chat_id))
+    status = "ВКЛ" if fin_on else "ВЫКЛ"
     qb = "без быстрого остатка"
-    if is_quick_balance_enabled(target_chat_id):
+    if fin_on and (not hidden_on) and is_quick_balance_enabled(target_chat_id):
         qb = "быстрый остаток: всегда первым" if get_quick_balance_behavior(target_chat_id) == "first" else "быстрый остаток: открывать окно"
-    hidden = "🙈 скрытые финансы ВКЛ" if is_hidden_finance_mode(target_chat_id) else "👁 скрытые финансы ВЫКЛ"
-    finwin = "фин окно доступно" if is_finance_mode(target_chat_id) else "фин окно недоступно, финрежим выключен"
+    if hidden_on:
+        qb = "скрытый финрежим, без окон в чате"
+    hidden = "🙈 скрытые финансы ВКЛ" if hidden_on else "👁 скрытые финансы ВЫКЛ"
+    finwin = "фин окно доступно" if fin_on else "фин окно недоступно, финрежим выключен"
     return (
         f"💰 Фин режим: {get_chat_display_name(target_chat_id)}\n"
         f"Сейчас: {status}, {qb}.\n"
@@ -6849,6 +6860,8 @@ def build_hidden_finance_chat_menu(day_key: str):
 
     buttons = []
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
+        if is_chat_bot_removed(int_cid) and not (OWNER_ID and str(int_cid) == str(OWNER_ID)):
+            continue
         enabled = is_hidden_finance_mode(int_cid)
         icon = "🙈" if enabled else "❌"
         buttons.append(types.InlineKeyboardButton(
@@ -6982,6 +6995,8 @@ def build_fin_windows_chat_menu(day_key: str):
         except Exception:
             continue
         if not is_finance_mode(int_cid):
+            continue
+        if is_chat_bot_removed(int_cid) and not (OWNER_ID and str(int_cid) == str(OWNER_ID)):
             continue
         items.append((int_cid, get_chat_display_name(int_cid)))
 
@@ -9052,6 +9067,7 @@ def on_callback(call):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
+            set_hidden_finance_mode(tgt, False)
             set_finance_mode(tgt, True)
             set_quick_balance_behavior(tgt, "normal")
             set_quick_balance_enabled(tgt, False)
@@ -9077,6 +9093,7 @@ def on_callback(call):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
+            set_hidden_finance_mode(tgt, False)
             set_quick_balance_behavior(tgt, "open")
             set_quick_balance_enabled(tgt, True)
             # Не трогаем личное окно владельца при изменении настроек другого чата.
@@ -9091,6 +9108,7 @@ def on_callback(call):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
+            set_hidden_finance_mode(tgt, False)
             set_quick_balance_behavior(tgt, "first")
             set_quick_balance_enabled(tgt, True)
             schedule_quick_balance_first_recreate(tgt, 60.0)
@@ -9106,7 +9124,12 @@ def on_callback(call):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
-            set_hidden_finance_mode(tgt, not is_hidden_finance_mode(tgt))
+            new_hidden = not is_hidden_finance_mode(tgt)
+            if new_hidden:
+                set_finance_mode(tgt, True)
+                set_quick_balance_behavior(tgt, "normal")
+                set_quick_balance_enabled(tgt, False)
+            set_hidden_finance_mode(tgt, new_hidden)
             safe_edit(
                 bot,
                 call,
@@ -9139,11 +9162,35 @@ def on_callback(call):
                 reply_markup=build_finance_mode_config_menu(day_key, tgt)
             )
             return
+        if cmd.startswith("fin_mode_toggle_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            if is_finance_mode(tgt):
+                set_hidden_finance_mode(tgt, False)
+                set_quick_balance_behavior(tgt, "normal")
+                set_quick_balance_enabled(tgt, False)
+                set_finance_mode(tgt, False)
+            else:
+                set_finance_mode(tgt, True)
+                set_quick_balance_behavior(tgt, "normal")
+                set_quick_balance_enabled(tgt, False)
+                # По ТЗ при простом включении финрежима включаем скрытый режим, остальные режимы остаются ❌.
+                set_hidden_finance_mode(tgt, True)
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
         if cmd.startswith("fin_mode_off_"):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
+            set_hidden_finance_mode(tgt, False)
             set_finance_mode(tgt, False)
+            set_quick_balance_behavior(tgt, "normal")
             set_quick_balance_enabled(tgt, False)
             save_data(data)
             safe_edit(
