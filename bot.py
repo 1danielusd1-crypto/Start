@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v55_v22_status_v98_backclose"
+VERSION = "bot_v56_format_markers_finlink"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -684,25 +684,35 @@ def wm_owner(text: str, n: int, html_mode: bool = False) -> str:
 
 
 def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
-    """Запасная маркировка для любых переходных окон, которые забыли пометить вручную."""
+    """Запасная маркировка для любых переходных окон.
+    Важно: каждое окно с другим набором кнопок получает отдельный маркер,
+    даже если текст похожий.
+    """
     d = str(data_str or "")
     try:
         d = resolve_short_callback(d) or d
     except Exception:
         pass
-    # Общие окна.
+
+    # Статьи / категории.
     if d.startswith("cat_") or d.startswith("catx:"):
         if "cat_show" in d:
             return "о8"
-        if "cat_edit" in d:
+        if "cat_edit_list" in d:
             return "о14"
-        if "cat_del" in d:
+        if "cat_edit_pick" in d:
+            return "о16"
+        if "cat_del_list" in d:
             return "о15"
+        if "cat_del_toggle" in d:
+            return "о17"
         if "cat_add" in d:
             return "о11"
         if "cat_desc" in d:
             return "о13"
         return "о7"
+
+    # Кнопки главного окна.
     if d.startswith("d:"):
         action = d.split(":", 2)[2] if d.count(":") >= 2 else ""
         if action in {"open", "prev", "next", "today", "back_main", "edit_menu", "menu"}:
@@ -715,26 +725,43 @@ def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
             return "о4"
         if action.startswith(("csv", "xlsx", "bk_")):
             return "о5"
-        if action.startswith("edit") or action.startswith("del_") or action in {"cancel_edit"}:
+        if action == "edit_list":
             return "о6"
+        if action.startswith("edit_rec_"):
+            return "о10"
+        if action.startswith("del_toggle_") or action == "del_selected":
+            return "о12"
         if action == "info":
             return "о9"
         if action.startswith("process"):
             return "в20" if owner_chat else "о20"
         if action.startswith("backup"):
             return "в21" if owner_chat else "о21"
-        if action == "forward_finmode_menu" or action.startswith("fw_finmode") or action.startswith("fin_mode_") or action.startswith("qb_") or action == "quick_balance_menu":
+        if action == "forward_finmode_menu":
             return "в24" if owner_chat else "о24"
-        if action.startswith("forward") or action.startswith("fw_"):
-            return "в22" if owner_chat else "о22"
-        if action.startswith("hf_") or action == "hidden_finance_menu":
-            return "в25" if owner_chat else "о25"
-        if action.startswith("finwin"):
+        if action.startswith("fw_finmode_pick_") or action.startswith("qb_cfg_"):
+            return "в31" if owner_chat else "о31"
+        if action.startswith("fin_mode_") or action.startswith("qb_mode_") or action.startswith("qb_hidden_"):
+            return "в31" if owner_chat else "о31"
+        if action.startswith("qb_finwin_open_") or action.startswith("finwin"):
             return "в26" if owner_chat else "о26"
-    # Окна владельца.
+        if action == "quick_balance_menu":
+            return "в33" if owner_chat else "о33"
+        if action == "forward_menu":
+            return "в22" if owner_chat else "о22"
+        if action.startswith("fw_"):
+            return "в22" if owner_chat else "о22"
+        if action == "hidden_finance_menu":
+            return "в25" if owner_chat else "о25"
+        if action.startswith("hf_pick_"):
+            return "в32" if owner_chat else "о32"
+
+    # Окна владельца просмотра чужого чата.
     if d.startswith("fvcat_") or d.startswith("fvcatx:"):
         if "fvcat_show" in d:
             return "в10"
+        if "fvcat_desc" in d:
+            return "в18"
         return "в9"
     if d.startswith("fv:"):
         parts = d.split(":")
@@ -749,21 +776,35 @@ def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
             return "в13"
         if action == "total":
             return "в14"
-        if action.startswith("edit") or action.startswith("del_"):
+        if action.startswith("edit"):
             return "в15"
+        if action.startswith("del_"):
+            return "в17"
         if action == "info":
             return "в16"
         return "в6"
+
+    # Пересылка В22: каждый шаг отдельный маркер.
+    if d == "fw_probe_all":
+        return "в29" if owner_chat else "о29"
+    if d == "fw_removed_list" or d.startswith("fw_probe_one_"):
+        return "в28" if owner_chat else "о28"
+    if d.startswith("fw_src:"):
+        return "в23" if owner_chat else "о23"
+    if d.startswith("fw_tgt:") or d.startswith("fw_mode:") or d.startswith("fw_finpair:"):
+        return "в27" if owner_chat else "о27"
+    if d.startswith("fw_back_tgt:"):
+        return "в23" if owner_chat else "о23"
+    if d.startswith("fw_back"):
+        return "в22" if owner_chat else "о22"
+
     if d.startswith("rep"):
         return "о3"
-    if d.startswith("fw_"):
-        return "в22" if owner_chat else "о22"
     if d.startswith("journal_"):
         return "в30" if owner_chat else "о30"
     if d.startswith("articles_desc"):
         return "о13"
     return "в98" if owner_chat else "о98"
-
 
 def auto_window_mark(text: str, data_str: str = "", owner_chat: bool = False, html_mode: bool = False) -> str:
     code = window_code_for_callback(data_str, owner_chat=owner_chat)
@@ -1457,7 +1498,8 @@ def set_hidden_finance_mode(chat_id: int, enabled: bool):
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
-    settings["hidden_finance"] = bool(enabled)
+    enabled = bool(enabled)
+    settings["hidden_finance"] = enabled
 
     if enabled:
         set_finance_mode(chat_id, True)
@@ -1475,9 +1517,19 @@ def set_hidden_finance_mode(chat_id: int, enabled: bool):
             data.setdefault("active_messages", {})[str(chat_id)] = {}
         except Exception:
             pass
+    else:
+        # По ТЗ: если скрытые финансы выключили и никакой другой фин-режим не выбран,
+        # то сам финрежим тоже выключается.
+        try:
+            qb_on = bool(settings.get("quick_balance_enabled", False))
+            behavior = str(settings.get("quick_balance_behavior") or "normal").strip().lower()
+            if is_finance_mode(chat_id) and (not qb_on) and behavior in {"normal", "mini", ""}:
+                set_finance_mode(chat_id, False)
+        except Exception as e:
+            log_error(f"set_hidden_finance_mode off check {get_chat_display_name(chat_id)}: {e}")
+
     save_data(data)
     schedule_config_backup_for_chats(chat_id)
-
 
 def force_recreate_balance_panel(chat_id: int):
     """Пересоздаёт быстрый остаток, чтобы он снова стал последним окном в чате."""
@@ -3803,23 +3855,31 @@ def restore_from_csv(chat_id: int, path: str):
 def fmt_num(x):
     """
     Европейский формат вывода с обязательным знаком.
-    Примеры:
-        +1234.56 → ➕ 1.234,56
-        -800     → ➖ 800
-        0        → ➕ 0
+    Защита от float-хвостов: +2.683.012,399999999907 больше не выводится.
+    По умолчанию показываем целые песо; если нужна дробь — максимум 2 знака без мусорных хвостов.
     """
-    sign = "+" if x >= 0 else "-"
-    x = abs(x)
-    s = f"{x:.12f}".rstrip("0").rstrip(".")
+    try:
+        v = float(x or 0)
+    except Exception:
+        v = 0.0
+    sign = "+" if v >= 0 else "-"
+    v = abs(v)
+
+    # Хвосты float убираем. Для обычных расходов/остатков показываем целые значения,
+    # потому что в чате суммы почти всегда в целых песо.
+    rounded_int = int(round(v))
+    if abs(v - rounded_int) < 0.005 or True:
+        s = f"{rounded_int:,}".replace(",", ".")
+        return f"{sign}{s}"
+
+    # Запасной путь, если позже понадобится вернуть копейки: максимум 2 знака.
+    s = f"{v:.2f}".rstrip("0").rstrip(".")
     if "." in s:
         int_part, dec_part = s.split(".")
     else:
         int_part, dec_part = s, ""
     int_part = f"{int(int_part):,}".replace(",", ".")
-    if dec_part:
-        s = f"{int_part},{dec_part}"
-    else:
-        s = int_part
+    s = f"{int_part},{dec_part}" if dec_part else int_part
     return f"{sign}{s}"
 num_re = re.compile(r"[+\-–]?\s*\d[\d\s.,_'’]*")
 def fmt_num_plain(x):
@@ -5510,12 +5570,51 @@ def get_forward_finance(src_chat_id: int, dst_chat_id: int) -> bool:
     ff = data.setdefault("forward_finance", {})
     return bool(ff.get(str(src_chat_id), {}).get(str(dst_chat_id), False))
 
+def ensure_forward_finance_hidden_modes():
+    """Если где-то включён 💰 финучёт пересылки, соответствующие чаты должны быть в скрытом финрежиме."""
+    try:
+        ff = data.get("forward_finance", {}) or {}
+        touched = set()
+        for src, dsts in (ff or {}).items():
+            for dst, enabled in (dsts or {}).items():
+                if not enabled:
+                    continue
+                for cid in (src, dst):
+                    try:
+                        int_cid = int(cid)
+                    except Exception:
+                        continue
+                    if int_cid in touched:
+                        continue
+                    touched.add(int_cid)
+                    if not is_hidden_finance_mode(int_cid) or not is_finance_mode(int_cid):
+                        set_finance_mode(int_cid, True)
+                        set_quick_balance_behavior(int_cid, "normal")
+                        set_quick_balance_enabled(int_cid, False)
+                        set_hidden_finance_mode(int_cid, True)
+        return touched
+    except Exception as e:
+        log_error(f"ensure_forward_finance_hidden_modes: {e}")
+        return set()
+
 def set_forward_finance(src_chat_id: int, dst_chat_id: int, enabled: bool):
     ff = data.setdefault("forward_finance", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
 
     ff.setdefault(src, {})[dst] = bool(enabled)
+
+    # По ТЗ: если в меню пересылки включён 💰 финучёт,
+    # в меню финрежима для участвующих чатов автоматически включаем скрытые финансы.
+    if enabled:
+        for _cid in (src_chat_id, dst_chat_id):
+            try:
+                set_finance_mode(int(_cid), True)
+                set_quick_balance_behavior(int(_cid), "normal")
+                set_quick_balance_enabled(int(_cid), False)
+                set_hidden_finance_mode(int(_cid), True)
+            except Exception as e:
+                log_error(f"set_forward_finance auto hidden {get_chat_display_name(_cid)}: {e}")
 
     persist_forward_rules_to_owner()
     save_data(data)
@@ -6802,6 +6901,7 @@ def finance_mode_state_lines(chat_id: int) -> list[str]:
 
 
 def build_finance_toggle_chat_menu(day_key: str):
+    ensure_forward_finance_hidden_modes()
     kb = types.InlineKeyboardMarkup(row_width=2)
     known = collect_forward_menu_chats()
 
@@ -6913,6 +7013,7 @@ def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
 
 
 def build_finance_mode_config_text(target_chat_id: int) -> str:
+    ensure_forward_finance_hidden_modes()
     return "💰 Фин режим / В24\n" + "\n".join(finance_mode_state_lines(target_chat_id))
 
 def build_hidden_finance_chat_menu(day_key: str):
