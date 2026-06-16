@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v55_v22_status_v98_backclose"
+VERSION = "bot_v56_fmt_mark_v22_v24"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -664,9 +664,10 @@ def window_mark(text: str, code: str, html_mode: bool = False) -> str:
         code = str(code or "").strip()
         if not code:
             return text
-        # Не дублируем и не смешиваем метки: если окно уже помечено, оставляем как есть.
+        # У каждого перехода/набора кнопок должна быть своя метка.
+        # Поэтому старую метку в конце всегда снимаем и ставим новую.
         if has_window_mark(text):
-            return text
+            text = strip_window_mark(text)
         pad = " " * 26
         if html_mode:
             return text + "\n\n" + pad + f"<i>{html.escape(code)}</i>"
@@ -723,8 +724,14 @@ def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
             return "в20" if owner_chat else "о20"
         if action.startswith("backup"):
             return "в21" if owner_chat else "о21"
-        if action == "forward_finmode_menu" or action.startswith("fw_finmode") or action.startswith("fin_mode_") or action.startswith("qb_") or action == "quick_balance_menu":
+        if action == "forward_finmode_menu":
             return "в24" if owner_chat else "о24"
+        if action.startswith("fw_finmode_pick_"):
+            return "в24" if owner_chat else "о24"
+        if action.startswith(("fin_mode_", "qb_")) or action == "quick_balance_menu":
+            return "в25" if owner_chat else "о25"
+        if action == "forward_menu":
+            return "в22" if owner_chat else "о22"
         if action.startswith("forward") or action.startswith("fw_"):
             return "в22" if owner_chat else "о22"
         if action.startswith("hf_") or action == "hidden_finance_menu":
@@ -756,6 +763,16 @@ def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
         return "в6"
     if d.startswith("rep"):
         return "о3"
+    if d == "fw_probe_all":
+        return "в29" if owner_chat else "о29"
+    if d == "fw_removed_list" or d.startswith("fw_probe_one:"):
+        return "в28" if owner_chat else "о28"
+    if d in {"fw_open", "fw_back_root", "fw_back_src"}:
+        return "в22" if owner_chat else "о22"
+    if d.startswith("fw_src:") or d.startswith("fw_back_tgt:"):
+        return "в23" if owner_chat else "о23"
+    if d.startswith("fw_tgt:") or d.startswith("fw_mode:") or d.startswith("fw_finpair:"):
+        return "в27" if owner_chat else "о27"
     if d.startswith("fw_"):
         return "в22" if owner_chat else "о22"
     if d.startswith("journal_"):
@@ -3803,23 +3820,23 @@ def restore_from_csv(chat_id: int, path: str):
 def fmt_num(x):
     """
     Европейский формат вывода с обязательным знаком.
+    В фин-окнах округляем до целого, чтобы не появлялись хвосты float вроде
+    +2.683.012,399999999907.
     Примеры:
-        +1234.56 → ➕ 1.234,56
-        -800     → ➖ 800
-        0        → ➕ 0
+        +1234.56 → +1.235
+        -800     → -800
+        0        → +0
     """
+    try:
+        x = float(x or 0)
+    except Exception:
+        try:
+            x = float(str(x).replace(" ", "").replace(".", "").replace(",", "."))
+        except Exception:
+            x = 0.0
     sign = "+" if x >= 0 else "-"
-    x = abs(x)
-    s = f"{x:.12f}".rstrip("0").rstrip(".")
-    if "." in s:
-        int_part, dec_part = s.split(".")
-    else:
-        int_part, dec_part = s, ""
-    int_part = f"{int(int_part):,}".replace(",", ".")
-    if dec_part:
-        s = f"{int_part},{dec_part}"
-    else:
-        s = int_part
+    whole = int(round(abs(x)))
+    s = f"{whole:,}".replace(",", ".")
     return f"{sign}{s}"
 num_re = re.compile(r"[+\-–]?\s*\d[\d\s.,_'’]*")
 def fmt_num_plain(x):
@@ -5510,12 +5527,44 @@ def get_forward_finance(src_chat_id: int, dst_chat_id: int) -> bool:
     ff = data.setdefault("forward_finance", {})
     return bool(ff.get(str(src_chat_id), {}).get(str(dst_chat_id), False))
 
+def _has_visible_fin_mode_selected(chat_id: int) -> bool:
+    """True если включён один из трёх видимых режимов В24: как обычно / 3️⃣ / 🥇."""
+    try:
+        if not is_finance_mode(chat_id) or is_hidden_finance_mode(chat_id):
+            return False
+        if is_quick_balance_enabled(chat_id):
+            return get_quick_balance_behavior(chat_id) in {"open", "first"}
+        return get_quick_balance_behavior(chat_id) == "normal" or not is_quick_balance_enabled(chat_id)
+    except Exception:
+        return False
+
+
+def ensure_hidden_finance_for_forward_dst(dst_chat_id: int):
+    """Если включили 💰учёт пересылки в чат, этот чат должен принимать финзаписи скрыто."""
+    try:
+        dst_chat_id = int(dst_chat_id)
+        if is_hidden_finance_mode(dst_chat_id):
+            return
+        set_finance_mode(dst_chat_id, True)
+        set_quick_balance_behavior(dst_chat_id, "normal")
+        set_quick_balance_enabled(dst_chat_id, False)
+        set_hidden_finance_mode(dst_chat_id, True)
+        bot_journal("forward_finance_auto_hidden", dst_chat_id, "💰 учёт пересылки включил скрытые финансы")
+    except Exception as e:
+        log_error(f"ensure_hidden_finance_for_forward_dst({dst_chat_id}): {e}")
+
+
 def set_forward_finance(src_chat_id: int, dst_chat_id: int, enabled: bool):
     ff = data.setdefault("forward_finance", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
 
     ff.setdefault(src, {})[dst] = bool(enabled)
+
+    # 💰 учёт пересылки записывает финоперацию в принимающий чат.
+    # Чтобы там не плодились окна, автоматически включаем скрытые финансы.
+    if bool(enabled):
+        ensure_hidden_finance_for_forward_dst(int(dst_chat_id))
 
     persist_forward_rules_to_owner()
     save_data(data)
@@ -9267,7 +9316,14 @@ def on_callback(call):
                 set_finance_mode(tgt, True)
                 set_quick_balance_behavior(tgt, "normal")
                 set_quick_balance_enabled(tgt, False)
-            set_hidden_finance_mode(tgt, new_hidden)
+                set_hidden_finance_mode(tgt, True)
+            else:
+                # Если скрытые финансы выключили через В24, а видимые режимы не выбраны,
+                # весь финрежим выключается. Чтобы оставить финрежим — выбери один из 3 режимов ниже.
+                set_hidden_finance_mode(tgt, False)
+                set_quick_balance_behavior(tgt, "normal")
+                set_quick_balance_enabled(tgt, False)
+                set_finance_mode(tgt, False)
             safe_edit(
                 bot,
                 call,
