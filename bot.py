@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v60_v22_new_horizontal_ab"
+VERSION = "bot_v60_v22_pairs_grid_tz"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -6892,16 +6892,69 @@ def build_forward_target_menu(src_id: int):
 
 
 
+def _forward_pair_key(A: int, B: int) -> str:
+    # В новом В22 порядок важен: выбранный Чат A остаётся слева, Чат B справа.
+    return f"{int(A)}:{int(B)}"
+
+
+def _forward_pair_undirected_key(A: int, B: int) -> tuple[int, int]:
+    A = int(A); B = int(B)
+    return (A, B) if A <= B else (B, A)
+
+
+def _remember_forward_pair(A: int, B: int):
+    """Сохраняет порядок создания пар для нового В22. Старую логику пересылки не трогает."""
+    try:
+        A, B = int(A), int(B)
+        if A == B:
+            return
+        key = _forward_pair_key(A, B)
+        rev = _forward_pair_key(B, A)
+        order = data.setdefault("forward_pair_order", [])
+        if not isinstance(order, list):
+            order = []
+            data["forward_pair_order"] = order
+        if key not in order and rev not in order:
+            order.append(key)
+            save_data(data)
+    except Exception as e:
+        log_error(f"_remember_forward_pair({A},{B}): {e}")
+
+
+def _forget_forward_pair_if_empty(A: int, B: int):
+    """Убирает пару из порядка, только если уже нет ни пересылки, ни 💰 финучёта в обе стороны."""
+    try:
+        A, B = int(A), int(B)
+        arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
+        if ab_on or ba_on or ab_fin or ba_fin:
+            return
+        key = _forward_pair_key(A, B)
+        rev = _forward_pair_key(B, A)
+        order = data.setdefault("forward_pair_order", [])
+        if isinstance(order, list) and (key in order or rev in order):
+            data["forward_pair_order"] = [x for x in order if x not in {key, rev}]
+            save_data(data)
+    except Exception as e:
+        log_error(f"_forget_forward_pair_if_empty({A},{B}): {e}")
+
+
 def _forward_pair_sort_key(pair):
     try:
+        order = data.get("forward_pair_order", []) or []
+        key = _forward_pair_key(pair[0], pair[1])
+        rev = _forward_pair_key(pair[1], pair[0])
+        if key in order:
+            return (0, order.index(key))
+        if rev in order:
+            return (0, order.index(rev))
         a, b = pair
-        return (get_chat_display_name(int(a)).lower(), get_chat_display_name(int(b)).lower(), int(a), int(b))
+        return (1, get_chat_display_name(int(a)).lower(), get_chat_display_name(int(b)).lower(), int(a), int(b))
     except Exception:
-        return (str(pair),)
+        return (9, str(pair))
 
 
 def _sorted_forward_pair(a: int, b: int):
-    """Чат A всегда фиксируем первым по имени/ID, чтобы пары в В22 не прыгали."""
+    """Старый helper оставлен для совместимости. Новый В22 порядок выбора не сортирует."""
     a = int(a); b = int(b)
     ka = (get_chat_display_name(a).lower(), a)
     kb = (get_chat_display_name(b).lower(), b)
@@ -6909,39 +6962,66 @@ def _sorted_forward_pair(a: int, b: int):
 
 
 def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
-    """Все пары, где есть пересылка или 💰 финучёт пересылки. A всегда слева."""
-    pairs = set()
+    """Все пары, где есть пересылка или 💰 финучёт пересылки. Порядок пары берём из создания/первого обнаружения."""
+    relation_pairs = []
+    seen = set()
     fr = data.get("forward_rules", {}) or {}
     ff = data.get("forward_finance", {}) or {}
+
+    def _add_pair(a, b):
+        try:
+            a = int(a); b = int(b)
+        except Exception:
+            return
+        if a == b:
+            return
+        uk = _forward_pair_undirected_key(a, b)
+        if uk in seen:
+            return
+        seen.add(uk)
+        relation_pairs.append((a, b))
+
+    # Сначала порядок, который создал владелец в новом В22.
+    order = data.get("forward_pair_order", []) or []
+    if isinstance(order, list):
+        for key in order:
+            try:
+                a_s, b_s = str(key).split(":", 1)
+                a, b = int(a_s), int(b_s)
+            except Exception:
+                continue
+            arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(a, b)
+            if ab_on or ba_on or ab_fin or ba_fin:
+                _add_pair(a, b)
+
+    # Потом старые/найденные связи — в порядке словарей, не ломая старую базу.
     for src, dsts in fr.items():
-        try:
-            src_id = int(src)
-        except Exception:
-            continue
         for dst in (dsts or {}).keys():
-            try:
-                dst_id = int(dst)
-            except Exception:
-                continue
-            if src_id == dst_id:
-                continue
-            pairs.add(_sorted_forward_pair(src_id, dst_id))
+            _add_pair(src, dst)
     for src, dsts in ff.items():
-        try:
-            src_id = int(src)
-        except Exception:
-            continue
         for dst, enabled in (dsts or {}).items():
-            if not enabled:
-                continue
-            try:
-                dst_id = int(dst)
-            except Exception:
-                continue
-            if src_id == dst_id:
-                continue
-            pairs.add(_sorted_forward_pair(src_id, dst_id))
-    return sorted(pairs, key=_forward_pair_sort_key)
+            if enabled:
+                _add_pair(src, dst)
+
+    # Дополняем forward_pair_order, чтобы следующий раз порядок был стабильным.
+    try:
+        order = data.setdefault("forward_pair_order", [])
+        if not isinstance(order, list):
+            order = []
+            data["forward_pair_order"] = order
+        changed = False
+        for A, B in relation_pairs:
+            key = _forward_pair_key(A, B)
+            rev = _forward_pair_key(B, A)
+            if key not in order and rev not in order:
+                order.append(key)
+                changed = True
+        if changed:
+            save_data(data)
+    except Exception:
+        pass
+
+    return sorted(relation_pairs, key=_forward_pair_sort_key)
 
 
 def _forward_pair_icons(A: int, B: int):
@@ -6954,67 +7034,72 @@ def _forward_pair_icons(A: int, B: int):
     return _forward_arrow_icon(ab_on, ba_on), _forward_fin_icon(ab_fin, ba_fin), ab_on, ba_on, ab_fin, ba_fin
 
 
-def _forward_new_pair_label(A: int, B: int) -> str:
+def _forward_new_pair_buttons(A: int, B: int):
+    """Две кнопки пары: слева A + знак пересылки, справа знак 💰 + B."""
     arrow, fin, *_ = _forward_pair_icons(A, B)
-    # По ТЗ: Чат A слева, после него в скобках направление пересылки,
-    # перед Чат B в скобках направление 💰 финучёта.
-    return f"{chat_button_title(A)} ({arrow}) ({fin}) {chat_button_title(B)}"
+    return (
+        types.InlineKeyboardButton(f"{chat_button_title(A)} ({arrow})", callback_data=f"fw_new_pair:{A}:{B}"),
+        types.InlineKeyboardButton(f"({fin}) {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
+    )
 
 
 def _forward_new_toggle_label(enabled: bool, icon: str) -> str:
     return ("✅" if enabled else "❌") + icon
 
 
-def build_forward_new_text(A: int | None = None, B: int | None = None) -> str:
-    """В22 новый режим: пошаговый выбор пары A/B без списка пар сверху."""
-    lines = ["🔁 Пересылка / В22", "Режим: по-новому", ""]
-    if A and B:
-        arrow, fin, *_ = _forward_pair_icons(A, B)
-        lines.append(f"Выбрана пара: {get_chat_display_name(A)} ({arrow}) ({fin}) {get_chat_display_name(B)}")
-        lines.append("Выберите направление пересылки и 💰 финучёт кнопками ниже.")
-    elif A:
-        lines.append(f"Выбран Чат А: {get_chat_display_name(A)}")
-        lines.append("Теперь выберите Чат Б. Остальные чаты остаются ниже по 2 кнопки в ряд.")
-    else:
-        lines.append("Выберите Чат А. Чаты идут по 2 кнопки в ряд, как в обычном меню.")
-    return "\n".join(lines)
-
-
-def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: int | None = None):
-    """
-    Новый В22 по ТЗ:
-    1) старт: обычная сетка текущих чатов по 2 кнопки;
-    2) выбран A: кнопка Чат А наверху, остальные чаты остаются ниже;
-    3) выбран B: сверху Чат А и Чат Б по горизонтали, ниже только 6 кнопок режимов.
-    """
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    if not OWNER_ID:
-        return kb
-
-    items, owner_item = _collect_forward_picker_items(include_owner=True)
+def _visible_forward_items_for_new_menu(include_owner: bool = True):
+    items, owner_item = _collect_forward_picker_items(include_owner=include_owner)
     all_items = list(items)
     if owner_item:
         all_items.append(owner_item)
-
-    # Удалённые чаты в новом выборе пары не показываем в общем списке.
-    visible_items = []
+    visible = []
     for cid, title in all_items:
         try:
             if is_chat_bot_removed(int(cid)):
                 continue
         except Exception:
             pass
-        visible_items.append((int(cid), title))
+        visible.append((int(cid), title))
+    return visible
+
+
+def build_forward_new_text(A: int | None = None, B: int | None = None) -> str:
+    """В22 новый режим: пары сверху, выбор A/B и настройка шести кнопок."""
+    lines = ["🔁 Пересылка / В22", "Режим: по-новому", ""]
+    if A and B:
+        arrow, fin, *_ = _forward_pair_icons(A, B)
+        lines.append(f"Чат А: {get_chat_display_name(A)} ({arrow})")
+        lines.append(f"Чат Б: ({fin}) {get_chat_display_name(B)}")
+        lines.append("Ниже выбери направление пересылки и 💰 финучёт.")
+    elif A:
+        lines.append(f"Чат А выбран: {get_chat_display_name(A)}")
+        lines.append("Теперь выбери Чат Б. Остальные чаты остаются ниже по 2 кнопки в ряд.")
+    else:
+        lines.append("Сверху пары со связями. Ниже — чаты без связей. Выбери Чат А.")
+    return "\n".join(lines)
+
+
+def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: int | None = None):
+    """
+    Новый В22 по уточнённому ТЗ:
+    • старт: пары сверху по 2 кнопки (A слева, B справа), потом пустой разделитель, потом свободные чаты по 2 кнопки;
+    • выбран A: кнопка Чат А сверху, остальные чаты остаются ниже по 2 кнопки;
+    • выбран B: сверху Чат А / Чат Б, ниже 6 кнопок режимов, ниже кнопка возврата к выбору чатов.
+    """
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    if not OWNER_ID:
+        return kb
+
+    visible_items = _visible_forward_items_for_new_menu(include_owner=True)
+    pair_rows = collect_forward_pairs_for_menu()
 
     if A and B:
+        A, B = int(A), int(B)
         arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
-        # Верхняя строка: выбранные Чат А и Чат Б. В имени сразу видны направления.
-        # Чат А слева + знак пересылки после имени, Чат Б справа + знак финучёта перед именем.
         kb.row(
-            types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)} ({arrow})", callback_data=f"fw_new_src:{A}"),
-            types.InlineKeyboardButton(f"Чат Б: ({fin}) {chat_button_title(B)}", callback_data=f"fw_new_tgt:{A}:{B}"),
+            types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_pair:{A}:{B}"),
+            types.InlineKeyboardButton(f"Чат Б: {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
         )
-        # По ТЗ — 6 кнопок настройки в один ряд, без списка других чатов.
         kb.row(
             types.InlineKeyboardButton(_forward_new_toggle_label(ba_on, "⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
             types.InlineKeyboardButton(_forward_new_toggle_label(ab_on, "⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
@@ -7027,25 +7112,43 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
         return kb
 
     if A:
+        A = int(A)
         kb.row(types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_src:{A}"))
         buttons = []
         for cid, title in visible_items:
             if int(cid) == int(A):
                 continue
-            buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_tgt:{A}:{cid}"))
+            buttons.append(types.InlineKeyboardButton(f"Чат Б: {chat_button_title(cid, title)}", callback_data=f"fw_new_tgt:{A}:{int(cid)}"))
         if buttons:
             add_buttons_in_rows(kb, buttons, 2)
         else:
             kb.row(types.InlineKeyboardButton("Нет чатов для выбора Чата Б", callback_data="none"))
-        kb.row(types.InlineKeyboardButton("🔙 К выбору Чата А", callback_data="fw_new_back_src"))
+        kb.row(types.InlineKeyboardButton("🔙 Назад в окно выбора чатов", callback_data="fw_new_back_src"))
         return kb
 
-    buttons = []
+    paired_ids = set()
+    for A0, B0 in pair_rows:
+        try:
+            if is_chat_bot_removed(A0) or is_chat_bot_removed(B0):
+                continue
+        except Exception:
+            pass
+        paired_ids.add(int(A0)); paired_ids.add(int(B0))
+        left_btn, right_btn = _forward_new_pair_buttons(A0, B0)
+        kb.row(left_btn, right_btn)
+
+    free_buttons = []
     for cid, title in visible_items:
-        buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
-    if buttons:
-        add_buttons_in_rows(kb, buttons, 2)
-    else:
+        if int(cid) in paired_ids:
+            continue
+        free_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
+
+    if pair_rows and free_buttons:
+        kb.row(types.InlineKeyboardButton("⠀", callback_data="none"))
+
+    if free_buttons:
+        add_buttons_in_rows(kb, free_buttons, 2)
+    elif not pair_rows:
         kb.row(types.InlineKeyboardButton("Нет доступных чатов", callback_data="none"))
 
     kb.row(
@@ -8695,9 +8798,16 @@ def on_callback(call):
                 if answer_removed_chat(call, A) or answer_removed_chat(call, B):
                     return
                 if which == "ab":
-                    set_forward_finance(A, B, not get_forward_finance(A, B))
+                    new_val = not get_forward_finance(A, B)
+                    set_forward_finance(A, B, new_val)
+                    if new_val:
+                        _remember_forward_pair(A, B)
                 elif which == "ba":
-                    set_forward_finance(B, A, not get_forward_finance(B, A))
+                    new_val = not get_forward_finance(B, A)
+                    set_forward_finance(B, A, new_val)
+                    if new_val:
+                        _remember_forward_pair(A, B)
+                _forget_forward_pair_if_empty(A, B)
                 safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
                 return
             if data_str.startswith("fw_new_mode:"):
@@ -8716,11 +8826,13 @@ def on_callback(call):
                         remove_forward_link(A, B)
                     else:
                         add_forward_link(A, B, "oneway_to")
+                        _remember_forward_pair(A, B)
                 elif mode == "from":
                     if str(A) in (fr.get(str(B), {}) or {}):
                         remove_forward_link(B, A)
                     else:
                         add_forward_link(B, A, "oneway_to")
+                        _remember_forward_pair(A, B)
                 elif mode == "two":
                     ab_on = str(B) in (fr.get(str(A), {}) or {})
                     ba_on = str(A) in (fr.get(str(B), {}) or {})
@@ -8730,6 +8842,8 @@ def on_callback(call):
                     else:
                         add_forward_link(A, B, "twoway")
                         add_forward_link(B, A, "twoway")
+                        _remember_forward_pair(A, B)
+                _forget_forward_pair_if_empty(A, B)
                 safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
                 return
             if data_str.startswith("fw_new_clear:"):
@@ -8744,6 +8858,7 @@ def on_callback(call):
                 remove_forward_link(B, A)
                 remove_forward_finance(A, B)
                 remove_forward_finance(B, A)
+                _forget_forward_pair_if_empty(A, B)
                 safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
                 return
             if data_str == "fw_probe_all":
