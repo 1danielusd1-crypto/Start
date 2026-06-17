@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v58_v22_new_pairs_menu"
+VERSION = "bot_v59_v22_new_step_pairs"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -6966,60 +6966,29 @@ def _forward_new_toggle_label(enabled: bool, icon: str) -> str:
 
 
 def build_forward_new_text(A: int | None = None, B: int | None = None) -> str:
+    """В22 новый режим: пошаговый выбор пары A/B без списка пар сверху."""
     lines = ["🔁 Пересылка / В22", "Режим: по-новому", ""]
-    pairs = collect_forward_pairs_for_menu()
-    if pairs:
-        lines.append("Связи сверху: Чат A (пересылка) (💰 учёт) Чат B.")
-    else:
-        lines.append("Связей пока нет. Выберите чат A, потом чат B.")
-    if A and not B:
-        lines.append("")
-        lines.append(f"Выбран Чат A: {get_chat_display_name(A)}")
-        lines.append("Теперь выберите Чат B.")
-    elif A and B:
+    if A and B:
         arrow, fin, *_ = _forward_pair_icons(A, B)
-        lines.append("")
-        lines.append(f"Настройка пары: {get_chat_display_name(A)} ({arrow}) ({fin}) {get_chat_display_name(B)}")
-        lines.append("Нижний ряд: ⏪️ B→A, ⏩️ A→B, 🔄 обе стороны, ◀️ 💰B→A, ▶️ 💰A→B, ❌ очистить.")
+        lines.append(f"Выбрана пара: {get_chat_display_name(A)} ({arrow}) ({fin}) {get_chat_display_name(B)}")
+        lines.append("Выберите направление пересылки и 💰 финучёт кнопками ниже.")
+    elif A:
+        lines.append(f"Выбран Чат А: {get_chat_display_name(A)}")
+        lines.append("Теперь выберите Чат Б. Остальные чаты остаются ниже по 2 кнопки в ряд.")
     else:
-        lines.append("")
-        lines.append("Выберите пару сверху или свободный чат ниже.")
+        lines.append("Выберите Чат А. Чаты идут по 2 кнопки в ряд, как в обычном меню.")
     return "\n".join(lines)
 
 
 def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: int | None = None):
+    """
+    Новый В22 по ТЗ:
+    1) старт: обычная сетка текущих чатов по 2 кнопки;
+    2) выбран A: кнопка Чат А наверху, остальные чаты остаются ниже;
+    3) выбран B: сверху Чат А и Чат Б по горизонтали, ниже только 6 кнопок режимов.
+    """
     kb = types.InlineKeyboardMarkup(row_width=2)
     if not OWNER_ID:
-        return kb
-
-    def _top_selected_rows():
-        if A:
-            kb.row(
-                types.InlineKeyboardButton("Чат A", callback_data="none"),
-                types.InlineKeyboardButton(chat_button_title(A), callback_data=f"fw_new_src:{A}"),
-            )
-        if A and B:
-            kb.row(
-                types.InlineKeyboardButton("Чат B", callback_data="none"),
-                types.InlineKeyboardButton(chat_button_title(B), callback_data=f"fw_new_tgt:{A}:{B}"),
-            )
-
-    _top_selected_rows()
-
-    if A and B:
-        arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
-        kb.row(
-            types.InlineKeyboardButton(_forward_new_toggle_label(ba_on, "⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on, "⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on and ba_on, "🔄"), callback_data=f"fw_new_mode:{A}:{B}:two"),
-        )
-        kb.row(
-            types.InlineKeyboardButton(_forward_new_toggle_label(ba_fin, "◀️"), callback_data=f"fw_new_fin:{A}:{B}:ba"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ab_fin, "▶️"), callback_data=f"fw_new_fin:{A}:{B}:ab"),
-            types.InlineKeyboardButton("❌", callback_data=f"fw_new_clear:{A}:{B}"),
-        )
-        kb.row(types.InlineKeyboardButton("🔙 Выбрать Чат B", callback_data=f"fw_new_src:{A}"))
-        kb.row(types.InlineKeyboardButton("🔙 К списку пар", callback_data="fw_new_back_src"))
         return kb
 
     items, owner_item = _collect_forward_picker_items(include_owner=True)
@@ -7027,37 +6996,53 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
     if owner_item:
         all_items.append(owner_item)
 
+    # Удалённые чаты в новом выборе пары не показываем в общем списке.
+    visible_items = []
+    for cid, title in all_items:
+        try:
+            if is_chat_bot_removed(int(cid)):
+                continue
+        except Exception:
+            pass
+        visible_items.append((int(cid), title))
+
+    if A and B:
+        arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
+        kb.row(
+            types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_src:{A}"),
+            types.InlineKeyboardButton(f"Чат Б: {chat_button_title(B)}", callback_data=f"fw_new_tgt:{A}:{B}"),
+        )
+        # По ТЗ — шесть кнопок в один ряд и больше никаких кнопок выбора чатов ниже.
+        kb.row(
+            types.InlineKeyboardButton(_forward_new_toggle_label(ba_on, "⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on, "⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on and ba_on, "🔄"), callback_data=f"fw_new_mode:{A}:{B}:two"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ba_fin, "◀️"), callback_data=f"fw_new_fin:{A}:{B}:ba"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ab_fin, "▶️"), callback_data=f"fw_new_fin:{A}:{B}:ab"),
+            types.InlineKeyboardButton("❌", callback_data=f"fw_new_clear:{A}:{B}"),
+        )
+        return kb
+
     if A:
+        kb.row(types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_src:{A}"))
         buttons = []
-        for cid, title in all_items:
+        for cid, title in visible_items:
             if int(cid) == int(A):
                 continue
             buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_tgt:{A}:{cid}"))
-        add_buttons_in_rows(kb, buttons, 2)
-        kb.row(types.InlineKeyboardButton("🔙 К списку пар", callback_data="fw_new_back_src"))
+        if buttons:
+            add_buttons_in_rows(kb, buttons, 2)
+        else:
+            kb.row(types.InlineKeyboardButton("Нет чатов для выбора Чата Б", callback_data="none"))
+        kb.row(types.InlineKeyboardButton("🔙 К выбору Чата А", callback_data="fw_new_back_src"))
         return kb
 
-    # Стартовое окно: сверху уже настроенные пары, потом пустая кнопка-разделитель,
-    # потом чаты без связей.
-    pairs = collect_forward_pairs_for_menu()
-    linked_ids = set()
-    for pa, pb in pairs:
-        linked_ids.add(int(pa)); linked_ids.add(int(pb))
-        kb.row(types.InlineKeyboardButton(_forward_new_pair_label(pa, pb), callback_data=f"fw_new_pair:{pa}:{pb}"))
-
-    if pairs:
-        kb.row(types.InlineKeyboardButton(" ", callback_data="none"))
-
-    free_buttons = []
-    for cid, title in all_items:
-        if int(cid) in linked_ids:
-            continue
-        if is_chat_bot_removed(int(cid)):
-            continue
-        free_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
-    if free_buttons:
-        add_buttons_in_rows(kb, free_buttons, 2)
-    elif not pairs:
+    buttons = []
+    for cid, title in visible_items:
+        buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
+    if buttons:
+        add_buttons_in_rows(kb, buttons, 2)
+    else:
         kb.row(types.InlineKeyboardButton("Нет доступных чатов", callback_data="none"))
 
     kb.row(
@@ -7069,7 +7054,6 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
     else:
         kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root"))
     return kb
-
 
 def build_forward_menu_text_for_current_mode(title: str | None = None, A: int | None = None, B: int | None = None) -> str:
     if forward_menu_new_style_enabled():
