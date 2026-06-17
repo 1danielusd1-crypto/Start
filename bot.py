@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v56_fmt_mark_v22_v24"
+VERSION = "bot_v57_back_window_mark_v25_o9"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -383,6 +383,32 @@ def toggle_journal_registration() -> bool:
 
 def journal_toggle_label() -> str:
     return ("✅ Журнал ВКЛ" if is_journal_registration_enabled() else "❌ Журнал ВЫКЛ")
+
+def buttons_current_window_enabled() -> bool:
+    """Глобальный режим владельца: кнопочные переходы стараются открываться в текущем окне."""
+    try:
+        gs = (data or {}).setdefault("_global_settings", {})
+        return bool(gs.get("buttons_current_window", False))
+    except Exception:
+        return False
+
+
+def set_buttons_current_window_enabled(enabled: bool):
+    try:
+        data.setdefault("_global_settings", {})["buttons_current_window"] = bool(enabled)
+        save_data(data)
+    except Exception as e:
+        log_error(f"set_buttons_current_window_enabled: {e}")
+
+
+def toggle_buttons_current_window() -> bool:
+    new_value = not buttons_current_window_enabled()
+    set_buttons_current_window_enabled(new_value)
+    return new_value
+
+
+def buttons_current_window_label() -> str:
+    return "✅ В текущем окне" if buttons_current_window_enabled() else "❌ В текущем окне"
 
 
 def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
@@ -727,7 +753,19 @@ def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
         if action == "forward_finmode_menu":
             return "в24" if owner_chat else "о24"
         if action.startswith("fw_finmode_pick_"):
-            return "в24" if owner_chat else "о24"
+            return "в25" if owner_chat else "о25"
+        if action.startswith("qb_finwin_open_") or action.startswith("finwin"):
+            return "в26" if owner_chat else "о26"
+        if action.startswith("qb_hidden_toggle_"):
+            return "в31" if owner_chat else "о31"
+        if action.startswith("qb_mode_normal_"):
+            return "в32" if owner_chat else "о32"
+        if action.startswith("qb_mode_open_"):
+            return "в33" if owner_chat else "о33"
+        if action.startswith("qb_mode_first_"):
+            return "в34" if owner_chat else "о34"
+        if action.startswith("fin_mode_toggle_") or action.startswith("fin_mode_off_"):
+            return "в35" if owner_chat else "о35"
         if action.startswith(("fin_mode_", "qb_")) or action == "quick_balance_menu":
             return "в25" if owner_chat else "о25"
         if action == "forward_menu":
@@ -3364,7 +3402,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True},
+        "_global_settings": {"bot_journal_enabled": True, "buttons_current_window": False},
     }
 def load_data():
     _import_legacy_global_json_to_db(DATA_FILE, force=False)
@@ -6815,38 +6853,36 @@ def build_forward_target_menu(src_id: int):
 
 
 def finance_mode_compact_icon(chat_id: int) -> str:
-    """Короткий знак режима для В24 в списке чатов."""
+    """Короткий знак режима для В24 в списке чатов. Скрытый режим независим и дописывается обезьянкой."""
     try:
         if not is_finance_mode(chat_id):
             return "❌"
-        if is_hidden_finance_mode(chat_id):
-            return "🙈"
+        hidden_prefix = "🙈" if is_hidden_finance_mode(chat_id) else ""
         if is_quick_balance_enabled(chat_id):
             behavior = get_quick_balance_behavior(chat_id)
             if behavior == "first":
-                return "✅🥇"
+                return hidden_prefix + "✅🥇"
             if behavior == "open":
-                return "✅3️⃣"
-        # Финрежим включён, быстрый остаток выключен: основное окно через 10 сообщений.
-        return "✅🔟"
+                return hidden_prefix + "✅3️⃣"
+        return hidden_prefix + "✅🔟"
     except Exception:
         return "❌"
 
 
 def finance_mode_state_lines(chat_id: int) -> list[str]:
-    """Строки В24: только чат и текущие режимы с понятными знаками."""
+    """Строки В25: скрытые финансы независимы от трёх видимых режимов."""
     fin_on = is_finance_mode(chat_id)
     hidden_on = bool(fin_on and is_hidden_finance_mode(chat_id))
-    qb_on = bool(fin_on and (not hidden_on) and is_quick_balance_enabled(chat_id))
+    qb_on = bool(fin_on and is_quick_balance_enabled(chat_id))
     behavior = get_quick_balance_behavior(chat_id) if fin_on else "normal"
     return [
         f"Чат: {chat_button_title(chat_id)}",
         "",
         f"{'✅' if fin_on else '❌'} Фин режим",
         f"{'🙈' if hidden_on else '❌'} Скрытые финансы",
-        f"{'✅🔟' if (fin_on and (not hidden_on) and (not qb_on or behavior == 'normal')) else '❌'} Как обычно — окно через 10 сообщений",
-        f"{'✅3️⃣' if (fin_on and (not hidden_on) and qb_on and behavior == 'open') else '❌'} Быстрый остаток — открывать окно",
-        f"{'✅🥇' if (fin_on and (not hidden_on) and qb_on and behavior == 'first') else '❌'} Быстрый остаток — всегда первым",
+        f"{'✅🔟' if (fin_on and (not qb_on or behavior == 'normal')) else '❌'} Как обычно — окно через 10 сообщений",
+        f"{'✅3️⃣' if (fin_on and qb_on and behavior == 'open') else '❌'} Быстрый остаток — открывать окно",
+        f"{'✅🥇' if (fin_on and qb_on and behavior == 'first') else '❌'} Быстрый остаток — всегда первым",
     ]
 
 
@@ -6934,15 +6970,15 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
     fin_on = is_finance_mode(target_chat_id)
     hidden_on = bool(fin_on and is_hidden_finance_mode(target_chat_id))
-    enabled = bool(fin_on and (not hidden_on) and is_quick_balance_enabled(target_chat_id))
+    enabled = bool(fin_on and is_quick_balance_enabled(target_chat_id))
     behavior = get_quick_balance_behavior(target_chat_id) if fin_on else "normal"
 
     fin_icon = "✅" if fin_on else "❌"
-    normal_icon = "✅" if (fin_on and (not hidden_on) and (not enabled or behavior == "normal")) else "❌"
-    open_icon = "✅3️⃣" if (fin_on and (not hidden_on) and enabled and behavior == "open") else "❌"
-    first_icon = "✅🥇" if (fin_on and (not hidden_on) and enabled and behavior == "first") else "❌"
+    normal_icon = "✅🔟" if (fin_on and (not enabled or behavior == "normal")) else "❌"
+    open_icon = "✅3️⃣" if (fin_on and enabled and behavior == "open") else "❌"
+    first_icon = "✅🥇" if (fin_on and enabled and behavior == "first") else "❌"
 
-    hidden_icon = "🙈" if hidden_on else "👁"
+    hidden_icon = "🙈" if hidden_on else "❌"
     finwin_icon = "🪟✅" if fin_on else "🪟❌"
 
     kb.row(types.InlineKeyboardButton(f"{fin_icon} Фин режим ВКЛ/ВЫКЛ", callback_data=f"d:{day_key}:fin_mode_toggle_{target_chat_id}"))
@@ -7732,6 +7768,15 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
         return
     except Exception:
         pass
+    try:
+        if buttons_current_window_enabled() and is_owner_chat(chat_id):
+            try:
+                bot.answer_callback_query(call.id, "Режим текущего окна включён: новое окно не создаю.", show_alert=False)
+            except Exception:
+                pass
+            return
+    except Exception:
+        pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_send_fallback")
     try:
         _touch_v98_auto_close_for_callback(chat_id, sent.message_id, getattr(call, "data", ""))
@@ -7881,6 +7926,12 @@ def open_info_window(chat_id: int):
             types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
             types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
         )
+        kb.row(
+            types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+            types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+        )
+    else:
+        kb.row(types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"))
     kb.row(
         types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
         types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
@@ -8628,6 +8679,10 @@ def on_callback(call):
                 types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
             )
             kb.row(
+                types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+                types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            )
+            kb.row(
                 types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
                 types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
             )
@@ -8642,11 +8697,48 @@ def on_callback(call):
                 types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
             )
             kb.row(
+                types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+                types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            )
+            kb.row(
                 types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
                 types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
             )
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=kb)
             return
+        if data_str == "buttons_current_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            new_state = toggle_buttons_current_window()
+            kb = types.InlineKeyboardMarkup()
+            kb.row(
+                types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
+                types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
+            )
+            kb.row(
+                types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+                types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            )
+            kb.row(
+                types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+                types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
+            )
+            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nРежим кнопок в текущем окне: {'ВКЛ' if new_state else 'ВЫКЛ'}", reply_markup=kb)
+            return
+        if data_str == "info_finance_off":
+            try:
+                if is_owner_chat(chat_id):
+                    bot.answer_callback_query(call.id, "У владельца финрежим системно всегда активен.", show_alert=False)
+                else:
+                    set_hidden_finance_mode(chat_id, False)
+                    set_quick_balance_behavior(chat_id, "normal")
+                    set_quick_balance_enabled(chat_id, False)
+                    set_finance_mode(chat_id, False)
+                    safe_edit(bot, call, build_info_text(chat_id) + "\n\n✅ Фин режим выключен.", reply_markup=default_window_nav_keyboard(chat_id))
+            except Exception as e:
+                log_error(f"info_finance_off({chat_id}): {e}")
+            return
+
         if data_str == "info_close":
             try:
                 bot.delete_message(chat_id, call.message.message_id)
@@ -8916,13 +9008,20 @@ def on_callback(call):
                 month_key = datetime.strptime(day_key, "%Y-%m-%d").strftime("%Y-%m")
             except Exception:
                 month_key = now_local().strftime("%Y-%m")
-            open_report_window(chat_id, month_key)
+            if buttons_current_window_enabled() and is_owner_chat(chat_id):
+                report_html, _ = build_month_report_text(chat_id, month_key)
+                safe_edit(bot, call, report_html, reply_markup=build_report_keyboard(month_key), parse_mode="HTML")
+            else:
+                open_report_window(chat_id, month_key)
             return
         if cmd == "total":
             chat_bal = store.get("balance", 0)
 
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 text = wm_common(f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}", 4)
+                if buttons_current_window_enabled() and is_owner_chat(chat_id):
+                    safe_edit(bot, call, text, parse_mode="HTML")
+                    return
                 final_id = send_or_edit_stored_window(
                     chat_id,
                     "total_msg_id",
@@ -8964,6 +9063,9 @@ def on_callback(call):
             lines.append(f"• Всего по всем чатам: {fmt_num(total_all)}")
 
             text = "\n".join(lines)
+            if buttons_current_window_enabled() and is_owner_chat(chat_id):
+                safe_edit(bot, call, wm_common(text, 4), parse_mode="HTML")
+                return
             final_id = send_or_edit_stored_window(
                 chat_id,
                 "total_msg_id",
@@ -8980,7 +9082,23 @@ def on_callback(call):
                 bot.answer_callback_query(call.id)
             except Exception:
                 pass
-            open_info_window(chat_id)
+            if buttons_current_window_enabled() and is_owner_chat(chat_id):
+                kb_info = types.InlineKeyboardMarkup()
+                kb_info.row(
+                    types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
+                    types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
+                )
+                kb_info.row(
+                    types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+                    types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+                )
+                kb_info.row(
+                    types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+                    types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
+                )
+                safe_edit(bot, call, wm_common(build_info_text(chat_id), 9), reply_markup=kb_info)
+            else:
+                open_info_window(chat_id)
             return
         if cmd == "process_menu":
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
@@ -9313,17 +9431,12 @@ def on_callback(call):
                 return
             new_hidden = not is_hidden_finance_mode(tgt)
             if new_hidden:
+                # Скрытые финансы независимы от трёх режимов: не сбрасываем quick_balance/normal.
                 set_finance_mode(tgt, True)
-                set_quick_balance_behavior(tgt, "normal")
-                set_quick_balance_enabled(tgt, False)
                 set_hidden_finance_mode(tgt, True)
             else:
-                # Если скрытые финансы выключили через В24, а видимые режимы не выбраны,
-                # весь финрежим выключается. Чтобы оставить финрежим — выбери один из 3 режимов ниже.
+                # Выключаем только скрытый режим. Остальные выбранные режимы остаются как были.
                 set_hidden_finance_mode(tgt, False)
-                set_quick_balance_behavior(tgt, "normal")
-                set_quick_balance_enabled(tgt, False)
-                set_finance_mode(tgt, False)
             safe_edit(
                 bot,
                 call,
@@ -11312,31 +11425,46 @@ def force_new_day_window(chat_id: int, day_key: str):
 
 
 def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
-    """Назад в основное окно: закрываем текущее переходное окно и создаём чистое О1.
-    Старое сохранённое О1 тоже удаляется, чтобы не было дублей.
+    """Назад в основное окно.
+    • если нажали из самого О1 — просто обновляем/перетекаем в О1 без удаления текущего сообщения;
+    • если нажали из переходного окна — старое сохранённое О1 удаляем, а текущее окно превращаем в новое О1.
     """
     try:
         if current_message_id is not None:
             _cancel_v98_auto_close(int(chat_id), int(current_message_id))
     except Exception:
         pass
+
     try:
-        close_previous_main_window_before_back(chat_id, day_key, current_message_id)
+        old_mid = get_active_window_id(chat_id, day_key)
     except Exception:
-        pass
+        old_mid = None
+
+    # Если текущее окно не является сохранённым О1 — удаляем прежний О1, чтобы не было дублей.
     try:
-        if current_message_id is not None:
-            bot.delete_message(int(chat_id), int(current_message_id))
-    except Exception:
-        pass
-    try:
-        aw = get_or_create_active_windows(chat_id)
-        if aw.get(day_key) == current_message_id:
-            aw.pop(day_key, None)
-            save_data(data)
-    except Exception:
-        pass
-    force_new_day_window(chat_id, day_key)
+        if old_mid and current_message_id is not None and int(old_mid) != int(current_message_id):
+            try:
+                bot.delete_message(int(chat_id), int(old_mid))
+            except Exception:
+                pass
+            clear_active_window_id(chat_id, day_key)
+    except Exception as e:
+        log_error(f"return_to_main delete old O1({chat_id},{day_key}): {e}")
+
+    # Текущее окно становится О1: без удаления, обычным edit_message_text.
+    if current_message_id is not None:
+        try:
+            set_active_window_id(chat_id, day_key, int(current_message_id))
+            if is_owner_chat(chat_id):
+                backup_window_for_owner(chat_id, day_key, message_id_override=int(current_message_id))
+            else:
+                update_or_send_day_window(chat_id, day_key)
+            return
+        except Exception as e:
+            log_error(f"return_to_main edit current to O1({chat_id},{day_key}): {e}")
+
+    # Запасной вариант, если нет текущего сообщения.
+    update_or_send_day_window(chat_id, day_key)
 
 
 def reset_chat_data(chat_id: int):
