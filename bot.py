@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v59_v22_new_step_pairs"
+VERSION = "bot_v60_v22_new_horizontal_ab"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -7008,11 +7008,13 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
 
     if A and B:
         arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
+        # Верхняя строка: выбранные Чат А и Чат Б. В имени сразу видны направления.
+        # Чат А слева + знак пересылки после имени, Чат Б справа + знак финучёта перед именем.
         kb.row(
-            types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_src:{A}"),
-            types.InlineKeyboardButton(f"Чат Б: {chat_button_title(B)}", callback_data=f"fw_new_tgt:{A}:{B}"),
+            types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)} ({arrow})", callback_data=f"fw_new_src:{A}"),
+            types.InlineKeyboardButton(f"Чат Б: ({fin}) {chat_button_title(B)}", callback_data=f"fw_new_tgt:{A}:{B}"),
         )
-        # По ТЗ — шесть кнопок в один ряд и больше никаких кнопок выбора чатов ниже.
+        # По ТЗ — 6 кнопок настройки в один ряд, без списка других чатов.
         kb.row(
             types.InlineKeyboardButton(_forward_new_toggle_label(ba_on, "⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
             types.InlineKeyboardButton(_forward_new_toggle_label(ab_on, "⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
@@ -7021,6 +7023,7 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
             types.InlineKeyboardButton(_forward_new_toggle_label(ab_fin, "▶️"), callback_data=f"fw_new_fin:{A}:{B}:ab"),
             types.InlineKeyboardButton("❌", callback_data=f"fw_new_clear:{A}:{B}"),
         )
+        kb.row(types.InlineKeyboardButton("🔙 Назад в окно выбора чатов", callback_data="fw_new_back_src"))
         return kb
 
     if A:
