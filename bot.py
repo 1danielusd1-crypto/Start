@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v62_v22_a_filter_b_tools"
+VERSION = "bot_v63_o9_secret_notes_plain"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -517,6 +517,349 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 2000):
     buf = io.BytesIO(payload)
     buf.name = f"bot_journal_{now_local().strftime('%Y%m%d_%H%M%S')}.txt" if 'now_local' in globals() else "bot_journal.txt"
     _tg_call_retry(bot.send_document, chat_id, buf, caption="📓 Журнал действий бота", purpose="journal_send_document")
+
+
+# ─────────────────────────────────────────────────────────────
+# 🔐 Секретные заметки владельца через О9
+# Telegram Bot API не умеет отличать долгое удержание inline-кнопки,
+# поэтому используется рабочая замена: 3 быстрых нажатия за 3 секунды.
+# Пока по ТЗ хранение обычным текстом: data + plain JSON в MEGA, если MEGA настроена.
+# ─────────────────────────────────────────────────────────────
+O9_SECRET_CLICK_WINDOW_SECONDS = 3.0
+_o9_secret_clicks = {}
+_o9_secret_click_lock = threading.RLock()
+_o9_secret_action_timers = {}
+_o9_secret_wait_timers = {}
+
+
+def _secret_notes_list() -> list:
+    try:
+        arr = data.setdefault("_secret_notes", [])
+        if not isinstance(arr, list):
+            data["_secret_notes"] = []
+            arr = data["_secret_notes"]
+        return arr
+    except Exception:
+        return []
+
+
+def _secret_notes_local_path() -> str:
+    try:
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        return os.path.join(MEGA_LOCAL_TMP_DIR, "secret_notes_owner.json")
+    except Exception:
+        return "secret_notes_owner.json"
+
+
+def _save_secret_notes_plain_to_file() -> str | None:
+    try:
+        payload = {
+            "kind": "owner_secret_notes_plain_text",
+            "version": VERSION,
+            "created_at": now_local().isoformat(timespec="seconds"),
+            "warning": "plain text, not encrypted",
+            "notes": _secret_notes_list(),
+        }
+        path = _secret_notes_local_path()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return path
+    except Exception as e:
+        log_error(f"_save_secret_notes_plain_to_file: {e}")
+        return None
+
+
+def upload_secret_notes_to_mega() -> bool:
+    """Загружает секретные заметки в MEGA обычным JSON, если MEGA настроена."""
+    try:
+        local_path = _save_secret_notes_plain_to_file()
+        if not local_path:
+            return False
+        if not mega_is_configured():
+            return False
+        remote_dir = MEGA_BACKUP_DIR.rstrip("/") + "/secrets"
+        return bool(mega_put_replace(local_path, remote_dir, "secret_notes_owner.json"))
+    except Exception as e:
+        log_error(f"upload_secret_notes_to_mega: {e}")
+        return False
+
+
+def _is_o9_owner_call(call) -> bool:
+    try:
+        chat_id = int(call.message.chat.id)
+        if not is_owner_chat(chat_id):
+            return False
+        msg_id = int(call.message.message_id)
+        store = get_chat_store(chat_id)
+        if int(store.get("info_msg_id") or 0) == msg_id:
+            return True
+        text = (getattr(call.message, "text", None) or getattr(call.message, "caption", None) or "")
+        return bool(re.search(r"(?:^|\s)о9\s*$", str(text or "")[-160:]))
+    except Exception:
+        return False
+
+
+def _cancel_o9_secret_timer(key):
+    try:
+        t = _o9_secret_action_timers.pop(key, None)
+        if t and getattr(t, "is_alive", lambda: False)():
+            t.cancel()
+    except Exception:
+        pass
+
+
+def _o9_delayed_close(chat_id: int, message_id: int, key):
+    try:
+        with _o9_secret_click_lock:
+            item = _o9_secret_clicks.get(key) or {}
+            # Если за время ожидания случился третий клик, обычное закрытие не делаем.
+            if int(item.get("count", 0) or 0) >= 3:
+                return
+            _o9_secret_clicks.pop(key, None)
+            _o9_secret_action_timers.pop(key, None)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+        try:
+            _clear_secret_wait(chat_id, delete_prompt=False)
+        except Exception:
+            pass
+        try:
+            _clear_stored_window(chat_id, "info_msg_id", message_id)
+        except Exception:
+            pass
+    except Exception as e:
+        log_error(f"_o9_delayed_close: {e}")
+
+
+def _o9_delayed_back_main(chat_id: int, message_id: int, day_key: str, key):
+    try:
+        with _o9_secret_click_lock:
+            item = _o9_secret_clicks.get(key) or {}
+            if int(item.get("count", 0) or 0) >= 3:
+                return
+            _o9_secret_clicks.pop(key, None)
+            _o9_secret_action_timers.pop(key, None)
+        try:
+            cancel_pending_window_commands(chat_id, delete_prompt=False)
+        except Exception:
+            pass
+        try:
+            day_key = day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
+            txt, _ = render_day_window(chat_id, day_key)
+            bot.edit_message_text(
+                txt,
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=build_main_keyboard(day_key, chat_id),
+                parse_mode="HTML",
+            )
+            try:
+                set_active_window_id(chat_id, day_key, message_id)
+            except Exception:
+                pass
+            try:
+                _clear_stored_window(chat_id, "info_msg_id", message_id)
+            except Exception:
+                pass
+        except Exception as e:
+            log_error(f"_o9_delayed_back_main edit failed: {e}")
+            try:
+                txt, _ = render_day_window(chat_id, day_key)
+                sent = _tg_call_retry(bot.send_message, chat_id, txt, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode="HTML", purpose="o9_secret_back_send_main")
+                try:
+                    set_active_window_id(chat_id, day_key, sent.message_id)
+                except Exception:
+                    pass
+            except Exception as e2:
+                log_error(f"_o9_delayed_back_main send main failed: {e2}")
+    except Exception as e:
+        log_error(f"_o9_delayed_back_main: {e}")
+
+
+def _start_secret_wait(chat_id: int, message_id: int | None = None):
+    try:
+        store = get_chat_store(chat_id)
+        store["secret_wait"] = {
+            "type": "secret_note_add",
+            "started_at": now_local().isoformat(timespec="seconds"),
+            "window_msg_id": int(message_id or 0),
+        }
+        save_data(data)
+
+        kb = types.InlineKeyboardMarkup()
+        kb.row(
+            types.InlineKeyboardButton("❌ Закрыть", callback_data="secret_cancel"),
+            types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{store.get('current_view_day', today_key())}:back_main"),
+        )
+        text = wm_common(
+            "🔐 Секретные данные\n\n"
+            "Отправь одним сообщением текст, который нужно сохранить.\n"
+            "Бот удалит твоё сообщение после сохранения.\n\n"
+            "Важно: сейчас хранение обычным текстом, без шифрования.",
+            9,
+        )
+        if message_id:
+            try:
+                bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+                store["secret_wait"]["prompt_msg_id"] = int(message_id)
+                save_data(data)
+                return
+            except Exception:
+                pass
+        sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=kb, purpose="secret_prompt")
+        store["secret_wait"]["prompt_msg_id"] = sent.message_id
+        save_data(data)
+    except Exception as e:
+        log_error(f"_start_secret_wait({chat_id}): {e}")
+
+
+def _format_secret_notes_text() -> str:
+    notes = _secret_notes_list()
+    if not notes:
+        return "🔐 Секретные данные\n\nПока пусто."
+    lines = ["🔐 Секретные данные", ""]
+    for i, item in enumerate(notes, start=1):
+        ts = str((item or {}).get("ts") or "")
+        body = str((item or {}).get("text") or "")
+        lines.append(f"{i}. {ts}\n{body}")
+        lines.append("")
+    text = "\n".join(lines).strip()
+    if len(text) > 3900:
+        text = text[-3900:]
+        text = "🔐 Секретные данные (последняя часть)\n\n" + text
+    return text
+
+
+def _send_secret_notes_to_owner(chat_id: int):
+    try:
+        text = _format_secret_notes_text()
+        _tg_call_retry(bot.send_message, chat_id, text, purpose="secret_notes_send")
+    except Exception as e:
+        log_error(f"_send_secret_notes_to_owner({chat_id}): {e}")
+
+
+def _clear_secret_wait(chat_id: int, delete_prompt: bool = False):
+    try:
+        store = get_chat_store(chat_id)
+        wait = store.get("secret_wait") or {}
+        msg_id = int(wait.get("prompt_msg_id") or wait.get("window_msg_id") or 0)
+        store["secret_wait"] = None
+        save_data(data)
+        if delete_prompt and msg_id:
+            try:
+                bot.delete_message(chat_id, msg_id)
+            except Exception:
+                pass
+    except Exception as e:
+        log_error(f"_clear_secret_wait({chat_id}): {e}")
+
+
+def handle_secret_note_message(msg) -> bool:
+    """Сохраняет секретное сообщение владельца и удаляет исходный текст."""
+    try:
+        if getattr(msg, "content_type", None) != "text":
+            return False
+        chat_id = int(msg.chat.id)
+        if not is_owner_chat(chat_id):
+            return False
+        store = get_chat_store(chat_id)
+        wait = store.get("secret_wait")
+        if not wait or wait.get("type") != "secret_note_add":
+            return False
+        text = (msg.text or "").strip()
+        if not text:
+            return True
+        _secret_notes_list().append({
+            "ts": now_local().isoformat(timespec="seconds"),
+            "text": text,
+        })
+        save_data(data)
+        mega_ok = upload_secret_notes_to_mega()
+        try:
+            bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            pass
+        _clear_secret_wait(chat_id, delete_prompt=False)
+        status = "✅ Секрет сохранён в MEGA." if mega_ok else "✅ Секрет сохранён локально. MEGA не настроена или загрузка не прошла."
+        sent = _tg_call_retry(bot.send_message, chat_id, status, purpose="secret_saved_notice")
+        try:
+            delete_message_later(chat_id, sent.message_id, 12)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        log_error(f"handle_secret_note_message: {e}")
+        return True
+
+
+def handle_o9_secret_triple_click(call, data_str: str) -> bool:
+    """Перехватывает О9: Закрыть ×3 = ввод секрета, Назад ×3 = показать секреты."""
+    try:
+        if not _is_o9_owner_call(call):
+            return False
+        chat_id = int(call.message.chat.id)
+        msg_id = int(call.message.message_id)
+        kind = None
+        day_key = get_chat_store(chat_id).get("current_view_day", today_key())
+        if data_str == "info_close":
+            kind = "close"
+        elif str(data_str or "").startswith("d:"):
+            parts = str(data_str).split(":", 2)
+            action = parts[2] if len(parts) >= 3 else ""
+            if action == "back_main":
+                kind = "back"
+                day_key = parts[1] or day_key
+        if not kind:
+            return False
+
+        key = (chat_id, msg_id, kind)
+        now_ts = time.time()
+        with _o9_secret_click_lock:
+            item = _o9_secret_clicks.get(key) or {"count": 0, "ts": 0}
+            if now_ts - float(item.get("ts", 0) or 0) > O9_SECRET_CLICK_WINDOW_SECONDS:
+                item = {"count": 0, "ts": 0}
+            item["count"] = int(item.get("count", 0) or 0) + 1
+            item["ts"] = now_ts
+            _o9_secret_clicks[key] = item
+            _cancel_o9_secret_timer(key)
+            count = int(item["count"])
+
+            if count < 3:
+                if kind == "close":
+                    t = threading.Timer(O9_SECRET_CLICK_WINDOW_SECONDS + 0.2, _o9_delayed_close, args=(chat_id, msg_id, key))
+                else:
+                    t = threading.Timer(O9_SECRET_CLICK_WINDOW_SECONDS + 0.2, _o9_delayed_back_main, args=(chat_id, msg_id, day_key, key))
+                _o9_secret_action_timers[key] = t
+                t.start()
+
+        if count >= 3:
+            _cancel_o9_secret_timer(key)
+            with _o9_secret_click_lock:
+                _o9_secret_clicks.pop(key, None)
+            if kind == "close":
+                _start_secret_wait(chat_id, msg_id)
+                try:
+                    bot.answer_callback_query(call.id, "🔐 Секретные данные")
+                except Exception:
+                    pass
+            else:
+                _send_secret_notes_to_owner(chat_id)
+                try:
+                    bot.answer_callback_query(call.id, "🔐 Отправил секретные данные")
+                except Exception:
+                    pass
+            return True
+
+        try:
+            bot.answer_callback_query(call.id, f"Секрет: {count}/3", show_alert=False)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        log_error(f"handle_o9_secret_triple_click: {e}")
+        return False
 
 
 
@@ -4803,6 +5146,8 @@ def on_any_message(msg):
 
     if msg.content_type == "text":
         try:
+            if handle_secret_note_message(msg):
+                return
             if handle_direct_edit_insert_message(msg):
                 return
             if handle_category_edit_message(msg):
@@ -4810,7 +5155,7 @@ def on_any_message(msg):
             if handle_category_add_message(msg):
                 return
         except Exception as e:
-            log_error(f"category_add/edit/direct-edit message handler error: {e}")
+            log_error(f"secret/category_add/edit/direct-edit message handler error: {e}")
 
     if msg.content_type == "text":
         try:
@@ -8695,6 +9040,18 @@ def on_callback(call):
             return
 
         store = get_chat_store(chat_id)
+
+        if data_str == "secret_cancel":
+            _clear_secret_wait(chat_id, delete_prompt=False)
+            try:
+                bot.delete_message(chat_id, call.message.message_id)
+            except Exception:
+                pass
+            return
+
+        if handle_o9_secret_triple_click(call, data_str):
+            return
+
         if call.message.message_id == store.get("balance_panel_id") and data_str != "bp:open":
             schedule_balance_panel_collapse(chat_id)
 
@@ -10417,6 +10774,10 @@ def cancel_pending_window_commands(chat_id: int, delete_prompt: bool = False):
         pass
     try:
         clear_category_wait_state(chat_id, "category_edit_wait", delete_prompt=delete_prompt)
+    except Exception:
+        pass
+    try:
+        _clear_secret_wait(chat_id, delete_prompt=delete_prompt)
     except Exception:
         pass
     try:
