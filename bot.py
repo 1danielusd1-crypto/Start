@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v57_back_window_mark_v25_o9"
+VERSION = "bot_v58_v22_new_pairs_menu"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -410,6 +410,34 @@ def toggle_buttons_current_window() -> bool:
 def buttons_current_window_label() -> str:
     return "✅ В текущем окне" if buttons_current_window_enabled() else "❌ В текущем окне"
 
+
+
+
+def forward_menu_new_style_enabled() -> bool:
+    """Глобальный режим владельца для В22: старое меню или новое визуальное меню пары A/B."""
+    try:
+        gs = (data or {}).setdefault("_global_settings", {})
+        return bool(gs.get("forward_menu_new_style", False))
+    except Exception:
+        return False
+
+
+def set_forward_menu_new_style_enabled(enabled: bool):
+    try:
+        data.setdefault("_global_settings", {})["forward_menu_new_style"] = bool(enabled)
+        save_data(data)
+    except Exception as e:
+        log_error(f"set_forward_menu_new_style_enabled: {e}")
+
+
+def toggle_forward_menu_new_style() -> bool:
+    new_value = not forward_menu_new_style_enabled()
+    set_forward_menu_new_style_enabled(new_value)
+    return new_value
+
+
+def forward_menu_style_label() -> str:
+    return "🧩 Пересылка: по-новому" if forward_menu_new_style_enabled() else "🔁 Пересылка: обычно"
 
 def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
     """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
@@ -801,6 +829,14 @@ def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
         return "в6"
     if d.startswith("rep"):
         return "о3"
+    if d == "forward_menu_style_toggle":
+        return "о9"
+    if d.startswith("fw_new_pair:") or d.startswith("fw_new_tgt:") or d.startswith("fw_new_mode:") or d.startswith("fw_new_fin:") or d.startswith("fw_new_clear:"):
+        return "в27" if owner_chat else "о27"
+    if d.startswith("fw_new_src:"):
+        return "в23" if owner_chat else "о23"
+    if d == "fw_new_back_src":
+        return "в22" if owner_chat else "о22"
     if d == "fw_probe_all":
         return "в29" if owner_chat else "о29"
     if d == "fw_removed_list" or d.startswith("fw_probe_one:"):
@@ -3402,7 +3438,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True, "buttons_current_window": False},
+        "_global_settings": {"bot_journal_enabled": True, "buttons_current_window": False, "forward_menu_new_style": False},
     }
 def load_data():
     _import_legacy_global_json_to_db(DATA_FILE, force=False)
@@ -6770,7 +6806,9 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
 
 
 def build_forward_root_menu(day_key: str):
-    """Старое корневое меню пересылки убрано; открываем сразу выбор чата A."""
+    """Корневое меню пересылки: старый режим или новый визуальный режим пары A/B."""
+    if forward_menu_new_style_enabled():
+        return build_forward_new_menu(day_key)
     return build_forward_source_menu(day_key)
 def _collect_forward_picker_items(include_owner: bool = True, include_removed: bool = False):
     known = collect_forward_menu_chats()
@@ -6804,6 +6842,8 @@ def _collect_forward_picker_items(include_owner: bool = True, include_removed: b
 
 
 def build_forward_source_menu(day_key: str | None = None):
+    if forward_menu_new_style_enabled():
+        return build_forward_new_menu(day_key)
     kb = types.InlineKeyboardMarkup(row_width=3)
     if not OWNER_ID:
         return kb
@@ -6849,6 +6889,202 @@ def build_forward_target_menu(src_id: int):
     kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src"))
     return kb
 
+
+
+
+def _forward_pair_sort_key(pair):
+    try:
+        a, b = pair
+        return (get_chat_display_name(int(a)).lower(), get_chat_display_name(int(b)).lower(), int(a), int(b))
+    except Exception:
+        return (str(pair),)
+
+
+def _sorted_forward_pair(a: int, b: int):
+    """Чат A всегда фиксируем первым по имени/ID, чтобы пары в В22 не прыгали."""
+    a = int(a); b = int(b)
+    ka = (get_chat_display_name(a).lower(), a)
+    kb = (get_chat_display_name(b).lower(), b)
+    return (a, b) if ka <= kb else (b, a)
+
+
+def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
+    """Все пары, где есть пересылка или 💰 финучёт пересылки. A всегда слева."""
+    pairs = set()
+    fr = data.get("forward_rules", {}) or {}
+    ff = data.get("forward_finance", {}) or {}
+    for src, dsts in fr.items():
+        try:
+            src_id = int(src)
+        except Exception:
+            continue
+        for dst in (dsts or {}).keys():
+            try:
+                dst_id = int(dst)
+            except Exception:
+                continue
+            if src_id == dst_id:
+                continue
+            pairs.add(_sorted_forward_pair(src_id, dst_id))
+    for src, dsts in ff.items():
+        try:
+            src_id = int(src)
+        except Exception:
+            continue
+        for dst, enabled in (dsts or {}).items():
+            if not enabled:
+                continue
+            try:
+                dst_id = int(dst)
+            except Exception:
+                continue
+            if src_id == dst_id:
+                continue
+            pairs.add(_sorted_forward_pair(src_id, dst_id))
+    return sorted(pairs, key=_forward_pair_sort_key)
+
+
+def _forward_pair_icons(A: int, B: int):
+    fr = data.get("forward_rules", {}) or {}
+    ff = data.get("forward_finance", {}) or {}
+    ab_on = str(B) in (fr.get(str(A), {}) or {})
+    ba_on = str(A) in (fr.get(str(B), {}) or {})
+    ab_fin = bool((ff.get(str(A), {}) or {}).get(str(B), False))
+    ba_fin = bool((ff.get(str(B), {}) or {}).get(str(A), False))
+    return _forward_arrow_icon(ab_on, ba_on), _forward_fin_icon(ab_fin, ba_fin), ab_on, ba_on, ab_fin, ba_fin
+
+
+def _forward_new_pair_label(A: int, B: int) -> str:
+    arrow, fin, *_ = _forward_pair_icons(A, B)
+    # По ТЗ: Чат A слева, после него в скобках направление пересылки,
+    # перед Чат B в скобках направление 💰 финучёта.
+    return f"{chat_button_title(A)} ({arrow}) ({fin}) {chat_button_title(B)}"
+
+
+def _forward_new_toggle_label(enabled: bool, icon: str) -> str:
+    return ("✅" if enabled else "❌") + icon
+
+
+def build_forward_new_text(A: int | None = None, B: int | None = None) -> str:
+    lines = ["🔁 Пересылка / В22", "Режим: по-новому", ""]
+    pairs = collect_forward_pairs_for_menu()
+    if pairs:
+        lines.append("Связи сверху: Чат A (пересылка) (💰 учёт) Чат B.")
+    else:
+        lines.append("Связей пока нет. Выберите чат A, потом чат B.")
+    if A and not B:
+        lines.append("")
+        lines.append(f"Выбран Чат A: {get_chat_display_name(A)}")
+        lines.append("Теперь выберите Чат B.")
+    elif A and B:
+        arrow, fin, *_ = _forward_pair_icons(A, B)
+        lines.append("")
+        lines.append(f"Настройка пары: {get_chat_display_name(A)} ({arrow}) ({fin}) {get_chat_display_name(B)}")
+        lines.append("Нижний ряд: ⏪️ B→A, ⏩️ A→B, 🔄 обе стороны, ◀️ 💰B→A, ▶️ 💰A→B, ❌ очистить.")
+    else:
+        lines.append("")
+        lines.append("Выберите пару сверху или свободный чат ниже.")
+    return "\n".join(lines)
+
+
+def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: int | None = None):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    if not OWNER_ID:
+        return kb
+
+    def _top_selected_rows():
+        if A:
+            kb.row(
+                types.InlineKeyboardButton("Чат A", callback_data="none"),
+                types.InlineKeyboardButton(chat_button_title(A), callback_data=f"fw_new_src:{A}"),
+            )
+        if A and B:
+            kb.row(
+                types.InlineKeyboardButton("Чат B", callback_data="none"),
+                types.InlineKeyboardButton(chat_button_title(B), callback_data=f"fw_new_tgt:{A}:{B}"),
+            )
+
+    _top_selected_rows()
+
+    if A and B:
+        arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
+        kb.row(
+            types.InlineKeyboardButton(_forward_new_toggle_label(ba_on, "⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on, "⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on and ba_on, "🔄"), callback_data=f"fw_new_mode:{A}:{B}:two"),
+        )
+        kb.row(
+            types.InlineKeyboardButton(_forward_new_toggle_label(ba_fin, "◀️"), callback_data=f"fw_new_fin:{A}:{B}:ba"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ab_fin, "▶️"), callback_data=f"fw_new_fin:{A}:{B}:ab"),
+            types.InlineKeyboardButton("❌", callback_data=f"fw_new_clear:{A}:{B}"),
+        )
+        kb.row(types.InlineKeyboardButton("🔙 Выбрать Чат B", callback_data=f"fw_new_src:{A}"))
+        kb.row(types.InlineKeyboardButton("🔙 К списку пар", callback_data="fw_new_back_src"))
+        return kb
+
+    items, owner_item = _collect_forward_picker_items(include_owner=True)
+    all_items = list(items)
+    if owner_item:
+        all_items.append(owner_item)
+
+    if A:
+        buttons = []
+        for cid, title in all_items:
+            if int(cid) == int(A):
+                continue
+            buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_tgt:{A}:{cid}"))
+        add_buttons_in_rows(kb, buttons, 2)
+        kb.row(types.InlineKeyboardButton("🔙 К списку пар", callback_data="fw_new_back_src"))
+        return kb
+
+    # Стартовое окно: сверху уже настроенные пары, потом пустая кнопка-разделитель,
+    # потом чаты без связей.
+    pairs = collect_forward_pairs_for_menu()
+    linked_ids = set()
+    for pa, pb in pairs:
+        linked_ids.add(int(pa)); linked_ids.add(int(pb))
+        kb.row(types.InlineKeyboardButton(_forward_new_pair_label(pa, pb), callback_data=f"fw_new_pair:{pa}:{pb}"))
+
+    if pairs:
+        kb.row(types.InlineKeyboardButton(" ", callback_data="none"))
+
+    free_buttons = []
+    for cid, title in all_items:
+        if int(cid) in linked_ids:
+            continue
+        if is_chat_bot_removed(int(cid)):
+            continue
+        free_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
+    if free_buttons:
+        add_buttons_in_rows(kb, free_buttons, 2)
+    elif not pairs:
+        kb.row(types.InlineKeyboardButton("Нет доступных чатов", callback_data="none"))
+
+    kb.row(
+        types.InlineKeyboardButton("📡 Проверить чаты", callback_data="fw_probe_all"),
+        types.InlineKeyboardButton("🗑 Удалённые", callback_data="fw_removed_list"),
+    )
+    if day_key:
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    else:
+        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root"))
+    return kb
+
+
+def build_forward_menu_text_for_current_mode(title: str | None = None, A: int | None = None, B: int | None = None) -> str:
+    if forward_menu_new_style_enabled():
+        return build_forward_new_text(A, B)
+    return build_forward_status_text(title or "Пересылка:\nВыберите чат A:")
+
+
+def build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: int | None = None, B: int | None = None):
+    if forward_menu_new_style_enabled():
+        return build_forward_new_menu(day_key, A, B)
+    if A and B:
+        return build_forward_mode_menu(A, B)
+    if A:
+        return build_forward_target_menu(A)
+    return build_forward_source_menu(day_key)
 
 
 
@@ -7930,6 +8166,7 @@ def open_info_window(chat_id: int):
             types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
             types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
         )
+        kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
     else:
         kb.row(types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"))
     kb.row(
@@ -8417,6 +8654,111 @@ def on_callback(call):
                 except Exception:
                     pass
                 return
+            if data_str == "fw_new_back_src":
+                owner_store = get_chat_store(int(OWNER_ID))
+                owner_day_key = owner_store.get("current_view_day", today_key())
+                safe_edit(
+                    bot,
+                    call,
+                    build_forward_new_text(),
+                    reply_markup=build_forward_new_menu(owner_day_key)
+                )
+                return
+            if data_str.startswith("fw_new_pair:"):
+                parts = data_str.split(":")
+                if len(parts) != 3:
+                    return
+                try:
+                    A = int(parts[1]); B = int(parts[2])
+                except Exception:
+                    return
+                if answer_removed_chat(call, A) or answer_removed_chat(call, B):
+                    return
+                safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
+                return
+            if data_str.startswith("fw_new_src:"):
+                try:
+                    A = int(data_str.split(":", 1)[1])
+                except Exception:
+                    return
+                if answer_removed_chat(call, A):
+                    return
+                safe_edit(bot, call, build_forward_new_text(A, None), reply_markup=build_forward_new_menu(None, A, None))
+                return
+            if data_str.startswith("fw_new_tgt:"):
+                parts = data_str.split(":")
+                if len(parts) != 3:
+                    return
+                try:
+                    A = int(parts[1]); B = int(parts[2])
+                except Exception:
+                    return
+                if answer_removed_chat(call, A) or answer_removed_chat(call, B):
+                    return
+                safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
+                return
+            if data_str.startswith("fw_new_fin:"):
+                parts = data_str.split(":")
+                if len(parts) != 4:
+                    return
+                try:
+                    A = int(parts[1]); B = int(parts[2]); which = parts[3]
+                except Exception:
+                    return
+                if answer_removed_chat(call, A) or answer_removed_chat(call, B):
+                    return
+                if which == "ab":
+                    set_forward_finance(A, B, not get_forward_finance(A, B))
+                elif which == "ba":
+                    set_forward_finance(B, A, not get_forward_finance(B, A))
+                safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
+                return
+            if data_str.startswith("fw_new_mode:"):
+                parts = data_str.split(":")
+                if len(parts) != 4:
+                    return
+                try:
+                    A = int(parts[1]); B = int(parts[2]); mode = parts[3]
+                except Exception:
+                    return
+                if answer_removed_chat(call, A) or answer_removed_chat(call, B):
+                    return
+                fr = data.get("forward_rules", {}) or {}
+                if mode == "to":
+                    if str(B) in (fr.get(str(A), {}) or {}):
+                        remove_forward_link(A, B)
+                    else:
+                        add_forward_link(A, B, "oneway_to")
+                elif mode == "from":
+                    if str(A) in (fr.get(str(B), {}) or {}):
+                        remove_forward_link(B, A)
+                    else:
+                        add_forward_link(B, A, "oneway_to")
+                elif mode == "two":
+                    ab_on = str(B) in (fr.get(str(A), {}) or {})
+                    ba_on = str(A) in (fr.get(str(B), {}) or {})
+                    if ab_on and ba_on:
+                        remove_forward_link(A, B)
+                        remove_forward_link(B, A)
+                    else:
+                        add_forward_link(A, B, "twoway")
+                        add_forward_link(B, A, "twoway")
+                safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
+                return
+            if data_str.startswith("fw_new_clear:"):
+                parts = data_str.split(":")
+                if len(parts) != 3:
+                    return
+                try:
+                    A = int(parts[1]); B = int(parts[2])
+                except Exception:
+                    return
+                remove_forward_link(A, B)
+                remove_forward_link(B, A)
+                remove_forward_finance(A, B)
+                remove_forward_finance(B, A)
+                safe_edit(bot, call, build_forward_new_text(A, B), reply_markup=build_forward_new_menu(None, A, B))
+                return
             if data_str == "fw_probe_all":
                 owner_store = get_chat_store(int(OWNER_ID))
                 owner_day_key = owner_store.get("current_view_day", today_key())
@@ -8467,11 +8809,11 @@ def on_callback(call):
             if data_str == "fw_open":
                 owner_store = get_chat_store(int(OWNER_ID))
                 owner_day_key = owner_store.get("current_view_day", today_key())
-                kb = build_forward_source_menu(owner_day_key)
+                kb = build_forward_menu_keyboard_for_current_mode(owner_day_key)
                 safe_edit(
                     bot,
                     call,
-                    build_forward_status_text("Пересылка:\nВыберите чат A:"),
+                    build_forward_menu_text_for_current_mode("Пересылка:\nВыберите чат A:"),
                     reply_markup=kb
                 )
                 return
@@ -8484,11 +8826,11 @@ def on_callback(call):
             if data_str == "fw_back_src":
                 owner_store = get_chat_store(int(OWNER_ID))
                 owner_day_key = owner_store.get("current_view_day", today_key())
-                kb = build_forward_source_menu(owner_day_key)
+                kb = build_forward_menu_keyboard_for_current_mode(owner_day_key)
                 safe_edit(
                     bot,
                     call,
-                    build_forward_status_text("Пересылка:\nВыберите чат A:"),
+                    build_forward_menu_text_for_current_mode("Пересылка:\nВыберите чат A:"),
                     reply_markup=kb
                 )
                 return
@@ -8682,6 +9024,7 @@ def on_callback(call):
                 types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
                 types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
             )
+            kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
             kb.row(
                 types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
                 types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
@@ -8700,11 +9043,32 @@ def on_callback(call):
                 types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
                 types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
             )
+            kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
             kb.row(
                 types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
                 types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
             )
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=kb)
+            return
+        if data_str == "forward_menu_style_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            new_state = toggle_forward_menu_new_style()
+            kb = types.InlineKeyboardMarkup()
+            kb.row(
+                types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
+                types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
+            )
+            kb.row(
+                types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+                types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            )
+            kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
+            kb.row(
+                types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+                types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
+            )
+            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nМеню пересылки: {'по-новому' if new_state else 'как обычно'}", reply_markup=kb)
             return
         if data_str == "buttons_current_toggle":
             if not is_owner_chat(chat_id):
@@ -8719,6 +9083,7 @@ def on_callback(call):
                 types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
                 types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
             )
+            kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
             kb.row(
                 types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
                 types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
@@ -9285,11 +9650,11 @@ def on_callback(call):
             if not OWNER_ID or str(chat_id) != str(OWNER_ID):
                 send_and_auto_delete(chat_id, "Меню доступно только владельцу.", HELPER_DELETE_DELAY)
                 return
-            kb = build_forward_source_menu(day_key)
+            kb = build_forward_menu_keyboard_for_current_mode(day_key)
             safe_edit(
                 bot,
                 call,
-                build_forward_status_text("Пересылка:\nВыберите чат A:"),
+                build_forward_menu_text_for_current_mode("Пересылка:\nВыберите чат A:"),
                 reply_markup=kb
             )
             return
