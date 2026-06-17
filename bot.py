@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v60_v22_pairs_grid_tz"
+VERSION = "bot_v61_v22_reselect_pairs"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -7035,11 +7035,17 @@ def _forward_pair_icons(A: int, B: int):
 
 
 def _forward_new_pair_buttons(A: int, B: int):
-    """Две кнопки пары: слева A + знак пересылки, справа знак 💰 + B."""
+    """Две кнопки пары сверху в новом В22.
+
+    Важно по ТЗ: даже если чат уже состоит в связи, нажатие на его кнопку
+    должно начинать обычную схему выбора — этот чат поднимается наверх как Чат А,
+    а затем владелец выбирает Чат Б. Поэтому callback у обеих кнопок — fw_new_src,
+    а не прямое открытие настройки пары.
+    """
     arrow, fin, *_ = _forward_pair_icons(A, B)
     return (
-        types.InlineKeyboardButton(f"{chat_button_title(A)} ({arrow})", callback_data=f"fw_new_pair:{A}:{B}"),
-        types.InlineKeyboardButton(f"({fin}) {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
+        types.InlineKeyboardButton(f"{chat_button_title(A)} ({arrow})", callback_data=f"fw_new_src:{A}"),
+        types.InlineKeyboardButton(f"({fin}) {chat_button_title(B)}", callback_data=f"fw_new_src:{B}"),
     )
 
 
@@ -7075,7 +7081,7 @@ def build_forward_new_text(A: int | None = None, B: int | None = None) -> str:
         lines.append(f"Чат А выбран: {get_chat_display_name(A)}")
         lines.append("Теперь выбери Чат Б. Остальные чаты остаются ниже по 2 кнопки в ряд.")
     else:
-        lines.append("Сверху пары со связями. Ниже — чаты без связей. Выбери Чат А.")
+        lines.append("Сверху пары со связями. Ниже — все доступные чаты. Любой чат можно снова выбрать как Чат А.")
     return "\n".join(lines)
 
 
@@ -7126,29 +7132,30 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
         kb.row(types.InlineKeyboardButton("🔙 Назад в окно выбора чатов", callback_data="fw_new_back_src"))
         return kb
 
-    paired_ids = set()
+    shown_pairs = 0
     for A0, B0 in pair_rows:
         try:
             if is_chat_bot_removed(A0) or is_chat_bot_removed(B0):
                 continue
         except Exception:
             pass
-        paired_ids.add(int(A0)); paired_ids.add(int(B0))
         left_btn, right_btn = _forward_new_pair_buttons(A0, B0)
         kb.row(left_btn, right_btn)
+        shown_pairs += 1
 
-    free_buttons = []
+    # Ниже после разделителя показываем ВСЕ доступные чаты, а не только свободные.
+    # Так чат, который уже есть в паре, можно снова выбрать как Чат А
+    # и связать с другим Чатом Б по той же схеме, что и при первом создании связи.
+    chat_buttons = []
     for cid, title in visible_items:
-        if int(cid) in paired_ids:
-            continue
-        free_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
+        chat_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
 
-    if pair_rows and free_buttons:
+    if shown_pairs and chat_buttons:
         kb.row(types.InlineKeyboardButton("⠀", callback_data="none"))
 
-    if free_buttons:
-        add_buttons_in_rows(kb, free_buttons, 2)
-    elif not pair_rows:
+    if chat_buttons:
+        add_buttons_in_rows(kb, chat_buttons, 2)
+    elif not shown_pairs:
         kb.row(types.InlineKeyboardButton("Нет доступных чатов", callback_data="none"))
 
     kb.row(
