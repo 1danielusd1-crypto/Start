@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v62_v22_b_tool_clean_list"
+VERSION = "bot_v62_v22_a_filter_b_tools"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -7037,16 +7037,15 @@ def _forward_pair_icons(A: int, B: int):
 def _forward_new_pair_buttons(A: int, B: int):
     """Две кнопки пары сверху в новом В22.
 
-    Левая кнопка Чата A остаётся быстрым выбором этого чата как нового Чата A.
-    Правая кнопка Чата B открывает настройки именно этой пары A/B и помечена 🛠.
-    Так список не захламляется: Чаты A не повторяем ниже разделителя, а правый чат пары
-    служит входом в настройки существующей связи.
+    По уточнённому ТЗ:
+    • кнопка Чата A сверху остаётся выбором этого чата как нового Чата A;
+    • кнопка Чата B сверху открывает настройки именно этой пары и помечается 🛠;
+    • ниже разделителя Чаты A из готовых пар не дублируются, чтобы список не захламлялся.
     """
     arrow, fin, *_ = _forward_pair_icons(A, B)
-    tool_gap = "   🛠"  # максимально близко к правому краю, насколько позволяет Telegram-кнопка
     return (
         types.InlineKeyboardButton(f"{chat_button_title(A)} ({arrow})", callback_data=f"fw_new_src:{A}"),
-        types.InlineKeyboardButton(f"({fin}) {chat_button_title(B)}{tool_gap}", callback_data=f"fw_new_pair:{A}:{B}"),
+        types.InlineKeyboardButton(f"({fin}) {chat_button_title(B)} 🛠", callback_data=f"fw_new_pair:{A}:{B}"),
     )
 
 
@@ -7134,38 +7133,25 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
         return kb
 
     shown_pairs = 0
+    top_pair_a_ids = set()
     for A0, B0 in pair_rows:
         try:
             if is_chat_bot_removed(A0) or is_chat_bot_removed(B0):
                 continue
         except Exception:
             pass
+        top_pair_a_ids.add(int(A0))
         left_btn, right_btn = _forward_new_pair_buttons(A0, B0)
         kb.row(left_btn, right_btn)
         shown_pairs += 1
 
-    # Ниже после разделителя показываем все доступные чаты, кроме тех,
-    # которые уже стоят слева как Чат A в существующих парах. Чаты B не скрываем:
-    # их можно снова выбрать как новый Чат A для связи с другим чатом.
-    pair_a_ids = set()
-    for A0, B0 in pair_rows:
-        try:
-            if is_chat_bot_removed(A0) or is_chat_bot_removed(B0):
-                continue
-        except Exception:
-            pass
-        try:
-            pair_a_ids.add(int(A0))
-        except Exception:
-            pass
-
+    # Ниже после разделителя показываем доступные чаты, но убираем только те,
+    # которые уже стоят сверху как Чат A. Чаты B остаются доступными для выбора,
+    # а их верхняя кнопка с 🛠 открывает настройки существующей пары.
     chat_buttons = []
     for cid, title in visible_items:
-        try:
-            if int(cid) in pair_a_ids:
-                continue
-        except Exception:
-            pass
+        if int(cid) in top_pair_a_ids:
+            continue
         chat_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
 
     if shown_pairs and chat_buttons:
