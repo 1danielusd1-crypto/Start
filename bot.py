@@ -122,7 +122,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v61_v22_reselect_pairs"
+VERSION = "bot_v62_v22_b_shortcut_pairs"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -7143,12 +7143,34 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
         kb.row(left_btn, right_btn)
         shown_pairs += 1
 
-    # Ниже после разделителя показываем ВСЕ доступные чаты, а не только свободные.
-    # Так чат, который уже есть в паре, можно снова выбрать как Чат А
-    # и связать с другим Чатом Б по той же схеме, что и при первом создании связи.
+    # Ниже после разделителя показываем список экономно:
+    # • Чаты A из уже созданных пар не дублируем в нижнем списке;
+    # • Чаты B оставляем как быстрый вход в настройки этой пары и помечаем 🔧 справа;
+    # • Остальные чаты работают как обычный выбор нового Чата A.
+    pair_a_ids = set()
+    pair_b_settings = {}
+    try:
+        for A0, B0 in pair_rows:
+            if is_chat_bot_removed(A0) or is_chat_bot_removed(B0):
+                continue
+            pair_a_ids.add(int(A0))
+            pair_b_settings.setdefault(int(B0), (int(A0), int(B0)))
+    except Exception:
+        pass
+
     chat_buttons = []
     for cid, title in visible_items:
-        chat_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
+        cid = int(cid)
+        if cid in pair_a_ids:
+            continue
+        if cid in pair_b_settings:
+            A_pair, B_pair = pair_b_settings[cid]
+            chat_buttons.append(types.InlineKeyboardButton(
+                f"{chat_button_title(cid, title)} 🔧",
+                callback_data=f"fw_new_pair:{A_pair}:{B_pair}"
+            ))
+        else:
+            chat_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
 
     if shown_pairs and chat_buttons:
         kb.row(types.InlineKeyboardButton("⠀", callback_data="none"))
