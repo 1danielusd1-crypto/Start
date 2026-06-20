@@ -2492,9 +2492,9 @@ def _forward_arrow_icon(ab_on: bool, ba_on: bool) -> str:
     if ab_on and ba_on:
         return "🔄"
     if ab_on:
-        return "📬⏩️"
+        return "⏩️"
     if ba_on:
-        return "📬⏪️"
+        return "⏪️"
     return "❌"
 
 
@@ -2511,7 +2511,7 @@ def _forward_fin_icon(ab_fin: bool, ba_fin: bool) -> str:
 def build_forward_status_lines() -> list[str]:
     """Статус В22: короткая схема связей.
     Всегда показываем Чат A первым:
-    Чат A -(📬⏩️/📬⏪️/📬🔄)-(💰▶️/💰◀️/💰🔄/❌)-Чат B
+    Чат A -(⏩️/⏪️/🔄)-(💰▶️/💰◀️/💰🔄/❌)-Чат B
     """
     lines = []
     fr = data.get("forward_rules", {}) or {}
@@ -7452,9 +7452,9 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
             types.InlineKeyboardButton(f"Чат Б: {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
         )
         kb.row(
-            types.InlineKeyboardButton(_forward_new_toggle_label(ba_on, "📬⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on, "📬⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on and ba_on, "📬🔄"), callback_data=f"fw_new_mode:{A}:{B}:two"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ba_on, "⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on, "⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
+            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on and ba_on, "🔄"), callback_data=f"fw_new_mode:{A}:{B}:two"),
             types.InlineKeyboardButton(_forward_new_toggle_label(ba_fin, "💰◀️"), callback_data=f"fw_new_fin:{A}:{B}:ba"),
             types.InlineKeyboardButton(_forward_new_toggle_label(ab_fin, "💰▶️"), callback_data=f"fw_new_fin:{A}:{B}:ab"),
             types.InlineKeyboardButton("❌", callback_data=f"fw_new_clear:{A}:{B}"),
