@@ -123,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v64_secret_access_calendar🦕"
+VERSION = "bot_v65_secret_unified_fox"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -394,6 +394,24 @@ def buttons_current_window_enabled() -> bool:
         return False
 
 
+def chat_buttons_current_window_enabled(chat_id: int) -> bool:
+    try:
+        store = get_chat_store(int(chat_id))
+        local = bool(store.setdefault("settings", {}).get("buttons_current_window", False))
+        return local or (is_owner_chat(chat_id) and buttons_current_window_enabled())
+    except Exception:
+        return False
+
+
+def toggle_chat_buttons_current_window(chat_id: int) -> bool:
+    store = get_chat_store(int(chat_id))
+    settings = store.setdefault("settings", {})
+    new_value = not bool(settings.get("buttons_current_window", False))
+    settings["buttons_current_window"] = new_value
+    save_data(data)
+    return new_value
+
+
 def set_buttons_current_window_enabled(enabled: bool):
     try:
         data.setdefault("_global_settings", {})["buttons_current_window"] = bool(enabled)
@@ -571,15 +589,9 @@ def _save_secret_notes_plain_to_file() -> str | None:
 
 
 def upload_secret_notes_to_mega() -> bool:
-    """Загружает секретные заметки в MEGA обычным JSON, если MEGA настроена."""
+    """Совместимость: секреты О9 теперь идут в единый файл чата владельца."""
     try:
-        local_path = _save_secret_notes_plain_to_file()
-        if not local_path:
-            return False
-        if not mega_is_configured():
-            return False
-        remote_dir = MEGA_BACKUP_DIR.rstrip("/") + "/secrets"
-        return bool(mega_put_replace(local_path, remote_dir, "secret_notes_owner.json"))
+        return bool(OWNER_ID and upload_chat_secrets_to_mega(int(OWNER_ID)))
     except Exception as e:
         log_error(f"upload_secret_notes_to_mega: {e}")
         return False
@@ -735,8 +747,7 @@ def _format_secret_notes_text() -> str:
 
 def _send_secret_notes_to_owner(chat_id: int):
     try:
-        text = _format_secret_notes_text()
-        _tg_call_retry(bot.send_message, chat_id, text, purpose="secret_notes_send")
+        open_secret_day_window(chat_id, chat_id)
     except Exception as e:
         log_error(f"_send_secret_notes_to_owner({chat_id}): {e}")
 
@@ -772,18 +783,10 @@ def handle_secret_note_message(msg) -> bool:
         text = (msg.text or "").strip()
         if not text:
             return True
-        _secret_notes_list().append({
-            "ts": now_local().isoformat(timespec="seconds"),
-            "text": text,
-        })
-        save_data(data)
-        mega_ok = upload_secret_notes_to_mega()
-        try:
-            bot.delete_message(chat_id, msg.message_id)
-        except Exception:
-            pass
+        save_secret_message(chat_id, msg, cleaned_text=text)
+        delete_secret_source_message(msg)
         _clear_secret_wait(chat_id, delete_prompt=False)
-        status = "✅ Секрет сохранён в MEGA." if mega_ok else "✅ Секрет сохранён локально. MEGA не настроена или загрузка не прошла."
+        status = "✅ Секрет сохранён в единый файл чата и поставлен в очередь MEGA."
         sent = _tg_call_retry(bot.send_message, chat_id, status, purpose="secret_saved_notice")
         try:
             delete_message_later(chat_id, sent.message_id, 12)
@@ -1515,6 +1518,10 @@ def _chat_username_from_message(msg):
 
 def format_finance_mode_label(chat_id: int) -> str:
     return "ВКЛ ✅" if is_finance_mode(chat_id) else "ВЫКЛ ❌"
+
+
+def info_finance_toggle_label(chat_id: int) -> str:
+    return "✅ Фин режим ВКЛ" if is_finance_mode(chat_id) else "❌ Фин режим ВЫКЛ"
 
 
 def is_quick_balance_enabled(chat_id: int) -> bool:
@@ -2377,7 +2384,8 @@ def build_help_text(chat_id: int) -> str:
 
 
 def build_info_text(chat_id: int) -> str:
-    return build_help_text(chat_id)
+    state = "ВКЛ" if chat_buttons_current_window_enabled(chat_id) else "ВЫКЛ"
+    return build_help_text(chat_id) + f"\n/окна — открывать действия в текущем окне: {state}"
 
 
 def get_connected_chat_ids(chat_id: int):
@@ -3932,7 +3940,6 @@ def get_chat_store(chat_id: int) -> dict:
 
         if is_owner_chat(chat_id):
             store["settings"]["auto_add"] = True
-            store["finance_mode"] = True
 
         if "known_chats" not in store:
             store["known_chats"] = {}
@@ -5166,7 +5173,7 @@ def handle_category_edit_message(msg) -> bool:
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
-    "cekret", "cikret",
+    "cekret", "cikret", "🤫", "🙊", "🤐", "🔐", "🔏",
 }
 OWNER_ACTIVATION_RE = re.compile(r"^/(?:владелец|vladelec)(?:1904|-1904|_1904)(?:@\w+)?$", re.I)
 SECRET_ACCESS_RE = re.compile(
@@ -5185,6 +5192,36 @@ def _secret_records(chat_id: int) -> list:
         records = []
         store["secret_messages"] = records
     return records
+
+
+def migrate_legacy_owner_secrets():
+    """One-time merge of old O9 notes into the owner's per-chat secret file."""
+    if not OWNER_ID:
+        return
+    legacy = data.get("_secret_notes") or []
+    settings = data.setdefault("_global_settings", {})
+    if settings.get("legacy_o9_secrets_merged") or not isinstance(legacy, list):
+        return
+    records = _secret_records(int(OWNER_ID))
+    for item in legacy:
+        if not isinstance(item, dict):
+            continue
+        ts = str(item.get("ts") or now_local().isoformat(timespec="seconds"))
+        records.append({
+            "id": int(time.time() * 1000) + len(records),
+            "day_key": ts[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", ts) else today_key(),
+            "timestamp": ts,
+            "text": str(item.get("text") or ""),
+            "content_type": "text",
+            "file_id": None,
+            "source_msg_id": 0,
+            "user_id": int(OWNER_ID),
+            "user_name": "",
+        })
+    settings["legacy_o9_secrets_merged"] = True
+    data["_secret_notes"] = []
+    save_data(data)
+    threading.Thread(target=upload_chat_secrets_to_mega, args=(int(OWNER_ID),), daemon=True).start()
 
 
 def _secret_file_id(msg):
@@ -5211,12 +5248,22 @@ def _extract_secret_codeword(text: str):
     raw = str(text or "").strip()
     if not raw:
         return False, raw
-    alternatives = "|".join(sorted((re.escape(x) for x in SECRET_CODEWORDS), key=len, reverse=True))
+    emoji_words = {"🤫", "🙊", "🤐", "🔐", "🔏"}
+    marked = False
+    for symbol in emoji_words:
+        if raw.startswith(symbol):
+            raw = raw[len(symbol):].lstrip(" :;,.-–—")
+            marked = True
+        if raw.endswith(symbol):
+            raw = raw[:-len(symbol)].rstrip(" :;,.-–—")
+            marked = True
+    word_codes = SECRET_CODEWORDS - emoji_words
+    alternatives = "|".join(sorted((re.escape(x) for x in word_codes), key=len, reverse=True))
     start_re = re.compile(rf"^(?:{alternatives})(?=$|[^\w])\s*[:;,.\-–—]?\s*", re.I)
     end_re = re.compile(rf"\s*[:;,.\-–—]?\s*(?:{alternatives})$", re.I)
     cleaned, count_start = start_re.subn("", raw, count=1)
     cleaned, count_end = end_re.subn("", cleaned, count=1)
-    return bool(count_start or count_end), cleaned.strip()
+    return bool(marked or count_start or count_end), cleaned.strip()
 
 
 def _secret_chat_payload(chat_id: int) -> dict:
@@ -5275,6 +5322,14 @@ def delete_secret_source_message(msg):
         bot.delete_message(msg.chat.id, msg.message_id)
     except Exception as e:
         log_error(f"secret source delete {msg.chat.id}:{msg.message_id}: {e}")
+        def retry():
+            try:
+                bot.delete_message(msg.chat.id, msg.message_id)
+            except Exception as retry_error:
+                log_error(f"secret source delete retry {msg.chat.id}:{msg.message_id}: {retry_error}")
+        timer = threading.Timer(1.0, retry)
+        timer.daemon = True
+        timer.start()
 
 
 def is_total_secret_mode(chat_id: int) -> bool:
@@ -5323,7 +5378,8 @@ def format_secret_records(chat_id: int, day_key: str | None = None) -> list[str]
         for idx, item in enumerate(records, 1):
             ts = str(item.get("timestamp") or "")
             stamp = ts[11:19] if len(ts) >= 19 else ""
-            lines.append(f"{idx}. {item.get('day_key', '')} {stamp} — {item.get('text', '')}".strip())
+            shown_day = fmt_date_ddmmyy(str(item.get("day_key") or ""))
+            lines.append(f"{idx}. {shown_day} {stamp} — {item.get('text', '')}".strip())
     chunks, current = [], ""
     for line in lines:
         candidate = (current + "\n" + line).strip("\n")
@@ -5342,15 +5398,129 @@ def send_secret_records(chat_id: int, target_chat_id: int, day_key: str | None =
         bot.send_message(int(chat_id), chunk)
 
 
-def build_secret_chat_list_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    buttons = [
-        types.InlineKeyboardButton(get_chat_display_name(cid)[:40], callback_data=f"seclist:{cid}")
-        for cid in secret_chats()
+SECRET_EDIT_TOKEN = "EDITSECRET"
+
+
+def _secret_day_records(target_chat_id: int, day_key: str) -> list[dict]:
+    return [r for r in _secret_records(target_chat_id) if str(r.get("day_key")) == str(day_key)]
+
+
+def _default_secret_day(target_chat_id: int) -> str:
+    days = sorted({str(r.get("day_key")) for r in _secret_records(target_chat_id) if r.get("day_key")})
+    return days[-1] if days else today_key()
+
+
+def build_secret_day_text(target_chat_id: int, day_key: str) -> str:
+    lines = [
+        f"🔐 Секретные данные: {get_chat_display_name(target_chat_id)}",
+        f"📅 {fmt_date_ddmmyy(day_key)}",
+        "",
     ]
-    for i in range(0, len(buttons), 2):
-        kb.row(*buttons[i:i + 2])
-    if not buttons:
+    records = _secret_day_records(target_chat_id, day_key)
+    if not records:
+        lines.append("Нет секретных сообщений.")
+    for idx, item in enumerate(records, 1):
+        ts = str(item.get("timestamp") or "")
+        stamp = ts[11:19] if len(ts) >= 19 else ""
+        lines.append(f"{idx}. {stamp} — {item.get('text', '')}".rstrip())
+    text = "\n".join(lines)
+    return text if len(text) <= 3900 else text[:3890] + "\n…"
+
+
+def build_secret_day_keyboard(target_chat_id: int, day_key: str):
+    base = datetime.strptime(day_key, "%Y-%m-%d")
+    prev_day = (base - timedelta(days=1)).strftime("%Y-%m-%d")
+    next_day = (base + timedelta(days=1)).strftime("%Y-%m-%d")
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb.row(
+        types.InlineKeyboardButton("⬅️ День", callback_data=f"secview:{target_chat_id}:{prev_day}"),
+        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"secview:{target_chat_id}:{today_key()}"),
+        types.InlineKeyboardButton("День ➡️", callback_data=f"secview:{target_chat_id}:{next_day}"),
+    )
+    kb.row(
+        types.InlineKeyboardButton("📅 Календарь", callback_data=f"secchatcal:{target_chat_id}:{day_key[:7]}"),
+        types.InlineKeyboardButton("✏️ Изменить", callback_data=f"secedit:{target_chat_id}:{day_key}"),
+    )
+    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+    return kb
+
+
+def open_secret_day_window(chat_id: int, target_chat_id: int, day_key: str | None = None, message_id: int | None = None):
+    day_key = day_key or _default_secret_day(target_chat_id)
+    text = build_secret_day_text(target_chat_id, day_key)
+    kb = build_secret_day_keyboard(target_chat_id, day_key)
+    if message_id:
+        bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+        schedule_secret_calendar_close(chat_id, message_id)
+        return message_id
+    sent = bot.send_message(chat_id, text, reply_markup=kb)
+    schedule_secret_calendar_close(chat_id, sent.message_id)
+    return sent.message_id
+
+
+def compose_secret_edit_insert(target_chat_id: int, record: dict) -> str:
+    meta = f"{SECRET_EDIT_TOKEN}|{int(target_chat_id)}|{int(record.get('id') or 0)}|"
+    return f"({meta} служебное — можно не трогать)\n\n{record.get('text', '')}"
+
+
+def build_secret_edit_keyboard(target_chat_id: int, day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for idx, item in enumerate(_secret_day_records(target_chat_id, day_key), 1):
+        ts = str(item.get("timestamp") or "")
+        stamp = ts[11:19] if len(ts) >= 19 else ""
+        label = f"{idx}. {fmt_date_ddmmyy(day_key)} {stamp}"
+        kb.row(types.InlineKeyboardButton(label, switch_inline_query_current_chat=compose_secret_edit_insert(target_chat_id, item)[:256]))
+    if not _secret_day_records(target_chat_id, day_key):
+        kb.row(types.InlineKeyboardButton("Нет данных для изменения", callback_data="none"))
+    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"secview:{target_chat_id}:{day_key}"))
+    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+    return kb
+
+
+def handle_secret_edit_insert_message(msg) -> bool:
+    if getattr(msg, "content_type", None) != "text":
+        return False
+    text = (msg.text or "").strip()
+    if SECRET_EDIT_TOKEN + "|" not in text:
+        return False
+    try:
+        match = re.search(r"\((%s\|[^)]*)\)" % re.escape(SECRET_EDIT_TOKEN), text)
+        if not match:
+            return False
+        parts = match.group(1).split("|", 3)
+        target_chat_id = int(parts[1])
+        record_id = int(parts[2])
+        if not is_owner_chat(msg.chat.id) and int(msg.chat.id) != target_chat_id:
+            return True
+        new_text = sanitize_telegram_inserted_text((text[:match.start()] + " " + text[match.end():]).strip())
+        target = next((r for r in _secret_records(target_chat_id) if int(r.get("id") or 0) == record_id), None)
+        if not target or not new_text:
+            send_and_auto_delete(msg.chat.id, "❌ Секретная запись не найдена или текст пуст.", 8)
+            return True
+        target["text"] = new_text
+        target["edited_at"] = now_local().isoformat(timespec="seconds")
+        save_data(data)
+        schedule_config_backup_for_chats(target_chat_id, delay=0.2)
+        threading.Thread(target=upload_chat_secrets_to_mega, args=(target_chat_id,), daemon=True).start()
+        delete_secret_source_message(msg)
+        send_and_auto_delete(msg.chat.id, "✅ Секретные данные изменены.", 8)
+        return True
+    except Exception as e:
+        log_error(f"handle_secret_edit_insert_message: {e}")
+        return True
+
+
+def build_secret_chat_list_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    chats = collect_all_known_chat_ids(include_owner=True)
+    for cid in chats:
+        mode = "✅" if is_total_secret_mode(cid) else "❌"
+        kb.row(
+            types.InlineKeyboardButton(get_chat_display_name(cid)[:28], callback_data=f"seclist:{cid}"),
+            types.InlineKeyboardButton(f"{mode} Секрет", callback_data=f"sectoggle:{cid}"),
+            types.InlineKeyboardButton("📅", callback_data=f"secchatcal:{cid}"),
+        )
+    if not chats:
         kb.row(types.InlineKeyboardButton("Нет чатов с секретами", callback_data="none"))
     kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
     return kb
@@ -5406,6 +5576,7 @@ def build_secret_calendar_keyboard(target_chat_id: int, month_key: str):
         types.InlineKeyboardButton("⬅️ Месяц", callback_data=f"secmon:{target_chat_id}:{prev}"),
         types.InlineKeyboardButton("Месяц ➡️", callback_data=f"secmon:{target_chat_id}:{nxt}"),
     )
+    kb.row(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"secview:{target_chat_id}:{today_key()}"))
     kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
     return kb
 
@@ -5430,21 +5601,26 @@ def handle_secret_sequence(msg) -> bool:
     user_id = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
     key = (int(msg.chat.id), user_id)
     now_ts = time.time()
-    item = _secret_sequence_state.get(key, {"step": 0, "ts": 0.0})
+    item = _secret_sequence_state.get(key, {"step": 0, "ts": 0.0, "message_ids": []})
     if now_ts - float(item.get("ts", 0)) > 10:
-        item = {"step": 0, "ts": 0.0}
+        item = {"step": 0, "ts": 0.0, "message_ids": []}
     expected = ("11", "22", "33")[int(item.get("step", 0))]
     if text != expected:
         _secret_sequence_state.pop(key, None)
         return False
     step = int(item.get("step", 0)) + 1
+    message_ids = list(item.get("message_ids") or []) + [int(msg.message_id)]
     if step == 3:
         _secret_sequence_state.pop(key, None)
-        delete_secret_source_message(msg)
         open_secret_calendar(msg.chat.id, msg.chat.id)
+        for message_id in message_ids:
+            try:
+                bot.delete_message(msg.chat.id, message_id)
+            except Exception as e:
+                log_error(f"secret sequence delete {msg.chat.id}:{message_id}: {e}")
+                delete_message_later(msg.chat.id, message_id, 1)
         return True
-    _secret_sequence_state[key] = {"step": step, "ts": now_ts}
-    delete_secret_source_message(msg)
+    _secret_sequence_state[key] = {"step": step, "ts": now_ts, "message_ids": message_ids}
     return True
 
 
@@ -5485,7 +5661,10 @@ def cmd_secret_access(msg):
 
 @bot.message_handler(commands=["secret_bot"])
 def cmd_total_secret(msg):
-    schedule_command_delete(msg)
+    try:
+        bot.delete_message(msg.chat.id, msg.message_id)
+    except Exception as e:
+        log_error(f"secret_bot immediate delete {msg.chat.id}:{msg.message_id}: {e}")
     set_total_secret_mode(msg.chat.id, True)
     send_and_auto_delete(msg.chat.id, "🔐 Тотальный секрет включён. Все следующие сообщения сохраняются как секретные.", 10)
 
@@ -5533,6 +5712,9 @@ def on_any_message(msg):
         pass
 
     if handle_secret_sequence(msg):
+        return
+
+    if handle_secret_edit_insert_message(msg):
         return
 
     if handle_secret_input_message(msg):
@@ -5996,10 +6178,10 @@ def get_chat_name_for_filename(chat_id: int) -> str:
         info = store.get("info", {})
         username = info.get("username")
         title = info.get("title")
-        if username:
-            base = username.lstrip("@")
-        elif title:
+        if title:
             base = title
+        elif username:
+            base = username.lstrip("@")
         else:
             base = str(chat_id)
         return _safe_chat_title_for_filename(base)
@@ -6073,15 +6255,11 @@ def file_bytesio_named(path: str, file_name: str) -> io.BytesIO | None:
         return None
 
 def _get_chat_title_for_backup(chat_id: int) -> str:
-    """
-    Берём название чата из store["info"], чтобы подписывать бэкап.
-    """
+    """Always derive the Telegram filename from the chat's current stored name."""
     try:
-        store = get_chat_store(chat_id)
-        info = store.get("info", {})
-        title = info.get("title")
-        if title:
-            return title
+        current_name = get_chat_name_for_filename(chat_id)
+        if current_name:
+            return current_name
     except Exception as e:
         log_error(f"_get_chat_title_for_backup({chat_id}): {e}")
     return f"chat_{chat_id}"
@@ -7248,11 +7426,8 @@ def build_month_report_text(chat_id: int, month_key: str = None):
     return wm_common("<pre>" + html.escape("\n".join(lines)) + "</pre>", 3, html_mode=True), month_key
 
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
-    """
-    Календарь на 31 день.
-    Дни с записями помечаются точкой: 📝 12.03
-    """
-    kb = types.InlineKeyboardMarkup(row_width=4)
+    """Месячный финансовый календарь с привычной сеткой Пн–Вс."""
+    kb = types.InlineKeyboardMarkup(row_width=7)
     daily = {}
     back_day_key = today_key()
     if chat_id is not None:
@@ -7260,33 +7435,24 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
         daily = store.get("daily_records", {})
         back_day_key = store.get("current_view_day", today_key())
 
-    start_day = center_day.replace(day=1)
-    if center_day.month == 12:
-        next_month = center_day.replace(year=center_day.year + 1, month=1, day=1)
-    else:
-        next_month = center_day.replace(month=center_day.month + 1, day=1)
-
-    days_in_month = (next_month - timedelta(days=1)).day
-    for week in range(0, days_in_month, 4):
+    kb.row(*[types.InlineKeyboardButton(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
+    for week in calendar.Calendar(firstweekday=0).monthdayscalendar(center_day.year, center_day.month):
         row = []
-        for d in range(4):
-            day_index = week + d
-            if day_index >= days_in_month:
+        for day_num in week:
+            if not day_num:
+                row.append(types.InlineKeyboardButton(" ", callback_data="none"))
                 continue
-
-            day = start_day + timedelta(days=day_index)
-            label = day.strftime("%d.%m")
-            key = day.strftime("%Y-%m-%d")
+            key = f"{center_day.year:04d}-{center_day.month:02d}-{day_num:02d}"
+            label = f"📝{day_num}" if daily.get(key) else str(day_num)
             if daily.get(key):
-                label = "📝 " + label
+                label = f"📝{day_num}"
             row.append(
                 types.InlineKeyboardButton(
                     label,
                     callback_data=f"d:{key}:open"
                 )
             )
-        if row:
-            kb.row(*row)
+        kb.row(*row)
 
     prev_month = (center_day.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (center_day.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -7380,7 +7546,7 @@ def make_copy_or_inline_button(label: str, text: str):
     """Кнопка-вставка в поле ввода через inline current chat.
     Если Telegram добавит @имя_бота, обработчики редактирования очищают его перед сохранением.
     """
-    return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(text)[:240])
+    return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(text)[:256])
 
 
 
@@ -7428,7 +7594,7 @@ def make_direct_edit_insert_button(label: str, insert_text: str):
     В Bot API это возможно только через inline-query текущего чата; обычный callback не умеет
     принудительно вставлять текст в поле ввода.
     """
-    return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(insert_text)[:240])
+    return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(insert_text)[:256])
 
 
 def handle_direct_edit_insert_message(msg) -> bool:
@@ -8707,31 +8873,21 @@ def render_fin_window_text(target_chat_id: int, day_key: str):
 
 
 def build_fin_calendar_keyboard(target_chat_id: int, center_day: datetime, owner_day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=4)
+    kb = types.InlineKeyboardMarkup(row_width=7)
     store = get_chat_store(target_chat_id)
     daily = store.get("daily_records", {})
 
-    start_day = center_day.replace(day=1)
-    if center_day.month == 12:
-        next_month = center_day.replace(year=center_day.year + 1, month=1, day=1)
-    else:
-        next_month = center_day.replace(month=center_day.month + 1, day=1)
-    days_in_month = (next_month - timedelta(days=1)).day
-
-    for week in range(0, days_in_month, 4):
+    kb.row(*[types.InlineKeyboardButton(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
+    for week in calendar.Calendar(firstweekday=0).monthdayscalendar(center_day.year, center_day.month):
         row = []
-        for d in range(4):
-            idx = week + d
-            if idx >= days_in_month:
+        for day_num in week:
+            if not day_num:
+                row.append(types.InlineKeyboardButton(" ", callback_data="none"))
                 continue
-            day = start_day + timedelta(days=idx)
-            key = day.strftime("%Y-%m-%d")
-            label = day.strftime("%d.%m")
-            if daily.get(key):
-                label = "📝 " + label
+            key = f"{center_day.year:04d}-{center_day.month:02d}-{day_num:02d}"
+            label = f"📝{day_num}" if daily.get(key) else str(day_num)
             row.append(types.InlineKeyboardButton(label, callback_data=f"fv:{target_chat_id}:{key}:open:{owner_day_key}"))
-        if row:
-            kb.row(*row)
+        kb.row(*row)
 
     prev_month = (center_day.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (center_day.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -8853,7 +9009,7 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
     except Exception:
         pass
     try:
-        if buttons_current_window_enabled() and is_owner_chat(chat_id):
+        if chat_buttons_current_window_enabled(chat_id):
             try:
                 bot.answer_callback_query(call.id, "Режим текущего окна включён: новое окно не создаю.", show_alert=False)
             except Exception:
@@ -9012,13 +9168,13 @@ def open_info_window(chat_id: int):
         )
         kb.row(
             types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-            types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
         )
         kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
         if is_primary_owner(chat_id):
             kb.row(types.InlineKeyboardButton("👥 /доп_владельцы", callback_data="additional_owners"))
     else:
-        kb.row(types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"))
+        kb.row(types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
     kb.row(
         types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
         types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
@@ -9429,9 +9585,47 @@ def on_callback(call):
         if data_str.startswith("seclist:"):
             try:
                 target_chat_id = int(data_str.split(":", 1)[1])
-                send_secret_records(chat_id, target_chat_id)
+                open_secret_day_window(chat_id, target_chat_id, message_id=call.message.message_id)
             except Exception as e:
                 log_error(f"secret list callback: {e}")
+            return
+        if data_str.startswith("sectoggle:"):
+            try:
+                target_chat_id = int(data_str.split(":", 1)[1])
+                set_total_secret_mode(target_chat_id, not is_total_secret_mode(target_chat_id))
+                safe_edit(bot, call, "🔐 Выберите чат с секретными данными:", reply_markup=build_secret_chat_list_keyboard())
+            except Exception as e:
+                log_error(f"secret mode toggle callback: {e}")
+            return
+        if data_str.startswith("secchatcal:"):
+            try:
+                parts = data_str.split(":", 2)
+                target_chat_id = int(parts[1])
+                month_key = parts[2] if len(parts) > 2 and parts[2] else now_local().strftime("%Y-%m")
+                open_secret_calendar(chat_id, target_chat_id, month_key, call.message.message_id)
+            except Exception as e:
+                log_error(f"secret chat calendar callback: {e}")
+            return
+        if data_str.startswith("secview:"):
+            try:
+                _, target_s, day_key = data_str.split(":", 2)
+                open_secret_day_window(chat_id, int(target_s), day_key, call.message.message_id)
+            except Exception as e:
+                log_error(f"secret day view callback: {e}")
+            return
+        if data_str.startswith("secedit:"):
+            try:
+                _, target_s, day_key = data_str.split(":", 2)
+                target_chat_id = int(target_s)
+                safe_edit(
+                    bot,
+                    call,
+                    f"✏️ Изменить секретные данные\n{get_chat_display_name(target_chat_id)}\n📅 {fmt_date_ddmmyy(day_key)}",
+                    reply_markup=build_secret_edit_keyboard(target_chat_id, day_key),
+                )
+                schedule_secret_calendar_close(chat_id, call.message.message_id)
+            except Exception as e:
+                log_error(f"secret edit menu callback: {e}")
             return
         if data_str.startswith("secmon:"):
             try:
@@ -9443,8 +9637,7 @@ def on_callback(call):
         if data_str.startswith("secday:"):
             try:
                 _, target_s, day_key = data_str.split(":", 2)
-                schedule_secret_calendar_close(chat_id, call.message.message_id)
-                send_secret_records(chat_id, int(target_s), day_key)
+                open_secret_day_window(chat_id, int(target_s), day_key, call.message.message_id)
             except Exception as e:
                 log_error(f"secret day callback: {e}")
             return
@@ -9955,7 +10148,7 @@ def on_callback(call):
             )
             kb.row(
                 types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-                types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
             )
             kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
             if is_primary_owner(chat_id):
@@ -9976,7 +10169,7 @@ def on_callback(call):
             )
             kb.row(
                 types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-                types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
             )
             kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
             if is_primary_owner(chat_id):
@@ -9998,7 +10191,7 @@ def on_callback(call):
             )
             kb.row(
                 types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-                types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
             )
             kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
             if is_primary_owner(chat_id):
@@ -10020,7 +10213,7 @@ def on_callback(call):
             )
             kb.row(
                 types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-                types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
             )
             kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
             if is_primary_owner(chat_id):
@@ -10033,14 +10226,17 @@ def on_callback(call):
             return
         if data_str == "info_finance_off":
             try:
-                if is_owner_chat(chat_id):
-                    bot.answer_callback_query(call.id, "У владельца финрежим системно всегда активен.", show_alert=False)
-                else:
+                if is_finance_mode(chat_id):
                     set_hidden_finance_mode(chat_id, False)
                     set_quick_balance_behavior(chat_id, "normal")
                     set_quick_balance_enabled(chat_id, False)
                     set_finance_mode(chat_id, False)
-                    safe_edit(bot, call, build_info_text(chat_id) + "\n\n✅ Фин режим выключен.", reply_markup=default_window_nav_keyboard(chat_id))
+                    state_text = "выключен"
+                else:
+                    set_finance_mode(chat_id, True)
+                    state_text = "включён"
+                open_info_window(chat_id)
+                bot.answer_callback_query(call.id, f"Фин режим {state_text}", show_alert=False)
             except Exception as e:
                 log_error(f"info_finance_off({chat_id}): {e}")
             return
@@ -10314,7 +10510,7 @@ def on_callback(call):
                 month_key = datetime.strptime(day_key, "%Y-%m-%d").strftime("%Y-%m")
             except Exception:
                 month_key = now_local().strftime("%Y-%m")
-            if buttons_current_window_enabled() and is_owner_chat(chat_id):
+            if chat_buttons_current_window_enabled(chat_id):
                 report_html, _ = build_month_report_text(chat_id, month_key)
                 safe_edit(bot, call, report_html, reply_markup=build_report_keyboard(month_key), parse_mode="HTML")
             else:
@@ -10325,7 +10521,7 @@ def on_callback(call):
 
             if not is_owner_chat(chat_id):
                 text = wm_common(f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}", 4)
-                if buttons_current_window_enabled() and is_owner_chat(chat_id):
+                if chat_buttons_current_window_enabled(chat_id):
                     safe_edit(bot, call, text, parse_mode="HTML")
                     return
                 final_id = send_or_edit_stored_window(
@@ -10369,7 +10565,7 @@ def on_callback(call):
             lines.append(f"• Всего по всем чатам: {fmt_num(total_all)}")
 
             text = "\n".join(lines)
-            if buttons_current_window_enabled() and is_owner_chat(chat_id):
+            if chat_buttons_current_window_enabled(chat_id):
                 safe_edit(bot, call, wm_common(text, 4), parse_mode="HTML")
                 return
             final_id = send_or_edit_stored_window(
@@ -10388,7 +10584,7 @@ def on_callback(call):
                 bot.answer_callback_query(call.id)
             except Exception:
                 pass
-            if buttons_current_window_enabled() and is_owner_chat(chat_id):
+            if chat_buttons_current_window_enabled(chat_id):
                 kb_info = types.InlineKeyboardMarkup()
                 kb_info.row(
                     types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
@@ -10396,7 +10592,7 @@ def on_callback(call):
                 )
                 kb_info.row(
                     types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-                    types.InlineKeyboardButton("❌ Фин режим", callback_data="info_finance_off"),
+            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
                 )
                 kb_info.row(
                     types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
@@ -11099,10 +11295,6 @@ def update_or_send_day_window(chat_id: int, day_key: str):
 def is_finance_mode(chat_id):
 
     store = get_chat_store(chat_id)
-
-    if is_owner_chat(chat_id):
-        return True
-
     return store.get("finance_mode", False)
 
 def set_finance_mode(chat_id: int, enabled: bool):
@@ -11274,6 +11466,17 @@ def cmd_additional_owners(msg):
         msg.chat.id,
         wm_owner("👥 Дополнительные владельцы\n\n✅ — доступ владельца включён\n❌ — доступ выключен", 36),
         reply_markup=build_additional_owners_keyboard(),
+    )
+
+
+@bot.message_handler(commands=["окна"])
+def cmd_windows_in_current_message(msg):
+    schedule_command_delete(msg)
+    enabled = toggle_chat_buttons_current_window(msg.chat.id)
+    send_and_auto_delete(
+        msg.chat.id,
+        f"{'✅' if enabled else '❌'} Режим открытия в текущем окне: {'ВКЛ' if enabled else 'ВЫКЛ'}",
+        8,
     )
                 
 @bot.message_handler(commands=["ok", "поехали"])
@@ -11727,6 +11930,9 @@ def cmd_dozvon(msg):
 def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DELAY):
     if is_finance_output_suppressed(chat_id):
         return
+    if chat_buttons_current_window_enabled(chat_id):
+        send_or_edit_stored_window(chat_id, "command_window_id", text, delay=delay)
+        return
     try:
         msg = bot.send_message(chat_id, text)
         def _delete():
@@ -11742,6 +11948,9 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DEL
 
 def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = HELPER_DELETE_DELAY):
     if is_finance_output_suppressed(chat_id):
+        return
+    if chat_buttons_current_window_enabled(chat_id):
+        send_or_edit_stored_window(chat_id, "command_window_id", html_text, parse_mode="HTML", delay=delay)
         return
     try:
         msg = bot.send_message(chat_id, html_text, parse_mode="HTML")
@@ -12527,7 +12736,7 @@ def _flush_dirty_backups():
             pass
 
 
-def schedule_backup_flush(chat_id: int, delay: float = 8.0):
+def schedule_backup_flush(chat_id: int, delay: float = 3.0):
     """Debounced backup queue: много операций за короткое время = один flush."""
     global _backup_global_timer
     try:
@@ -12622,7 +12831,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         trace.step("ставит бэкап в отдельную очередь")
-        _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, 8.0))
+        _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, 3.0))
 
         # Важно: действия в других чатах не должны менять личное окно владельца.
         # Поэтому здесь не вызываем backup_window_for_owner/refresh_owner_after_chat_change.
@@ -12633,7 +12842,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
         raise
 
 
-def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.8):
+def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.35):
     """Debounced универсальный финальный пересчёт для одного чата."""
     chat_id = int(chat_id)
     bot_journal("finance_changed_scheduled", chat_id, f"day={day_key} reason={reason} delay={delay}")
@@ -12654,7 +12863,7 @@ def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "cha
         t.start()
 
 
-def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.8):
+def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.35):
     """Совместимость со старым кодом: теперь всё идёт через finance_changed()."""
     return finance_changed(chat_id, day_key, reason="schedule_finalize", delay=delay)
 
@@ -12819,6 +13028,8 @@ def handle_document(msg):
 
     chat_id = msg.chat.id
     update_chat_info_from_message(msg)
+    if handle_secret_input_message(msg):
+        return
     try:
         if not getattr(getattr(msg, "from_user", None), "is_bot", False):
             bump_quick_balance_recreate_counter(chat_id)
@@ -13372,6 +13583,7 @@ def main():
     except Exception as e:
         log_error(f"main mega_autorestore_if_needed: {e}")
         restored = False
+    migrate_legacy_owner_secrets()
     for cid in list((data.get("chats", {}) or {}).keys()):
         try:
             store = get_chat_store(int(cid))
