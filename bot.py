@@ -123,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v65_secret_unified_fox"
+VERSION = "bot_v66_secret_sync_owl"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -5314,6 +5314,7 @@ def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> d
     save_data(data)
     schedule_config_backup_for_chats(chat_id, delay=0.2)
     threading.Thread(target=upload_chat_secrets_to_mega, args=(chat_id,), daemon=True).start()
+    refresh_secret_windows(chat_id)
     return record
 
 
@@ -5349,6 +5350,30 @@ def handle_secret_input_message(msg) -> bool:
     if not marked and not is_total_secret_mode(msg.chat.id):
         return False
     save_secret_message(msg.chat.id, msg, cleaned_text=cleaned if marked else None)
+    delete_secret_source_message(msg)
+    return True
+
+
+def handle_secret_edited_message(msg) -> bool:
+    """Update an existing secret by Telegram message_id, or capture an edit that became secret."""
+    chat_id = int(msg.chat.id)
+    message_id = int(getattr(msg, "message_id", 0) or 0)
+    record = next(
+        (r for r in _secret_records(chat_id) if int(r.get("source_msg_id") or 0) == message_id),
+        None,
+    )
+    if record is None:
+        return handle_secret_input_message(msg)
+    raw_text = getattr(msg, "text", None) or getattr(msg, "caption", None) or ""
+    marked, cleaned = _extract_secret_codeword(raw_text)
+    record["text"] = _secret_message_text(msg, cleaned_text=cleaned if marked else raw_text)
+    record["content_type"] = getattr(msg, "content_type", record.get("content_type", "text"))
+    record["file_id"] = _secret_file_id(msg) or record.get("file_id")
+    record["edited_at"] = now_local().isoformat(timespec="seconds")
+    save_data(data)
+    schedule_config_backup_for_chats(chat_id, delay=0.2)
+    threading.Thread(target=upload_chat_secrets_to_mega, args=(chat_id,), daemon=True).start()
+    refresh_secret_windows(chat_id)
     delete_secret_source_message(msg)
     return True
 
@@ -5441,8 +5466,72 @@ def build_secret_day_keyboard(target_chat_id: int, day_key: str):
         types.InlineKeyboardButton("📅 Календарь", callback_data=f"secchatcal:{target_chat_id}:{day_key[:7]}"),
         types.InlineKeyboardButton("✏️ Изменить", callback_data=f"secedit:{target_chat_id}:{day_key}"),
     )
-    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+    kb.row(
+        types.InlineKeyboardButton("🔙 Назад", callback_data="secbacklist"),
+        types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
+    )
     return kb
+
+
+def register_secret_window(viewer_chat_id: int, message_id: int, target_chat_id: int, kind: str, day_key: str | None = None, month_key: str | None = None):
+    store = get_chat_store(int(viewer_chat_id))
+    store["secret_active_window"] = {
+        "message_id": int(message_id),
+        "target_chat_id": int(target_chat_id),
+        "kind": str(kind),
+        "day_key": day_key,
+        "month_key": month_key,
+    }
+    save_data(data)
+
+
+def clear_secret_window(viewer_chat_id: int, message_id: int | None = None):
+    store = get_chat_store(int(viewer_chat_id))
+    active = store.get("secret_active_window") or {}
+    if message_id is None or int(active.get("message_id") or 0) == int(message_id):
+        store["secret_active_window"] = None
+        save_data(data)
+
+
+def refresh_secret_windows(target_chat_id: int):
+    target_chat_id = int(target_chat_id)
+    for viewer_s, viewer_store in list((data.get("chats", {}) or {}).items()):
+        active = (viewer_store or {}).get("secret_active_window") or {}
+        if int(active.get("target_chat_id") or 0) != target_chat_id:
+            continue
+        try:
+            viewer_id = int(viewer_s)
+            message_id = int(active.get("message_id") or 0)
+            kind = active.get("kind")
+            if not message_id:
+                continue
+            if kind == "day":
+                day_key = active.get("day_key") or _default_secret_day(target_chat_id)
+                bot.edit_message_text(
+                    build_secret_day_text(target_chat_id, day_key),
+                    chat_id=viewer_id,
+                    message_id=message_id,
+                    reply_markup=build_secret_day_keyboard(target_chat_id, day_key),
+                )
+            elif kind == "edit":
+                day_key = active.get("day_key") or _default_secret_day(target_chat_id)
+                bot.edit_message_text(
+                    f"✏️ Изменить секретные данные\n{get_chat_display_name(target_chat_id)}\n📅 {fmt_date_ddmmyy(day_key)}",
+                    chat_id=viewer_id,
+                    message_id=message_id,
+                    reply_markup=build_secret_edit_keyboard(target_chat_id, day_key),
+                )
+            elif kind == "calendar":
+                month_key = active.get("month_key") or now_local().strftime("%Y-%m")
+                bot.edit_message_text(
+                    f"🔐 Секретные сообщения\n{get_chat_display_name(target_chat_id)}\n📅 {month_key}",
+                    chat_id=viewer_id,
+                    message_id=message_id,
+                    reply_markup=build_secret_calendar_keyboard(target_chat_id, month_key),
+                )
+        except Exception as e:
+            if "message is not modified" not in str(e).lower():
+                log_error(f"refresh_secret_windows({target_chat_id}): {e}")
 
 
 def open_secret_day_window(chat_id: int, target_chat_id: int, day_key: str | None = None, message_id: int | None = None):
@@ -5451,9 +5540,11 @@ def open_secret_day_window(chat_id: int, target_chat_id: int, day_key: str | Non
     kb = build_secret_day_keyboard(target_chat_id, day_key)
     if message_id:
         bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+        register_secret_window(chat_id, message_id, target_chat_id, "day", day_key=day_key)
         schedule_secret_calendar_close(chat_id, message_id)
         return message_id
     sent = bot.send_message(chat_id, text, reply_markup=kb)
+    register_secret_window(chat_id, sent.message_id, target_chat_id, "day", day_key=day_key)
     schedule_secret_calendar_close(chat_id, sent.message_id)
     return sent.message_id
 
@@ -5502,6 +5593,7 @@ def handle_secret_edit_insert_message(msg) -> bool:
         save_data(data)
         schedule_config_backup_for_chats(target_chat_id, delay=0.2)
         threading.Thread(target=upload_chat_secrets_to_mega, args=(target_chat_id,), daemon=True).start()
+        refresh_secret_windows(target_chat_id)
         delete_secret_source_message(msg)
         send_and_auto_delete(msg.chat.id, "✅ Секретные данные изменены.", 8)
         return True
@@ -5522,7 +5614,10 @@ def build_secret_chat_list_keyboard():
         )
     if not chats:
         kb.row(types.InlineKeyboardButton("Нет чатов с секретами", callback_data="none"))
-    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+    kb.row(
+        types.InlineKeyboardButton("🔙 Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+        types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
+    )
     return kb
 
 
@@ -5545,6 +5640,7 @@ def schedule_secret_calendar_close(chat_id: int, message_id: int):
             bot.delete_message(chat_id, message_id)
         except Exception:
             pass
+        clear_secret_window(chat_id, message_id)
         with _secret_calendar_lock:
             _secret_calendar_timers.pop(key, None)
     timer = threading.Timer(60.0, close)
@@ -5577,7 +5673,10 @@ def build_secret_calendar_keyboard(target_chat_id: int, month_key: str):
         types.InlineKeyboardButton("Месяц ➡️", callback_data=f"secmon:{target_chat_id}:{nxt}"),
     )
     kb.row(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"secview:{target_chat_id}:{today_key()}"))
-    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+    kb.row(
+        types.InlineKeyboardButton("🔙 Назад", callback_data="secbacklist"),
+        types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
+    )
     return kb
 
 
@@ -5587,9 +5686,11 @@ def open_secret_calendar(chat_id: int, target_chat_id: int, month_key: str | Non
     kb = build_secret_calendar_keyboard(target_chat_id, month_key)
     if message_id:
         bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+        register_secret_window(chat_id, message_id, target_chat_id, "calendar", month_key=month_key)
         schedule_secret_calendar_close(chat_id, message_id)
         return message_id
     sent = bot.send_message(chat_id, text, reply_markup=kb)
+    register_secret_window(chat_id, sent.message_id, target_chat_id, "calendar", month_key=month_key)
     schedule_secret_calendar_close(chat_id, sent.message_id)
     return sent.message_id
 
@@ -9577,10 +9678,16 @@ def on_callback(call):
         # от финансового/скрытого режима.
         if data_str == "secclose":
             _cancel_secret_calendar_timer(chat_id, call.message.message_id)
+            clear_secret_window(chat_id, call.message.message_id)
             try:
                 bot.delete_message(chat_id, call.message.message_id)
             except Exception:
                 pass
+            return
+        if data_str == "secbacklist":
+            _cancel_secret_calendar_timer(chat_id, call.message.message_id)
+            clear_secret_window(chat_id, call.message.message_id)
+            safe_edit(bot, call, "🔐 Выберите чат с секретными данными:", reply_markup=build_secret_chat_list_keyboard())
             return
         if data_str.startswith("seclist:"):
             try:
@@ -9623,6 +9730,7 @@ def on_callback(call):
                     f"✏️ Изменить секретные данные\n{get_chat_display_name(target_chat_id)}\n📅 {fmt_date_ddmmyy(day_key)}",
                     reply_markup=build_secret_edit_keyboard(target_chat_id, day_key),
                 )
+                register_secret_window(chat_id, call.message.message_id, target_chat_id, "edit", day_key=day_key)
                 schedule_secret_calendar_close(chat_id, call.message.message_id)
             except Exception as e:
                 log_error(f"secret edit menu callback: {e}")
@@ -13226,6 +13334,11 @@ def on_any_channel_post(msg):
     except Exception as e:
         log_error(f"channel_post update_chat_info failed: {e}")
 
+    if handle_secret_sequence(msg):
+        return
+    if handle_secret_input_message(msg):
+        return
+
     try:
         bump_quick_balance_recreate_counter(msg.chat.id)
     except Exception:
@@ -13258,6 +13371,9 @@ def on_edited_channel_post(msg):
         update_chat_info_from_message(msg)
     except Exception as e:
         log_error(f"edited_channel_post update_chat_info failed: {e}")
+
+    if handle_secret_edited_message(msg):
+        return
 
     try:
         if is_finance_mode(msg.chat.id):
@@ -13297,6 +13413,9 @@ def on_edited_message(msg):
         update_chat_info_from_message(msg)
     except Exception:
         pass
+
+    if handle_secret_edited_message(msg):
+        return
 
     edit_text = _message_text_for_finance(msg)
     if is_forward_delete_command(edit_text):
