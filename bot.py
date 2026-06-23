@@ -28,6 +28,84 @@ from flask import Flask, request
 from collections import defaultdict, deque
 from contextlib import contextmanager
 
+
+# Короткие подписи применяются только к служебным кнопкам. Динамические
+# названия чатов сюда не попадают и всегда остаются без изменений.
+_INLINE_BUTTON_INIT = types.InlineKeyboardButton.__init__
+_COMPACT_BUTTON_LABELS = {
+    "⬅️ Назад осн. окно": "🏠",
+    "🔙 Назад осн. окно": "🏠",
+    "⏪ Назад осн. окно": "🏠",
+    "🔙 Назад": "⬅️",
+    "⬅️ Назад": "⬅️",
+    "❌ Закрыть": "✖️",
+    "❌ Закрыть статьи": "✖️",
+    "⬅️ Вчера": "◀️",
+    "➡️ Завтра": "▶️",
+    "⬅️ Пред. месяц": "◀️",
+    "След. месяц ➡️": "▶️",
+    "⬅️ Месяц": "◀️",
+    "➡️ Месяц": "▶️",
+    "Месяц ➡️": "▶️",
+    "⬅️ День": "◀️",
+    "День ➡️": "▶️",
+    "📅 Сегодня": "📅",
+    "📅 Календарь": "📅",
+    "📊 Отчёт": "📊",
+    "💰 Общий итог": "💰 Итог",
+    "📝 Редактировать": "✏️",
+    "ℹ️ Инфо": "ℹ️",
+    "🔁 Пересылка": "🔁",
+    "💰 Фин режим": "💰 Режим",
+    "🧪 PROCESS": "🧪",
+    "💾 BACKUP": "💾",
+    "📡 Проверить чаты": "📡",
+    "📡 Проверить все": "📡",
+    "🗑 Удалить выбранное": "🗑",
+    "🗑 Удалить статью": "🗑 Статью",
+    "➕ Добавить статью": "➕ Статью",
+    "✏️ Изменить статью": "✏️ Статью",
+    "📚 Описание статей": "📖 Статьи",
+    "📆 Выбор недели": "📆",
+    "🔙 Назад к статьям": "⬅️ Статьи",
+    "⏪ Назад к статьям": "⬅️ Статьи",
+    "🔙 К окну чата": "⬅️ Чат",
+    "🔙 Назад к чатам": "⬅️ Чаты",
+    "🔙 Назад к списку": "⬅️ Список",
+    "🔙 Назад в Инфо": "⬅️ ℹ️",
+    "🔙 Назад в окно выбора чатов": "⬅️ Чаты",
+    "👥 /доп_владельцы": "👥",
+    "📄 Скачать TXT": "📄 TXT",
+    "✅ Да": "✅",
+    "❌ Нет": "❌",
+    "Нет пользовательских статей": "Пусто",
+    "Нет данных для изменения": "Пусто",
+    "Нет доступных чатов": "Пусто",
+    "Нет чатов с финрежимом": "Пусто",
+    "Нет чатов с секретами": "Пусто",
+    "Нет чатов для выбора Чата Б": "Пусто",
+    "Удалённых нет": "Пусто",
+}
+
+
+def _compact_inline_button_init(self, text, *args, **kwargs):
+    text = _COMPACT_BUTTON_LABELS.get(str(text), text)
+    text = re.sub(r"^([✅❌]) Фин режим ВКЛ/ВЫКЛ$", r"\1 💰", str(text))
+    text = re.sub(r"^([✅❌](?:🔟)?) Как обычно — фин окно через 10 сообщений$", r"\1 Обычно", text)
+    text = re.sub(r"^([✅❌](?:3️⃣)?) Фин режим \+ быстрый остаток: открывать окно$", r"\1 Окно", text)
+    text = re.sub(r"^([✅❌](?:🥇)?) Фин режим \+ быстрый остаток: всегда первым$", r"\1 Первым", text)
+    text = re.sub(r"^([🙈❌]) Скрытые финансы$", r"\1 Скрыто", text)
+    text = re.sub(r"^([🪟✅❌]+) Фин окно$", r"\1", text)
+    text = re.sub(r"^([✅❌]) Секрет$", r"\1 🔐", text)
+    if text.startswith("Чат А: "):
+        text = "A: " + text[7:]
+    elif text.startswith("Чат Б: "):
+        text = "Б: " + text[7:]
+    _INLINE_BUTTON_INIT(self, text, *args, **kwargs)
+
+
+types.InlineKeyboardButton.__init__ = _compact_inline_button_init
+
 window_locks = defaultdict(threading.Lock)
 
 # ─────────────────────────────────────────────────────────────
@@ -123,7 +201,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v66_secret_sync_owl"
+VERSION = "bot_v67_secret_mega_media_compact"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -5183,6 +5261,7 @@ SECRET_ACCESS_RE = re.compile(
 _secret_sequence_state = {}
 _secret_calendar_timers = {}
 _secret_calendar_lock = threading.RLock()
+_secret_mega_locks = defaultdict(threading.Lock)
 
 
 def _secret_records(chat_id: int) -> list:
@@ -5229,10 +5308,106 @@ def _secret_file_id(msg):
         ct = getattr(msg, "content_type", "")
         value = getattr(msg, ct, None)
         if ct == "photo" and value:
-            return value[-1].file_id
+            # Telegram присылает несколько размеров. Для секретного архива
+            # намеренно сохраняем самый маленький вариант.
+            return value[0].file_id
         return getattr(value, "file_id", None)
     except Exception:
         return None
+
+
+def _secret_content_payload(msg) -> dict:
+    """JSON-описание сообщения, включая типы без файлового вложения."""
+    ct = str(getattr(msg, "content_type", "text") or "text")
+    value = getattr(msg, ct, None)
+    payload = {}
+    try:
+        if ct == "photo":
+            photos = list(value or [])
+            if photos:
+                photo = photos[0]
+                payload.update({
+                    "width": int(getattr(photo, "width", 0) or 0),
+                    "height": int(getattr(photo, "height", 0) or 0),
+                    "file_size": int(getattr(photo, "file_size", 0) or 0),
+                    "quality": "telegram_smallest",
+                })
+        elif ct in {"video", "animation", "video_note"}:
+            payload.update({
+                "duration": int(getattr(value, "duration", 0) or 0),
+                "width": int(getattr(value, "width", 0) or 0),
+                "height": int(getattr(value, "height", 0) or 0),
+                "file_size": int(getattr(value, "file_size", 0) or 0),
+                "mime_type": str(getattr(value, "mime_type", "") or ""),
+                "file_name": str(getattr(value, "file_name", "") or ""),
+            })
+        elif ct in {"audio", "voice"}:
+            payload.update({
+                "duration": int(getattr(value, "duration", 0) or 0),
+                "file_size": int(getattr(value, "file_size", 0) or 0),
+                "mime_type": str(getattr(value, "mime_type", "") or ""),
+                "file_name": str(getattr(value, "file_name", "") or ""),
+                "performer": str(getattr(value, "performer", "") or ""),
+                "title": str(getattr(value, "title", "") or ""),
+            })
+        elif ct == "document":
+            payload.update({
+                "file_name": str(getattr(value, "file_name", "") or ""),
+                "mime_type": str(getattr(value, "mime_type", "") or ""),
+                "file_size": int(getattr(value, "file_size", 0) or 0),
+            })
+        elif ct == "sticker":
+            payload.update({
+                "emoji": str(getattr(value, "emoji", "") or ""),
+                "set_name": str(getattr(value, "set_name", "") or ""),
+                "width": int(getattr(value, "width", 0) or 0),
+                "height": int(getattr(value, "height", 0) or 0),
+                "is_animated": bool(getattr(value, "is_animated", False)),
+                "is_video": bool(getattr(value, "is_video", False)),
+            })
+        elif ct == "location":
+            payload.update({
+                "latitude": getattr(value, "latitude", None),
+                "longitude": getattr(value, "longitude", None),
+                "horizontal_accuracy": getattr(value, "horizontal_accuracy", None),
+            })
+        elif ct == "venue":
+            location = getattr(value, "location", None)
+            payload.update({
+                "title": str(getattr(value, "title", "") or ""),
+                "address": str(getattr(value, "address", "") or ""),
+                "latitude": getattr(location, "latitude", None),
+                "longitude": getattr(location, "longitude", None),
+            })
+        elif ct == "contact":
+            payload.update({
+                "phone_number": str(getattr(value, "phone_number", "") or ""),
+                "first_name": str(getattr(value, "first_name", "") or ""),
+                "last_name": str(getattr(value, "last_name", "") or ""),
+                "user_id": getattr(value, "user_id", None),
+                "vcard": str(getattr(value, "vcard", "") or ""),
+            })
+        elif ct == "dice":
+            payload.update({
+                "emoji": str(getattr(value, "emoji", "") or ""),
+                "value": int(getattr(value, "value", 0) or 0),
+            })
+        elif ct == "poll":
+            payload.update({
+                "question": str(getattr(value, "question", "") or ""),
+                "type": str(getattr(value, "type", "") or ""),
+                "is_anonymous": bool(getattr(value, "is_anonymous", False)),
+                "options": [
+                    {
+                        "text": str(getattr(option, "text", "") or ""),
+                        "voter_count": int(getattr(option, "voter_count", 0) or 0),
+                    }
+                    for option in (getattr(value, "options", None) or [])
+                ],
+            })
+    except Exception as e:
+        log_error(f"_secret_content_payload({ct}): {e}")
+    return payload
 
 
 def _secret_message_text(msg, cleaned_text: str | None = None) -> str:
@@ -5277,21 +5452,88 @@ def _secret_chat_payload(chat_id: int) -> dict:
     }
 
 
+def _secret_media_remote_name(record: dict, telegram_path: str) -> str:
+    content = record.get("content") or {}
+    original = str(content.get("file_name") or os.path.basename(telegram_path or "") or "")
+    ext = os.path.splitext(original)[1].lower()
+    if not ext:
+        ext = {
+            "photo": ".jpg",
+            "video": ".mp4",
+            "animation": ".mp4",
+            "video_note": ".mp4",
+            "voice": ".ogg",
+            "audio": ".mp3",
+            "sticker": ".webp",
+        }.get(str(record.get("content_type") or ""), ".bin")
+    stem = mega_safe_name(os.path.splitext(original)[0], str(record.get("content_type") or "file"))
+    return (
+        f"{int(record.get('id') or 0)}_"
+        f"{int(record.get('source_msg_id') or 0)}_{stem}{ext[:10]}"
+    )
+
+
+def _upload_secret_record_media(chat_id: int, record: dict, remote_dir: str) -> bool:
+    file_id = record.get("file_id")
+    if not file_id:
+        return True
+    if record.get("mega_media_path"):
+        return True
+    local_dir = None
+    try:
+        file_info = bot.get_file(file_id)
+        telegram_path = str(getattr(file_info, "file_path", "") or "")
+        raw = bot.download_file(telegram_path)
+        remote_name = _secret_media_remote_name(record, telegram_path)
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        local_dir = tempfile.mkdtemp(
+            prefix=f"secret_{chat_id}_{threading.get_ident()}_",
+            dir=MEGA_LOCAL_TMP_DIR,
+        )
+        local_path = os.path.join(local_dir, remote_name)
+        with open(local_path, "wb") as media_file:
+            media_file.write(raw)
+        if not mega_put_replace(local_path, remote_dir, remote_name):
+            return False
+        record["mega_media_path"] = remote_dir.rstrip("/") + "/" + remote_name
+        record["mega_saved_at"] = now_local().isoformat(timespec="seconds")
+        record.pop("mega_media_error", None)
+        return True
+    except Exception as e:
+        record["mega_media_error"] = str(e)[:300]
+        log_error(f"_upload_secret_record_media({chat_id}): {e}")
+        return False
+    finally:
+        if local_dir:
+            try:
+                shutil.rmtree(local_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
 def upload_chat_secrets_to_mega(chat_id: int) -> bool:
     if not mega_is_configured():
         return False
-    try:
-        chat_id = int(chat_id)
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        slug = mega_chat_slug(chat_id)
-        filename = f"secret_{slug}.json"
-        path = os.path.join(MEGA_LOCAL_TMP_DIR, filename)
-        _save_json(path, _secret_chat_payload(chat_id))
-        remote_dir = f"{MEGA_BACKUP_DIR.rstrip('/')}/secrets/{slug}"
-        return bool(mega_put_replace(path, remote_dir, filename))
-    except Exception as e:
-        log_error(f"upload_chat_secrets_to_mega({chat_id}): {e}")
-        return False
+    chat_id = int(chat_id)
+    with _secret_mega_locks[chat_id]:
+        try:
+            os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+            slug = mega_chat_slug(chat_id)
+            filename = f"secret_{slug}.json"
+            path = os.path.join(MEGA_LOCAL_TMP_DIR, filename)
+            remote_dir = f"{MEGA_BACKUP_DIR.rstrip('/')}/secrets/{slug}"
+            media_dir = remote_dir.rstrip("/") + "/media"
+            media_ok = True
+            for record in list(_secret_records(chat_id)):
+                if record.get("file_id"):
+                    media_ok = _upload_secret_record_media(chat_id, record, media_dir) and media_ok
+            save_data(data)
+            _save_json(path, _secret_chat_payload(chat_id))
+            json_ok = bool(mega_put_replace(path, remote_dir, filename))
+            return bool(media_ok and json_ok)
+        except Exception as e:
+            log_error(f"upload_chat_secrets_to_mega({chat_id}): {e}")
+            return False
 
 
 def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> dict:
@@ -5304,6 +5546,7 @@ def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> d
         "text": _secret_message_text(msg, cleaned_text),
         "content_type": getattr(msg, "content_type", "text"),
         "file_id": _secret_file_id(msg),
+        "content": _secret_content_payload(msg),
         "source_msg_id": int(getattr(msg, "message_id", 0) or 0),
         "user_id": int(getattr(user, "id", 0) or 0),
         "user_name": getattr(user, "username", None) or getattr(user, "first_name", None) or "",
@@ -5368,7 +5611,13 @@ def handle_secret_edited_message(msg) -> bool:
     marked, cleaned = _extract_secret_codeword(raw_text)
     record["text"] = _secret_message_text(msg, cleaned_text=cleaned if marked else raw_text)
     record["content_type"] = getattr(msg, "content_type", record.get("content_type", "text"))
-    record["file_id"] = _secret_file_id(msg) or record.get("file_id")
+    previous_file_id = record.get("file_id")
+    new_file_id = _secret_file_id(msg)
+    record["file_id"] = new_file_id or previous_file_id
+    record["content"] = _secret_content_payload(msg) or record.get("content", {})
+    if new_file_id and new_file_id != previous_file_id:
+        record.pop("mega_media_path", None)
+        record.pop("mega_saved_at", None)
     record["edited_at"] = now_local().isoformat(timespec="seconds")
     save_data(data)
     schedule_config_backup_for_chats(chat_id, delay=0.2)
@@ -8051,13 +8300,13 @@ def _forward_new_pair_buttons(A: int, B: int):
 
     По уточнённому ТЗ:
     • кнопка Чата A сверху остаётся выбором этого чата как нового Чата A;
-    • кнопка Чата B сверху открывает настройки именно этой пары и помечается 🛠;
+    • кнопка Чата B сверху открывает настройки именно этой пары и помечается 🛠️ перед именем;
     • ниже разделителя Чаты A из готовых пар не дублируются, чтобы список не захламлялся.
     """
     arrow, fin, *_ = _forward_pair_icons(A, B)
     return (
         types.InlineKeyboardButton(f"{chat_button_title(A)} ({arrow})", callback_data=f"fw_new_src:{A}"),
-        types.InlineKeyboardButton(f"({fin}) {chat_button_title(B)} 🛠", callback_data=f"fw_new_pair:{A}:{B}"),
+        types.InlineKeyboardButton(f"({fin}) 🛠️ {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
     )
 
 
