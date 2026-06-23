@@ -201,7 +201,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v67_secret_mega_media_compact"
+VERSION = "bot_v68_secret_media_view_low_video"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -5473,11 +5473,48 @@ def _secret_media_remote_name(record: dict, telegram_path: str) -> str:
     )
 
 
+def _compress_secret_video_low(input_path: str, output_path: str) -> bool:
+    """Сжимает секретное видео для MEGA, сохраняя пропорции и чётные размеры."""
+    if not shutil.which("ffmpeg"):
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", input_path,
+                "-vf", "scale='min(640,iw)':-2",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "33",
+                "-maxrate", "700k", "-bufsize", "1400k",
+                "-c:a", "aac", "-b:a", "64k",
+                "-movflags", "+faststart",
+                output_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=max(180, MEGA_TIMEOUT * 2),
+            check=False,
+        )
+        return bool(
+            result.returncode == 0
+            and os.path.exists(output_path)
+            and os.path.getsize(output_path) > 0
+        )
+    except Exception as e:
+        log_error(f"_compress_secret_video_low: {e}")
+        return False
+
+
 def _upload_secret_record_media(chat_id: int, record: dict, remote_dir: str) -> bool:
     file_id = record.get("file_id")
     if not file_id:
         return True
-    if record.get("mega_media_path"):
+    content_type = str(record.get("content_type") or "")
+    old_remote_path = str(record.get("mega_media_path") or "")
+    saved_quality = str((record.get("content") or {}).get("quality") or "")
+    needs_video_recompress = (
+        content_type in {"video", "video_note", "animation"}
+        and saved_quality != "low_640p_crf33"
+    )
+    if old_remote_path and not needs_video_recompress:
         return True
     local_dir = None
     try:
@@ -5493,11 +5530,27 @@ def _upload_secret_record_media(chat_id: int, record: dict, remote_dir: str) -> 
         local_path = os.path.join(local_dir, remote_name)
         with open(local_path, "wb") as media_file:
             media_file.write(raw)
-        if not mega_put_replace(local_path, remote_dir, remote_name):
+        upload_path = local_path
+        if content_type in {"video", "video_note", "animation"}:
+            compressed_name = os.path.splitext(remote_name)[0] + "_low.mp4"
+            compressed_path = os.path.join(local_dir, compressed_name)
+            if _compress_secret_video_low(local_path, compressed_path):
+                upload_path = compressed_path
+                remote_name = compressed_name
+                record.setdefault("content", {})["quality"] = "low_640p_crf33"
+                record["content"]["mega_file_size"] = os.path.getsize(compressed_path)
+            else:
+                record.setdefault("content", {})["quality"] = "original_fallback"
+        if not mega_put_replace(upload_path, remote_dir, remote_name):
             return False
         record["mega_media_path"] = remote_dir.rstrip("/") + "/" + remote_name
         record["mega_saved_at"] = now_local().isoformat(timespec="seconds")
         record.pop("mega_media_error", None)
+        if old_remote_path and old_remote_path != record["mega_media_path"]:
+            try:
+                _mega_run("mega-rm", [old_remote_path], check=False, timeout=30)
+            except Exception as e:
+                log_error(f"secret old media cleanup {old_remote_path}: {e}")
         return True
     except Exception as e:
         record["mega_media_error"] = str(e)[:300]
@@ -5653,7 +5706,7 @@ def format_secret_records(chat_id: int, day_key: str | None = None) -> list[str]
             ts = str(item.get("timestamp") or "")
             stamp = ts[11:19] if len(ts) >= 19 else ""
             shown_day = fmt_date_ddmmyy(str(item.get("day_key") or ""))
-            lines.append(f"{idx}. {shown_day} {stamp} — {item.get('text', '')}".strip())
+            lines.append(f"{idx}. {shown_day} {stamp} — {_secret_record_display_text(item)}".strip())
     chunks, current = [], ""
     for line in lines:
         candidate = (current + "\n" + line).strip("\n")
@@ -5665,6 +5718,130 @@ def format_secret_records(chat_id: int, day_key: str | None = None) -> list[str]
     if current:
         chunks.append(current)
     return chunks
+
+
+def _secret_record_display_text(record: dict) -> str:
+    text = str(record.get("text") or "").strip()
+    ct = str(record.get("content_type") or "message")
+    placeholders = {f"[{ct}]", "[message]", ""}
+    if text not in placeholders:
+        return text
+    return {
+        "photo": "📷 Фото",
+        "video": "🎥 Видео",
+        "animation": "🎞️ Анимация",
+        "video_note": "⭕ Видеосообщение",
+        "audio": "🎵 Аудио",
+        "voice": "🎤 Голосовое",
+        "document": "📎 Файл",
+        "sticker": "🖼️ Стикер",
+        "location": "📍 Геолокация",
+        "venue": "📍 Место",
+        "contact": "👤 Контакт",
+        "dice": "🎲 Кубик",
+        "poll": "📊 Опрос",
+    }.get(ct, f"📦 {ct}")
+
+
+def _secret_media_caption(record: dict) -> str:
+    ts = str(record.get("timestamp") or "")
+    stamp = ts[11:19] if len(ts) >= 19 else ""
+    day = fmt_date_ddmmyy(str(record.get("day_key") or ""))
+    text = str(record.get("text") or "").strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = ""
+    caption = f"🔐 {day} {stamp}".strip()
+    if text:
+        caption += "\n" + text
+    return caption[:1024]
+
+
+def _send_secret_record_media(viewer_chat_id: int, record: dict) -> bool:
+    ct = str(record.get("content_type") or "")
+    file_id = record.get("file_id")
+    content = record.get("content") or {}
+    caption = _secret_media_caption(record)
+    try:
+        if ct == "photo" and file_id:
+            bot.send_photo(viewer_chat_id, file_id, caption=caption)
+        elif ct == "video" and file_id:
+            bot.send_video(viewer_chat_id, file_id, caption=caption, supports_streaming=True)
+        elif ct == "animation" and file_id:
+            bot.send_animation(viewer_chat_id, file_id, caption=caption)
+        elif ct == "video_note" and file_id:
+            bot.send_message(viewer_chat_id, caption)
+            bot.send_video_note(viewer_chat_id, file_id)
+        elif ct == "audio" and file_id:
+            bot.send_audio(viewer_chat_id, file_id, caption=caption)
+        elif ct == "voice" and file_id:
+            bot.send_voice(viewer_chat_id, file_id, caption=caption)
+        elif ct == "document" and file_id:
+            bot.send_document(viewer_chat_id, file_id, caption=caption)
+        elif ct == "sticker" and file_id:
+            bot.send_message(viewer_chat_id, caption)
+            bot.send_sticker(viewer_chat_id, file_id)
+        elif ct == "location" and content.get("latitude") is not None:
+            bot.send_message(viewer_chat_id, caption)
+            bot.send_location(viewer_chat_id, content["latitude"], content["longitude"])
+        elif ct == "venue" and content.get("latitude") is not None:
+            bot.send_venue(
+                viewer_chat_id,
+                content["latitude"],
+                content["longitude"],
+                content.get("title") or "Место",
+                content.get("address") or "",
+            )
+        elif ct == "contact" and content.get("phone_number"):
+            bot.send_contact(
+                viewer_chat_id,
+                content["phone_number"],
+                content.get("first_name") or "Контакт",
+                last_name=content.get("last_name") or None,
+                vcard=content.get("vcard") or None,
+            )
+        elif ct == "dice":
+            bot.send_message(viewer_chat_id, f"{caption}\n🎲 {content.get('emoji', '')} {content.get('value', '')}".strip())
+        elif ct == "poll":
+            options = [str(x.get("text") or "") for x in (content.get("options") or []) if str(x.get("text") or "")]
+            if len(options) >= 2:
+                bot.send_poll(
+                    viewer_chat_id,
+                    str(content.get("question") or "Опрос")[:300],
+                    options[:10],
+                    is_anonymous=bool(content.get("is_anonymous", True)),
+                )
+            else:
+                bot.send_message(viewer_chat_id, caption)
+        else:
+            return False
+        return True
+    except Exception as e:
+        log_error(f"_send_secret_record_media({viewer_chat_id},{ct}): {e}")
+        return False
+
+
+def send_secret_media(viewer_chat_id: int, target_chat_id: int, day_key: str | None = None):
+    records = list(_secret_records(int(target_chat_id)))
+    if day_key:
+        records = [record for record in records if str(record.get("day_key")) == str(day_key)]
+    records = [record for record in records if str(record.get("content_type") or "") != "text"]
+    title = get_chat_display_name(int(target_chat_id))
+    period = fmt_date_ddmmyy(day_key) if day_key else "за всё время"
+    if not records:
+        send_and_auto_delete(viewer_chat_id, f"🎞️ Медиа нет: {title}, {period}.", 10)
+        return
+    bot.send_message(viewer_chat_id, f"🎞️ {title}\n📅 {period}\nФайлов: {len(records)}")
+    sent = 0
+    for record in records:
+        if _send_secret_record_media(viewer_chat_id, record):
+            sent += 1
+        time.sleep(0.12)
+    if sent != len(records):
+        send_and_auto_delete(
+            viewer_chat_id,
+            f"🎞️ Отправлено: {sent}/{len(records)}. Некоторые старые записи не содержат файла.",
+            15,
+        )
 
 
 def send_secret_records(chat_id: int, target_chat_id: int, day_key: str | None = None):
@@ -5696,7 +5873,7 @@ def build_secret_day_text(target_chat_id: int, day_key: str) -> str:
     for idx, item in enumerate(records, 1):
         ts = str(item.get("timestamp") or "")
         stamp = ts[11:19] if len(ts) >= 19 else ""
-        lines.append(f"{idx}. {stamp} — {item.get('text', '')}".rstrip())
+        lines.append(f"{idx}. {stamp} — {_secret_record_display_text(item)}".rstrip())
     text = "\n".join(lines)
     return text if len(text) <= 3900 else text[:3890] + "\n…"
 
@@ -5713,6 +5890,7 @@ def build_secret_day_keyboard(target_chat_id: int, day_key: str):
     )
     kb.row(
         types.InlineKeyboardButton("📅 Календарь", callback_data=f"secchatcal:{target_chat_id}:{day_key[:7]}"),
+        types.InlineKeyboardButton("🎞️", callback_data=f"secmedia:{target_chat_id}:{day_key}"),
         types.InlineKeyboardButton("✏️ Изменить", callback_data=f"secedit:{target_chat_id}:{day_key}"),
     )
     kb.row(
@@ -5852,12 +6030,13 @@ def handle_secret_edit_insert_message(msg) -> bool:
 
 
 def build_secret_chat_list_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb = types.InlineKeyboardMarkup(row_width=4)
     chats = collect_all_known_chat_ids(include_owner=True)
     for cid in chats:
         mode = "✅" if is_total_secret_mode(cid) else "❌"
         kb.row(
             types.InlineKeyboardButton(get_chat_display_name(cid)[:28], callback_data=f"seclist:{cid}"),
+            types.InlineKeyboardButton("🎞️", callback_data=f"secmedia:{cid}:all"),
             types.InlineKeyboardButton(f"{mode} Секрет", callback_data=f"sectoggle:{cid}"),
             types.InlineKeyboardButton("📅", callback_data=f"secchatcal:{cid}"),
         )
@@ -9952,6 +10131,23 @@ def on_callback(call):
                 safe_edit(bot, call, "🔐 Выберите чат с секретными данными:", reply_markup=build_secret_chat_list_keyboard())
             except Exception as e:
                 log_error(f"secret mode toggle callback: {e}")
+            return
+        if data_str.startswith("secmedia:"):
+            try:
+                _, target_s, period = data_str.split(":", 2)
+                target_chat_id = int(target_s)
+                day_key = None if period == "all" else period
+                try:
+                    bot.answer_callback_query(call.id, "Отправляю медиа…")
+                except Exception:
+                    pass
+                threading.Thread(
+                    target=send_secret_media,
+                    args=(chat_id, target_chat_id, day_key),
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                log_error(f"secret media callback: {e}")
             return
         if data_str.startswith("secchatcal:"):
             try:
