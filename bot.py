@@ -28,84 +28,6 @@ from flask import Flask, request
 from collections import defaultdict, deque
 from contextlib import contextmanager
 
-
-# Короткие подписи применяются только к служебным кнопкам. Динамические
-# названия чатов сюда не попадают и всегда остаются без изменений.
-_INLINE_BUTTON_INIT = types.InlineKeyboardButton.__init__
-_COMPACT_BUTTON_LABELS = {
-    "⬅️ Назад осн. окно": "🏠",
-    "🔙 Назад осн. окно": "🏠",
-    "⏪ Назад осн. окно": "🏠",
-    "🔙 Назад": "⬅️",
-    "⬅️ Назад": "⬅️",
-    "❌ Закрыть": "✖️",
-    "❌ Закрыть статьи": "✖️",
-    "⬅️ Вчера": "◀️",
-    "➡️ Завтра": "▶️",
-    "⬅️ Пред. месяц": "◀️",
-    "След. месяц ➡️": "▶️",
-    "⬅️ Месяц": "◀️",
-    "➡️ Месяц": "▶️",
-    "Месяц ➡️": "▶️",
-    "⬅️ День": "◀️",
-    "День ➡️": "▶️",
-    "📅 Сегодня": "📅",
-    "📅 Календарь": "📅",
-    "📊 Отчёт": "📊",
-    "💰 Общий итог": "💰 Итог",
-    "📝 Редактировать": "✏️",
-    "ℹ️ Инфо": "ℹ️",
-    "🔁 Пересылка": "🔁",
-    "💰 Фин режим": "💰 Режим",
-    "🧪 PROCESS": "🧪",
-    "💾 BACKUP": "💾",
-    "📡 Проверить чаты": "📡",
-    "📡 Проверить все": "📡",
-    "🗑 Удалить выбранное": "🗑",
-    "🗑 Удалить статью": "🗑 Статью",
-    "➕ Добавить статью": "➕ Статью",
-    "✏️ Изменить статью": "✏️ Статью",
-    "📚 Описание статей": "📖 Статьи",
-    "📆 Выбор недели": "📆",
-    "🔙 Назад к статьям": "⬅️ Статьи",
-    "⏪ Назад к статьям": "⬅️ Статьи",
-    "🔙 К окну чата": "⬅️ Чат",
-    "🔙 Назад к чатам": "⬅️ Чаты",
-    "🔙 Назад к списку": "⬅️ Список",
-    "🔙 Назад в Инфо": "⬅️ ℹ️",
-    "🔙 Назад в окно выбора чатов": "⬅️ Чаты",
-    "👥 /доп_владельцы": "👥",
-    "📄 Скачать TXT": "📄 TXT",
-    "✅ Да": "✅",
-    "❌ Нет": "❌",
-    "Нет пользовательских статей": "Пусто",
-    "Нет данных для изменения": "Пусто",
-    "Нет доступных чатов": "Пусто",
-    "Нет чатов с финрежимом": "Пусто",
-    "Нет чатов с секретами": "Пусто",
-    "Нет чатов для выбора Чата Б": "Пусто",
-    "Удалённых нет": "Пусто",
-}
-
-
-def _compact_inline_button_init(self, text, *args, **kwargs):
-    text = _COMPACT_BUTTON_LABELS.get(str(text), text)
-    text = re.sub(r"^([✅❌]) Фин режим ВКЛ/ВЫКЛ$", r"\1 💰", str(text))
-    text = re.sub(r"^([✅❌](?:🔟)?) Как обычно — фин окно через 10 сообщений$", r"\1 Обычно", text)
-    text = re.sub(r"^([✅❌](?:3️⃣)?) Фин режим \+ быстрый остаток: открывать окно$", r"\1 Окно", text)
-    text = re.sub(r"^([✅❌](?:🥇)?) Фин режим \+ быстрый остаток: всегда первым$", r"\1 Первым", text)
-    text = re.sub(r"^([🙈❌]) Скрытые финансы$", r"\1 Скрыто", text)
-    text = re.sub(r"^([🪟✅❌]+) Фин окно$", r"\1", text)
-    text = re.sub(r"^([✅❌]) Секрет$", r"\1 🔐", text)
-    if text.startswith("Чат А: "):
-        text = "A: " + text[7:]
-    elif text.startswith("Чат Б: "):
-        text = "Б: " + text[7:]
-    _INLINE_BUTTON_INIT(self, text, *args, **kwargs)
-
-
-types.InlineKeyboardButton.__init__ = _compact_inline_button_init
-
 window_locks = defaultdict(threading.Lock)
 
 # ─────────────────────────────────────────────────────────────
@@ -201,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v68_secret_media_view_low_video"
+VERSION = "bot_v69_secret_media_commands_timer"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -5262,6 +5184,10 @@ _secret_sequence_state = {}
 _secret_calendar_timers = {}
 _secret_calendar_lock = threading.RLock()
 _secret_mega_locks = defaultdict(threading.Lock)
+_secret_media_timer_lock = threading.RLock()
+_secret_media_timer_generation = {}
+SECRET_AUTO_CLOSE_SECONDS = 90
+SECRET_COUNTDOWN_STEP_SECONDS = 15
 
 
 def _secret_records(chat_id: int) -> list:
@@ -5271,6 +5197,56 @@ def _secret_records(chat_id: int) -> list:
         records = []
         store["secret_messages"] = records
     return records
+
+
+def _is_secret_media_record(record: dict) -> bool:
+    return str((record or {}).get("content_type") or "text") != "text"
+
+
+def _ensure_secret_media_numbers(chat_id: int) -> bool:
+    """Назначает старым и новым медиа постоянные номера /1, /2, /3."""
+    changed = False
+    used = set()
+    next_number = 1
+    for record in _secret_records(int(chat_id)):
+        if not _is_secret_media_record(record):
+            continue
+        try:
+            number = int(record.get("media_number") or 0)
+        except Exception:
+            number = 0
+        if number <= 0 or number in used:
+            while next_number in used:
+                next_number += 1
+            number = next_number
+            record["media_number"] = number
+            changed = True
+        used.add(number)
+        next_number = max(next_number, number + 1)
+    return changed
+
+
+def _next_secret_media_number(chat_id: int) -> int:
+    _ensure_secret_media_numbers(chat_id)
+    numbers = [
+        int(record.get("media_number") or 0)
+        for record in _secret_records(int(chat_id))
+        if _is_secret_media_record(record)
+    ]
+    return max(numbers or [0]) + 1
+
+
+def _secret_media_record_by_number(chat_id: int, number: int) -> dict | None:
+    if _ensure_secret_media_numbers(chat_id):
+        save_data(data)
+    return next(
+        (
+            record for record in _secret_records(int(chat_id))
+            if _is_secret_media_record(record)
+            and int(record.get("media_number") or 0) == int(number)
+        ),
+        None,
+    )
 
 
 def migrate_legacy_owner_secrets():
@@ -5592,18 +5568,21 @@ def upload_chat_secrets_to_mega(chat_id: int) -> bool:
 def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> dict:
     chat_id = int(chat_id)
     user = getattr(msg, "from_user", None)
+    content_type = getattr(msg, "content_type", "text")
     record = {
         "id": int(time.time() * 1000),
         "day_key": day_key_from_message(msg),
         "timestamp": message_timestamp_iso(msg),
         "text": _secret_message_text(msg, cleaned_text),
-        "content_type": getattr(msg, "content_type", "text"),
+        "content_type": content_type,
         "file_id": _secret_file_id(msg),
         "content": _secret_content_payload(msg),
         "source_msg_id": int(getattr(msg, "message_id", 0) or 0),
         "user_id": int(getattr(user, "id", 0) or 0),
         "user_name": getattr(user, "username", None) or getattr(user, "first_name", None) or "",
     }
+    if content_type != "text":
+        record["media_number"] = _next_secret_media_number(chat_id)
     _secret_records(chat_id).append(record)
     settings = get_chat_store(chat_id).setdefault("settings", {})
     settings["auto_backup_to_mega_enabled"] = True
@@ -5692,6 +5671,8 @@ def secret_chats() -> list[int]:
 
 
 def format_secret_records(chat_id: int, day_key: str | None = None) -> list[str]:
+    if _ensure_secret_media_numbers(chat_id):
+        save_data(data)
     records = _secret_records(chat_id)
     if day_key:
         records = [r for r in records if str(r.get("day_key")) == str(day_key)]
@@ -5724,23 +5705,29 @@ def _secret_record_display_text(record: dict) -> str:
     text = str(record.get("text") or "").strip()
     ct = str(record.get("content_type") or "message")
     placeholders = {f"[{ct}]", "[message]", ""}
-    if text not in placeholders:
-        return text
-    return {
-        "photo": "📷 Фото",
-        "video": "🎥 Видео",
-        "animation": "🎞️ Анимация",
-        "video_note": "⭕ Видеосообщение",
-        "audio": "🎵 Аудио",
-        "voice": "🎤 Голосовое",
-        "document": "📎 Файл",
-        "sticker": "🖼️ Стикер",
-        "location": "📍 Геолокация",
-        "venue": "📍 Место",
-        "contact": "👤 Контакт",
-        "dice": "🎲 Кубик",
-        "poll": "📊 Опрос",
-    }.get(ct, f"📦 {ct}")
+    if _is_secret_media_record(record):
+        label = {
+            "photo": "📷 Фото",
+            "video": "🎥 Видео",
+            "animation": "🎞️ Анимация",
+            "video_note": "⭕ Видеосообщение",
+            "audio": "🎵 Аудио",
+            "voice": "🎤 Голосовое",
+            "document": "📎 Файл",
+            "sticker": "🖼️ Стикер",
+            "location": "📍 Геолокация",
+            "venue": "📍 Место",
+            "contact": "👤 Контакт",
+            "dice": "🎲 Кубик",
+            "poll": "📊 Опрос",
+        }.get(ct, f"📦 {ct}")
+        text = label if text in placeholders else f"{label}: {text}"
+        number = int(record.get("media_number") or 0)
+        if number:
+            text = f"{text} /{number}"
+    elif text in placeholders:
+        text = "Сообщение"
+    return text
 
 
 def _secret_media_caption(record: dict) -> str:
@@ -5753,74 +5740,169 @@ def _secret_media_caption(record: dict) -> str:
     caption = f"🔐 {day} {stamp}".strip()
     if text:
         caption += "\n" + text
+    number = int(record.get("media_number") or 0)
+    if number:
+        caption += f"\n/{number}"
     return caption[:1024]
 
 
-def _send_secret_record_media(viewer_chat_id: int, record: dict) -> bool:
+def _secret_countdown_text(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def build_secret_media_timer_keyboard(remaining: int = SECRET_AUTO_CLOSE_SECONDS):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        types.InlineKeyboardButton("❌ Закрыть", callback_data="secmclose"),
+        types.InlineKeyboardButton(
+            f"⏳ Закроется {_secret_countdown_text(remaining)}",
+            callback_data="secmwait",
+        ),
+    )
+    return kb
+
+
+def cancel_secret_media_timer(chat_id: int, message_id: int):
+    key = (int(chat_id), int(message_id))
+    with _secret_media_timer_lock:
+        _secret_media_timer_generation.pop(key, None)
+
+
+def schedule_secret_media_close(chat_id: int, message_id: int):
+    """Запускает или продлевает удаление медиа на 90 секунд."""
+    key = (int(chat_id), int(message_id))
+    with _secret_media_timer_lock:
+        generation = int(_secret_media_timer_generation.get(key, 0)) + 1
+        _secret_media_timer_generation[key] = generation
+
+    def run():
+        remaining = SECRET_AUTO_CLOSE_SECONDS
+        while remaining > 0:
+            time.sleep(SECRET_COUNTDOWN_STEP_SECONDS)
+            with _secret_media_timer_lock:
+                if _secret_media_timer_generation.get(key) != generation:
+                    return
+            remaining = max(0, remaining - SECRET_COUNTDOWN_STEP_SECONDS)
+            if remaining > 0:
+                try:
+                    bot.edit_message_reply_markup(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        reply_markup=build_secret_media_timer_keyboard(remaining),
+                    )
+                except Exception as e:
+                    if "message is not modified" not in str(e).lower():
+                        log_error(f"secret media countdown {chat_id}:{message_id}: {e}")
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+        with _secret_media_timer_lock:
+            if _secret_media_timer_generation.get(key) == generation:
+                _secret_media_timer_generation.pop(key, None)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _send_secret_media_caption_message(viewer_chat_id: int, caption: str):
+    try:
+        sent = bot.send_message(viewer_chat_id, caption)
+        delete_message_later(viewer_chat_id, sent.message_id, SECRET_AUTO_CLOSE_SECONDS)
+    except Exception:
+        pass
+
+
+def _send_secret_record_media(viewer_chat_id: int, record: dict):
     ct = str(record.get("content_type") or "")
     file_id = record.get("file_id")
     content = record.get("content") or {}
     caption = _secret_media_caption(record)
+    kb = build_secret_media_timer_keyboard()
+    sent = None
     try:
         if ct == "photo" and file_id:
-            bot.send_photo(viewer_chat_id, file_id, caption=caption)
+            sent = bot.send_photo(viewer_chat_id, file_id, caption=caption, reply_markup=kb)
         elif ct == "video" and file_id:
-            bot.send_video(viewer_chat_id, file_id, caption=caption, supports_streaming=True)
+            sent = bot.send_video(viewer_chat_id, file_id, caption=caption, supports_streaming=True, reply_markup=kb)
         elif ct == "animation" and file_id:
-            bot.send_animation(viewer_chat_id, file_id, caption=caption)
+            sent = bot.send_animation(viewer_chat_id, file_id, caption=caption, reply_markup=kb)
         elif ct == "video_note" and file_id:
-            bot.send_message(viewer_chat_id, caption)
-            bot.send_video_note(viewer_chat_id, file_id)
+            _send_secret_media_caption_message(viewer_chat_id, caption)
+            sent = bot.send_video_note(viewer_chat_id, file_id, reply_markup=kb)
         elif ct == "audio" and file_id:
-            bot.send_audio(viewer_chat_id, file_id, caption=caption)
+            sent = bot.send_audio(viewer_chat_id, file_id, caption=caption, reply_markup=kb)
         elif ct == "voice" and file_id:
-            bot.send_voice(viewer_chat_id, file_id, caption=caption)
+            sent = bot.send_voice(viewer_chat_id, file_id, caption=caption, reply_markup=kb)
         elif ct == "document" and file_id:
-            bot.send_document(viewer_chat_id, file_id, caption=caption)
+            sent = bot.send_document(viewer_chat_id, file_id, caption=caption, reply_markup=kb)
         elif ct == "sticker" and file_id:
-            bot.send_message(viewer_chat_id, caption)
-            bot.send_sticker(viewer_chat_id, file_id)
+            _send_secret_media_caption_message(viewer_chat_id, caption)
+            sent = bot.send_sticker(viewer_chat_id, file_id, reply_markup=kb)
         elif ct == "location" and content.get("latitude") is not None:
-            bot.send_message(viewer_chat_id, caption)
-            bot.send_location(viewer_chat_id, content["latitude"], content["longitude"])
+            _send_secret_media_caption_message(viewer_chat_id, caption)
+            sent = bot.send_location(
+                viewer_chat_id,
+                content["latitude"],
+                content["longitude"],
+                reply_markup=kb,
+            )
         elif ct == "venue" and content.get("latitude") is not None:
-            bot.send_venue(
+            _send_secret_media_caption_message(viewer_chat_id, caption)
+            sent = bot.send_venue(
                 viewer_chat_id,
                 content["latitude"],
                 content["longitude"],
                 content.get("title") or "Место",
                 content.get("address") or "",
+                reply_markup=kb,
             )
         elif ct == "contact" and content.get("phone_number"):
-            bot.send_contact(
+            _send_secret_media_caption_message(viewer_chat_id, caption)
+            sent = bot.send_contact(
                 viewer_chat_id,
                 content["phone_number"],
                 content.get("first_name") or "Контакт",
                 last_name=content.get("last_name") or None,
                 vcard=content.get("vcard") or None,
+                reply_markup=kb,
             )
         elif ct == "dice":
-            bot.send_message(viewer_chat_id, f"{caption}\n🎲 {content.get('emoji', '')} {content.get('value', '')}".strip())
+            _send_secret_media_caption_message(
+                viewer_chat_id,
+                f"{caption}\n🎲 Выпало: {content.get('value', '')}".strip(),
+            )
+            sent = bot.send_dice(
+                viewer_chat_id,
+                emoji=content.get("emoji") or "🎲",
+                reply_markup=kb,
+            )
         elif ct == "poll":
             options = [str(x.get("text") or "") for x in (content.get("options") or []) if str(x.get("text") or "")]
             if len(options) >= 2:
-                bot.send_poll(
+                _send_secret_media_caption_message(viewer_chat_id, caption)
+                sent = bot.send_poll(
                     viewer_chat_id,
                     str(content.get("question") or "Опрос")[:300],
                     options[:10],
                     is_anonymous=bool(content.get("is_anonymous", True)),
+                    reply_markup=kb,
                 )
             else:
-                bot.send_message(viewer_chat_id, caption)
+                sent = bot.send_message(viewer_chat_id, caption, reply_markup=kb)
         else:
-            return False
-        return True
+            return None
+        if sent:
+            schedule_secret_media_close(viewer_chat_id, sent.message_id)
+        return sent
     except Exception as e:
         log_error(f"_send_secret_record_media({viewer_chat_id},{ct}): {e}")
-        return False
+        return None
 
 
 def send_secret_media(viewer_chat_id: int, target_chat_id: int, day_key: str | None = None):
+    if _ensure_secret_media_numbers(target_chat_id):
+        save_data(data)
     records = list(_secret_records(int(target_chat_id)))
     if day_key:
         records = [record for record in records if str(record.get("day_key")) == str(day_key)]
@@ -5830,7 +5912,8 @@ def send_secret_media(viewer_chat_id: int, target_chat_id: int, day_key: str | N
     if not records:
         send_and_auto_delete(viewer_chat_id, f"🎞️ Медиа нет: {title}, {period}.", 10)
         return
-    bot.send_message(viewer_chat_id, f"🎞️ {title}\n📅 {period}\nФайлов: {len(records)}")
+    header = bot.send_message(viewer_chat_id, f"🎞️ {title}\n📅 {period}\nФайлов: {len(records)}")
+    delete_message_later(viewer_chat_id, header.message_id, SECRET_AUTO_CLOSE_SECONDS)
     sent = 0
     for record in records:
         if _send_secret_record_media(viewer_chat_id, record):
@@ -5862,6 +5945,8 @@ def _default_secret_day(target_chat_id: int) -> str:
 
 
 def build_secret_day_text(target_chat_id: int, day_key: str) -> str:
+    if _ensure_secret_media_numbers(target_chat_id):
+        save_data(data)
     lines = [
         f"🔐 Секретные данные: {get_chat_display_name(target_chat_id)}",
         f"📅 {fmt_date_ddmmyy(day_key)}",
@@ -5878,7 +5963,7 @@ def build_secret_day_text(target_chat_id: int, day_key: str) -> str:
     return text if len(text) <= 3900 else text[:3890] + "\n…"
 
 
-def build_secret_day_keyboard(target_chat_id: int, day_key: str):
+def build_secret_day_keyboard(target_chat_id: int, day_key: str, self_only: bool = False):
     base = datetime.strptime(day_key, "%Y-%m-%d")
     prev_day = (base - timedelta(days=1)).strftime("%Y-%m-%d")
     next_day = (base + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -5893,14 +5978,25 @@ def build_secret_day_keyboard(target_chat_id: int, day_key: str):
         types.InlineKeyboardButton("🎞️", callback_data=f"secmedia:{target_chat_id}:{day_key}"),
         types.InlineKeyboardButton("✏️ Изменить", callback_data=f"secedit:{target_chat_id}:{day_key}"),
     )
-    kb.row(
-        types.InlineKeyboardButton("🔙 Назад", callback_data="secbacklist"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
-    )
+    if self_only:
+        kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+    else:
+        kb.row(
+            types.InlineKeyboardButton("🔙 Назад", callback_data="secbacklist"),
+            types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
+        )
     return kb
 
 
-def register_secret_window(viewer_chat_id: int, message_id: int, target_chat_id: int, kind: str, day_key: str | None = None, month_key: str | None = None):
+def register_secret_window(
+    viewer_chat_id: int,
+    message_id: int,
+    target_chat_id: int,
+    kind: str,
+    day_key: str | None = None,
+    month_key: str | None = None,
+    self_only: bool = False,
+):
     store = get_chat_store(int(viewer_chat_id))
     store["secret_active_window"] = {
         "message_id": int(message_id),
@@ -5908,8 +6004,18 @@ def register_secret_window(viewer_chat_id: int, message_id: int, target_chat_id:
         "kind": str(kind),
         "day_key": day_key,
         "month_key": month_key,
+        "self_only": bool(self_only),
     }
+    store["secret_last_target_chat_id"] = int(target_chat_id)
+    store["secret_last_self_only"] = bool(self_only)
     save_data(data)
+
+
+def secret_window_self_only(viewer_chat_id: int, message_id: int | None = None) -> bool:
+    active = get_chat_store(int(viewer_chat_id)).get("secret_active_window") or {}
+    if message_id is not None and int(active.get("message_id") or 0) != int(message_id):
+        return False
+    return bool(active.get("self_only", False))
 
 
 def clear_secret_window(viewer_chat_id: int, message_id: int | None = None):
@@ -5918,6 +6024,19 @@ def clear_secret_window(viewer_chat_id: int, message_id: int | None = None):
     if message_id is None or int(active.get("message_id") or 0) == int(message_id):
         store["secret_active_window"] = None
         save_data(data)
+
+
+def register_secret_list_window(viewer_chat_id: int, message_id: int):
+    store = get_chat_store(int(viewer_chat_id))
+    target_chat_id = int(store.get("secret_last_target_chat_id") or viewer_chat_id)
+    register_secret_window(
+        viewer_chat_id,
+        message_id,
+        target_chat_id,
+        "list",
+        self_only=False,
+    )
+    schedule_secret_calendar_close(viewer_chat_id, message_id)
 
 
 def refresh_secret_windows(target_chat_id: int):
@@ -5930,6 +6049,7 @@ def refresh_secret_windows(target_chat_id: int):
             viewer_id = int(viewer_s)
             message_id = int(active.get("message_id") or 0)
             kind = active.get("kind")
+            self_only = bool(active.get("self_only", False))
             if not message_id:
                 continue
             if kind == "day":
@@ -5938,7 +6058,7 @@ def refresh_secret_windows(target_chat_id: int):
                     build_secret_day_text(target_chat_id, day_key),
                     chat_id=viewer_id,
                     message_id=message_id,
-                    reply_markup=build_secret_day_keyboard(target_chat_id, day_key),
+                    reply_markup=build_secret_day_keyboard(target_chat_id, day_key, self_only=self_only),
                 )
             elif kind == "edit":
                 day_key = active.get("day_key") or _default_secret_day(target_chat_id)
@@ -5946,7 +6066,7 @@ def refresh_secret_windows(target_chat_id: int):
                     f"✏️ Изменить секретные данные\n{get_chat_display_name(target_chat_id)}\n📅 {fmt_date_ddmmyy(day_key)}",
                     chat_id=viewer_id,
                     message_id=message_id,
-                    reply_markup=build_secret_edit_keyboard(target_chat_id, day_key),
+                    reply_markup=build_secret_edit_keyboard(target_chat_id, day_key, self_only=self_only),
                 )
             elif kind == "calendar":
                 month_key = active.get("month_key") or now_local().strftime("%Y-%m")
@@ -5954,24 +6074,30 @@ def refresh_secret_windows(target_chat_id: int):
                     f"🔐 Секретные сообщения\n{get_chat_display_name(target_chat_id)}\n📅 {month_key}",
                     chat_id=viewer_id,
                     message_id=message_id,
-                    reply_markup=build_secret_calendar_keyboard(target_chat_id, month_key),
+                    reply_markup=build_secret_calendar_keyboard(target_chat_id, month_key, self_only=self_only),
                 )
         except Exception as e:
             if "message is not modified" not in str(e).lower():
                 log_error(f"refresh_secret_windows({target_chat_id}): {e}")
 
 
-def open_secret_day_window(chat_id: int, target_chat_id: int, day_key: str | None = None, message_id: int | None = None):
+def open_secret_day_window(
+    chat_id: int,
+    target_chat_id: int,
+    day_key: str | None = None,
+    message_id: int | None = None,
+    self_only: bool = False,
+):
     day_key = day_key or _default_secret_day(target_chat_id)
     text = build_secret_day_text(target_chat_id, day_key)
-    kb = build_secret_day_keyboard(target_chat_id, day_key)
+    kb = build_secret_day_keyboard(target_chat_id, day_key, self_only=self_only)
     if message_id:
         bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
-        register_secret_window(chat_id, message_id, target_chat_id, "day", day_key=day_key)
+        register_secret_window(chat_id, message_id, target_chat_id, "day", day_key=day_key, self_only=self_only)
         schedule_secret_calendar_close(chat_id, message_id)
         return message_id
     sent = bot.send_message(chat_id, text, reply_markup=kb)
-    register_secret_window(chat_id, sent.message_id, target_chat_id, "day", day_key=day_key)
+    register_secret_window(chat_id, sent.message_id, target_chat_id, "day", day_key=day_key, self_only=self_only)
     schedule_secret_calendar_close(chat_id, sent.message_id)
     return sent.message_id
 
@@ -5981,7 +6107,7 @@ def compose_secret_edit_insert(target_chat_id: int, record: dict) -> str:
     return f"({meta} служебное — можно не трогать)\n\n{record.get('text', '')}"
 
 
-def build_secret_edit_keyboard(target_chat_id: int, day_key: str):
+def build_secret_edit_keyboard(target_chat_id: int, day_key: str, self_only: bool = False):
     kb = types.InlineKeyboardMarkup(row_width=1)
     for idx, item in enumerate(_secret_day_records(target_chat_id, day_key), 1):
         ts = str(item.get("timestamp") or "")
@@ -6071,14 +6197,14 @@ def schedule_secret_calendar_close(chat_id: int, message_id: int):
         clear_secret_window(chat_id, message_id)
         with _secret_calendar_lock:
             _secret_calendar_timers.pop(key, None)
-    timer = threading.Timer(60.0, close)
+    timer = threading.Timer(float(SECRET_AUTO_CLOSE_SECONDS), close)
     timer.daemon = True
     with _secret_calendar_lock:
         _secret_calendar_timers[key] = timer
     timer.start()
 
 
-def build_secret_calendar_keyboard(target_chat_id: int, month_key: str):
+def build_secret_calendar_keyboard(target_chat_id: int, month_key: str, self_only: bool = False):
     year, month = (int(x) for x in month_key.split("-", 1))
     marked = {str(r.get("day_key")) for r in _secret_records(target_chat_id)}
     kb = types.InlineKeyboardMarkup(row_width=7)
@@ -6101,24 +6227,39 @@ def build_secret_calendar_keyboard(target_chat_id: int, month_key: str):
         types.InlineKeyboardButton("Месяц ➡️", callback_data=f"secmon:{target_chat_id}:{nxt}"),
     )
     kb.row(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"secview:{target_chat_id}:{today_key()}"))
-    kb.row(
-        types.InlineKeyboardButton("🔙 Назад", callback_data="secbacklist"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
-    )
+    if self_only:
+        kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+    else:
+        kb.row(
+            types.InlineKeyboardButton("🔙 Назад", callback_data="secbacklist"),
+            types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
+        )
     return kb
 
 
-def open_secret_calendar(chat_id: int, target_chat_id: int, month_key: str | None = None, message_id: int | None = None):
+def open_secret_calendar(
+    chat_id: int,
+    target_chat_id: int,
+    month_key: str | None = None,
+    message_id: int | None = None,
+    self_only: bool = False,
+):
     month_key = month_key or now_local().strftime("%Y-%m")
     text = f"🔐 Секретные сообщения\n{get_chat_display_name(target_chat_id)}\n📅 {month_key}"
-    kb = build_secret_calendar_keyboard(target_chat_id, month_key)
+    kb = build_secret_calendar_keyboard(target_chat_id, month_key, self_only=self_only)
     if message_id:
         bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
-        register_secret_window(chat_id, message_id, target_chat_id, "calendar", month_key=month_key)
+        register_secret_window(
+            chat_id, message_id, target_chat_id, "calendar",
+            month_key=month_key, self_only=self_only,
+        )
         schedule_secret_calendar_close(chat_id, message_id)
         return message_id
     sent = bot.send_message(chat_id, text, reply_markup=kb)
-    register_secret_window(chat_id, sent.message_id, target_chat_id, "calendar", month_key=month_key)
+    register_secret_window(
+        chat_id, sent.message_id, target_chat_id, "calendar",
+        month_key=month_key, self_only=self_only,
+    )
     schedule_secret_calendar_close(chat_id, sent.message_id)
     return sent.message_id
 
@@ -6141,7 +6282,7 @@ def handle_secret_sequence(msg) -> bool:
     message_ids = list(item.get("message_ids") or []) + [int(msg.message_id)]
     if step == 3:
         _secret_sequence_state.pop(key, None)
-        open_secret_calendar(msg.chat.id, msg.chat.id)
+        open_secret_calendar(msg.chat.id, msg.chat.id, self_only=True)
         for message_id in message_ids:
             try:
                 bot.delete_message(msg.chat.id, message_id)
@@ -6185,7 +6326,12 @@ def cmd_secret_access(msg):
     if getattr(msg.chat, "type", "") != "private":
         send_and_auto_delete(msg.chat.id, "🔐 Список секретов доступен только в личке с ботом.", 8)
         return
-    bot.send_message(msg.chat.id, "🔐 Выберите чат с секретными данными:", reply_markup=build_secret_chat_list_keyboard())
+    sent = bot.send_message(
+        msg.chat.id,
+        "🔐 Выберите чат с секретными данными:",
+        reply_markup=build_secret_chat_list_keyboard(),
+    )
+    register_secret_list_window(msg.chat.id, sent.message_id)
 
 
 @bot.message_handler(commands=["secret_bot"])
@@ -6196,6 +6342,47 @@ def cmd_total_secret(msg):
         log_error(f"secret_bot immediate delete {msg.chat.id}:{msg.message_id}: {e}")
     set_total_secret_mode(msg.chat.id, True)
     send_and_auto_delete(msg.chat.id, "🔐 Тотальный секрет включён. Все следующие сообщения сохраняются как секретные.", 10)
+
+
+def _secret_media_command_target(viewer_chat_id: int) -> int:
+    store = get_chat_store(int(viewer_chat_id))
+    active = store.get("secret_active_window") or {}
+    target = active.get("target_chat_id") or store.get("secret_last_target_chat_id") or viewer_chat_id
+    try:
+        target = int(target)
+    except Exception:
+        target = int(viewer_chat_id)
+    if not is_owner_chat(viewer_chat_id) and target != int(viewer_chat_id):
+        target = int(viewer_chat_id)
+    return target
+
+
+@bot.message_handler(func=lambda m: bool(
+    getattr(m, "text", None)
+    and re.fullmatch(r"/\d+(?:@\w+)?", m.text.strip())
+))
+def cmd_secret_media_number(msg):
+    try:
+        number = int(msg.text.strip().split("@", 1)[0][1:])
+    except Exception:
+        return
+    try:
+        bot.delete_message(msg.chat.id, msg.message_id)
+    except Exception:
+        pass
+    target_chat_id = _secret_media_command_target(msg.chat.id)
+    record = _secret_media_record_by_number(target_chat_id, number)
+    if not record:
+        send_and_auto_delete(
+            msg.chat.id,
+            f"❌ Медиа /{number} не найдено в чате {get_chat_display_name(target_chat_id)}.",
+            10,
+        )
+        return
+    get_chat_store(msg.chat.id)["secret_last_target_chat_id"] = int(target_chat_id)
+    save_data(data)
+    if not _send_secret_record_media(msg.chat.id, record):
+        send_and_auto_delete(msg.chat.id, f"❌ Не удалось открыть медиа /{number}.", 10)
 
 
 @bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/старт(?:@\w+)?", m.text.strip(), re.I)))
@@ -10027,6 +10214,13 @@ def on_callback(call):
         except Exception:
             pass
 
+        try:
+            active_secret = get_chat_store(chat_id).get("secret_active_window") or {}
+            if int(active_secret.get("message_id") or 0) == int(call.message.message_id):
+                schedule_secret_calendar_close(chat_id, call.message.message_id)
+        except Exception:
+            pass
+
         if _callback_should_debounce(call, data_str):
             return
 
@@ -10104,6 +10298,25 @@ def on_callback(call):
 
         # Секретные окна доступны по своей скрытой команде и работают независимо
         # от финансового/скрытого режима.
+        if data_str == "secmclose":
+            cancel_secret_media_timer(chat_id, call.message.message_id)
+            try:
+                bot.delete_message(chat_id, call.message.message_id)
+            except Exception:
+                pass
+            return
+        if data_str == "secmwait":
+            schedule_secret_media_close(chat_id, call.message.message_id)
+            try:
+                bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=build_secret_media_timer_keyboard(),
+                )
+                bot.answer_callback_query(call.id, "Продлено на 1 мин 30 сек")
+            except Exception:
+                pass
+            return
         if data_str == "secclose":
             _cancel_secret_calendar_timer(chat_id, call.message.message_id)
             clear_secret_window(chat_id, call.message.message_id)
@@ -10113,14 +10326,27 @@ def on_callback(call):
                 pass
             return
         if data_str == "secbacklist":
+            if secret_window_self_only(chat_id, call.message.message_id):
+                _cancel_secret_calendar_timer(chat_id, call.message.message_id)
+                clear_secret_window(chat_id, call.message.message_id)
+                try:
+                    bot.delete_message(chat_id, call.message.message_id)
+                except Exception:
+                    pass
+                return
             _cancel_secret_calendar_timer(chat_id, call.message.message_id)
             clear_secret_window(chat_id, call.message.message_id)
             safe_edit(bot, call, "🔐 Выберите чат с секретными данными:", reply_markup=build_secret_chat_list_keyboard())
+            register_secret_list_window(chat_id, call.message.message_id)
             return
         if data_str.startswith("seclist:"):
             try:
                 target_chat_id = int(data_str.split(":", 1)[1])
-                open_secret_day_window(chat_id, target_chat_id, message_id=call.message.message_id)
+                open_secret_day_window(
+                    chat_id, target_chat_id,
+                    message_id=call.message.message_id,
+                    self_only=False,
+                )
             except Exception as e:
                 log_error(f"secret list callback: {e}")
             return
@@ -10154,14 +10380,22 @@ def on_callback(call):
                 parts = data_str.split(":", 2)
                 target_chat_id = int(parts[1])
                 month_key = parts[2] if len(parts) > 2 and parts[2] else now_local().strftime("%Y-%m")
-                open_secret_calendar(chat_id, target_chat_id, month_key, call.message.message_id)
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
+                open_secret_calendar(
+                    chat_id, target_chat_id, month_key,
+                    call.message.message_id, self_only=self_only,
+                )
             except Exception as e:
                 log_error(f"secret chat calendar callback: {e}")
             return
         if data_str.startswith("secview:"):
             try:
                 _, target_s, day_key = data_str.split(":", 2)
-                open_secret_day_window(chat_id, int(target_s), day_key, call.message.message_id)
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
+                open_secret_day_window(
+                    chat_id, int(target_s), day_key,
+                    call.message.message_id, self_only=self_only,
+                )
             except Exception as e:
                 log_error(f"secret day view callback: {e}")
             return
@@ -10169,13 +10403,17 @@ def on_callback(call):
             try:
                 _, target_s, day_key = data_str.split(":", 2)
                 target_chat_id = int(target_s)
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
                 safe_edit(
                     bot,
                     call,
                     f"✏️ Изменить секретные данные\n{get_chat_display_name(target_chat_id)}\n📅 {fmt_date_ddmmyy(day_key)}",
-                    reply_markup=build_secret_edit_keyboard(target_chat_id, day_key),
+                    reply_markup=build_secret_edit_keyboard(target_chat_id, day_key, self_only=self_only),
                 )
-                register_secret_window(chat_id, call.message.message_id, target_chat_id, "edit", day_key=day_key)
+                register_secret_window(
+                    chat_id, call.message.message_id, target_chat_id, "edit",
+                    day_key=day_key, self_only=self_only,
+                )
                 schedule_secret_calendar_close(chat_id, call.message.message_id)
             except Exception as e:
                 log_error(f"secret edit menu callback: {e}")
@@ -10183,14 +10421,22 @@ def on_callback(call):
         if data_str.startswith("secmon:"):
             try:
                 _, target_s, month_key = data_str.split(":", 2)
-                open_secret_calendar(chat_id, int(target_s), month_key, call.message.message_id)
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
+                open_secret_calendar(
+                    chat_id, int(target_s), month_key,
+                    call.message.message_id, self_only=self_only,
+                )
             except Exception as e:
                 log_error(f"secret month callback: {e}")
             return
         if data_str.startswith("secday:"):
             try:
                 _, target_s, day_key = data_str.split(":", 2)
-                open_secret_day_window(chat_id, int(target_s), day_key, call.message.message_id)
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
+                open_secret_day_window(
+                    chat_id, int(target_s), day_key,
+                    call.message.message_id, self_only=self_only,
+                )
             except Exception as e:
                 log_error(f"secret day callback: {e}")
             return
@@ -14160,6 +14406,7 @@ def main():
             settings["auto_backup_to_mega_enabled"] = True
             settings.setdefault("total_secret_mode", False)
             store.setdefault("secret_messages", [])
+            _ensure_secret_media_numbers(int(cid))
         except Exception:
             pass
     save_data(data)
@@ -14183,7 +14430,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ Бот запущен (версия {VERSION}).\n"
+                    f"✅ Бот запущен 🥳(версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
