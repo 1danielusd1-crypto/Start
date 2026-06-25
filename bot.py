@@ -123,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v69_secret_media_commands_timer"
+VERSION = "bot_v70_secret_modes"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -458,6 +458,62 @@ def toggle_forward_menu_new_style() -> bool:
 def forward_menu_style_label() -> str:
     return "🧩 Пересылка: по-новому" if forward_menu_new_style_enabled() else "🔁 Пересылка: обычно"
 
+
+# ─────────────────────────────────────────────────────────────
+# Короткие подписи inline-кнопок: режим переключается владельцем командой /кнопки.
+# Имена чатов не трогаем: сокращаются только известные служебные подписи.
+# ─────────────────────────────────────────────────────────────
+def icon_button_mode_enabled() -> bool:
+    try:
+        gs = (data or {}).setdefault("_global_settings", {})
+        return bool(gs.get("icon_button_mode", True))
+    except Exception:
+        return False
+
+
+def set_icon_button_mode_enabled(enabled: bool):
+    try:
+        data.setdefault("_global_settings", {})["icon_button_mode"] = bool(enabled)
+        save_data(data)
+    except Exception as e:
+        log_error(f"set_icon_button_mode_enabled: {e}")
+
+
+def toggle_icon_button_mode() -> bool:
+    new_value = not icon_button_mode_enabled()
+    set_icon_button_mode_enabled(new_value)
+    return new_value
+
+
+def icon_button_mode_label() -> str:
+    return "🔣 Кнопки: значки" if icon_button_mode_enabled() else "🔤 Кнопки: текст"
+
+
+def total_secret_mask_enabled() -> bool:
+    try:
+        gs = (data or {}).setdefault("_global_settings", {})
+        return bool(gs.get("total_secret_mask_enabled", False))
+    except Exception:
+        return False
+
+
+def set_total_secret_mask_enabled(enabled: bool):
+    try:
+        data.setdefault("_global_settings", {})["total_secret_mask_enabled"] = bool(enabled)
+        save_data(data)
+    except Exception as e:
+        log_error(f"set_total_secret_mask_enabled: {e}")
+
+
+def toggle_total_secret_mask() -> bool:
+    new_value = not total_secret_mask_enabled()
+    set_total_secret_mask_enabled(new_value)
+    return new_value
+
+
+def total_secret_mask_label() -> str:
+    return "🪷 Маска: ВКЛ" if total_secret_mask_enabled() else "🪷 Маска: ВЫКЛ"
+
 def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
     """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
     try:
@@ -545,6 +601,8 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 2000):
 # Пока по ТЗ хранение обычным текстом: data + plain JSON в MEGA, если MEGA настроена.
 # ─────────────────────────────────────────────────────────────
 O9_SECRET_CLICK_WINDOW_SECONDS = 3.0
+O9_SECRET_WAIT_SECONDS = 90
+O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS = 5
 _o9_secret_clicks = {}
 _o9_secret_click_lock = threading.RLock()
 _o9_secret_action_timers = {}
@@ -619,6 +677,90 @@ def _cancel_o9_secret_timer(key):
             t.cancel()
     except Exception:
         pass
+
+
+def _format_mmss(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def _secret_wait_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup()
+    store = get_chat_store(chat_id)
+    kb.row(
+        IB("❌ Закрыть", callback_data="secret_cancel"),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{store.get('current_view_day', today_key())}:back_main"),
+    )
+    return kb
+
+
+def _secret_wait_prompt_text(remaining: int | None = None) -> str:
+    tail = ""
+    if remaining is not None:
+        tail = f"\n\n⏳ Осталось: {_format_mmss(remaining)}"
+    return wm_common(
+        "🔐 Секретные данные\n\n"
+        "Отправь одним сообщением текст, который нужно сохранить.\n"
+        "Бот удалит твоё сообщение после сохранения.\n\n"
+        "Важно: сейчас хранение обычным текстом, без шифрования."
+        + tail,
+        9,
+    )
+
+
+def _cancel_o9_secret_wait_timer(chat_id: int):
+    key = int(chat_id)
+    with _o9_secret_click_lock:
+        item = _o9_secret_wait_timers.get(key)
+        if isinstance(item, dict):
+            item["cancelled"] = True
+        _o9_secret_wait_timers.pop(key, None)
+
+
+def schedule_o9_secret_wait_timeout(chat_id: int, prompt_message_id: int, delay: int = O9_SECRET_WAIT_SECONDS):
+    key = int(chat_id)
+    with _o9_secret_click_lock:
+        prev = _o9_secret_wait_timers.get(key)
+        if isinstance(prev, dict):
+            prev["cancelled"] = True
+        generation = int(time.time() * 1000)
+        token = {"generation": generation, "cancelled": False}
+        _o9_secret_wait_timers[key] = token
+
+    def _job():
+        try:
+            remaining = int(delay)
+            while remaining > 0:
+                with _o9_secret_click_lock:
+                    current = _o9_secret_wait_timers.get(key)
+                    if current is not token or token.get("cancelled"):
+                        return
+                try:
+                    _tg_call_retry(
+                        bot.edit_message_text,
+                        _secret_wait_prompt_text(remaining),
+                        chat_id=chat_id,
+                        message_id=int(prompt_message_id),
+                        reply_markup=_secret_wait_keyboard(chat_id),
+                        purpose="o9_secret_wait_countdown",
+                    )
+                except Exception as e:
+                    if "message is not modified" not in str(e).lower():
+                        log_error(f"o9 secret wait countdown {chat_id}:{prompt_message_id}: {e}")
+                time.sleep(O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS)
+                remaining -= O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS
+            with _o9_secret_click_lock:
+                current = _o9_secret_wait_timers.get(key)
+                if current is not token or token.get("cancelled"):
+                    return
+                _o9_secret_wait_timers.pop(key, None)
+            _clear_secret_wait(chat_id, delete_prompt=True)
+            send_and_auto_delete(chat_id, "⌛ Время принятия секретных данных истекло.", 8)
+        except Exception as e:
+            log_error(f"schedule_o9_secret_wait_timeout({chat_id},{prompt_message_id}): {e}")
+
+    threading.Thread(target=_job, daemon=True).start()
+
 
 
 def _o9_delayed_close(chat_id: int, message_id: int, key):
@@ -701,32 +843,23 @@ def _start_secret_wait(chat_id: int, message_id: int | None = None):
         }
         save_data(data)
 
-        kb = types.InlineKeyboardMarkup()
-        kb.row(
-            types.InlineKeyboardButton("❌ Закрыть", callback_data="secret_cancel"),
-            types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{store.get('current_view_day', today_key())}:back_main"),
-        )
-        text = wm_common(
-            "🔐 Секретные данные\n\n"
-            "Отправь одним сообщением текст, который нужно сохранить.\n"
-            "Бот удалит твоё сообщение после сохранения.\n\n"
-            "Важно: сейчас хранение обычным текстом, без шифрования.",
-            9,
-        )
+        kb = _secret_wait_keyboard(chat_id)
+        text = _secret_wait_prompt_text(O9_SECRET_WAIT_SECONDS)
         if message_id:
             try:
                 bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
                 store["secret_wait"]["prompt_msg_id"] = int(message_id)
                 save_data(data)
+                schedule_o9_secret_wait_timeout(chat_id, int(message_id), O9_SECRET_WAIT_SECONDS)
                 return
             except Exception:
                 pass
         sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=kb, purpose="secret_prompt")
         store["secret_wait"]["prompt_msg_id"] = sent.message_id
         save_data(data)
+        schedule_o9_secret_wait_timeout(chat_id, sent.message_id, O9_SECRET_WAIT_SECONDS)
     except Exception as e:
         log_error(f"_start_secret_wait({chat_id}): {e}")
-
 
 def _format_secret_notes_text() -> str:
     notes = _secret_notes_list()
@@ -754,6 +887,7 @@ def _send_secret_notes_to_owner(chat_id: int):
 
 def _clear_secret_wait(chat_id: int, delete_prompt: bool = False):
     try:
+        _cancel_o9_secret_wait_timer(chat_id)
         store = get_chat_store(chat_id)
         wait = store.get("secret_wait") or {}
         msg_id = int(wait.get("prompt_msg_id") or wait.get("window_msg_id") or 0)
@@ -762,6 +896,10 @@ def _clear_secret_wait(chat_id: int, delete_prompt: bool = False):
         if delete_prompt and msg_id:
             try:
                 bot.delete_message(chat_id, msg_id)
+            except Exception:
+                pass
+            try:
+                _clear_stored_window(chat_id, "info_msg_id", msg_id)
             except Exception:
                 pass
     except Exception as e:
@@ -785,7 +923,7 @@ def handle_secret_note_message(msg) -> bool:
             return True
         save_secret_message(chat_id, msg, cleaned_text=text)
         delete_secret_source_message(msg)
-        _clear_secret_wait(chat_id, delete_prompt=False)
+        _clear_secret_wait(chat_id, delete_prompt=True)
         status = "✅ Секрет сохранён в единый файл чата и поставлен в очередь MEGA."
         sent = _tg_call_retry(bot.send_message, chat_id, status, purpose="secret_saved_notice")
         try:
@@ -1886,12 +2024,12 @@ def build_removed_chats_menu(day_key: str | None = None):
     kb = types.InlineKeyboardMarkup(row_width=2)
     removed = [cid for cid in collect_all_known_chat_ids(include_owner=False) if is_chat_bot_removed(cid)]
     if removed:
-        buttons = [types.InlineKeyboardButton(chat_button_title(cid, get_chat_display_name(cid)), callback_data=f"fw_probe_one:{cid}") for cid in removed]
+        buttons = [IB(chat_button_title(cid, get_chat_display_name(cid)), callback_data=f"fw_probe_one:{cid}") for cid in removed]
         add_buttons_in_rows(kb, buttons, 2)
     else:
-        kb.row(types.InlineKeyboardButton("Удалённых нет", callback_data="none"))
-    kb.row(types.InlineKeyboardButton("📡 Проверить все", callback_data="fw_probe_all"))
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src" if day_key is None else f"d:{day_key}:forward_menu"))
+        kb.row(IB("Удалённых нет", callback_data="none"))
+    kb.row(IB("📡 Проверить все", callback_data="fw_probe_all"))
+    kb.row(IB("🔙 Назад", callback_data="fw_back_src" if day_key is None else f"d:{day_key}:forward_menu"))
     return kb
 
 
@@ -2185,8 +2323,8 @@ def default_window_nav_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     day = get_chat_store(chat_id).get("current_view_day") or today_key()
     kb.row(
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{day}:back_main"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="aux_close"),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{day}:back_main"),
+        IB("❌ Закрыть", callback_data="aux_close"),
     )
     return kb
 
@@ -2378,6 +2516,8 @@ def build_help_text(chat_id: int) -> str:
             "/articles — описание статей: статья = ключевые слова",
             "/mega_status — статус MEGA/MEGAcmd",
             "/mega_backup_now — сразу загрузить latest_global.json в MEGA",
+            "/кнопки — переключить кнопки: текст/значки",
+            "/маска — переключить маскировку тотального секрета",
         ])
     lines.append("/help — эта справка")
     return "\n".join(lines)
@@ -2385,7 +2525,11 @@ def build_help_text(chat_id: int) -> str:
 
 def build_info_text(chat_id: int) -> str:
     state = "ВКЛ" if chat_buttons_current_window_enabled(chat_id) else "ВЫКЛ"
-    return build_help_text(chat_id) + f"\n/окна — открывать действия в текущем окне: {state}"
+    text = build_help_text(chat_id) + f"\n/окна — открывать действия в текущем окне: {state}"
+    if is_owner_chat(chat_id):
+        text += f"\n/кнопки — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
+        text += f"\n/маска — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
+    return text
 
 
 def get_connected_chat_ids(chat_id: int):
@@ -2414,15 +2558,15 @@ def build_dozvon_menu(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     buttons = []
     for cid in get_connected_chat_ids(chat_id):
-        buttons.append(types.InlineKeyboardButton(
+        buttons.append(IB(
             chat_button_title(cid, get_chat_display_name(cid)),
             callback_data=f"dzv:{cid}"
         ))
     if buttons:
         add_buttons_in_rows(kb, buttons, 3)
     kb.row(
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="dzv:close"),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+        IB("❌ Закрыть", callback_data="dzv:close"),
     )
     return kb
 
@@ -2790,7 +2934,7 @@ def _call_with_optional_reply(send_func, *args, reply_to_message_id=None, **kwar
 def build_balance_panel_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     bal = get_chat_store(chat_id).get("balance", 0)
-    kb.row(types.InlineKeyboardButton(
+    kb.row(IB(
         f"🏦 Остаток: {fmt_num(bal)}",
         callback_data="bp:open"
     ))
@@ -3819,8 +3963,84 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True, "buttons_current_window": False, "forward_menu_new_style": False},
+        "_global_settings": {"bot_journal_enabled": True, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False},
     }
+
+# InlineKeyboardButton wrapper for optional compact mode. It is intentionally
+# exact/pattern based, so chat names remain untouched.
+_ORIGINAL_INLINE_KEYBOARD_BUTTON = types.InlineKeyboardButton
+
+
+def _compact_button_label(text) -> str:
+    label = str(text or "")
+    if not icon_button_mode_enabled():
+        return label
+    exact = {
+        "⬅️ Назад осн. окно": "⬅️",
+        "🔙 Назад": "↩️",
+        "🔙 Назад в Инфо": "↩️ ℹ️",
+        "⏪ Назад к статьям": "↩️ 📊",
+        "❌ Закрыть": "✖️",
+        "❌ Закрыть статьи": "✖️ 📊",
+        "🗑 Удалить статью": "🗑",
+        "🗑 Удалить выбранное": "🗑 ✅",
+        "➕ Добавить": "➕",
+        "➕ Добавить статью": "➕",
+        "✏️ Изменить": "✏️",
+        "📅 Сегодня": "📅",
+        "📅 Календарь": "📆",
+        "📆 Выбор недели": "📆",
+        "📚 Описание статей": "📚",
+        "📓 Журнал": "📓",
+        "📄 Скачать TXT": "📄",
+        "📡 Проверить все": "📡",
+        "⬅️ День": "⬅️",
+        "День ➡️": "➡️",
+        "⬅️ Месяц": "⬅️",
+        "Месяц ➡️": "➡️",
+        "⬅️ Чт–Ср": "⬅️ Чт",
+        "Чт–Ср ➡️": "Чт ➡️",
+        "⬅️ Пн–Вс": "⬅️ Пн",
+        "Пн–Вс ➡️": "Пн ➡️",
+        "⬜ Пн–Вс": "⬜ Пн",
+        "🟦 Чт–Ср": "🟦 Чт",
+        "👥 /доп_владельцы": "👥 /доп",
+        "Нет доступных чатов": "Нет чатов",
+        "Нет данных для изменения": "Нет данных",
+        "Нет пользовательских статей": "Нет статей",
+        "Удалённых нет": "Нет",
+    }
+    if label in exact:
+        return exact[label]
+    # Dynamic/service labels.
+    if re.fullmatch(r"[✅❌] Фин режим (?:ВКЛ|ВЫКЛ)", label):
+        return ("✅" if label.startswith("✅") else "❌") + " Фин"
+    if re.fullmatch(r"[✅❌] Журнал (?:ВКЛ|ВЫКЛ)", label):
+        return ("✅" if label.startswith("✅") else "❌") + " 📓"
+    if label.startswith("✅ В текущем окне"):
+        return "✅ 🪟"
+    if label.startswith("❌ В текущем окне"):
+        return "❌ 🪟"
+    if label.startswith("🧩 Пересылка:") or label.startswith("🔁 Пересылка:"):
+        return "🔁/🧩"
+    if label.startswith("🔣 Кнопки:") or label.startswith("🔤 Кнопки:"):
+        return "🔣/🔤"
+    if label.startswith("🪷 Маска:"):
+        return "🪷" + ("✅" if "ВКЛ" in label else "❌")
+    if re.fullmatch(r"[✅❌] Секрет", label):
+        return ("✅" if label.startswith("✅") else "❌") + "🔐"
+    if label.startswith("🏦 Остаток:"):
+        return label.replace("🏦 Остаток:", "🏦", 1)
+    if label.startswith("✏️ ") and len(label) > 18:
+        return "✏️ " + label[3:24].strip()
+    if label.startswith("☑️ ") or label.startswith("⬛ "):
+        return label[:2] + " " + label[3:24].strip()
+    return label
+
+
+def IB(text, *args, **kwargs):
+    return _ORIGINAL_INLINE_KEYBOARD_BUTTON(_compact_button_label(text), *args, **kwargs)
+
 def load_data():
     _import_legacy_global_json_to_db(DATA_FILE, force=False)
 
@@ -4714,7 +4934,7 @@ def build_categories_buttons(start: str, end: str, store: dict | None = None):
         if not slug:
             continue
         buttons.append(
-            types.InlineKeyboardButton(
+            IB(
                 cat,
                 callback_data=cat_callback(f"cat_show:{start}:{end}:{slug}")
             )
@@ -4732,46 +4952,46 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
     if mode == "wthu":
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=cat_callback(f"cat_wthu:{prev_key}"))]
+        row = [IB("⬅️ Чт–Ср", callback_data=cat_callback(f"cat_wthu:{prev_key}"))]
         if start != week_start_thursday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")))
-        row.append(types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=cat_callback(f"cat_wthu:{next_key}")))
+            row.append(IB("📅 Сегодня", callback_data=cat_callback("cat_today")))
+        row.append(IB("Чт–Ср ➡️", callback_data=cat_callback(f"cat_wthu:{next_key}")))
         kb.row(*row)
         kb.row(
-            types.InlineKeyboardButton(
+            IB(
                 "⬜ Пн–Вс",
                 callback_data=cat_callback(f"cat_wk:{week_start_monday(start)}")
             ),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data=cat_callback("cat_months"))
+            IB("📆 Выбор недели", callback_data=cat_callback("cat_months"))
         )
     elif mode == "wk":
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Пн–Вс", callback_data=cat_callback(f"cat_wk:{prev_key}"))]
+        row = [IB("⬅️ Пн–Вс", callback_data=cat_callback(f"cat_wk:{prev_key}"))]
         if start != week_start_monday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")))
-        row.append(types.InlineKeyboardButton("Пн–Вс ➡️", callback_data=cat_callback(f"cat_wk:{next_key}")))
+            row.append(IB("📅 Сегодня", callback_data=cat_callback("cat_today")))
+        row.append(IB("Пн–Вс ➡️", callback_data=cat_callback(f"cat_wk:{next_key}")))
         kb.row(*row)
         thu_ref = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
         kb.row(
-            types.InlineKeyboardButton("🟦 Чт–Ср", callback_data=cat_callback(f"cat_wthu:{thu_ref}")),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data=cat_callback("cat_months"))
+            IB("🟦 Чт–Ср", callback_data=cat_callback(f"cat_wthu:{thu_ref}")),
+            IB("📆 Выбор недели", callback_data=cat_callback("cat_months"))
         )
     else:
         kb.row(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")),
-            types.InlineKeyboardButton("📆 Выбор недели", callback_data=cat_callback("cat_months"))
+            IB("📅 Сегодня", callback_data=cat_callback("cat_today")),
+            IB("📆 Выбор недели", callback_data=cat_callback("cat_months"))
         )
 
-    kb.row(types.InlineKeyboardButton("📚 Описание статей", callback_data=cat_callback("cat_desc")))
+    kb.row(IB("📚 Описание статей", callback_data=cat_callback("cat_desc")))
     kb.row(
-        types.InlineKeyboardButton("➕ Добавить", callback_data=cat_callback("cat_add")),
-        types.InlineKeyboardButton("✏️ Изменить", callback_data=cat_callback("cat_edit_menu")),
-        types.InlineKeyboardButton("🗑 Удалить", callback_data=cat_callback("cat_del_menu")),
+        IB("➕ Добавить", callback_data=cat_callback("cat_add")),
+        IB("✏️ Изменить", callback_data=cat_callback("cat_edit_menu")),
+        IB("🗑 Удалить", callback_data=cat_callback("cat_del_menu")),
     )
     kb.row(
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data=cat_callback("cat_close")),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+        IB("❌ Закрыть", callback_data=cat_callback("cat_close")),
     )
     return kb
 
@@ -4803,24 +5023,24 @@ def build_category_detail_keyboard(start: str, end: str, back_callback: str, mod
     if mode == "wthu" and slug:
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=cat_callback(f"cat_show_wthu:{prev_key}:{slug}"))]
+        row = [IB("⬅️ Чт–Ср", callback_data=cat_callback(f"cat_show_wthu:{prev_key}:{slug}"))]
         if start != week_start_thursday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback(f"cat_show_wthu:{today_key()}:{slug}")))
-        row.append(types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=cat_callback(f"cat_show_wthu:{next_key}:{slug}")))
+            row.append(IB("📅 Сегодня", callback_data=cat_callback(f"cat_show_wthu:{today_key()}:{slug}")))
+        row.append(IB("Чт–Ср ➡️", callback_data=cat_callback(f"cat_show_wthu:{next_key}:{slug}")))
         kb.row(*row)
     elif mode == "wk" and slug:
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
-        row = [types.InlineKeyboardButton("⬅️ Пн–Вс", callback_data=cat_callback(f"cat_show_wk:{prev_key}:{slug}"))]
+        row = [IB("⬅️ Пн–Вс", callback_data=cat_callback(f"cat_show_wk:{prev_key}:{slug}"))]
         if start != week_start_monday(today_key()):
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback(f"cat_show_wk:{today_key()}:{slug}")))
-        row.append(types.InlineKeyboardButton("Пн–Вс ➡️", callback_data=cat_callback(f"cat_show_wk:{next_key}:{slug}")))
+            row.append(IB("📅 Сегодня", callback_data=cat_callback(f"cat_show_wk:{today_key()}:{slug}")))
+        row.append(IB("Пн–Вс ➡️", callback_data=cat_callback(f"cat_show_wk:{next_key}:{slug}")))
         kb.row(*row)
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=cat_callback(back_callback) if str(back_callback).startswith("cat") else back_callback))
+    kb.row(IB("🔙 Назад", callback_data=cat_callback(back_callback) if str(back_callback).startswith("cat") else back_callback))
     kb.row(
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
-        types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close")),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+        IB("❌ Закрыть статьи", callback_data=cat_callback("cat_close")),
     )
     return kb
 
@@ -5012,11 +5232,11 @@ def _category_prompt_keyboard(chat_id: int, owner_day_key: str | None = None, ba
     else:
         delete_callback = cat_callback("cat_del_menu")
     kb.row(
-        types.InlineKeyboardButton("🗑 Удалить статью", callback_data=delete_callback),
+        IB("🗑 Удалить статью", callback_data=delete_callback),
     )
     kb.row(
-        types.InlineKeyboardButton("❌ Закрыть", callback_data=cat_callback("cat_add_cancel")),
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=back_callback or f"d:{day}:back_main"),
+        IB("❌ Закрыть", callback_data=cat_callback("cat_add_cancel")),
+        IB("⬅️ Назад осн. окно", callback_data=back_callback or f"d:{day}:back_main"),
     )
     return kb
 
@@ -5069,15 +5289,15 @@ def build_category_delete_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=2)
     items = category_custom_items_for_chat(chat_id)
     if not items:
-        kb.row(types.InlineKeyboardButton("Нет пользовательских статей", callback_data="none"))
+        kb.row(IB("Нет пользовательских статей", callback_data="none"))
     for item in items:
         slug = item.get("slug")
         icon = "☑️" if slug in selected else "⬛"
-        kb.row(types.InlineKeyboardButton(f"{icon} {item.get('name')}", callback_data=cat_callback(f"cat_del_toggle:{slug}")))
-    kb.row(types.InlineKeyboardButton("🗑 Удалить выбранное", callback_data=cat_callback("cat_del_selected")))
+        kb.row(IB(f"{icon} {item.get('name')}", callback_data=cat_callback(f"cat_del_toggle:{slug}")))
+    kb.row(IB("🗑 Удалить выбранное", callback_data=cat_callback("cat_del_selected")))
     kb.row(
-        types.InlineKeyboardButton("⏪ Назад к статьям", callback_data=cat_callback("cat_today")),
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+        IB("⏪ Назад к статьям", callback_data=cat_callback("cat_today")),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
     )
     return kb
 
@@ -5086,12 +5306,12 @@ def build_category_edit_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=2)
     items = category_custom_items_for_chat(chat_id)
     if not items:
-        kb.row(types.InlineKeyboardButton("Нет пользовательских статей", callback_data="none"))
+        kb.row(IB("Нет пользовательских статей", callback_data="none"))
     for item in items:
-        kb.row(types.InlineKeyboardButton(f"✏️ {item.get('name')}", callback_data=cat_callback(f"cat_edit_pick:{item.get('slug')}")))
+        kb.row(IB(f"✏️ {item.get('name')}", callback_data=cat_callback(f"cat_edit_pick:{item.get('slug')}")))
     kb.row(
-        types.InlineKeyboardButton("⏪ Назад к статьям", callback_data=cat_callback("cat_today")),
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+        IB("⏪ Назад к статьям", callback_data=cat_callback("cat_today")),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
     )
     return kb
 
@@ -5619,13 +5839,56 @@ def set_total_secret_mode(chat_id: int, enabled: bool):
     schedule_config_backup_for_chats(chat_id)
 
 
+TOTAL_SECRET_DECOY_PHRASES = [
+    "Внимание и покой.", "Осознанность здесь.", "Тишина внутри.", "Путь сердца.",
+    "Наблюдай себя.", "Дыши глубже.", "Присутствуй сейчас.", "Свет внутри.",
+    "Любовь сильнее.", "Мир в сердце.", "Благодарность растёт.", "Внутренняя работа.",
+    "Помни себя.", "Будь свидетелем.", "Не спи внутри.", "Шаг к свету.",
+    "Сознание расширяется.", "Тело помнит.", "Душа учится.", "Сердце открыто.",
+    "Молчание лечит.", "Принятие есть.", "Путь продолжается.", "Воля и внимание.",
+    "Сила в тишине.", "Радость без причины.", "Любовь без условий.", "Свидетель молчит.",
+    "Энергия вверх.", "Чистое намерение.", "Здесь и сейчас.", "Осознанный выбор.",
+    "Божественное рядом.", "Внутренний свет.", "Учись видеть.", "Покой глубже слов.",
+    "Смотри внутрь.", "Развитие души.", "Практика внимания.", "Тишина ума.",
+    "Сердце знает.", "Пусть будет свет.", "Благость и мир.", "Память о себе.",
+    "Человек пробуждается.", "Дух ведёт.", "Созерцай спокойно.", "Истина проста.",
+    "Мягкая сила.", "Светлая мысль.", "Пробуждение рядом.", "Душевный рост.",
+    "Путь любви.", "Молитва сердца.", "Чистое сознание.", "Терпение и вера.",
+    "Гармония внутри.", "Служение добру.", "Внутренний учитель.", "Свобода ума.",
+    "Осознай момент.", "Сохрани тишину.", "Открой сердце.", "Иди глубже.",
+    "Будь настоящим.", "Свети спокойно.", "Доверяй пути.", "Живи осознанно.",
+]
+
+
+def total_secret_decoy_text(msg) -> str:
+    try:
+        seed = int(getattr(msg, "message_id", 0) or 0) + int(getattr(getattr(msg, "chat", None), "id", 0) or 0)
+        return TOTAL_SECRET_DECOY_PHRASES[abs(seed) % len(TOTAL_SECRET_DECOY_PHRASES)]
+    except Exception:
+        return "Тишина внутри."
+
+
+def maybe_send_total_secret_decoy(msg):
+    try:
+        if not total_secret_mask_enabled():
+            return
+        if not is_total_secret_mode(msg.chat.id):
+            return
+        _tg_call_retry(bot.send_message, msg.chat.id, total_secret_decoy_text(msg), purpose="total_secret_decoy")
+    except Exception as e:
+        log_error(f"maybe_send_total_secret_decoy({getattr(getattr(msg, 'chat', None), 'id', '?')}): {e}")
+
+
 def handle_secret_input_message(msg) -> bool:
     text = getattr(msg, "text", None) or getattr(msg, "caption", None) or ""
     marked, cleaned = _extract_secret_codeword(text)
-    if not marked and not is_total_secret_mode(msg.chat.id):
+    total_mode = is_total_secret_mode(msg.chat.id)
+    if not marked and not total_mode:
         return False
     save_secret_message(msg.chat.id, msg, cleaned_text=cleaned if marked else None)
     delete_secret_source_message(msg)
+    if total_mode:
+        maybe_send_total_secret_decoy(msg)
     return True
 
 
@@ -5754,9 +6017,9 @@ def _secret_countdown_text(seconds: int) -> str:
 def build_secret_media_timer_keyboard(remaining: int = SECRET_AUTO_CLOSE_SECONDS):
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.row(
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="secmclose"),
-        types.InlineKeyboardButton(
-            f"⏳ Закроется {_secret_countdown_text(remaining)}",
+        IB("❌ Закрыть", callback_data="secmclose"),
+        IB(
+            f"⏳ {_secret_countdown_text(remaining)} Закроется",
             callback_data="secmwait",
         ),
     )
@@ -5969,21 +6232,21 @@ def build_secret_day_keyboard(target_chat_id: int, day_key: str, self_only: bool
     next_day = (base + timedelta(days=1)).strftime("%Y-%m-%d")
     kb = types.InlineKeyboardMarkup(row_width=3)
     kb.row(
-        types.InlineKeyboardButton("⬅️ День", callback_data=f"secview:{target_chat_id}:{prev_day}"),
-        types.InlineKeyboardButton("📅 Сегодня", callback_data=f"secview:{target_chat_id}:{today_key()}"),
-        types.InlineKeyboardButton("День ➡️", callback_data=f"secview:{target_chat_id}:{next_day}"),
+        IB("⬅️ День", callback_data=f"secview:{target_chat_id}:{prev_day}"),
+        IB("📅 Сегодня", callback_data=f"secview:{target_chat_id}:{today_key()}"),
+        IB("День ➡️", callback_data=f"secview:{target_chat_id}:{next_day}"),
     )
     kb.row(
-        types.InlineKeyboardButton("📅 Календарь", callback_data=f"secchatcal:{target_chat_id}:{day_key[:7]}"),
-        types.InlineKeyboardButton("🎞️", callback_data=f"secmedia:{target_chat_id}:{day_key}"),
-        types.InlineKeyboardButton("✏️ Изменить", callback_data=f"secedit:{target_chat_id}:{day_key}"),
+        IB("📅 Календарь", callback_data=f"secchatcal:{target_chat_id}:{day_key[:7]}"),
+        IB("🎞️", callback_data=f"secmedia:{target_chat_id}:{day_key}"),
+        IB("✏️ Изменить", callback_data=f"secedit:{target_chat_id}:{day_key}"),
     )
     if self_only:
-        kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+        kb.row(IB("❌ Закрыть", callback_data="secclose"))
     else:
         kb.row(
-            types.InlineKeyboardButton("🔙 Назад", callback_data="secbacklist"),
-            types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
+            IB("🔙 Назад", callback_data="secbacklist"),
+            IB("❌ Закрыть", callback_data="secclose"),
         )
     return kb
 
@@ -6113,11 +6376,11 @@ def build_secret_edit_keyboard(target_chat_id: int, day_key: str, self_only: boo
         ts = str(item.get("timestamp") or "")
         stamp = ts[11:19] if len(ts) >= 19 else ""
         label = f"{idx}. {fmt_date_ddmmyy(day_key)} {stamp}"
-        kb.row(types.InlineKeyboardButton(label, switch_inline_query_current_chat=compose_secret_edit_insert(target_chat_id, item)[:256]))
+        kb.row(IB(label, switch_inline_query_current_chat=compose_secret_edit_insert(target_chat_id, item)[:256]))
     if not _secret_day_records(target_chat_id, day_key):
-        kb.row(types.InlineKeyboardButton("Нет данных для изменения", callback_data="none"))
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"secview:{target_chat_id}:{day_key}"))
-    kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+        kb.row(IB("Нет данных для изменения", callback_data="none"))
+    kb.row(IB("🔙 Назад", callback_data=f"secview:{target_chat_id}:{day_key}"))
+    kb.row(IB("❌ Закрыть", callback_data="secclose"))
     return kb
 
 
@@ -6127,6 +6390,12 @@ def handle_secret_edit_insert_message(msg) -> bool:
     text = (msg.text or "").strip()
     if SECRET_EDIT_TOKEN + "|" not in text:
         return False
+    try:
+        # Удаляем служебное сообщение редактирования сразу: даже если текст пустой
+        # или запись не найдена, хвост вида EDITSECRET|... не должен висеть в чате.
+        delete_secret_source_message(msg)
+    except Exception:
+        pass
     try:
         match = re.search(r"\((%s\|[^)]*)\)" % re.escape(SECRET_EDIT_TOKEN), text)
         if not match:
@@ -6147,7 +6416,6 @@ def handle_secret_edit_insert_message(msg) -> bool:
         schedule_config_backup_for_chats(target_chat_id, delay=0.2)
         threading.Thread(target=upload_chat_secrets_to_mega, args=(target_chat_id,), daemon=True).start()
         refresh_secret_windows(target_chat_id)
-        delete_secret_source_message(msg)
         send_and_auto_delete(msg.chat.id, "✅ Секретные данные изменены.", 8)
         return True
     except Exception as e:
@@ -6161,16 +6429,16 @@ def build_secret_chat_list_keyboard():
     for cid in chats:
         mode = "✅" if is_total_secret_mode(cid) else "❌"
         kb.row(
-            types.InlineKeyboardButton(get_chat_display_name(cid)[:28], callback_data=f"seclist:{cid}"),
-            types.InlineKeyboardButton("🎞️", callback_data=f"secmedia:{cid}:all"),
-            types.InlineKeyboardButton(f"{mode} Секрет", callback_data=f"sectoggle:{cid}"),
-            types.InlineKeyboardButton("📅", callback_data=f"secchatcal:{cid}"),
+            IB(get_chat_display_name(cid)[:28], callback_data=f"seclist:{cid}"),
+            IB("🎞️", callback_data=f"secmedia:{cid}:all"),
+            IB(f"{mode} Секрет", callback_data=f"sectoggle:{cid}"),
+            IB("📅", callback_data=f"secchatcal:{cid}"),
         )
     if not chats:
-        kb.row(types.InlineKeyboardButton("Нет чатов с секретами", callback_data="none"))
+        kb.row(IB("Нет чатов с секретами", callback_data="none"))
     kb.row(
-        types.InlineKeyboardButton("🔙 Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
+        IB("🔙 Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+        IB("❌ Закрыть", callback_data="secclose"),
     )
     return kb
 
@@ -6208,31 +6476,31 @@ def build_secret_calendar_keyboard(target_chat_id: int, month_key: str, self_onl
     year, month = (int(x) for x in month_key.split("-", 1))
     marked = {str(r.get("day_key")) for r in _secret_records(target_chat_id)}
     kb = types.InlineKeyboardMarkup(row_width=7)
-    kb.row(*[types.InlineKeyboardButton(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
+    kb.row(*[IB(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
     for week in calendar.Calendar(firstweekday=0).monthdayscalendar(year, month):
         row = []
         for day in week:
             if not day:
-                row.append(types.InlineKeyboardButton(" ", callback_data="none"))
+                row.append(IB(" ", callback_data="none"))
                 continue
             day_key = f"{year:04d}-{month:02d}-{day:02d}"
             label = f"🔐{day}" if day_key in marked else str(day)
-            row.append(types.InlineKeyboardButton(label, callback_data=f"secday:{target_chat_id}:{day_key}" if day_key in marked else "none"))
+            row.append(IB(label, callback_data=f"secday:{target_chat_id}:{day_key}" if day_key in marked else "none"))
         kb.row(*row)
     first = datetime(year, month, 1)
     prev = (first - timedelta(days=1)).strftime("%Y-%m")
     nxt = (first.replace(day=28) + timedelta(days=4)).replace(day=1).strftime("%Y-%m")
     kb.row(
-        types.InlineKeyboardButton("⬅️ Месяц", callback_data=f"secmon:{target_chat_id}:{prev}"),
-        types.InlineKeyboardButton("Месяц ➡️", callback_data=f"secmon:{target_chat_id}:{nxt}"),
+        IB("⬅️ Месяц", callback_data=f"secmon:{target_chat_id}:{prev}"),
+        IB("Месяц ➡️", callback_data=f"secmon:{target_chat_id}:{nxt}"),
     )
-    kb.row(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"secview:{target_chat_id}:{today_key()}"))
+    kb.row(IB("📅 Сегодня", callback_data=f"secview:{target_chat_id}:{today_key()}"))
     if self_only:
-        kb.row(types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"))
+        kb.row(IB("❌ Закрыть", callback_data="secclose"))
     else:
         kb.row(
-            types.InlineKeyboardButton("🔙 Назад", callback_data="secbacklist"),
-            types.InlineKeyboardButton("❌ Закрыть", callback_data="secclose"),
+            IB("🔙 Назад", callback_data="secbacklist"),
+            IB("❌ Закрыть", callback_data="secclose"),
         )
     return kb
 
@@ -6302,12 +6570,12 @@ def build_additional_owners_keyboard():
         if is_primary_owner(cid):
             continue
         icon = "✅" if int(cid) in owners else "❌"
-        buttons.append(types.InlineKeyboardButton(f"{icon} {get_chat_display_name(cid)[:32]}", callback_data=f"addown:{cid}"))
+        buttons.append(IB(f"{icon} {get_chat_display_name(cid)[:32]}", callback_data=f"addown:{cid}"))
     for i in range(0, len(buttons), 2):
         kb.row(*buttons[i:i + 2])
     if not buttons:
-        kb.row(types.InlineKeyboardButton("Нет доступных чатов", callback_data="none"))
-    kb.row(types.InlineKeyboardButton("🔙 Назад в Инфо", callback_data="journal_back"))
+        kb.row(IB("Нет доступных чатов", callback_data="none"))
+    kb.row(IB("🔙 Назад в Инфо", callback_data="journal_back"))
     return kb
 
 
@@ -6391,15 +6659,44 @@ def cmd_start_ru(msg):
     cmd_start(msg)
 
 
+@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/(?:кнопки|buttons)(?:@\w+)?", m.text.strip(), re.I)))
+def cmd_toggle_icon_buttons(msg):
+    schedule_command_delete(msg)
+    if not is_owner_chat(msg.chat.id):
+        send_and_auto_delete(msg.chat.id, "Эта команда только для владельца.", 8)
+        return
+    new_state = toggle_icon_button_mode()
+    send_and_auto_delete(msg.chat.id, "🔣 Кнопки: значки" if new_state else "🔤 Кнопки: текст", 10)
+    try:
+        open_info_window(msg.chat.id)
+    except Exception:
+        pass
+
+
+@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/(?:маска|mask)(?:@\w+)?", m.text.strip(), re.I)))
+def cmd_toggle_total_secret_mask(msg):
+    schedule_command_delete(msg)
+    if not is_owner_chat(msg.chat.id):
+        send_and_auto_delete(msg.chat.id, "Эта команда только для владельца.", 8)
+        return
+    new_state = toggle_total_secret_mask()
+    send_and_auto_delete(msg.chat.id, "🪷 Маскировка тотального секрета ВКЛ" if new_state else "🪷 Маскировка тотального секрета ВЫКЛ", 10)
+    try:
+        open_info_window(msg.chat.id)
+    except Exception:
+        pass
+
+
 @bot.message_handler(func=lambda m: bool(
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
-    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot"}
+    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/маска", "/mask"}
 ))
 def cmd_total_secret_capture(msg):
     save_secret_message(msg.chat.id, msg)
     delete_secret_source_message(msg)
+    maybe_send_total_secret_decoy(msg)
 
 
 @bot.message_handler(
@@ -7950,15 +8247,15 @@ def build_process_menu(day_key: str):
     buttons = []
     for cid, title in _collect_process_menu_items():
         icon = "✅" if is_process_trace_enabled(cid) else "❌"
-        buttons.append(types.InlineKeyboardButton(
+        buttons.append(IB(
             f"{icon} {chat_button_title(cid, title)}",
             callback_data=f"d:{day_key}:process_toggle_{cid}"
         ))
     if buttons:
         add_buttons_in_rows(kb, buttons, 2)
     else:
-        kb.row(types.InlineKeyboardButton("Нет чатов", callback_data="none"))
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+        kb.row(IB("Нет чатов", callback_data="none"))
+    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
 
@@ -7983,16 +8280,16 @@ def build_backup_owner_menu(day_key: str):
         # Если бот удалён из чата, название остаётся с ➖ и само нажатие на название
         # показывает владельцу понятное сообщение, а не молчит через callback_data="none".
         title_cb = f"d:{day_key}:removed_{cid}" if is_chat_bot_removed(cid) else "none"
-        chat_btn = types.InlineKeyboardButton(f"💬 {chat_button_title(cid, title)}", callback_data=title_cb)
+        chat_btn = IB(f"💬 {chat_button_title(cid, title)}", callback_data=title_cb)
         chat_label = _backup_toggle_label(cid, "chat", "чат") if (owner_id is not None and int(cid) == owner_id) else "➖ чат"
         chat_cb = f"d:{day_key}:backup_toggle_chat_{cid}" if (owner_id is not None and int(cid) == owner_id) else (f"d:{day_key}:removed_{cid}" if is_chat_bot_removed(cid) else "none")
         kb.row(
             chat_btn,
-            types.InlineKeyboardButton(chat_label, callback_data=chat_cb),
-            types.InlineKeyboardButton(_backup_toggle_label(cid, "channel", "канал"), callback_data=f"d:{day_key}:backup_toggle_channel_{cid}"),
-            types.InlineKeyboardButton(_backup_toggle_label(cid, "mega", "MEGA"), callback_data=f"d:{day_key}:backup_toggle_mega_{cid}"),
+            IB(chat_label, callback_data=chat_cb),
+            IB(_backup_toggle_label(cid, "channel", "канал"), callback_data=f"d:{day_key}:backup_toggle_channel_{cid}"),
+            IB(_backup_toggle_label(cid, "mega", "MEGA"), callback_data=f"d:{day_key}:backup_toggle_mega_{cid}"),
         )
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
 
@@ -8009,37 +8306,37 @@ def build_main_keyboard(day_key: str, chat_id=None):
     kb = types.InlineKeyboardMarkup(row_width=3)
 
     nav_row = [
-        types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"d:{day_key}:prev")
+        IB("⬅️ Вчера", callback_data=f"d:{day_key}:prev")
     ]
     if day_key != today_key():
-        nav_row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"d:{day_key}:today"))
-    nav_row.append(types.InlineKeyboardButton("➡️ Завтра", callback_data=f"d:{day_key}:next"))
+        nav_row.append(IB("📅 Сегодня", callback_data=f"d:{day_key}:today"))
+    nav_row.append(IB("➡️ Завтра", callback_data=f"d:{day_key}:next"))
     kb.row(*nav_row)
 
     kb.row(
-        types.InlineKeyboardButton("📅 Календарь", callback_data=f"d:{day_key}:calendar"),
-        types.InlineKeyboardButton("📊 Отчёт", callback_data=f"d:{day_key}:report"),
-        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"d:{day_key}:total"),
+        IB("📅 Календарь", callback_data=f"d:{day_key}:calendar"),
+        IB("📊 Отчёт", callback_data=f"d:{day_key}:report"),
+        IB("💰 Общий итог", callback_data=f"d:{day_key}:total"),
     )
     kb.row(
-        types.InlineKeyboardButton("📝 Редактировать", callback_data=f"d:{day_key}:edit_list"),
-        types.InlineKeyboardButton("📂 CSV", callback_data=f"d:{day_key}:csv_all"),
-        types.InlineKeyboardButton("📊 Статьи", callback_data=cat_callback("cat_today")),
+        IB("📝 Редактировать", callback_data=f"d:{day_key}:edit_list"),
+        IB("📂 CSV", callback_data=f"d:{day_key}:csv_all"),
+        IB("📊 Статьи", callback_data=cat_callback("cat_today")),
     )
     # Обнуление убрано из основного окна о1 по ТЗ. Оставлена команда /reset в окне ℹ️ Инфо.
     kb.row(
-        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
+        IB("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
     )
 
     if is_owner_chat(chat_id):
         kb.row(
-            types.InlineKeyboardButton("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu"),
-            types.InlineKeyboardButton("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
+            IB("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu"),
+            IB("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"),
         )
         # Скрытые финансы и Фин окно перенесены внутрь: Фин режим → выбор чата → настройки чата.
         kb.row(
-            types.InlineKeyboardButton("🧪 PROCESS", callback_data=f"d:{day_key}:process_menu"),
-            types.InlineKeyboardButton("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"),
+            IB("🧪 PROCESS", callback_data=f"d:{day_key}:process_menu"),
+            IB("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"),
         )
 
     return kb
@@ -8059,14 +8356,14 @@ def build_report_keyboard(month_key: str):
     prev_month = (dt.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
 
-    nav_row = [types.InlineKeyboardButton("⬅️ Пред. месяц", callback_data=f"rep:{prev_month.strftime('%Y-%m')}")]
+    nav_row = [IB("⬅️ Пред. месяц", callback_data=f"rep:{prev_month.strftime('%Y-%m')}")]
     if month_key != current_month:
-        nav_row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data="rep_today"))
-    nav_row.append(types.InlineKeyboardButton("След. месяц ➡️", callback_data=f"rep:{next_month.strftime('%Y-%m')}"))
+        nav_row.append(IB("📅 Сегодня", callback_data="rep_today"))
+    nav_row.append(IB("След. месяц ➡️", callback_data=f"rep:{next_month.strftime('%Y-%m')}"))
     kb.row(*nav_row)
     kb.row(
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="rep_close"),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+        IB("❌ Закрыть", callback_data="rep_close"),
     )
     return kb
 
@@ -8151,19 +8448,19 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
         daily = store.get("daily_records", {})
         back_day_key = store.get("current_view_day", today_key())
 
-    kb.row(*[types.InlineKeyboardButton(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
+    kb.row(*[IB(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
     for week in calendar.Calendar(firstweekday=0).monthdayscalendar(center_day.year, center_day.month):
         row = []
         for day_num in week:
             if not day_num:
-                row.append(types.InlineKeyboardButton(" ", callback_data="none"))
+                row.append(IB(" ", callback_data="none"))
                 continue
             key = f"{center_day.year:04d}-{center_day.month:02d}-{day_num:02d}"
             label = f"📝{day_num}" if daily.get(key) else str(day_num)
             if daily.get(key):
                 label = f"📝{day_num}"
             row.append(
-                types.InlineKeyboardButton(
+                IB(
                     label,
                     callback_data=f"d:{key}:open"
                 )
@@ -8174,11 +8471,11 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
     next_month = (center_day.replace(day=28) + timedelta(days=4)).replace(day=1)
 
     kb.row(
-        types.InlineKeyboardButton(
+        IB(
             "⬅️ Месяц",
             callback_data=f"c:{prev_month.strftime('%Y-%m-%d')}"
         ),
-        types.InlineKeyboardButton(
+        IB(
             "➡️ Месяц",
             callback_data=f"c:{next_month.strftime('%Y-%m-%d')}"
         )
@@ -8189,21 +8486,21 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
     bottom_row = []
     if shown_month != current_month:
         bottom_row.append(
-            types.InlineKeyboardButton(
+            IB(
                 "📅 Сегодня",
                 callback_data=f"c:{now_local().strftime('%Y-%m-%d')}"
             )
         )
     elif back_day_key != today_key():
         bottom_row.append(
-            types.InlineKeyboardButton(
+            IB(
                 "📅 Сегодня",
                 callback_data=f"d:{today_key()}:open"
             )
         )
 
     bottom_row.append(
-        types.InlineKeyboardButton(
+        IB(
             "🔙 Назад",
             callback_data=f"d:{back_day_key}:back_main"
         )
@@ -8235,9 +8532,9 @@ def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | 
             csv_cb = f"d:{day_key}:{csv_action}"
             xlsx_cb = f"d:{day_key}:{xlsx_action}"
         kb.row(
-            types.InlineKeyboardButton(label, callback_data="none"),
-            types.InlineKeyboardButton("CSV", callback_data=csv_cb),
-            types.InlineKeyboardButton("Excel", callback_data=xlsx_cb),
+            IB(label, callback_data="none"),
+            IB("CSV", callback_data=csv_cb),
+            IB("Excel", callback_data=xlsx_cb),
         )
 
 
@@ -8247,11 +8544,11 @@ def build_csv_menu(day_key: str, chat_id: int | None = None):
     # Выбор вида/направления бэкапа оставлен только владельцу.
     if chat_id is not None and is_owner_chat(chat_id):
         kb.row(
-            types.InlineKeyboardButton(_backup_toggle_label(chat_id, "chat", "Бэкап в чат"), callback_data=f"d:{day_key}:bk_chat"),
-            types.InlineKeyboardButton(_backup_toggle_label(chat_id, "channel", "в канал"), callback_data=f"d:{day_key}:bk_channel"),
-            types.InlineKeyboardButton(_backup_toggle_label(chat_id, "mega", "в MEGA"), callback_data=f"d:{day_key}:bk_mega"),
+            IB(_backup_toggle_label(chat_id, "chat", "Бэкап в чат"), callback_data=f"d:{day_key}:bk_chat"),
+            IB(_backup_toggle_label(chat_id, "channel", "в канал"), callback_data=f"d:{day_key}:bk_channel"),
+            IB(_backup_toggle_label(chat_id, "mega", "в MEGA"), callback_data=f"d:{day_key}:bk_mega"),
         )
-    kb.row(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"d:{day_key}:edit_menu"))
+    kb.row(IB("⬅️ Назад", callback_data=f"d:{day_key}:edit_menu"))
     return kb
 
 
@@ -8262,7 +8559,7 @@ def make_copy_or_inline_button(label: str, text: str):
     """Кнопка-вставка в поле ввода через inline current chat.
     Если Telegram добавит @имя_бота, обработчики редактирования очищают его перед сохранением.
     """
-    return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(text)[:256])
+    return IB(label, switch_inline_query_current_chat=str(text)[:256])
 
 
 
@@ -8310,7 +8607,7 @@ def make_direct_edit_insert_button(label: str, insert_text: str):
     В Bot API это возможно только через inline-query текущего чата; обычный callback не умеет
     принудительно вставлять текст в поле ввода.
     """
-    return types.InlineKeyboardButton(label, switch_inline_query_current_chat=str(insert_text)[:256])
+    return IB(label, switch_inline_query_current_chat=str(insert_text)[:256])
 
 
 def handle_direct_edit_insert_message(msg) -> bool:
@@ -8386,8 +8683,8 @@ def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None):
     if insert_text:
         kb.row(make_copy_or_inline_button("✍️ Вставить текст", str(insert_text)))
     kb.row(
-        types.InlineKeyboardButton("❌ Закрыть", callback_data=f"d:{day_key}:cancel_edit"),
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"),
+        IB("❌ Закрыть", callback_data=f"d:{day_key}:cancel_edit"),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"),
     )
     return kb
 
@@ -8397,8 +8694,8 @@ def build_finwin_cancel_edit_keyboard(target_chat_id: int, day_key: str, owner_d
     if insert_text:
         kb.row(make_copy_or_inline_button("✍️ Вставить текст", str(insert_text)))
     kb.row(
-        types.InlineKeyboardButton("❌ Закрыть", callback_data=f"fv:{target_chat_id}:{day_key}:cancel_edit:{owner_day_key}"),
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"),
+        IB("❌ Закрыть", callback_data=f"fv:{target_chat_id}:{day_key}:cancel_edit:{owner_day_key}"),
+        IB("⬅️ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"),
     )
     return kb
 
@@ -8477,23 +8774,23 @@ def build_forward_source_menu(day_key: str | None = None):
 
     items, owner_item = _collect_forward_picker_items(include_owner=True)
     buttons = [
-        types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_src:{cid}")
+        IB(chat_button_title(cid, title), callback_data=f"fw_src:{cid}")
         for cid, title in items
     ]
     add_buttons_in_rows(kb, buttons, 2)
 
     if owner_item:
-        kb.row(types.InlineKeyboardButton(chat_button_title(owner_item[0], owner_item[1]), callback_data=f"fw_src:{owner_item[0]}"))
+        kb.row(IB(chat_button_title(owner_item[0], owner_item[1]), callback_data=f"fw_src:{owner_item[0]}"))
 
     kb.row(
-        types.InlineKeyboardButton("📡 Проверить чаты", callback_data="fw_probe_all"),
-        types.InlineKeyboardButton("🗑 Удалённые", callback_data="fw_removed_list"),
+        IB("📡 Проверить чаты", callback_data="fw_probe_all"),
+        IB("🗑 Удалённые", callback_data="fw_removed_list"),
     )
 
     if day_key:
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+        kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     else:
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root"))
+        kb.row(IB("🔙 Назад", callback_data="fw_back_root"))
     return kb
 def build_forward_target_menu(src_id: int):
     kb = types.InlineKeyboardMarkup()
@@ -8506,14 +8803,14 @@ def build_forward_target_menu(src_id: int):
     for int_cid, title in items:
         if int_cid == src_id:
             continue
-        buttons.append(types.InlineKeyboardButton(chat_button_title(int_cid, title), callback_data=f"fw_tgt:{src_id}:{int_cid}"))
+        buttons.append(IB(chat_button_title(int_cid, title), callback_data=f"fw_tgt:{src_id}:{int_cid}"))
 
     add_buttons_in_rows(kb, buttons, 2)
 
     if owner_item and owner_item[0] != src_id:
-        kb.row(types.InlineKeyboardButton(chat_button_title(owner_item[0], owner_item[1]), callback_data=f"fw_tgt:{src_id}:{owner_item[0]}"))
+        kb.row(IB(chat_button_title(owner_item[0], owner_item[1]), callback_data=f"fw_tgt:{src_id}:{owner_item[0]}"))
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_src"))
+    kb.row(IB("🔙 Назад", callback_data="fw_back_src"))
     return kb
 
 
@@ -8671,8 +8968,8 @@ def _forward_new_pair_buttons(A: int, B: int):
     """
     arrow, fin, *_ = _forward_pair_icons(A, B)
     return (
-        types.InlineKeyboardButton(f"{chat_button_title(A)} ({arrow})", callback_data=f"fw_new_src:{A}"),
-        types.InlineKeyboardButton(f"({fin}) 🛠️ {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
+        IB(f"{chat_button_title(A)} ({arrow})", callback_data=f"fw_new_src:{A}"),
+        IB(f"({fin}) 🛠️ {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
     )
 
 
@@ -8730,33 +9027,33 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
         A, B = int(A), int(B)
         arrow, fin, ab_on, ba_on, ab_fin, ba_fin = _forward_pair_icons(A, B)
         kb.row(
-            types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_pair:{A}:{B}"),
-            types.InlineKeyboardButton(f"Чат Б: {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
+            IB(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_pair:{A}:{B}"),
+            IB(f"Чат Б: {chat_button_title(B)}", callback_data=f"fw_new_pair:{A}:{B}"),
         )
         kb.row(
-            types.InlineKeyboardButton(_forward_new_toggle_label(ba_on, "⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on, "⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ab_on and ba_on, "🔄"), callback_data=f"fw_new_mode:{A}:{B}:two"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ba_fin, "◀️"), callback_data=f"fw_new_fin:{A}:{B}:ba"),
-            types.InlineKeyboardButton(_forward_new_toggle_label(ab_fin, "▶️"), callback_data=f"fw_new_fin:{A}:{B}:ab"),
-            types.InlineKeyboardButton("❌", callback_data=f"fw_new_clear:{A}:{B}"),
+            IB(_forward_new_toggle_label(ba_on, "⏪️"), callback_data=f"fw_new_mode:{A}:{B}:from"),
+            IB(_forward_new_toggle_label(ab_on, "⏩️"), callback_data=f"fw_new_mode:{A}:{B}:to"),
+            IB(_forward_new_toggle_label(ab_on and ba_on, "🔄"), callback_data=f"fw_new_mode:{A}:{B}:two"),
+            IB(_forward_new_toggle_label(ba_fin, "◀️"), callback_data=f"fw_new_fin:{A}:{B}:ba"),
+            IB(_forward_new_toggle_label(ab_fin, "▶️"), callback_data=f"fw_new_fin:{A}:{B}:ab"),
+            IB("❌", callback_data=f"fw_new_clear:{A}:{B}"),
         )
-        kb.row(types.InlineKeyboardButton("🔙 Назад в окно выбора чатов", callback_data="fw_new_back_src"))
+        kb.row(IB("🔙 Назад в окно выбора чатов", callback_data="fw_new_back_src"))
         return kb
 
     if A:
         A = int(A)
-        kb.row(types.InlineKeyboardButton(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_src:{A}"))
+        kb.row(IB(f"Чат А: {chat_button_title(A)}", callback_data=f"fw_new_src:{A}"))
         buttons = []
         for cid, title in visible_items:
             if int(cid) == int(A):
                 continue
-            buttons.append(types.InlineKeyboardButton(f"Чат Б: {chat_button_title(cid, title)}", callback_data=f"fw_new_tgt:{A}:{int(cid)}"))
+            buttons.append(IB(f"Чат Б: {chat_button_title(cid, title)}", callback_data=f"fw_new_tgt:{A}:{int(cid)}"))
         if buttons:
             add_buttons_in_rows(kb, buttons, 2)
         else:
-            kb.row(types.InlineKeyboardButton("Нет чатов для выбора Чата Б", callback_data="none"))
-        kb.row(types.InlineKeyboardButton("🔙 Назад в окно выбора чатов", callback_data="fw_new_back_src"))
+            kb.row(IB("Нет чатов для выбора Чата Б", callback_data="none"))
+        kb.row(IB("🔙 Назад в окно выбора чатов", callback_data="fw_new_back_src"))
         return kb
 
     shown_pairs = 0
@@ -8779,24 +9076,24 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
     for cid, title in visible_items:
         if int(cid) in top_pair_a_ids:
             continue
-        chat_buttons.append(types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
+        chat_buttons.append(IB(chat_button_title(cid, title), callback_data=f"fw_new_src:{cid}"))
 
     if shown_pairs and chat_buttons:
-        kb.row(types.InlineKeyboardButton("⠀", callback_data="none"))
+        kb.row(IB("⠀", callback_data="none"))
 
     if chat_buttons:
         add_buttons_in_rows(kb, chat_buttons, 2)
     elif not shown_pairs:
-        kb.row(types.InlineKeyboardButton("Нет доступных чатов", callback_data="none"))
+        kb.row(IB("Нет доступных чатов", callback_data="none"))
 
     kb.row(
-        types.InlineKeyboardButton("📡 Проверить чаты", callback_data="fw_probe_all"),
-        types.InlineKeyboardButton("🗑 Удалённые", callback_data="fw_removed_list"),
+        IB("📡 Проверить чаты", callback_data="fw_probe_all"),
+        IB("🗑 Удалённые", callback_data="fw_removed_list"),
     )
     if day_key:
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+        kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     else:
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="fw_back_root"))
+        kb.row(IB("🔙 Назад", callback_data="fw_back_root"))
     return kb
 
 def build_forward_menu_text_for_current_mode(title: str | None = None, A: int | None = None, B: int | None = None) -> str:
@@ -8874,13 +9171,13 @@ def build_finance_toggle_chat_menu(day_key: str):
         if is_chat_bot_removed(int_cid) and not (OWNER_ID and str(int_cid) == str(OWNER_ID)):
             continue
         icon = finance_mode_compact_icon(int_cid)
-        buttons.append(types.InlineKeyboardButton(
+        buttons.append(IB(
             f'{icon} {chat_button_title(int_cid, title)}',
             callback_data=f"d:{day_key}:fw_finmode_pick_{int_cid}"
         ))
 
     add_buttons_in_rows(kb, buttons, 2)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
 def build_quick_balance_chat_menu(day_key: str):
@@ -8911,7 +9208,7 @@ def build_quick_balance_chat_menu(day_key: str):
         visible_qb = bool(is_finance_mode(int_cid) and is_quick_balance_enabled(int_cid))
         behavior = get_quick_balance_behavior(int_cid) if visible_qb else "normal"
         icon = "✅🥇" if visible_qb and behavior == "first" else ("✅3️⃣" if visible_qb and behavior == "open" else ("✅" if visible_qb else "❌"))
-        buttons.append(types.InlineKeyboardButton(
+        buttons.append(IB(
             f'{icon} {chat_button_title(int_cid, title)}',
             callback_data=f"d:{day_key}:qb_cfg_{int_cid}"
         ))
@@ -8922,12 +9219,12 @@ def build_quick_balance_chat_menu(day_key: str):
         visible_qb = bool(is_finance_mode(owner_item[0]) and is_quick_balance_enabled(owner_item[0]))
         behavior = get_quick_balance_behavior(owner_item[0]) if visible_qb else "normal"
         icon = "✅🥇" if visible_qb and behavior == "first" else ("✅3️⃣" if visible_qb and behavior == "open" else ("✅" if visible_qb else "❌"))
-        kb.row(types.InlineKeyboardButton(
+        kb.row(IB(
             f'{icon} {chat_button_title(owner_item[0], owner_item[1])}',
             callback_data=f"d:{day_key}:qb_cfg_{owner_item[0]}"
         ))
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
 def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
@@ -8945,15 +9242,15 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     hidden_icon = "🙈" if hidden_on else "❌"
     finwin_icon = "🪟✅" if fin_on else "🪟❌"
 
-    kb.row(types.InlineKeyboardButton(f"{fin_icon} Фин режим ВКЛ/ВЫКЛ", callback_data=f"d:{day_key}:fin_mode_toggle_{target_chat_id}"))
-    kb.row(types.InlineKeyboardButton(f"{normal_icon} Как обычно — фин окно через 10 сообщений", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"))
-    kb.row(types.InlineKeyboardButton(f"{open_icon} Фин режим + быстрый остаток: открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"))
-    kb.row(types.InlineKeyboardButton(f"{first_icon} Фин режим + быстрый остаток: всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"))
+    kb.row(IB(f"{fin_icon} Фин режим ВКЛ/ВЫКЛ", callback_data=f"d:{day_key}:fin_mode_toggle_{target_chat_id}"))
+    kb.row(IB(f"{normal_icon} Как обычно — фин окно через 10 сообщений", callback_data=f"d:{day_key}:qb_mode_normal_{target_chat_id}"))
+    kb.row(IB(f"{open_icon} Фин режим + быстрый остаток: открывать окно", callback_data=f"d:{day_key}:qb_mode_open_{target_chat_id}"))
+    kb.row(IB(f"{first_icon} Фин режим + быстрый остаток: всегда первым", callback_data=f"d:{day_key}:qb_mode_first_{target_chat_id}"))
     kb.row(
-        types.InlineKeyboardButton(f"{hidden_icon} Скрытые финансы", callback_data=f"d:{day_key}:qb_hidden_toggle_{target_chat_id}"),
-        types.InlineKeyboardButton(f"{finwin_icon} Фин окно", callback_data=f"d:{day_key}:qb_finwin_open_{target_chat_id}"),
+        IB(f"{hidden_icon} Скрытые финансы", callback_data=f"d:{day_key}:qb_hidden_toggle_{target_chat_id}"),
+        IB(f"{finwin_icon} Фин окно", callback_data=f"d:{day_key}:qb_finwin_open_{target_chat_id}"),
     )
-    kb.row(types.InlineKeyboardButton("🔙 Назад к чатам", callback_data=f"d:{day_key}:forward_finmode_menu"))
+    kb.row(IB("🔙 Назад к чатам", callback_data=f"d:{day_key}:forward_finmode_menu"))
     return kb
 
 def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
@@ -8989,13 +9286,13 @@ def build_hidden_finance_chat_menu(day_key: str):
             continue
         enabled = is_hidden_finance_mode(int_cid)
         icon = "🙈" if enabled else "❌"
-        buttons.append(types.InlineKeyboardButton(
+        buttons.append(IB(
             f"{icon} {chat_button_title(int_cid, title)}",
             callback_data=f"d:{day_key}:hf_pick_{int_cid}"
         ))
 
     add_buttons_in_rows(kb, buttons, 2)
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
 def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str = "d", owner_day_key: str | None = None):
@@ -9015,21 +9312,21 @@ def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str = "d", o
             del_cb = f"d:{day_key}:del_toggle_{rid}"
         insert_text = compose_direct_edit_insert_value(chat_id, rid, day_key, r.get("amount", 0), r.get("note", ""))
         kb.row(
-            types.InlineKeyboardButton(lbl, callback_data="none"),
+            IB(lbl, callback_data="none"),
             make_direct_edit_insert_button("✏️", insert_text),
-            types.InlineKeyboardButton(del_icon, callback_data=del_cb)
+            IB(del_icon, callback_data=del_cb)
         )
 
     if selected:
         if prefix == "fv":
-            kb.row(types.InlineKeyboardButton("🗑 Удалить выбранное", callback_data=f"fv:{chat_id}:{day_key}:del_selected:{owner_day_key or today_key()}"))
+            kb.row(IB("🗑 Удалить выбранное", callback_data=f"fv:{chat_id}:{day_key}:del_selected:{owner_day_key or today_key()}"))
         else:
-            kb.row(types.InlineKeyboardButton("🗑 Удалить выбранное", callback_data=f"d:{day_key}:del_selected"))
+            kb.row(IB("🗑 Удалить выбранное", callback_data=f"d:{day_key}:del_selected"))
 
     if prefix == "fv":
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{chat_id}:{day_key}:clear_delete_back:{owner_day_key or today_key()}"))
+        kb.row(IB("🔙 Назад", callback_data=f"fv:{chat_id}:{day_key}:clear_delete_back:{owner_day_key or today_key()}"))
     else:
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+        kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 def toggle_edit_delete_selection(chat_id: int, day_key: str, rid: int):
     store = get_chat_store(chat_id)
@@ -9126,16 +9423,16 @@ def build_fin_windows_chat_menu(day_key: str):
         items.append((int_cid, get_chat_display_name(int_cid)))
 
     buttons = [
-        types.InlineKeyboardButton(chat_button_title(cid, title), callback_data=f"d:{day_key}:finwin_open_{cid}")
+        IB(chat_button_title(cid, title), callback_data=f"d:{day_key}:finwin_open_{cid}")
         for cid, title in sorted(items, key=lambda x: x[1].lower())
     ]
 
     if buttons:
         add_buttons_in_rows(kb, buttons, 2)
     else:
-        kb.row(types.InlineKeyboardButton("Нет чатов с финрежимом", callback_data="none"))
+        kb.row(IB("Нет чатов с финрежимом", callback_data="none"))
 
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
 def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
@@ -9143,26 +9440,26 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
 
     prev_day = (datetime.strptime(day_key, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     next_day = (datetime.strptime(day_key, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-    nav_row = [types.InlineKeyboardButton("⬅️ Вчера", callback_data=f"fv:{target_chat_id}:{prev_day}:open:{owner_day_key}")]
+    nav_row = [IB("⬅️ Вчера", callback_data=f"fv:{target_chat_id}:{prev_day}:open:{owner_day_key}")]
     if day_key != today_key():
-        nav_row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"fv:{target_chat_id}:{today_key()}:open:{owner_day_key}"))
-    nav_row.append(types.InlineKeyboardButton("➡️ Завтра", callback_data=f"fv:{target_chat_id}:{next_day}:open:{owner_day_key}"))
+        nav_row.append(IB("📅 Сегодня", callback_data=f"fv:{target_chat_id}:{today_key()}:open:{owner_day_key}"))
+    nav_row.append(IB("➡️ Завтра", callback_data=f"fv:{target_chat_id}:{next_day}:open:{owner_day_key}"))
     kb.row(*nav_row)
 
     kb.row(
-        types.InlineKeyboardButton("📝 Редактировать", callback_data=f"fv:{target_chat_id}:{day_key}:edit_list:{owner_day_key}"),
-        types.InlineKeyboardButton("📂 CSV", callback_data=f"fv:{target_chat_id}:{day_key}:csv_menu:{owner_day_key}"),
-        types.InlineKeyboardButton("📊 Статьи", callback_data=fvcat_callback(f"fvcat_today:{target_chat_id}:{owner_day_key}")),
+        IB("📝 Редактировать", callback_data=f"fv:{target_chat_id}:{day_key}:edit_list:{owner_day_key}"),
+        IB("📂 CSV", callback_data=f"fv:{target_chat_id}:{day_key}:csv_menu:{owner_day_key}"),
+        IB("📊 Статьи", callback_data=fvcat_callback(f"fvcat_today:{target_chat_id}:{owner_day_key}")),
     )
     kb.row(
-        types.InlineKeyboardButton("📅 Календарь", callback_data=f"fv:{target_chat_id}:{day_key}:calendar:{owner_day_key}"),
-        types.InlineKeyboardButton("📊 Отчёт", callback_data=f"fv:{target_chat_id}:{day_key}:report:{owner_day_key}"),
-        types.InlineKeyboardButton("💰 Общий итог", callback_data=f"fv:{target_chat_id}:{day_key}:total:{owner_day_key}"),
+        IB("📅 Календарь", callback_data=f"fv:{target_chat_id}:{day_key}:calendar:{owner_day_key}"),
+        IB("📊 Отчёт", callback_data=f"fv:{target_chat_id}:{day_key}:report:{owner_day_key}"),
+        IB("💰 Общий итог", callback_data=f"fv:{target_chat_id}:{day_key}:total:{owner_day_key}"),
     )
     kb.row(
-        types.InlineKeyboardButton("⚙️ Обнулить", callback_data=f"fv:{target_chat_id}:{day_key}:reset:{owner_day_key}"),
-        types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"fv:{target_chat_id}:{day_key}:info:{owner_day_key}"),
-        types.InlineKeyboardButton("🔙 Назад к списку", callback_data=f"d:{owner_day_key}:fin_windows_menu"),
+        IB("⚙️ Обнулить", callback_data=f"fv:{target_chat_id}:{day_key}:reset:{owner_day_key}"),
+        IB("ℹ️ Инфо", callback_data=f"fv:{target_chat_id}:{day_key}:info:{owner_day_key}"),
+        IB("🔙 Назад к списку", callback_data=f"d:{owner_day_key}:fin_windows_menu"),
     )
     return kb
 
@@ -9174,11 +9471,11 @@ def build_fin_window_csv_menu(target_chat_id: int, day_key: str, owner_day_key: 
     kb = types.InlineKeyboardMarkup(row_width=3)
     _add_export_period_rows(kb, day_key, "fv", owner_day_key=owner_day_key, target_chat_id=target_chat_id)
     kb.row(
-        types.InlineKeyboardButton(_backup_toggle_label(target_chat_id, "chat", "Бэкап в чат"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_chat:{owner_day_key}"),
-        types.InlineKeyboardButton(_backup_toggle_label(target_chat_id, "channel", "в канал"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_channel:{owner_day_key}"),
-        types.InlineKeyboardButton(_backup_toggle_label(target_chat_id, "mega", "в MEGA"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_mega:{owner_day_key}"),
+        IB(_backup_toggle_label(target_chat_id, "chat", "Бэкап в чат"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_chat:{owner_day_key}"),
+        IB(_backup_toggle_label(target_chat_id, "channel", "в канал"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_channel:{owner_day_key}"),
+        IB(_backup_toggle_label(target_chat_id, "mega", "в MEGA"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_mega:{owner_day_key}"),
     )
-    kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
+    kb.row(IB("🔙 Назад", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
     return kb
 
 
@@ -9384,25 +9681,25 @@ def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start:
     for cat in get_ordered_category_names(include_all=True, store=store):
         slug = get_expense_category_slug(cat, store)
         if slug:
-            buttons.append(types.InlineKeyboardButton(cat, callback_data=fvcat_callback(f"fvcat_show:{target_chat_id}:{start}:{end}:{slug}:{owner_day_key}")))
+            buttons.append(IB(cat, callback_data=fvcat_callback(f"fvcat_show:{target_chat_id}:{start}:{end}:{slug}:{owner_day_key}")))
     add_buttons_in_rows(kb, buttons, 3)
     if mode == "wthu":
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
         next_key = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
         kb.row(
-            types.InlineKeyboardButton("⬅️ Чт–Ср", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{prev_key}:{owner_day_key}")),
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=fvcat_callback(f"fvcat_today:{target_chat_id}:{owner_day_key}")),
-            types.InlineKeyboardButton("Чт–Ср ➡️", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{next_key}:{owner_day_key}")),
+            IB("⬅️ Чт–Ср", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{prev_key}:{owner_day_key}")),
+            IB("📅 Сегодня", callback_data=fvcat_callback(f"fvcat_today:{target_chat_id}:{owner_day_key}")),
+            IB("Чт–Ср ➡️", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{next_key}:{owner_day_key}")),
         )
-    kb.row(types.InlineKeyboardButton("📚 Описание статей", callback_data=fvcat_callback(f"fvcat_desc:{target_chat_id}:{start}:{owner_day_key}")))
+    kb.row(IB("📚 Описание статей", callback_data=fvcat_callback(f"fvcat_desc:{target_chat_id}:{start}:{owner_day_key}")))
     kb.row(
-        types.InlineKeyboardButton("➕ Добавить статью", callback_data=fvcat_callback(f"fvcat_add:{target_chat_id}:{start}:{owner_day_key}")),
-        types.InlineKeyboardButton("✏️ Изменить статью", callback_data=fvcat_callback(f"fvcat_edit_menu:{target_chat_id}:{start}:{owner_day_key}")),
+        IB("➕ Добавить статью", callback_data=fvcat_callback(f"fvcat_add:{target_chat_id}:{start}:{owner_day_key}")),
+        IB("✏️ Изменить статью", callback_data=fvcat_callback(f"fvcat_edit_menu:{target_chat_id}:{start}:{owner_day_key}")),
     )
-    kb.row(types.InlineKeyboardButton("🗑 Удалить статью", callback_data=fvcat_callback(f"fvcat_del_menu:{target_chat_id}:{start}:{owner_day_key}")))
+    kb.row(IB("🗑 Удалить статью", callback_data=fvcat_callback(f"fvcat_del_menu:{target_chat_id}:{start}:{owner_day_key}")))
     kb.row(
-        types.InlineKeyboardButton("⏪ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"),
-        types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"),
+        IB("⏪ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"),
+        IB("❌ Закрыть статьи", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"),
     )
     return kb
 
@@ -9411,11 +9708,11 @@ def build_fin_category_edit_keyboard(target_chat_id: int, ref: str, owner_day_ke
     kb = types.InlineKeyboardMarkup(row_width=2)
     items = category_custom_items_for_chat(target_chat_id)
     if not items:
-        kb.row(types.InlineKeyboardButton("Нет пользовательских статей", callback_data="none"))
+        kb.row(IB("Нет пользовательских статей", callback_data="none"))
     for item in items:
-        kb.row(types.InlineKeyboardButton(f"✏️ {item.get('name')}", callback_data=fvcat_callback(f"fvcat_edit_pick:{target_chat_id}:{item.get('slug')}:{owner_day_key}")))
-    kb.row(types.InlineKeyboardButton("🔙 Назад к статьям", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{ref}:{owner_day_key}")))
-    kb.row(types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{ref}:open:{owner_day_key}"))
+        kb.row(IB(f"✏️ {item.get('name')}", callback_data=fvcat_callback(f"fvcat_edit_pick:{target_chat_id}:{item.get('slug')}:{owner_day_key}")))
+    kb.row(IB("🔙 Назад к статьям", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{ref}:{owner_day_key}")))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{ref}:open:{owner_day_key}"))
     return kb
 
 
@@ -9425,14 +9722,14 @@ def build_fin_category_delete_keyboard(target_chat_id: int, ref: str, owner_day_
     kb = types.InlineKeyboardMarkup(row_width=2)
     items = category_custom_items_for_chat(target_chat_id)
     if not items:
-        kb.row(types.InlineKeyboardButton("Нет пользовательских статей", callback_data="none"))
+        kb.row(IB("Нет пользовательских статей", callback_data="none"))
     for item in items:
         slug = item.get("slug")
         icon = "☑️" if slug in selected else "⬛"
-        kb.row(types.InlineKeyboardButton(f"{icon} {item.get('name')}", callback_data=fvcat_callback(f"fvcat_del_toggle:{target_chat_id}:{slug}:{ref}:{owner_day_key}")))
-    kb.row(types.InlineKeyboardButton("🗑 Удалить выбранное", callback_data=fvcat_callback(f"fvcat_del_selected:{target_chat_id}:{ref}:{owner_day_key}")))
-    kb.row(types.InlineKeyboardButton("🔙 Назад к статьям", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{ref}:{owner_day_key}")))
-    kb.row(types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{ref}:open:{owner_day_key}"))
+        kb.row(IB(f"{icon} {item.get('name')}", callback_data=fvcat_callback(f"fvcat_del_toggle:{target_chat_id}:{slug}:{ref}:{owner_day_key}")))
+    kb.row(IB("🗑 Удалить выбранное", callback_data=fvcat_callback(f"fvcat_del_selected:{target_chat_id}:{ref}:{owner_day_key}")))
+    kb.row(IB("🔙 Назад к статьям", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{ref}:{owner_day_key}")))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{ref}:open:{owner_day_key}"))
     return kb
 
 def handle_finwindow_categories_callback(call, data_str: str) -> bool:
@@ -9455,8 +9752,8 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
         ref = parts[2] if len(parts) > 2 else today_key()
         owner_day_key = parts[3] if len(parts) > 3 else today_key()
         kb = types.InlineKeyboardMarkup()
-        kb.row(types.InlineKeyboardButton("🔙 Назад к статьям", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{ref}:{owner_day_key}")))
-        kb.row(types.InlineKeyboardButton("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{ref}:open:{owner_day_key}"))
+        kb.row(IB("🔙 Назад к статьям", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{ref}:{owner_day_key}")))
+        kb.row(IB("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{ref}:open:{owner_day_key}"))
         safe_edit(bot, call, f"👁 {get_chat_display_name(target_chat_id)}\n" + build_articles_description_text(target_chat_id), reply_markup=kb, parse_mode=None)
         return True
 
@@ -9576,8 +9873,8 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
         label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
         text = f"👁 {get_chat_display_name(target_chat_id)}\n" + build_category_detail_text(store, start, end, category, label)
         kb = build_fin_categories_summary_keyboard(target_chat_id, "detail", start, end, owner_day_key)
-        kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}")))
-        kb.row(types.InlineKeyboardButton("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
+        kb.row(IB("🔙 Назад", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}")))
+        kb.row(IB("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
         safe_edit(bot, call, text, reply_markup=kb, parse_mode=None)
         return True
     return True
@@ -9593,28 +9890,28 @@ def build_fin_calendar_keyboard(target_chat_id: int, center_day: datetime, owner
     store = get_chat_store(target_chat_id)
     daily = store.get("daily_records", {})
 
-    kb.row(*[types.InlineKeyboardButton(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
+    kb.row(*[IB(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
     for week in calendar.Calendar(firstweekday=0).monthdayscalendar(center_day.year, center_day.month):
         row = []
         for day_num in week:
             if not day_num:
-                row.append(types.InlineKeyboardButton(" ", callback_data="none"))
+                row.append(IB(" ", callback_data="none"))
                 continue
             key = f"{center_day.year:04d}-{center_day.month:02d}-{day_num:02d}"
             label = f"📝{day_num}" if daily.get(key) else str(day_num)
-            row.append(types.InlineKeyboardButton(label, callback_data=f"fv:{target_chat_id}:{key}:open:{owner_day_key}"))
+            row.append(IB(label, callback_data=f"fv:{target_chat_id}:{key}:open:{owner_day_key}"))
         kb.row(*row)
 
     prev_month = (center_day.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (center_day.replace(day=28) + timedelta(days=4)).replace(day=1)
     kb.row(
-        types.InlineKeyboardButton("⬅️ Месяц", callback_data=f"fc:{target_chat_id}:{prev_month.strftime('%Y-%m-%d')}:{owner_day_key}"),
-        types.InlineKeyboardButton("➡️ Месяц", callback_data=f"fc:{target_chat_id}:{next_month.strftime('%Y-%m-%d')}:{owner_day_key}")
+        IB("⬅️ Месяц", callback_data=f"fc:{target_chat_id}:{prev_month.strftime('%Y-%m-%d')}:{owner_day_key}"),
+        IB("➡️ Месяц", callback_data=f"fc:{target_chat_id}:{next_month.strftime('%Y-%m-%d')}:{owner_day_key}")
     )
     row = []
     if center_day.strftime("%Y-%m") != now_local().strftime("%Y-%m"):
-        row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=f"fc:{target_chat_id}:{today_key()}:{owner_day_key}"))
-    row.append(types.InlineKeyboardButton("🔙 Назад", callback_data=f"fv:{target_chat_id}:{store.get('current_view_day', today_key())}:open:{owner_day_key}"))
+        row.append(IB("📅 Сегодня", callback_data=f"fc:{target_chat_id}:{today_key()}:{owner_day_key}"))
+    row.append(IB("🔙 Назад", callback_data=f"fv:{target_chat_id}:{store.get('current_view_day', today_key())}:open:{owner_day_key}"))
     kb.row(*row)
     return kb
 
@@ -9640,31 +9937,31 @@ def build_forward_mode_menu(A: int, B: int):
     ab_fin = "ВКЛ ✅" if get_forward_finance(A, B) else "ВЫКЛ ❌"
     ba_fin = "ВКЛ ✅" if get_forward_finance(B, A) else "ВЫКЛ ❌"
 
-    kb.row(types.InlineKeyboardButton(
+    kb.row(IB(
         f"➡️ {ab_state} {name_a} → {name_b}",
         callback_data=f"fw_mode:{A}:{B}:to"
     ))
-    kb.row(types.InlineKeyboardButton(
+    kb.row(IB(
         f"⬅️ {ba_state} {name_b} → {name_a}",
         callback_data=f"fw_mode:{A}:{B}:from"
     ))
-    kb.row(types.InlineKeyboardButton(
+    kb.row(IB(
         f"↔️ {two_state} {name_a} ⇄ {name_b}",
         callback_data=f"fw_mode:{A}:{B}:two"
     ))
-    kb.row(types.InlineKeyboardButton(
+    kb.row(IB(
         f"💰 {ab_fin} Учёт {name_a} → {name_b}",
         callback_data=f"fw_finpair:{A}:{B}:ab"
     ))
-    kb.row(types.InlineKeyboardButton(
+    kb.row(IB(
         f"💰 {ba_fin} Учёт {name_b} → {name_a}",
         callback_data=f"fw_finpair:{A}:{B}:ba"
     ))
-    kb.row(types.InlineKeyboardButton(
+    kb.row(IB(
         "❌ Удалить все связи A-B",
         callback_data=f"fw_mode:{A}:{B}:del"
     ))
-    kb.row(types.InlineKeyboardButton(
+    kb.row(IB(
         "🔙 Назад",
         callback_data=f"fw_back_tgt:{A}"
     ))
@@ -9673,7 +9970,7 @@ def build_forward_mode_menu(A: int, B: int):
 
 def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton(label, callback_data=callback_data))
+    kb.row(IB(label, callback_data=callback_data))
     return kb
 
 def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
@@ -9874,32 +10171,40 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
     save_data(data)
 
 
-def open_info_window(chat_id: int):
-    info_text = wm_common(build_info_text(chat_id), 9)
+def build_info_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     if is_owner_chat(chat_id):
         kb.row(
-            types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
-            types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
+            IB("📓 Журнал", callback_data="journal_open"),
+            IB(journal_toggle_label(), callback_data="journal_toggle"),
         )
         kb.row(
-            types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
+            IB(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+            IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
         )
-        kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
+        kb.row(
+            IB(forward_menu_style_label(), callback_data="forward_menu_style_toggle"),
+            IB(icon_button_mode_label(), callback_data="icon_buttons_toggle"),
+        )
+        kb.row(IB(total_secret_mask_label(), callback_data="total_secret_mask_toggle"))
         if is_primary_owner(chat_id):
-            kb.row(types.InlineKeyboardButton("👥 /доп_владельцы", callback_data="additional_owners"))
+            kb.row(IB("👥 /доп_владельцы", callback_data="additional_owners"))
     else:
-        kb.row(types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
+        kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
     kb.row(
-        types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-        types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+        IB("❌ Закрыть", callback_data="info_close"),
     )
+    return kb
+
+
+def open_info_window(chat_id: int):
+    info_text = wm_common(build_info_text(chat_id), 9)
     send_or_edit_stored_window(
         chat_id,
         "info_msg_id",
         info_text,
-        reply_markup=kb,
+        reply_markup=build_info_keyboard(chat_id),
         parse_mode=None,
         delay=AUX_WINDOW_DELETE_DELAY
     )
@@ -10004,10 +10309,10 @@ def handle_categories_callback(call, data_str: str) -> bool:
 
     if data_str == "cat_desc":
         kb = types.InlineKeyboardMarkup()
-        kb.row(types.InlineKeyboardButton("🔙 Назад к статьям", callback_data=cat_callback(f"cat_wthu:{today_key()}")))
+        kb.row(IB("🔙 Назад к статьям", callback_data=cat_callback(f"cat_wthu:{today_key()}")))
         kb.row(
-            types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
-            types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close")),
+            IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+            IB("❌ Закрыть статьи", callback_data=cat_callback("cat_close")),
         )
         send_or_edit_categories_window(chat_id, build_articles_description_text(chat_id), reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
@@ -10036,11 +10341,11 @@ def handle_categories_callback(call, data_str: str) -> bool:
         current_month = now_local().month
         for m in range(1, 13):
             label = datetime(2000, m, 1).strftime("%b")
-            kb.add(types.InlineKeyboardButton(label, callback_data=cat_callback(f"cat_m:{m}")))
+            kb.add(IB(label, callback_data=cat_callback(f"cat_m:{m}")))
         kb.row(
-            types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")),
-            types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
-            types.InlineKeyboardButton("❌ Закрыть статьи", callback_data=cat_callback("cat_close"))
+            IB("📅 Сегодня", callback_data=cat_callback("cat_today")),
+            IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+            IB("❌ Закрыть статьи", callback_data=cat_callback("cat_close"))
         )
         send_or_edit_categories_window(chat_id, wm_common("📦 Выберите месяц:", 12), reply_markup=kb)
         return True
@@ -10054,14 +10359,14 @@ def handle_categories_callback(call, data_str: str) -> bool:
         kb = types.InlineKeyboardMarkup(row_width=2)
         weeks = [(1, 7), (8, 14), (15, 21), (22, 31)]
         for a, b in weeks:
-            kb.add(types.InlineKeyboardButton(
+            kb.add(IB(
                 f"{a:02d}–{b:02d}",
                 callback_data=cat_callback(f"cat_rng:{year}:{month}:{a}:{b}")
             ))
         row = []
         if month != now_local().month:
-            row.append(types.InlineKeyboardButton("📅 Сегодня", callback_data=cat_callback("cat_today")))
-        row.append(types.InlineKeyboardButton("🔙 Назад", callback_data=cat_callback("cat_months")))
+            row.append(IB("📅 Сегодня", callback_data=cat_callback("cat_today")))
+        row.append(IB("🔙 Назад", callback_data=cat_callback("cat_months")))
         kb.row(*row)
         send_or_edit_categories_window(chat_id, wm_common("📆 Выберите неделю:", 13), reply_markup=kb)
         return True
@@ -10504,6 +10809,14 @@ def on_callback(call):
                 pass
             return
 
+        try:
+            wait = store.get("secret_wait") or {}
+            wait_msg_id = int(wait.get("prompt_msg_id") or wait.get("window_msg_id") or 0)
+            if wait_msg_id == int(call.message.message_id) and str(data_str).startswith("d:") and str(data_str).endswith(":back_main"):
+                _clear_secret_wait(chat_id, delete_prompt=False)
+        except Exception:
+            pass
+
         if handle_o9_secret_triple_click(call, data_str):
             return
 
@@ -10914,7 +11227,7 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             kb = types.InlineKeyboardMarkup()
-            kb.row(types.InlineKeyboardButton("🔙 Назад", callback_data="journal_back"))
+            kb.row(IB("🔙 Назад", callback_data="journal_back"))
             safe_edit(bot, call, build_articles_description_text(chat_id), reply_markup=kb)
             return
 
@@ -10922,11 +11235,11 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             kb = types.InlineKeyboardMarkup()
-            kb.row(types.InlineKeyboardButton("📄 Скачать TXT", callback_data="journal_file"))
+            kb.row(IB("📄 Скачать TXT", callback_data="journal_file"))
             kb.row(
-                types.InlineKeyboardButton("🔙 Назад", callback_data="journal_back"),
-                types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-                types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
+                IB("🔙 Назад", callback_data="journal_back"),
+                IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+                IB("❌ Закрыть", callback_data="info_close"),
             )
             safe_edit(bot, call, format_journal_text(120), reply_markup=kb)
             return
@@ -10940,88 +11253,36 @@ def on_callback(call):
                 return
             new_state = toggle_journal_registration()
             bot_journal("journal_toggle", chat_id, f"enabled={new_state}")
-            kb = types.InlineKeyboardMarkup()
-            kb.row(
-                types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
-                types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
-            )
-            kb.row(
-                types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
-            )
-            kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
-            if is_primary_owner(chat_id):
-                kb.row(types.InlineKeyboardButton("👥 /доп_владельцы", callback_data="additional_owners"))
-            kb.row(
-                types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-                types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
-            )
-            safe_edit(bot, call, build_info_text(chat_id), reply_markup=kb)
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "journal_back":
             if not is_owner_chat(chat_id):
                 return
-            kb = types.InlineKeyboardMarkup()
-            kb.row(
-                types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
-                types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
-            )
-            kb.row(
-                types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
-            )
-            kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
-            if is_primary_owner(chat_id):
-                kb.row(types.InlineKeyboardButton("👥 /доп_владельцы", callback_data="additional_owners"))
-            kb.row(
-                types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-                types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
-            )
-            safe_edit(bot, call, build_info_text(chat_id), reply_markup=kb)
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "forward_menu_style_toggle":
             if not is_owner_chat(chat_id):
                 return
             new_state = toggle_forward_menu_new_style()
-            kb = types.InlineKeyboardMarkup()
-            kb.row(
-                types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
-                types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
-            )
-            kb.row(
-                types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
-            )
-            kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
-            if is_primary_owner(chat_id):
-                kb.row(types.InlineKeyboardButton("👥 /доп_владельцы", callback_data="additional_owners"))
-            kb.row(
-                types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-                types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
-            )
-            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nМеню пересылки: {'по-новому' if new_state else 'как обычно'}", reply_markup=kb)
+            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nМеню пересылки: {'по-новому' if new_state else 'как обычно'}", reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "buttons_current_toggle":
             if not is_owner_chat(chat_id):
                 return
             new_state = toggle_buttons_current_window()
-            kb = types.InlineKeyboardMarkup()
-            kb.row(
-                types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
-                types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
-            )
-            kb.row(
-                types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
-            )
-            kb.row(types.InlineKeyboardButton(forward_menu_style_label(), callback_data="forward_menu_style_toggle"))
-            if is_primary_owner(chat_id):
-                kb.row(types.InlineKeyboardButton("👥 /доп_владельцы", callback_data="additional_owners"))
-            kb.row(
-                types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-                types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
-            )
-            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nРежим кнопок в текущем окне: {'ВКЛ' if new_state else 'ВЫКЛ'}", reply_markup=kb)
+            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nРежим кнопок в текущем окне: {'ВКЛ' if new_state else 'ВЫКЛ'}", reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "icon_buttons_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            new_state = toggle_icon_button_mode()
+            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nКнопки: {'значки' if new_state else 'текст'}", reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "total_secret_mask_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            new_state = toggle_total_secret_mask()
+            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nМаскировка тотального секрета: {'ВКЛ' if new_state else 'ВЫКЛ'}", reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "info_finance_off":
             try:
@@ -11386,16 +11647,16 @@ def on_callback(call):
             if chat_buttons_current_window_enabled(chat_id):
                 kb_info = types.InlineKeyboardMarkup()
                 kb_info.row(
-                    types.InlineKeyboardButton("📓 Журнал", callback_data="journal_open"),
-                    types.InlineKeyboardButton(journal_toggle_label(), callback_data="journal_toggle"),
+                    IB("📓 Журнал", callback_data="journal_open"),
+                    IB(journal_toggle_label(), callback_data="journal_toggle"),
                 )
                 kb_info.row(
-                    types.InlineKeyboardButton(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-            types.InlineKeyboardButton(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
+                    IB(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+            IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
                 )
                 kb_info.row(
-                    types.InlineKeyboardButton("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-                    types.InlineKeyboardButton("❌ Закрыть", callback_data="info_close"),
+                    IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
+                    IB("❌ Закрыть", callback_data="info_close"),
                 )
                 safe_edit(bot, call, wm_common(build_info_text(chat_id), 9), reply_markup=kb_info)
             else:
@@ -13069,8 +13330,8 @@ def maybe_prompt_owner_for_new_chat_auto_backup(chat_id: int):
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.row(
-        types.InlineKeyboardButton("✅ Да", callback_data=f"ncb:{chat_id}:yes"),
-        types.InlineKeyboardButton("❌ Нет", callback_data=f"ncb:{chat_id}:no"),
+        IB("✅ Да", callback_data=f"ncb:{chat_id}:yes"),
+        IB("❌ Нет", callback_data=f"ncb:{chat_id}:no"),
     )
     msg = bot.send_message(owner_id, text, reply_markup=kb)
     settings["owner_auto_backup_prompt_msg_id"] = msg.message_id
@@ -13241,8 +13502,8 @@ def maybe_prompt_owner_for_json_restore(msg, fname: str) -> bool:
         )
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.row(
-            types.InlineKeyboardButton("✅ Да", callback_data=f"ojr:{key}:yes"),
-            types.InlineKeyboardButton("❌ Нет", callback_data=f"ojr:{key}:no"),
+            IB("✅ Да", callback_data=f"ojr:{key}:yes"),
+            IB("❌ Нет", callback_data=f"ojr:{key}:no"),
         )
         sent = bot.send_message(int(msg.chat.id), text, reply_markup=kb)
         with _owner_json_restore_prompt_lock:
@@ -14430,7 +14691,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ Бот запущен 🥳(версия {VERSION}).\n"
+                    f"✅ Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
