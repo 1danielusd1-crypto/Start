@@ -123,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v70_secret_modes"
+VERSION = "bot_v71_secret_delete_latin"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -460,7 +460,7 @@ def forward_menu_style_label() -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# Короткие подписи inline-кнопок: режим переключается владельцем командой /кнопки.
+# Короткие подписи inline-кнопок: режим переключается владельцем командой /buttons.
 # Имена чатов не трогаем: сокращаются только известные служебные подписи.
 # ─────────────────────────────────────────────────────────────
 def icon_button_mode_enabled() -> bool:
@@ -2492,7 +2492,7 @@ def build_help_text(chat_id: int) -> str:
         f"ℹ️ Финансовый бот — версия {VERSION}",
         "",
         "Команды:",
-        "/ok, /поехали — включить финансовый режим",
+        "/ok — включить финансовый режим",
         "/start — окно сегодняшнего дня",
         "/prev — предыдущий день",
         "/next — следующий день",
@@ -2516,8 +2516,8 @@ def build_help_text(chat_id: int) -> str:
             "/articles — описание статей: статья = ключевые слова",
             "/mega_status — статус MEGA/MEGAcmd",
             "/mega_backup_now — сразу загрузить latest_global.json в MEGA",
-            "/кнопки — переключить кнопки: текст/значки",
-            "/маска — переключить маскировку тотального секрета",
+            "/buttons — переключить кнопки: text/icons",
+            "/mask — переключить маскировку тотального секрета",
         ])
     lines.append("/help — эта справка")
     return "\n".join(lines)
@@ -2525,10 +2525,10 @@ def build_help_text(chat_id: int) -> str:
 
 def build_info_text(chat_id: int) -> str:
     state = "ВКЛ" if chat_buttons_current_window_enabled(chat_id) else "ВЫКЛ"
-    text = build_help_text(chat_id) + f"\n/окна — открывать действия в текущем окне: {state}"
+    text = build_help_text(chat_id) + f"\n/windows — открывать действия в текущем окне: {state}"
     if is_owner_chat(chat_id):
-        text += f"\n/кнопки — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
-        text += f"\n/маска — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
+        text += f"\n/buttons — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
+        text += f"\n/mask — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
     return text
 
 
@@ -3984,6 +3984,11 @@ def _compact_button_label(text) -> str:
         "❌ Закрыть статьи": "✖️ 📊",
         "🗑 Удалить статью": "🗑",
         "🗑 Удалить выбранное": "🗑 ✅",
+        "🗑 Удалить секреты": "🗑🔐",
+        "🗑 День": "🗑 Д",
+        "🗑 Неделя": "🗑 Н",
+        "🗑 Месяц": "🗑 М",
+        "🗑 Всё": "🗑 Всё",
         "➕ Добавить": "➕",
         "➕ Добавить статью": "➕",
         "✏️ Изменить": "✏️",
@@ -4004,7 +4009,7 @@ def _compact_button_label(text) -> str:
         "Пн–Вс ➡️": "Пн ➡️",
         "⬜ Пн–Вс": "⬜ Пн",
         "🟦 Чт–Ср": "🟦 Чт",
-        "👥 /доп_владельцы": "👥 /доп",
+        "👥 /owners": "👥 /own",
         "Нет доступных чатов": "Нет чатов",
         "Нет данных для изменения": "Нет данных",
         "Нет пользовательских статей": "Нет статей",
@@ -6226,6 +6231,178 @@ def build_secret_day_text(target_chat_id: int, day_key: str) -> str:
     return text if len(text) <= 3900 else text[:3890] + "\n…"
 
 
+SECRET_DELETE_MODES = ("day", "week", "month", "all")
+
+
+def can_manage_secret_target(viewer_chat_id: int, target_chat_id: int) -> bool:
+    try:
+        return bool(is_owner_chat(int(viewer_chat_id)) or int(viewer_chat_id) == int(target_chat_id))
+    except Exception:
+        return False
+
+
+def _renumber_secret_media_numbers(chat_id: int) -> None:
+    number = 1
+    for record in _secret_records(int(chat_id)):
+        if _is_secret_media_record(record):
+            record["media_number"] = number
+            number += 1
+
+
+def _secret_delete_period_bounds(mode: str, day_key: str):
+    mode = str(mode or "day")
+    try:
+        base = datetime.strptime(str(day_key)[:10], "%Y-%m-%d").date()
+    except Exception:
+        base = now_local().date()
+    if mode == "all":
+        return None, None
+    if mode == "week":
+        start = datetime.strptime(week_start_monday(base.strftime("%Y-%m-%d")), "%Y-%m-%d").date()
+        end = start + timedelta(days=6)
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+    if mode == "month":
+        start = base.replace(day=1)
+        last_day = calendar.monthrange(base.year, base.month)[1]
+        end = base.replace(day=last_day)
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+    return base.strftime("%Y-%m-%d"), base.strftime("%Y-%m-%d")
+
+
+def _secret_delete_period_label(mode: str, day_key: str) -> str:
+    start, end = _secret_delete_period_bounds(mode, day_key)
+    if mode == "all":
+        return "Всё"
+    if mode == "month":
+        try:
+            return datetime.strptime(str(day_key)[:10], "%Y-%m-%d").strftime("%m.%y")
+        except Exception:
+            return str(day_key)[:7]
+    if start == end:
+        return fmt_date_ddmmyy(start)
+    return f"{fmt_date_ddmmyy(start)}–{fmt_date_ddmmyy(end)}"
+
+
+def _secret_record_matches_delete_mode(record: dict, mode: str, day_key: str) -> bool:
+    if mode == "all":
+        return True
+    rk = str((record or {}).get("day_key") or "")[:10]
+    if not rk:
+        return False
+    start, end = _secret_delete_period_bounds(mode, day_key)
+    return bool(start <= rk <= end)
+
+
+def _secret_delete_count(target_chat_id: int, mode: str, day_key: str) -> int:
+    return sum(1 for r in _secret_records(int(target_chat_id)) if _secret_record_matches_delete_mode(r, mode, day_key))
+
+
+def _secret_delete_selection(viewer_chat_id: int, target_chat_id: int, day_key: str) -> set[str]:
+    store = get_chat_store(int(viewer_chat_id))
+    item = store.get("secret_delete_selection") or {}
+    if int(item.get("target_chat_id") or 0) != int(target_chat_id) or str(item.get("day_key") or "") != str(day_key):
+        item = {"target_chat_id": int(target_chat_id), "day_key": str(day_key), "modes": []}
+        store["secret_delete_selection"] = item
+        save_data(data)
+    return {m for m in (item.get("modes") or []) if m in SECRET_DELETE_MODES}
+
+
+def set_secret_delete_selection(viewer_chat_id: int, target_chat_id: int, day_key: str, selected: set[str]):
+    store = get_chat_store(int(viewer_chat_id))
+    store["secret_delete_selection"] = {
+        "target_chat_id": int(target_chat_id),
+        "day_key": str(day_key),
+        "modes": [m for m in SECRET_DELETE_MODES if m in set(selected or set())],
+    }
+    save_data(data)
+
+
+def toggle_secret_delete_selection(viewer_chat_id: int, target_chat_id: int, day_key: str, mode: str) -> set[str]:
+    selected = _secret_delete_selection(viewer_chat_id, target_chat_id, day_key)
+    if mode in selected:
+        selected.discard(mode)
+    elif mode in SECRET_DELETE_MODES:
+        # Если выбрано "всё", остальные галочки не нужны. И наоборот.
+        if mode == "all":
+            selected = {"all"}
+        else:
+            selected.discard("all")
+            selected.add(mode)
+    set_secret_delete_selection(viewer_chat_id, target_chat_id, day_key, selected)
+    return selected
+
+
+def build_secret_delete_text(viewer_chat_id: int, target_chat_id: int, day_key: str) -> str:
+    selected = _secret_delete_selection(viewer_chat_id, target_chat_id, day_key)
+    lines = [
+        f"🗑 Удаление секретных данных: {get_chat_display_name(target_chat_id)}",
+        f"📅 Точка отсчёта: {fmt_date_ddmmyy(day_key)}",
+        "",
+        "Выбери период галочкой и нажми «Удалить выбранное».",
+        "Удаляются текст, фото, видео, документы и другие секретные записи.",
+        "",
+    ]
+    for mode in SECRET_DELETE_MODES:
+        mark = "☑️" if mode in selected else "⬛"
+        title = {"day": "День", "week": "Неделя", "month": "Месяц", "all": "Всё"}.get(mode, mode)
+        lines.append(f"{mark} {title}: {_secret_delete_period_label(mode, day_key)} — {_secret_delete_count(target_chat_id, mode, day_key)}")
+    return "\n".join(lines)
+
+
+def build_secret_delete_keyboard(viewer_chat_id: int, target_chat_id: int, day_key: str, self_only: bool = False):
+    selected = _secret_delete_selection(viewer_chat_id, target_chat_id, day_key)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    for mode in SECRET_DELETE_MODES:
+        mark = "☑️" if mode in selected else "⬛"
+        title = {"day": "🗑 День", "week": "🗑 Неделя", "month": "🗑 Месяц", "all": "🗑 Всё"}.get(mode, mode)
+        count = _secret_delete_count(target_chat_id, mode, day_key)
+        kb.row(IB(f"{mark} {title} ({count})", callback_data=f"secdelt:{target_chat_id}:{day_key}:{mode}"))
+    kb.row(IB("🗑 Удалить выбранное", callback_data=f"secdelgo:{target_chat_id}:{day_key}"))
+    kb.row(IB("🔙 Назад", callback_data=f"secview:{target_chat_id}:{day_key}"))
+    if self_only:
+        kb.row(IB("❌ Закрыть", callback_data="secclose"))
+    else:
+        kb.row(IB("🔙 Назад", callback_data="secbacklist"), IB("❌ Закрыть", callback_data="secclose"))
+    return kb
+
+
+def _delete_secret_mega_media_paths(paths: list[str]):
+    if not paths or not mega_is_configured():
+        return
+    for remote_path in sorted(set(str(p) for p in paths if p)):
+        try:
+            _mega_run("mega-rm", [remote_path], check=False, timeout=30)
+        except Exception as e:
+            log_error(f"delete secret mega media {remote_path}: {e}")
+
+
+def delete_secret_records_by_modes(target_chat_id: int, modes: set[str], day_key: str) -> int:
+    target_chat_id = int(target_chat_id)
+    modes = {m for m in (modes or set()) if m in SECRET_DELETE_MODES}
+    if not modes:
+        return 0
+    records = _secret_records(target_chat_id)
+    kept = []
+    deleted = []
+    for record in records:
+        if any(_secret_record_matches_delete_mode(record, mode, day_key) for mode in modes):
+            deleted.append(record)
+        else:
+            kept.append(record)
+    if not deleted:
+        return 0
+    media_paths = [str(r.get("mega_media_path") or "") for r in deleted if r.get("mega_media_path")]
+    records[:] = kept
+    _renumber_secret_media_numbers(target_chat_id)
+    save_data(data)
+    schedule_config_backup_for_chats(target_chat_id, delay=0.2)
+    if media_paths:
+        threading.Thread(target=_delete_secret_mega_media_paths, args=(media_paths,), daemon=True).start()
+    threading.Thread(target=upload_chat_secrets_to_mega, args=(target_chat_id,), daemon=True).start()
+    refresh_secret_windows(target_chat_id)
+    return len(deleted)
+
+
 def build_secret_day_keyboard(target_chat_id: int, day_key: str, self_only: bool = False):
     base = datetime.strptime(day_key, "%Y-%m-%d")
     prev_day = (base - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -6241,6 +6418,7 @@ def build_secret_day_keyboard(target_chat_id: int, day_key: str, self_only: bool
         IB("🎞️", callback_data=f"secmedia:{target_chat_id}:{day_key}"),
         IB("✏️ Изменить", callback_data=f"secedit:{target_chat_id}:{day_key}"),
     )
+    kb.row(IB("🗑 Удалить секреты", callback_data=f"secdel:{target_chat_id}:{day_key}"))
     if self_only:
         kb.row(IB("❌ Закрыть", callback_data="secclose"))
     else:
@@ -6330,6 +6508,14 @@ def refresh_secret_windows(target_chat_id: int):
                     chat_id=viewer_id,
                     message_id=message_id,
                     reply_markup=build_secret_edit_keyboard(target_chat_id, day_key, self_only=self_only),
+                )
+            elif kind == "delete":
+                day_key = active.get("day_key") or _default_secret_day(target_chat_id)
+                bot.edit_message_text(
+                    build_secret_delete_text(viewer_id, target_chat_id, day_key),
+                    chat_id=viewer_id,
+                    message_id=message_id,
+                    reply_markup=build_secret_delete_keyboard(viewer_id, target_chat_id, day_key, self_only=self_only),
                 )
             elif kind == "calendar":
                 month_key = active.get("month_key") or now_local().strftime("%Y-%m")
@@ -6659,7 +6845,7 @@ def cmd_start_ru(msg):
     cmd_start(msg)
 
 
-@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/(?:кнопки|buttons)(?:@\w+)?", m.text.strip(), re.I)))
+@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/(?:buttons|knopki|кнопки)(?:@\w+)?", m.text.strip(), re.I)))
 def cmd_toggle_icon_buttons(msg):
     schedule_command_delete(msg)
     if not is_owner_chat(msg.chat.id):
@@ -6673,7 +6859,7 @@ def cmd_toggle_icon_buttons(msg):
         pass
 
 
-@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/(?:маска|mask)(?:@\w+)?", m.text.strip(), re.I)))
+@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/(?:mask|maska|маска)(?:@\w+)?", m.text.strip(), re.I)))
 def cmd_toggle_total_secret_mask(msg):
     schedule_command_delete(msg)
     if not is_owner_chat(msg.chat.id):
@@ -6691,7 +6877,7 @@ def cmd_toggle_total_secret_mask(msg):
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
-    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/маска", "/mask"}
+    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы"}
 ))
 def cmd_total_secret_capture(msg):
     save_secret_message(msg.chat.id, msg)
@@ -10188,7 +10374,7 @@ def build_info_keyboard(chat_id: int):
         )
         kb.row(IB(total_secret_mask_label(), callback_data="total_secret_mask_toggle"))
         if is_primary_owner(chat_id):
-            kb.row(IB("👥 /доп_владельцы", callback_data="additional_owners"))
+            kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
     kb.row(
@@ -10662,6 +10848,77 @@ def on_callback(call):
                 safe_edit(bot, call, "🔐 Выберите чат с секретными данными:", reply_markup=build_secret_chat_list_keyboard())
             except Exception as e:
                 log_error(f"secret mode toggle callback: {e}")
+            return
+        if data_str.startswith("secdel:"):
+            try:
+                _, target_s, day_key = data_str.split(":", 2)
+                target_chat_id = int(target_s)
+                if not can_manage_secret_target(chat_id, target_chat_id):
+                    bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+                    return
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
+                set_secret_delete_selection(chat_id, target_chat_id, day_key, set())
+                safe_edit(
+                    bot,
+                    call,
+                    build_secret_delete_text(chat_id, target_chat_id, day_key),
+                    reply_markup=build_secret_delete_keyboard(chat_id, target_chat_id, day_key, self_only=self_only),
+                )
+                register_secret_window(
+                    chat_id, call.message.message_id, target_chat_id, "delete",
+                    day_key=day_key, self_only=self_only,
+                )
+                schedule_secret_calendar_close(chat_id, call.message.message_id)
+            except Exception as e:
+                log_error(f"secret delete menu callback: {e}")
+            return
+        if data_str.startswith("secdelt:"):
+            try:
+                _, target_s, day_key, mode = data_str.split(":", 3)
+                target_chat_id = int(target_s)
+                if not can_manage_secret_target(chat_id, target_chat_id):
+                    bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+                    return
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
+                toggle_secret_delete_selection(chat_id, target_chat_id, day_key, mode)
+                safe_edit(
+                    bot,
+                    call,
+                    build_secret_delete_text(chat_id, target_chat_id, day_key),
+                    reply_markup=build_secret_delete_keyboard(chat_id, target_chat_id, day_key, self_only=self_only),
+                )
+                register_secret_window(
+                    chat_id, call.message.message_id, target_chat_id, "delete",
+                    day_key=day_key, self_only=self_only,
+                )
+                schedule_secret_calendar_close(chat_id, call.message.message_id)
+            except Exception as e:
+                log_error(f"secret delete toggle callback: {e}")
+            return
+        if data_str.startswith("secdelgo:"):
+            try:
+                _, target_s, day_key = data_str.split(":", 2)
+                target_chat_id = int(target_s)
+                if not can_manage_secret_target(chat_id, target_chat_id):
+                    bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+                    return
+                selected = _secret_delete_selection(chat_id, target_chat_id, day_key)
+                if not selected:
+                    bot.answer_callback_query(call.id, "Сначала поставь галочку", show_alert=True)
+                    return
+                count = delete_secret_records_by_modes(target_chat_id, selected, day_key)
+                set_secret_delete_selection(chat_id, target_chat_id, day_key, set())
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
+                try:
+                    bot.answer_callback_query(call.id, f"Удалено: {count}", show_alert=False)
+                except Exception:
+                    pass
+                open_secret_day_window(
+                    chat_id, target_chat_id, day_key,
+                    message_id=call.message.message_id, self_only=self_only,
+                )
+            except Exception as e:
+                log_error(f"secret delete selected callback: {e}")
             return
         if data_str.startswith("secmedia:"):
             try:
@@ -12517,7 +12774,7 @@ def send_info(chat_id: int, text: str):
     send_and_auto_delete(chat_id, text, HELPER_DELETE_DELAY)
 
 
-@bot.message_handler(commands=["доп_владельцы"])
+@bot.message_handler(commands=["owners", "additional_owners", "доп_владельцы"])
 def cmd_additional_owners(msg):
     schedule_command_delete(msg)
     if not is_primary_owner(msg.chat.id):
@@ -12529,7 +12786,7 @@ def cmd_additional_owners(msg):
     )
 
 
-@bot.message_handler(commands=["окна"])
+@bot.message_handler(commands=["windows", "okna", "окна"])
 def cmd_windows_in_current_message(msg):
     schedule_command_delete(msg)
     enabled = toggle_chat_buttons_current_window(msg.chat.id)
@@ -14691,7 +14948,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🦷Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
