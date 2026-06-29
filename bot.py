@@ -123,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v72_secret_window_timers"
+VERSION = "bot_v73_secret_tabl_lsx"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -2500,6 +2500,7 @@ def build_help_text(chat_id: int) -> str:
         "/report — краткий отчёт по дням",
         "/csv — CSV этого чата",
         "/xlsx — Excel этого чата",
+        "/tabl_lsx — таблица за последние 4 недели Чт–Ср",
         "/json — JSON этого чата",
         "/reset — обнулить данные чата (с подтверждением)",
         "/ping — проверка, жив ли бот",
@@ -4322,6 +4323,236 @@ def _xlsx_record_row(date_value, amount, note):
     income, expense = _xlsx_income_expense_values(amount)
     return [date_value, note or "", income, expense]
 
+
+
+TABL_LSX_CATEGORIES = [
+    "Продукты",
+    "Хоз общ",
+    "Авто и (бус)",
+    "прочие",
+    "орг. техника",
+    "Еда доп и ШБ",
+    "Связь",
+    "переводы",
+    "Проживание",
+    "Хоз за ашр",
+    "аптечка",
+]
+
+
+def _tabl_lsx_category(note: str) -> str:
+    text = str(note or "").casefold()
+    checks = [
+        ("Еда доп и ШБ", ("шб", "шамп", "мыло", "зуб", "паста", "гигиен")),
+        ("Продукты", ("продукт", "еда", "хлеб", "мол", "фрукт", "овощ", "банан", "лук", "масло", "йогурт", "кофе", "чай", "курица", "мясо")),
+        ("Хоз общ", ("хоз", "салф", "порош", "клей", "краск", "саморез", "инструмент", "батарей", "розет", "шнур", "пульт", "ключ")),
+        ("Авто и (бус)", ("авто", "бенз", "соляр", "заправ", "машин", "шина", "масло авто", "пикап", "бус")),
+        ("орг. техника", ("орг", "двд", "dvd", "переходник", "блок питание", "провод", "кабель", "монитор", "паяль", "заряд", "науш", "мыш", "принтер")),
+        ("Связь", ("тел", "связ", "пополнение", "сим", "интернет")),
+        ("переводы", ("перевод", "вестерн", "western", "банковский", "mercado", "меркадо")),
+        ("Проживание", ("прож", "аренд", "квар", "отель", "дом")),
+        ("Хоз за ашр", ("ашр", "ашрам")),
+        ("аптечка", ("аптеч", "аптек", "лекар", "ибуп", "витамин", "стоматолог")),
+    ]
+    for name, words in checks:
+        if any(w in text for w in words):
+            return name
+    return "прочие"
+
+
+def _tabl_lsx_weeks(reference_day: str | None = None, count: int = 4) -> list[tuple[str, str]]:
+    ref = reference_day or today_key()
+    start_key = week_start_thursday(ref)
+    start = datetime.strptime(start_key, "%Y-%m-%d").date()
+    weeks = []
+    first = start - timedelta(days=7 * (int(count) - 1))
+    for i in range(int(count)):
+        s = first + timedelta(days=7 * i)
+        e = s + timedelta(days=6)
+        weeks.append((s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")))
+    return weeks
+
+
+def _tabl_lsx_opening_balance(store: dict, start_key: str) -> float:
+    total = 0.0
+    for r in (store.get("records", []) or []):
+        try:
+            if _record_day_key(r) < start_key:
+                total += float(r.get("amount", 0) or 0)
+        except Exception:
+            pass
+    return total
+
+
+def _xlsx_cell_xml2(row_idx: int, col_idx: int, value, style: int = 0) -> str:
+    if value is None:
+        value = ""
+    ref = f"{_xlsx_col_name(col_idx)}{row_idx}"
+    s_attr = f' s="{int(style)}"' if int(style or 0) else ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f'<c r="{ref}"{s_attr}><v>{float(value):.2f}</v></c>'
+    text = str(value)
+    return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(text)}</t></is></c>'
+
+
+def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_name: str = "4 недели") -> None:
+    max_cols = max((len(r) for r in rows), default=1)
+    widths = [13, 16, 28] + [20] * max(0, max_cols - 3)
+    sheet_rows = []
+    for r_idx, row in enumerate(rows, start=1):
+        cells = []
+        st_row = styles[r_idx - 1] if r_idx - 1 < len(styles) else []
+        for c_idx in range(1, max_cols + 1):
+            value = row[c_idx - 1] if c_idx - 1 < len(row) else ""
+            style = st_row[c_idx - 1] if c_idx - 1 < len(st_row) else 0
+            cells.append(_xlsx_cell_xml2(r_idx, c_idx, value, style=style))
+        height = ' ht="22" customHeight="1"' if r_idx <= 2 else ""
+        sheet_rows.append(f'<row r="{r_idx}"{height}>' + "".join(cells) + '</row>')
+    cols_xml = "".join(
+        f'<col min="{i}" max="{i}" width="{min(widths[i-1] if i-1 < len(widths) else 18, 34)}" customWidth="1"/>'
+        for i in range(1, max_cols + 1)
+    )
+    sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+<cols>{cols_xml}</cols>
+<sheetData>{''.join(sheet_rows)}</sheetData>
+</worksheet>'''
+    workbook_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="{_xlsx_xml_escape(sheet_name)[:31]}" sheetId="1" r:id="rId1"/></sheets>
+</workbook>'''
+    rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+    workbook_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>'''
+    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>'''
+    styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="3"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font></fonts>
+<fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF00E000"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC000"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFF9999"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9EAD3"/></patternFill></fill></fills>
+<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="6" borderId="1" xfId="0" applyFill="1" applyFont="1"/></cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>'''
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types_xml)
+        z.writestr("_rels/.rels", rels_xml)
+        z.writestr("xl/workbook.xml", workbook_xml)
+        z.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        z.writestr("xl/styles.xml", styles_xml)
+
+
+def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
+    chat_id = int(chat_id)
+    store = get_chat_store(chat_id)
+    weeks = _tabl_lsx_weeks(reference_day or today_key(), 4)
+    cols = ["Дата", "Приход/выдача", "Откуда/кому"] + TABL_LSX_CATEGORIES
+    rows, styles = [], []
+    title = f"сегодня {fmt_date_ddmmyy(today_key())} — {get_chat_display_name(chat_id)}"
+    rows.append([title]); styles.append([1] + [0] * (len(cols) - 1))
+    rows.append(["Таблица за последние 4 недели: четверг–среда"]); styles.append([1] + [0] * (len(cols) - 1))
+    rows.append([]); styles.append([])
+    daily = store.get("daily_records", {}) or {}
+    for start_key, end_key in weeks:
+        rows.append(["Неделя", f"{fmt_date_ddmmyy(start_key)} — {fmt_date_ddmmyy(end_key)}"])
+        styles.append([3, 3] + [3] * (len(cols) - 2))
+        rows.append(cols); styles.append([2] * len(cols))
+        opening = _tabl_lsx_opening_balance(store, start_key)
+        rows.append([fmt_date_ddmmyy(start_key), int(round(opening)), "остаток с прошлой недели"] + [""] * len(TABL_LSX_CATEGORIES))
+        styles.append([7, 7, 7] + [4] * len(TABL_LSX_CATEGORIES))
+        income_total = 0.0
+        expense_total = 0.0
+        cat_totals = {cat: 0.0 for cat in TABL_LSX_CATEGORIES}
+        start_dt = datetime.strptime(start_key, "%Y-%m-%d").date()
+        for offset in range(7):
+            dk = (start_dt + timedelta(days=offset)).strftime("%Y-%m-%d")
+            recs = sorted(daily.get(dk, []) or [], key=record_sort_key)
+            if not recs:
+                rows.append([fmt_date_ddmmyy(dk)] + [""] * (len(cols) - 1))
+                styles.append([3] + [4] * (len(cols) - 1))
+                continue
+            first_for_day = True
+            for rec in recs:
+                try:
+                    amount = float(rec.get("amount", 0) or 0)
+                except Exception:
+                    amount = 0.0
+                note = str(rec.get("note") or "").strip()
+                row = [fmt_date_ddmmyy(dk) if first_for_day else "", "", ""] + [""] * len(TABL_LSX_CATEGORIES)
+                first_for_day = False
+                if amount >= 0:
+                    income_total += amount
+                    row[1] = int(round(amount))
+                    row[2] = note
+                else:
+                    value = abs(amount)
+                    expense_total += value
+                    cat = _tabl_lsx_category(note)
+                    cat_totals[cat] = cat_totals.get(cat, 0.0) + value
+                    col_idx = 3 + TABL_LSX_CATEGORIES.index(cat)
+                    shown = fmt_num_plain(value)
+                    row[col_idx] = (shown + (" " + note if note else "")).strip()
+                rows.append(row)
+                styles.append([3 if row[0] else 4, 4, 4] + [4] * len(TABL_LSX_CATEGORIES))
+        total_row = ["Итог:", int(round(income_total)), ""] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in TABL_LSX_CATEGORIES]
+        rows.append(total_row); styles.append([5] * len(cols))
+        rows.append(["расход:", int(round(expense_total))] + [""] * (len(cols) - 2)); styles.append([5] * len(cols))
+        rows.append(["на руках:", int(round(opening + income_total - expense_total))] + [""] * (len(cols) - 2)); styles.append([6] * len(cols))
+        rows.append([]); styles.append([])
+    os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+    start_all, end_all = weeks[0][0], weeks[-1][1]
+    fname = f"tabl_lsx_{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{start_all}_{end_all}.xlsx"
+    path = os.path.join(MEGA_LOCAL_TMP_DIR, fname)
+    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name="4 недели")
+    return path
+
+
+def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
+    trace = ProcessTrace(recipient_chat_id, f"Таблица LSX: {get_chat_display_name(target_chat_id)}").start()
+    path = None
+    try:
+        trace.step("собирает последние 4 недели Чт–Ср")
+        path = create_tabl_lsx_file(target_chat_id, today_key())
+        trace.step("отправляет Excel")
+        display = os.path.basename(path)
+        fobj = file_bytesio_named(path, display)
+        if fobj:
+            _tg_call_retry(
+                bot.send_document,
+                recipient_chat_id,
+                fobj,
+                caption=f"📊 Таблица LSX за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}",
+                purpose="tabl_lsx_send_document",
+            )
+        trace.finish("таблица готова")
+    except Exception as e:
+        log_error(f"send_tabl_lsx_for_chat({target_chat_id}): {e}")
+        send_and_auto_delete(recipient_chat_id, "❌ Не удалось создать /tabl_lsx.", 15)
+        try:
+            trace.fail(e)
+        except Exception:
+            pass
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
 def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = None) -> str | None:
     """Создаёт Excel .xlsx для чата; date в формате DD:MM:YY."""
@@ -6500,6 +6731,11 @@ def clear_secret_window(viewer_chat_id: int, message_id: int | None = None):
     store = get_chat_store(int(viewer_chat_id))
     active = store.get("secret_active_window") or {}
     if message_id is None or int(active.get("message_id") or 0) == int(message_id):
+        try:
+            if message_id is not None:
+                _cancel_secret_calendar_timer(int(viewer_chat_id), int(message_id))
+        except Exception:
+            pass
         store["secret_active_window"] = None
         save_data(data)
 
@@ -6565,6 +6801,15 @@ def refresh_secret_windows(target_chat_id: int):
                     chat_id=viewer_id,
                     message_id=message_id,
                     reply_markup=build_secret_calendar_keyboard(target_chat_id, month_key, self_only=self_only),
+                )
+                updated = True
+            elif kind == "month_list":
+                month_key = active.get("month_key") or now_local().strftime("%Y-%m")
+                bot.edit_message_text(
+                    build_secret_month_summary_text(target_chat_id, month_key),
+                    chat_id=viewer_id,
+                    message_id=message_id,
+                    reply_markup=build_secret_month_summary_keyboard(target_chat_id, month_key, self_only=self_only),
                 )
                 updated = True
             if updated:
@@ -6720,13 +6965,12 @@ def handle_secret_edit_insert_message(msg) -> bool:
 
 
 def build_secret_chat_list_keyboard(remaining: int = SECRET_AUTO_CLOSE_SECONDS):
-    kb = types.InlineKeyboardMarkup(row_width=4)
+    kb = types.InlineKeyboardMarkup(row_width=3)
     chats = collect_all_known_chat_ids(include_owner=True)
     for cid in chats:
         mode = "✅" if is_total_secret_mode(cid) else "❌"
         kb.row(
             IB(get_chat_display_name(cid)[:28], callback_data=f"seclist:{cid}"),
-            IB("🎞️", callback_data=f"secmedia:{cid}:all"),
             IB(f"{mode} Секрет", callback_data=f"sectoggle:{cid}"),
             IB("📅", callback_data=f"secchatcal:{cid}"),
         )
@@ -6771,6 +7015,12 @@ def _build_secret_active_keyboard(viewer_chat_id: int, active: dict, remaining: 
     if kind == "calendar":
         month_key = active.get("month_key") or now_local().strftime("%Y-%m")
         return build_secret_calendar_keyboard(
+            target_chat_id, month_key,
+            self_only=self_only, remaining=remaining,
+        )
+    if kind == "month_list":
+        month_key = active.get("month_key") or now_local().strftime("%Y-%m")
+        return build_secret_month_summary_keyboard(
             target_chat_id, month_key,
             self_only=self_only, remaining=remaining,
         )
@@ -6831,6 +7081,96 @@ def schedule_secret_calendar_close(chat_id: int, message_id: int):
     threading.Thread(target=close, daemon=True).start()
 
 
+def _secret_month_records(target_chat_id: int, month_key: str) -> list[dict]:
+    prefix = str(month_key or now_local().strftime("%Y-%m"))[:7] + "-"
+    return [r for r in _secret_records(int(target_chat_id)) if str(r.get("day_key") or "").startswith(prefix)]
+
+
+def build_secret_month_summary_text(target_chat_id: int, month_key: str) -> str:
+    if _ensure_secret_media_numbers(target_chat_id):
+        save_data(data)
+    records = _secret_month_records(target_chat_id, month_key)
+    lines = [
+        f"🪬 Секреты за месяц: {get_chat_display_name(target_chat_id)}",
+        f"📅 {month_key}",
+        "",
+    ]
+    if not records:
+        lines.append("Нет секретных сообщений за этот месяц.")
+    for idx, item in enumerate(records, 1):
+        day = fmt_date_ddmmyy(str(item.get("day_key") or ""))
+        ts = str(item.get("timestamp") or "")
+        stamp = ts[11:16] if len(ts) >= 16 else ""
+        body = re.sub(r"\s+", " ", _secret_record_display_text(item)).strip()
+        if len(body) > 74:
+            body = body[:74].rstrip()
+        lines.append(f"{idx}. {day} {stamp} — {body}...")
+    text = "\n".join(lines)
+    return text if len(text) <= 3900 else text[:3890] + "\n…"
+
+
+def build_secret_month_summary_keyboard(
+    target_chat_id: int,
+    month_key: str,
+    self_only: bool = False,
+    remaining: int = SECRET_AUTO_CLOSE_SECONDS,
+):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        IB("📅 Календарь", callback_data=f"secchatcal:{target_chat_id}:{month_key}"),
+        IB("🗑 Удалить секреты", callback_data=f"secdel:{target_chat_id}:{month_key}-01"),
+    )
+    if self_only:
+        kb.row(IB(_secret_close_label(remaining), callback_data="secclose"))
+    else:
+        kb.row(
+            IB("🔙 Назад", callback_data="secbacklist"),
+            IB(_secret_close_label(remaining), callback_data="secclose"),
+        )
+    return kb
+
+
+def open_secret_month_summary(
+    chat_id: int,
+    target_chat_id: int,
+    month_key: str | None = None,
+    message_id: int | None = None,
+    self_only: bool = False,
+):
+    month_key = month_key or now_local().strftime("%Y-%m")
+    text = build_secret_month_summary_text(target_chat_id, month_key)
+    kb = build_secret_month_summary_keyboard(target_chat_id, month_key, self_only=self_only)
+    if message_id:
+        bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+        register_secret_window(
+            chat_id, message_id, target_chat_id, "month_list",
+            month_key=month_key, self_only=self_only,
+        )
+        schedule_secret_calendar_close(chat_id, message_id)
+        return message_id
+    sent = bot.send_message(chat_id, text, reply_markup=kb)
+    register_secret_window(
+        chat_id, sent.message_id, target_chat_id, "month_list",
+        month_key=month_key, self_only=self_only,
+    )
+    schedule_secret_calendar_close(chat_id, sent.message_id)
+    return sent.message_id
+
+
+
+
+def touch_secret_window_timer_for_callback(chat_id: int, message_id: int, data_str: str | None = None) -> bool:
+    """Продлевает автозакрытие любого активного секретного окна при любом нажатии."""
+    try:
+        active = get_chat_store(int(chat_id)).get("secret_active_window") or {}
+        if int(active.get("message_id") or 0) == int(message_id):
+            schedule_secret_calendar_close(int(chat_id), int(message_id))
+            return True
+    except Exception as e:
+        log_error(f"touch_secret_window_timer_for_callback({chat_id},{message_id},{data_str}): {e}")
+    return False
+
+
 def build_secret_calendar_keyboard(
     target_chat_id: int,
     month_key: str,
@@ -6860,7 +7200,10 @@ def build_secret_calendar_keyboard(
         IB("Месяц ➡️", callback_data=f"secmon:{target_chat_id}:{nxt}"),
     )
     anchor_day = today_key() if month_key == now_local().strftime("%Y-%m") else f"{month_key}-01"
-    kb.row(IB("🗑 Удалить секреты", callback_data=f"secdel:{target_chat_id}:{anchor_day}"))
+    kb.row(
+        IB("🪬", callback_data=f"secmonthlist:{target_chat_id}:{month_key}"),
+        IB("🗑 Удалить секреты", callback_data=f"secdel:{target_chat_id}:{anchor_day}"),
+    )
     if self_only:
         kb.row(IB(_secret_close_label(remaining), callback_data="secclose"))
     else:
@@ -7057,7 +7400,7 @@ def cmd_toggle_total_secret_mask(msg):
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
-    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы"}
+    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx"}
 ))
 def cmd_total_secret_capture(msg):
     save_secret_message(msg.chat.id, msg)
@@ -10886,9 +11229,9 @@ def on_callback(call):
             pass
 
         try:
-            active_secret = get_chat_store(chat_id).get("secret_active_window") or {}
-            if int(active_secret.get("message_id") or 0) == int(call.message.message_id):
-                schedule_secret_calendar_close(chat_id, call.message.message_id)
+            # Любая кнопка в любом окне секретного режима означает, что пользователь
+            # ещё работает с окном: перезапускаем отсчёт автозакрытия с 01:30.
+            touch_secret_window_timer_for_callback(chat_id, call.message.message_id, data_str)
         except Exception:
             pass
 
@@ -11116,6 +11459,18 @@ def on_callback(call):
                 ).start()
             except Exception as e:
                 log_error(f"secret media callback: {e}")
+            return
+        if data_str.startswith("secmonthlist:"):
+            try:
+                _, target_s, month_key = data_str.split(":", 2)
+                target_chat_id = int(target_s)
+                self_only = secret_window_self_only(chat_id, call.message.message_id)
+                open_secret_month_summary(
+                    chat_id, target_chat_id, month_key,
+                    message_id=call.message.message_id, self_only=self_only,
+                )
+            except Exception as e:
+                log_error(f"secret month summary callback: {e}")
             return
         if data_str.startswith("secchatcal:"):
             try:
@@ -13298,6 +13653,24 @@ def cmd_csv_day(chat_id: int, day_key: str):
         except FileNotFoundError:
             pass
 
+@bot.message_handler(commands=["tabl_lsx"])
+def cmd_tabl_lsx(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help", "tabl_lsx"}):
+        return
+    if not require_finance(chat_id):
+        return
+    send_tabl_lsx_for_chat(chat_id, chat_id)
+
+
 @bot.message_handler(commands=["xlsx", "excel"])
 def cmd_xlsx(msg):
     try:
@@ -15189,7 +15562,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ ☎️Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🦷Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
