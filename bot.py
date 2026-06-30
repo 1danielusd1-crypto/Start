@@ -123,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v74_fast_ui"
+VERSION = "bot_v75_hot_knife"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -3609,9 +3609,9 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
     и не влияет на сохранность, потому что операции всё равно уже записаны в SQLite/data.
     """
     try:
-        delay = max(float(delay or 0), 8.0)
+        delay = max(float(delay or 0), 30.0)
     except Exception:
-        delay = 8.0
+        delay = 30.0
     ids = set()
     for cid in chat_ids:
         try:
@@ -5739,7 +5739,7 @@ def migrate_legacy_owner_secrets():
     settings["legacy_o9_secrets_merged"] = True
     data["_secret_notes"] = []
     save_data(data)
-    threading.Thread(target=upload_chat_secrets_to_mega, args=(int(OWNER_ID),), daemon=True).start()
+    schedule_secret_mega_upload(int(OWNER_ID))
 
 
 def _secret_file_id(msg):
@@ -6028,6 +6028,43 @@ def upload_chat_secrets_to_mega(chat_id: int) -> bool:
             return False
 
 
+
+_secret_mega_upload_timers = {}
+_secret_mega_upload_lock = threading.RLock()
+
+
+def schedule_secret_mega_upload(chat_id: int, delay: float = 45.0):
+    """Debounce для MEGA секретов: много секретных действий = одна загрузка позже."""
+    try:
+        if not mega_is_configured():
+            return False
+        chat_id = int(chat_id)
+        delay = max(float(delay or 0), 30.0)
+    except Exception:
+        return False
+
+    def _job():
+        try:
+            upload_chat_secrets_to_mega(chat_id)
+        finally:
+            with _secret_mega_upload_lock:
+                cur = _secret_mega_upload_timers.get(chat_id)
+                if cur is timer:
+                    _secret_mega_upload_timers.pop(chat_id, None)
+
+    with _secret_mega_upload_lock:
+        prev = _secret_mega_upload_timers.get(chat_id)
+        if prev and getattr(prev, "is_alive", lambda: False)():
+            try:
+                prev.cancel()
+            except Exception:
+                pass
+        timer = threading.Timer(delay, _job)
+        _secret_mega_upload_timers[chat_id] = timer
+        timer.daemon = True
+        timer.start()
+    return True
+
 def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> dict:
     chat_id = int(chat_id)
     user = getattr(msg, "from_user", None)
@@ -6051,7 +6088,7 @@ def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> d
     settings["auto_backup_to_mega_enabled"] = True
     save_data(data)
     schedule_config_backup_for_chats(chat_id, delay=0.2)
-    threading.Thread(target=upload_chat_secrets_to_mega, args=(chat_id,), daemon=True).start()
+    schedule_secret_mega_upload(chat_id)
     refresh_secret_windows(chat_id)
     return record
 
@@ -6159,7 +6196,7 @@ def handle_secret_edited_message(msg) -> bool:
     record["edited_at"] = now_local().isoformat(timespec="seconds")
     save_data(data)
     schedule_config_backup_for_chats(chat_id, delay=0.2)
-    threading.Thread(target=upload_chat_secrets_to_mega, args=(chat_id,), daemon=True).start()
+    schedule_secret_mega_upload(chat_id)
     refresh_secret_windows(chat_id)
     delete_secret_source_message(msg)
     return True
@@ -6623,7 +6660,7 @@ def delete_secret_records_by_modes(target_chat_id: int, modes: set[str], day_key
     schedule_config_backup_for_chats(target_chat_id, delay=0.2)
     if media_paths:
         threading.Thread(target=_delete_secret_mega_media_paths, args=(media_paths,), daemon=True).start()
-    threading.Thread(target=upload_chat_secrets_to_mega, args=(target_chat_id,), daemon=True).start()
+    schedule_secret_mega_upload(target_chat_id)
     refresh_secret_windows(target_chat_id)
     return len(deleted)
 
@@ -6644,7 +6681,7 @@ def delete_secret_records_by_ids(target_chat_id: int, record_ids: set[int]) -> i
     schedule_config_backup_for_chats(target_chat_id, delay=0.2)
     if media_paths:
         threading.Thread(target=_delete_secret_mega_media_paths, args=(media_paths,), daemon=True).start()
-    threading.Thread(target=upload_chat_secrets_to_mega, args=(target_chat_id,), daemon=True).start()
+    schedule_secret_mega_upload(target_chat_id)
     refresh_secret_windows(target_chat_id)
     return len(deleted)
 
@@ -6751,47 +6788,52 @@ def refresh_secret_windows(target_chat_id: int):
                 continue
             if kind == "day":
                 day_key = active.get("day_key") or _default_secret_day(target_chat_id)
-                bot.edit_message_text(
+                fast_ui_edit_message_text(
+                    viewer_id,
+                    message_id,
                     build_secret_day_text(target_chat_id, day_key),
-                    chat_id=viewer_id,
-                    message_id=message_id,
                     reply_markup=build_secret_day_keyboard(target_chat_id, day_key, self_only=self_only),
+                    purpose="refresh_secret_windows",
                 )
                 updated = True
             elif kind == "edit":
                 day_key = active.get("day_key") or _default_secret_day(target_chat_id)
-                bot.edit_message_text(
+                fast_ui_edit_message_text(
+                    viewer_id,
+                    message_id,
                     build_secret_edit_text(target_chat_id, day_key),
-                    chat_id=viewer_id,
-                    message_id=message_id,
                     reply_markup=build_secret_edit_keyboard(viewer_id, target_chat_id, day_key, self_only=self_only),
+                    purpose="refresh_secret_windows",
                 )
                 updated = True
             elif kind == "delete":
                 day_key = active.get("day_key") or _default_secret_day(target_chat_id)
-                bot.edit_message_text(
+                fast_ui_edit_message_text(
+                    viewer_id,
+                    message_id,
                     build_secret_delete_text(viewer_id, target_chat_id, day_key),
-                    chat_id=viewer_id,
-                    message_id=message_id,
                     reply_markup=build_secret_delete_keyboard(viewer_id, target_chat_id, day_key, self_only=self_only),
+                    purpose="refresh_secret_windows",
                 )
                 updated = True
             elif kind == "calendar":
                 month_key = active.get("month_key") or now_local().strftime("%Y-%m")
-                bot.edit_message_text(
+                fast_ui_edit_message_text(
+                    viewer_id,
+                    message_id,
                     f"🔐 Секретные сообщения\n{get_chat_display_name(target_chat_id)}\n📅 {month_key}",
-                    chat_id=viewer_id,
-                    message_id=message_id,
                     reply_markup=build_secret_calendar_keyboard(target_chat_id, month_key, self_only=self_only),
+                    purpose="refresh_secret_windows",
                 )
                 updated = True
             elif kind == "month_list":
                 month_key = active.get("month_key") or now_local().strftime("%Y-%m")
-                bot.edit_message_text(
+                fast_ui_edit_message_text(
+                    viewer_id,
+                    message_id,
                     build_secret_month_summary_text(target_chat_id, month_key),
-                    chat_id=viewer_id,
-                    message_id=message_id,
                     reply_markup=build_secret_month_summary_keyboard(target_chat_id, month_key, self_only=self_only),
+                    purpose="refresh_secret_windows",
                 )
                 updated = True
             if updated:
@@ -6812,7 +6854,7 @@ def open_secret_day_window(
     text = build_secret_day_text(target_chat_id, day_key)
     kb = build_secret_day_keyboard(target_chat_id, day_key, self_only=self_only)
     if message_id:
-        bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+        fast_ui_edit_message_text(chat_id, message_id, text, reply_markup=kb, purpose="secret_open_window")
         register_secret_window(chat_id, message_id, target_chat_id, "day", day_key=day_key, self_only=self_only)
         schedule_secret_calendar_close(chat_id, message_id)
         return message_id
@@ -6937,7 +6979,7 @@ def handle_secret_edit_insert_message(msg) -> bool:
         target["edited_at"] = now_local().isoformat(timespec="seconds")
         save_data(data)
         schedule_config_backup_for_chats(target_chat_id, delay=0.2)
-        threading.Thread(target=upload_chat_secrets_to_mega, args=(target_chat_id,), daemon=True).start()
+        schedule_secret_mega_upload(target_chat_id)
         refresh_secret_windows(target_chat_id)
         send_and_auto_delete(msg.chat.id, "✅ Секретные данные изменены.", 8)
         return True
@@ -7120,7 +7162,7 @@ def open_secret_month_summary(
     text = build_secret_month_summary_text(target_chat_id, month_key)
     kb = build_secret_month_summary_keyboard(target_chat_id, month_key, self_only=self_only)
     if message_id:
-        bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+        fast_ui_edit_message_text(chat_id, message_id, text, reply_markup=kb, purpose="secret_open_window")
         register_secret_window(
             chat_id, message_id, target_chat_id, "month_list",
             month_key=month_key, self_only=self_only,
@@ -7204,7 +7246,7 @@ def open_secret_calendar(
     text = f"🔐 Секретные сообщения\n{get_chat_display_name(target_chat_id)}\n📅 {month_key}"
     kb = build_secret_calendar_keyboard(target_chat_id, month_key, self_only=self_only)
     if message_id:
-        bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=kb)
+        fast_ui_edit_message_text(chat_id, message_id, text, reply_markup=kb, purpose="secret_open_window")
         register_secret_window(
             chat_id, message_id, target_chat_id, "calendar",
             month_key=month_key, self_only=self_only,
@@ -10661,9 +10703,143 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb.row(IB(label, callback_data=callback_data))
     return kb
 
+
+# ─────────────────────────────────────────────────────────────
+# ⚡ Fast UI edit queue
+# ─────────────────────────────────────────────────────────────
+# Telegram даёт 429, если слишком часто редактировать одно окно.
+# Поэтому кнопки больше не ждут retry_after внутри callback:
+# • редактирование одного сообщения ограничено частотой;
+# • частые клики собираются в одно последнее обновление;
+# • 429 не держит обработчик кнопки, а просто пропускает лишнее обновление.
+UI_EDIT_MIN_INTERVAL_SECONDS = float(os.getenv("UI_EDIT_MIN_INTERVAL_SECONDS", "1.15") or "1.15")
+_ui_edit_lock = threading.RLock()
+_ui_edit_last_ts = {}
+_ui_edit_pending = {}
+_ui_edit_timers = {}
+
+
+def _ui_edit_key(chat_id: int, message_id: int):
+    return (int(chat_id), int(message_id))
+
+
+def _perform_fast_ui_edit(payload: dict) -> str:
+    chat_id = int(payload.get("chat_id"))
+    message_id = int(payload.get("message_id"))
+    text = payload.get("text") or ""
+    reply_markup = payload.get("reply_markup")
+    parse_mode = payload.get("parse_mode")
+    purpose = payload.get("purpose") or "fast_ui_edit"
+    try:
+        _tg_call_retry(
+            bot.edit_message_text,
+            text,
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+            attempts=1,
+            purpose=purpose + "_text",
+        )
+        return "ok"
+    except Exception as e1:
+        low = str(e1).lower()
+        if "message is not modified" in low:
+            return "ok"
+        if is_telegram_429(e1):
+            try:
+                bot_journal("ui_edit_rate_limited", chat_id, f"{purpose}: {str(e1)[:220]}", "WARN")
+            except Exception:
+                pass
+            return "rate_limited"
+        if "message to edit not found" in low or "message can't be edited" in low:
+            return "not_found"
+        try:
+            _tg_call_retry(
+                bot.edit_message_caption,
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+                attempts=1,
+                purpose=purpose + "_caption",
+            )
+            return "ok"
+        except Exception as e2:
+            low2 = str(e2).lower()
+            if "message is not modified" in low2:
+                return "ok"
+            if is_telegram_429(e2):
+                try:
+                    bot_journal("ui_edit_rate_limited", chat_id, f"{purpose}: {str(e2)[:220]}", "WARN")
+                except Exception:
+                    pass
+                return "rate_limited"
+            if "message to edit not found" in low2 or "message can't be edited" in low2:
+                return "not_found"
+            try:
+                bot_journal("ui_edit_failed", chat_id, f"{purpose}: {str(e1)[:180]} / {str(e2)[:180]}", "WARN")
+            except Exception:
+                pass
+            return "failed"
+
+
+def _run_pending_ui_edit(key):
+    with _ui_edit_lock:
+        payload = _ui_edit_pending.pop(key, None)
+        _ui_edit_timers.pop(key, None)
+        if not payload:
+            return
+        _ui_edit_last_ts[key] = time.time()
+    _perform_fast_ui_edit(payload)
+
+
+def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "fast_ui") -> str:
+    key = _ui_edit_key(chat_id, message_id)
+    payload = {
+        "chat_id": int(chat_id),
+        "message_id": int(message_id),
+        "text": text,
+        "reply_markup": reply_markup,
+        "parse_mode": parse_mode,
+        "purpose": purpose,
+    }
+    now_ts = time.time()
+    with _ui_edit_lock:
+        last_ts = float(_ui_edit_last_ts.get(key, 0) or 0)
+        wait = max(0.0, float(UI_EDIT_MIN_INTERVAL_SECONDS) - (now_ts - last_ts))
+        if wait > 0:
+            _ui_edit_pending[key] = payload
+            prev = _ui_edit_timers.get(key)
+            if prev and getattr(prev, "is_alive", lambda: False)():
+                try:
+                    prev.cancel()
+                except Exception:
+                    pass
+            t = threading.Timer(wait + 0.05, _run_pending_ui_edit, args=(key,))
+            _ui_edit_timers[key] = t
+            t.daemon = True
+            t.start()
+            return "scheduled"
+        _ui_edit_last_ts[key] = now_ts
+    return _perform_fast_ui_edit(payload)
+
+
+def cancel_fast_ui_edit(chat_id: int, message_id: int):
+    key = _ui_edit_key(chat_id, message_id)
+    with _ui_edit_lock:
+        _ui_edit_pending.pop(key, None)
+        t = _ui_edit_timers.pop(key, None)
+    if t and getattr(t, "is_alive", lambda: False)():
+        try:
+            t.cancel()
+        except Exception:
+            pass
+
 def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
-    """Безопасное обновление: edit_text → edit_caption → send_message.
-    Все окна, которые открываются кнопками, получают метку о*/в*, если она ещё не проставлена вручную.
+    """Быстрое обновление окна.
+    Не держит callback при Telegram 429 и собирает частые клики в одно последнее обновление.
     """
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
@@ -10681,65 +10857,55 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
             reply_markup = default_window_nav_keyboard(chat_id)
         except Exception:
             pass
-    try:
-        _tg_call_retry(
-            bot.edit_message_text,
-            text,
-            chat_id=chat_id,
-            message_id=msg_id,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-            purpose="safe_edit_text"
-        )
-        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
-        return
-    except Exception as e:
-        if is_telegram_429(e):
+    result = fast_ui_edit_message_text(
+        chat_id, msg_id, text,
+        reply_markup=reply_markup,
+        parse_mode=parse_mode,
+        purpose="safe_edit_fast",
+    )
+    if result in {"ok", "scheduled", "rate_limited"}:
+        if result == "rate_limited":
             try:
-                bot.answer_callback_query(call.id, "Telegram ограничил частые обновления. Попробуй через пару секунд.", show_alert=False)
+                bot.answer_callback_query(call.id, "Обновление отложено: Telegram ограничил частые клики.", show_alert=False)
             except Exception:
                 pass
-            return
-    try:
-        _tg_call_retry(
-            bot.edit_message_caption,
-            chat_id=chat_id,
-            message_id=msg_id,
-            caption=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-            purpose="safe_edit_caption"
-        )
-        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
+        try:
+            _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
+        except Exception:
+            pass
         return
-    except Exception as e:
-        if is_telegram_429(e):
-            try:
-                bot.answer_callback_query(call.id, "Telegram ограничил частые обновления. Попробуй через пару секунд.", show_alert=False)
-            except Exception:
-                pass
-            return
+
+    # Только если старое сообщение реально потеряно, создаём новое окно.
     try:
         if chat_buttons_current_window_enabled(chat_id):
             try:
-                bot.answer_callback_query(call.id, "Режим текущего окна включён: новое окно не создаю.", show_alert=False)
+                bot.answer_callback_query(call.id, "Текущее окно недоступно, новое не создаю.", show_alert=False)
             except Exception:
                 pass
             return
     except Exception:
         pass
-    sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_send_fallback")
     try:
-        _touch_v98_auto_close_for_callback(chat_id, sent.message_id, getattr(call, "data", ""))
-    except Exception:
-        pass
+        sent = _tg_call_retry(
+            bot.send_message,
+            chat_id,
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+            attempts=1,
+            purpose="safe_edit_send_fallback",
+        )
+        try:
+            _touch_v98_auto_close_for_callback(chat_id, sent.message_id, getattr(call, "data", ""))
+        except Exception:
+            pass
+    except Exception as e:
+        if not is_telegram_429(e):
+            log_error(f"safe_edit fallback send {chat_id}: {e}")
 
 
 def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
-    """Редактирует только текущее окно.
-    Используется для долгих действий вроде «Проверить чаты», чтобы при ошибке edit
-    не плодить новое окно через send_message.
-    """
+    """Редактирует только текущее окно, без создания нового и без ожидания retry_after."""
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
     try:
@@ -10756,53 +10922,22 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
             reply_markup = default_window_nav_keyboard(chat_id)
         except Exception:
             pass
-    try:
-        _tg_call_retry(
-            bot.edit_message_text,
-            text,
-            chat_id=chat_id,
-            message_id=msg_id,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-            purpose="safe_edit_current_only_text"
-        )
-        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
-        return True
-    except Exception as e1:
-        if "message is not modified" in str(e1).lower():
-            return True
-        if is_telegram_429(e1):
-            try:
-                bot.answer_callback_query(call.id, "Telegram ограничил частые обновления. Попробуй через пару секунд.", show_alert=False)
-            except Exception:
-                pass
-            return False
-    try:
-        _tg_call_retry(
-            bot.edit_message_caption,
-            chat_id=chat_id,
-            message_id=msg_id,
-            caption=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-            purpose="safe_edit_current_only_caption"
-        )
-        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
-        return True
-    except Exception as e2:
-        if "message is not modified" in str(e2).lower():
-            return True
-        if is_telegram_429(e2):
-            try:
-                bot.answer_callback_query(call.id, "Telegram ограничил частые обновления. Попробуй через пару секунд.", show_alert=False)
-            except Exception:
-                pass
-            return False
+    result = fast_ui_edit_message_text(
+        chat_id, msg_id, text,
+        reply_markup=reply_markup,
+        parse_mode=parse_mode,
+        purpose="safe_edit_current_only_fast",
+    )
+    if result == "rate_limited":
         try:
-            bot.answer_callback_query(call.id, "Окно не удалось обновить, но новое окно не создаю.", show_alert=False)
+            bot.answer_callback_query(call.id, "Обновление отложено: слишком много кликов.", show_alert=False)
         except Exception:
             pass
-        return False
+    try:
+        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
+    except Exception:
+        pass
+    return result in {"ok", "scheduled", "rate_limited"}
 
 def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None, preferred_message_id=None):
     """Отдельное окно для отчёта по статьям расходов (одно сообщение на чат)."""
@@ -11220,7 +11355,7 @@ def schedule_secret_edit_refresh_window(viewer_chat_id: int, message_id: int, ta
             text = build_secret_edit_text(int(target_chat_id), day_key)
             kb = build_secret_edit_keyboard(int(viewer_chat_id), int(target_chat_id), day_key, self_only=bool(self_only))
             try:
-                bot.edit_message_text(text, chat_id=int(viewer_chat_id), message_id=int(message_id), reply_markup=kb)
+                fast_ui_edit_message_text(int(viewer_chat_id), int(message_id), text, reply_markup=kb, purpose="secret_edit_debounce")
             except Exception as e:
                 if not is_telegram_429(e) and "message is not modified" not in str(e).lower():
                     log_error(f"secret edit debounce refresh {viewer_chat_id}:{message_id}: {e}")
@@ -13704,7 +13839,12 @@ def cmd_tabl_lsx(msg):
         return
     if not require_finance(chat_id):
         return
-    send_tabl_lsx_for_chat(chat_id, chat_id)
+    try:
+        notice = bot.send_message(chat_id, "⏳ Готовлю /tabl_lsx в фоне…")
+        delete_message_later(chat_id, notice.message_id, 20)
+    except Exception:
+        pass
+    threading.Thread(target=send_tabl_lsx_for_chat, args=(chat_id, chat_id), daemon=True).start()
 
 
 @bot.message_handler(commands=["xlsx", "excel"])
@@ -14672,9 +14812,9 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
     """Debounced backup queue: много операций за короткое время = один flush."""
     global _backup_global_timer
     try:
-        delay = max(float(delay or 0), 8.0)
+        delay = max(float(delay or 0), 30.0)
     except Exception:
-        delay = 8.0
+        delay = 30.0
     try:
         if chat_id is not None:
             with timer_lock:
@@ -14690,6 +14830,7 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
             except Exception:
                 pass
         t = threading.Timer(delay, _flush_dirty_backups)
+        t.daemon = True
         _backup_global_timer = t
         t.start()
     
@@ -14767,7 +14908,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         trace.step("ставит бэкап в отдельную очередь")
-        _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, 3.0))
+        _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, 30.0))
 
         # Важно: действия в других чатах не должны менять личное окно владельца.
         # Поэтому здесь не вызываем backup_window_for_owner/refresh_owner_after_chat_change.
@@ -15567,7 +15708,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ ❌Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🪬Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
