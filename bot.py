@@ -123,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v73_secret_tabl_lsx"
+VERSION = "bot_v74_fast_ui"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -602,7 +602,7 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 2000):
 # ─────────────────────────────────────────────────────────────
 O9_SECRET_CLICK_WINDOW_SECONDS = 3.0
 O9_SECRET_WAIT_SECONDS = 90
-O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS = 5
+O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS = 30
 _o9_secret_clicks = {}
 _o9_secret_click_lock = threading.RLock()
 _o9_secret_action_timers = {}
@@ -718,6 +718,7 @@ def _cancel_o9_secret_wait_timer(chat_id: int):
 
 
 def schedule_o9_secret_wait_timeout(chat_id: int, prompt_message_id: int, delay: int = O9_SECRET_WAIT_SECONDS):
+    """Автоотмена ожидания секрета без частого редактирования таймера."""
     key = int(chat_id)
     with _o9_secret_click_lock:
         prev = _o9_secret_wait_timers.get(key)
@@ -729,26 +730,7 @@ def schedule_o9_secret_wait_timeout(chat_id: int, prompt_message_id: int, delay:
 
     def _job():
         try:
-            remaining = int(delay)
-            while remaining > 0:
-                with _o9_secret_click_lock:
-                    current = _o9_secret_wait_timers.get(key)
-                    if current is not token or token.get("cancelled"):
-                        return
-                try:
-                    _tg_call_retry(
-                        bot.edit_message_text,
-                        _secret_wait_prompt_text(remaining),
-                        chat_id=chat_id,
-                        message_id=int(prompt_message_id),
-                        reply_markup=_secret_wait_keyboard(chat_id, remaining),
-                        purpose="o9_secret_wait_countdown",
-                    )
-                except Exception as e:
-                    if "message is not modified" not in str(e).lower():
-                        log_error(f"o9 secret wait countdown {chat_id}:{prompt_message_id}: {e}")
-                time.sleep(O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS)
-                remaining -= O9_SECRET_WAIT_COUNTDOWN_STEP_SECONDS
+            time.sleep(int(delay))
             with _o9_secret_click_lock:
                 current = _o9_secret_wait_timers.get(key)
                 if current is not token or token.get("cancelled"):
@@ -760,7 +742,6 @@ def schedule_o9_secret_wait_timeout(chat_id: int, prompt_message_id: int, delay:
             log_error(f"schedule_o9_secret_wait_timeout({chat_id},{prompt_message_id}): {e}")
 
     threading.Thread(target=_job, daemon=True).start()
-
 
 
 def _o9_delayed_close(chat_id: int, message_id: int, key):
@@ -2837,6 +2818,24 @@ def _telegram_retry_after_seconds(err: Exception):
     return None
 
 
+def is_telegram_429(err: Exception) -> bool:
+    """True если Telegram ограничил частоту. Для UI такие ошибки нельзя держать sleep-ом."""
+    try:
+        return _telegram_retry_after_seconds(err) is not None
+    except Exception:
+        return "too many requests" in str(err or "").lower()
+
+
+def _is_fast_ui_purpose(purpose: str) -> bool:
+    p = str(purpose or "").lower()
+    fast_marks = (
+        "safe_edit", "countdown", "secret_window", "secret media",
+        "secret_edit_debounce", "category_wait_countdown", "process_trace_edit",
+        "o9_secret_wait_countdown",
+    )
+    return any(x in p for x in fast_marks)
+
+
 def _telegram_rate_limit_chat(chat_id, min_gap: float = 0.35):
     """Мягкий лимит отправки в один чат, чтобы реже получать 429 при шквале пересылок."""
     try:
@@ -2912,6 +2911,10 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
                 bot_journal("telegram_429_retry", chat_id if 'chat_id' in locals() else None, f"{purpose}: attempt={attempt}/{attempts}, wait={wait}s, error={str(e)[:220]}", "WARN")
             except Exception:
                 pass
+            # UI-операции не должны держать кнопку 20–30 секунд.
+            # Для них пропускаем редактирование и отдаём управление сразу.
+            if _is_fast_ui_purpose(purpose):
+                raise e
             if attempt >= int(attempts):
                 break
             time.sleep(wait)
@@ -3600,7 +3603,15 @@ def mega_upload_chat_backup_bundle(chat_id: int, month_key: str | None = None) -
 
 
 def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
-    """После изменения настроек/пересылки тоже обновляем JSON/канал/MEGA."""
+    """После изменения настроек/пересылки обновляем JSON/канал/MEGA с мягким debounce.
+
+    Не ставим мгновенный бэкап после каждого клика/секрета: это разгружает Telegram API
+    и не влияет на сохранность, потому что операции всё равно уже записаны в SQLite/data.
+    """
+    try:
+        delay = max(float(delay or 0), 8.0)
+    except Exception:
+        delay = 8.0
     ids = set()
     for cid in chat_ids:
         try:
@@ -5418,32 +5429,16 @@ def _category_countdown_text(base_text: str, remaining: int) -> str:
 
 
 def schedule_cancel_category_wait(chat_id: int, field: str, prompt_message_id: int, delay: float = 60.0):
+    """Автоотмена ожидания статьи без ежесекундного редактирования окна."""
     key = _category_wait_key(chat_id, field)
 
     def _job():
         try:
-            total = int(delay)
-            while total > 0:
-                store = get_chat_store(chat_id)
-                wait = store.get(field) or {}
-                if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
-                    return
-                base_text = wait.get("countdown_base_text") or ("➕ Добавление статьи" if field == "category_add_wait" else "✏️ Изменение статьи")
-                owner_day_key = wait.get("owner_day_key") or get_chat_store(chat_id).get("current_view_day") or today_key()
-                try:
-                    _tg_call_retry(
-                        bot.edit_message_text,
-                        _category_countdown_text(base_text, total),
-                        chat_id=chat_id,
-                        message_id=int(prompt_message_id),
-                        reply_markup=_category_prompt_keyboard(chat_id, owner_day_key=owner_day_key),
-                        purpose="category_wait_countdown",
-                    )
-                except Exception as e:
-                    if "message is not modified" not in str(e).lower():
-                        log_error(f"category countdown {chat_id}:{field}:{prompt_message_id}: {e}")
-                time.sleep(1)
-                total -= 1
+            time.sleep(float(delay))
+            store = get_chat_store(chat_id)
+            wait = store.get(field) or {}
+            if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
+                return
             cleared = clear_category_wait_state(chat_id, field, prompt_message_id, delete_prompt=True)
             if cleared:
                 send_and_auto_delete(chat_id, "⌛ Время ожидания истекло. Команда отменена.", 8)
@@ -5646,7 +5641,7 @@ _secret_mega_locks = defaultdict(threading.Lock)
 _secret_media_timer_lock = threading.RLock()
 _secret_media_timer_generation = {}
 SECRET_AUTO_CLOSE_SECONDS = 90
-SECRET_COUNTDOWN_STEP_SECONDS = 5
+SECRET_COUNTDOWN_STEP_SECONDS = 30
 
 
 def _secret_countdown_text(seconds: int) -> str:
@@ -6276,30 +6271,17 @@ def cancel_secret_media_timer(chat_id: int, message_id: int):
 
 
 def schedule_secret_media_close(chat_id: int, message_id: int):
-    """Запускает или продлевает удаление медиа на 90 секунд."""
+    """Запускает или продлевает удаление медиа на 90 секунд без лишних edit-таймеров."""
     key = (int(chat_id), int(message_id))
     with _secret_media_timer_lock:
         generation = int(_secret_media_timer_generation.get(key, 0)) + 1
         _secret_media_timer_generation[key] = generation
 
     def run():
-        remaining = SECRET_AUTO_CLOSE_SECONDS
-        while remaining > 0:
-            time.sleep(SECRET_COUNTDOWN_STEP_SECONDS)
-            with _secret_media_timer_lock:
-                if _secret_media_timer_generation.get(key) != generation:
-                    return
-            remaining = max(0, remaining - SECRET_COUNTDOWN_STEP_SECONDS)
-            if remaining > 0:
-                try:
-                    bot.edit_message_reply_markup(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        reply_markup=build_secret_media_timer_keyboard(remaining),
-                    )
-                except Exception as e:
-                    if "message is not modified" not in str(e).lower():
-                        log_error(f"secret media countdown {chat_id}:{message_id}: {e}")
+        time.sleep(int(SECRET_AUTO_CLOSE_SECONDS))
+        with _secret_media_timer_lock:
+            if _secret_media_timer_generation.get(key) != generation:
+                return
         try:
             bot.delete_message(chat_id, message_id)
         except Exception:
@@ -7048,36 +7030,33 @@ def _update_secret_window_countdown(chat_id: int, message_id: int, remaining: in
 
 
 def schedule_secret_calendar_close(chat_id: int, message_id: int):
+    """Быстрое автозакрытие секретного окна.
+
+    Важно: больше НЕ редактируем кнопку таймера каждые 5 секунд.
+    Частые edit_message_reply_markup ловили Telegram 429 и тормозили все кнопки.
+    Любой клик просто создаёт новый токен и отсчёт 90 секунд заново.
+    """
     _cancel_secret_calendar_timer(chat_id, message_id)
     key = (int(chat_id), int(message_id))
     token = {"cancelled": False, "generation": time.time_ns()}
     with _secret_calendar_lock:
         _secret_calendar_timers[key] = token
 
-    try:
-        _update_secret_window_countdown(chat_id, message_id, SECRET_AUTO_CLOSE_SECONDS)
-    except Exception:
-        pass
-
     def close():
-        remaining = int(SECRET_AUTO_CLOSE_SECONDS)
-        while remaining > 0:
-            time.sleep(SECRET_COUNTDOWN_STEP_SECONDS)
+        try:
+            time.sleep(int(SECRET_AUTO_CLOSE_SECONDS))
             with _secret_calendar_lock:
                 if _secret_calendar_timers.get(key) is not token or token.get("cancelled"):
                     return
-            remaining = max(0, remaining - SECRET_COUNTDOWN_STEP_SECONDS)
-            if remaining > 0:
-                if not _update_secret_window_countdown(chat_id, message_id, remaining):
-                    return
-        try:
-            bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-        clear_secret_window(chat_id, message_id)
-        with _secret_calendar_lock:
-            if _secret_calendar_timers.get(key) is token:
-                _secret_calendar_timers.pop(key, None)
+            try:
+                bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+            clear_secret_window(chat_id, message_id)
+        finally:
+            with _secret_calendar_lock:
+                if _secret_calendar_timers.get(key) is token:
+                    _secret_calendar_timers.pop(key, None)
     threading.Thread(target=close, daemon=True).start()
 
 
@@ -10714,8 +10693,13 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
         )
         _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
         return
-    except Exception:
-        pass
+    except Exception as e:
+        if is_telegram_429(e):
+            try:
+                bot.answer_callback_query(call.id, "Telegram ограничил частые обновления. Попробуй через пару секунд.", show_alert=False)
+            except Exception:
+                pass
+            return
     try:
         _tg_call_retry(
             bot.edit_message_caption,
@@ -10728,8 +10712,13 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
         )
         _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
         return
-    except Exception:
-        pass
+    except Exception as e:
+        if is_telegram_429(e):
+            try:
+                bot.answer_callback_query(call.id, "Telegram ограничил частые обновления. Попробуй через пару секунд.", show_alert=False)
+            except Exception:
+                pass
+            return
     try:
         if chat_buttons_current_window_enabled(chat_id):
             try:
@@ -10782,6 +10771,12 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
     except Exception as e1:
         if "message is not modified" in str(e1).lower():
             return True
+        if is_telegram_429(e1):
+            try:
+                bot.answer_callback_query(call.id, "Telegram ограничил частые обновления. Попробуй через пару секунд.", show_alert=False)
+            except Exception:
+                pass
+            return False
     try:
         _tg_call_retry(
             bot.edit_message_caption,
@@ -10797,6 +10792,12 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
     except Exception as e2:
         if "message is not modified" in str(e2).lower():
             return True
+        if is_telegram_429(e2):
+            try:
+                bot.answer_callback_query(call.id, "Telegram ограничил частые обновления. Попробуй через пару секунд.", show_alert=False)
+            except Exception:
+                pass
+            return False
         try:
             bot.answer_callback_query(call.id, "Окно не удалось обновить, но новое окно не создаю.", show_alert=False)
         except Exception:
@@ -11186,6 +11187,8 @@ def _callback_should_debounce(call, data_str: str, min_interval: float = 0.45) -
             hot = action in {"prev", "next", "today", "open", "back_main", "calendar", "csv_all"}
         elif data_str.startswith("fv:") or data_str.startswith("c:") or data_str.startswith("fc:"):
             hot = True
+        elif data_str.startswith(("secday:", "secview:", "secchatcal:", "secmon:", "secmonthlist:")):
+            hot = True
         if not hot:
             return False
         key = (chat_id, msg_id, data_str.split(":", 1)[0], data_str.split(":")[-1])
@@ -11201,6 +11204,44 @@ def _callback_should_debounce(call, data_str: str, min_interval: float = 0.45) -
         return skipped
     except Exception:
         return False
+
+
+# Debounce перерисовки галочек в секретном редактировании:
+# быстрые клики собираются, окно обновляется один раз после последнего клика.
+_secret_edit_refresh_lock = threading.RLock()
+_secret_edit_refresh_timers = {}
+
+
+def schedule_secret_edit_refresh_window(viewer_chat_id: int, message_id: int, target_chat_id: int, day_key: str, self_only: bool = False, delay: float = 0.7):
+    key = (int(viewer_chat_id), int(message_id))
+
+    def _job():
+        try:
+            text = build_secret_edit_text(int(target_chat_id), day_key)
+            kb = build_secret_edit_keyboard(int(viewer_chat_id), int(target_chat_id), day_key, self_only=bool(self_only))
+            try:
+                bot.edit_message_text(text, chat_id=int(viewer_chat_id), message_id=int(message_id), reply_markup=kb)
+            except Exception as e:
+                if not is_telegram_429(e) and "message is not modified" not in str(e).lower():
+                    log_error(f"secret edit debounce refresh {viewer_chat_id}:{message_id}: {e}")
+            register_secret_window(int(viewer_chat_id), int(message_id), int(target_chat_id), "edit", day_key=day_key, self_only=bool(self_only))
+            schedule_secret_calendar_close(int(viewer_chat_id), int(message_id))
+        finally:
+            with _secret_edit_refresh_lock:
+                cur = _secret_edit_refresh_timers.get(key)
+                if cur is timer:
+                    _secret_edit_refresh_timers.pop(key, None)
+
+    with _secret_edit_refresh_lock:
+        prev = _secret_edit_refresh_timers.get(key)
+        if prev and getattr(prev, "is_alive", lambda: False)():
+            try:
+                prev.cancel()
+            except Exception:
+                pass
+        timer = threading.Timer(float(delay), _job)
+        _secret_edit_refresh_timers[key] = timer
+        timer.start()
 
 @bot.callback_query_handler(func=lambda c: True)
 
@@ -11506,19 +11547,14 @@ def on_callback(call):
                     return
                 self_only = secret_window_self_only(chat_id, call.message.message_id)
                 toggle_secret_edit_delete_selection(chat_id, target_chat_id, day_key, record_id)
-                safe_edit_current_only(
-                    bot,
-                    call,
-                    build_secret_edit_text(target_chat_id, day_key),
-                    reply_markup=build_secret_edit_keyboard(
-                        chat_id, target_chat_id, day_key, self_only=self_only,
-                    ),
+                try:
+                    bot.answer_callback_query(call.id, "✅", show_alert=False)
+                except Exception:
+                    pass
+                schedule_secret_edit_refresh_window(
+                    chat_id, call.message.message_id, target_chat_id, day_key,
+                    self_only=self_only, delay=0.7,
                 )
-                register_secret_window(
-                    chat_id, call.message.message_id, target_chat_id, "edit",
-                    day_key=day_key, self_only=self_only,
-                )
-                schedule_secret_calendar_close(chat_id, call.message.message_id)
             except Exception as e:
                 log_error(f"secret edit delete toggle callback: {e}")
             return
@@ -13973,35 +14009,16 @@ def _edit_countdown_text(base_text: str, remaining: int) -> str:
 
 
 def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: float = 40.0):
+    """Автоотмена фин-редактирования без ежесекундного редактирования таймера."""
     key = (int(chat_id), "finwin_edit_wait")
 
     def _job():
         try:
-            total = int(delay)
-            while total > 0:
-                store = get_chat_store(chat_id)
-                wait = store.get("finwin_edit_wait") or {}
-                if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
-                    return
-                base_text = wait.get("countdown_base_text") or "✏️ Редактирование записи"
-                target_chat_id = int(wait.get("target_chat_id") or chat_id)
-                day_key = wait.get("day_key") or today_key()
-                owner_day_key = wait.get("owner_day_key") or today_key()
-                insert_text = wait.get("insert_text") or ""
-                try:
-                    _tg_call_retry(
-                        bot.edit_message_text,
-                        _edit_countdown_text(base_text, total),
-                        chat_id=chat_id,
-                        message_id=int(prompt_message_id),
-                        reply_markup=build_finwin_cancel_edit_keyboard(target_chat_id, day_key, owner_day_key, insert_text=insert_text),
-                        purpose="finwin_edit_countdown",
-                    )
-                except Exception as e:
-                    if "message is not modified" not in str(e).lower():
-                        log_error(f"finwin edit countdown {chat_id}:{prompt_message_id}: {e}")
-                time.sleep(1)
-                total -= 1
+            time.sleep(float(delay))
+            store = get_chat_store(chat_id)
+            wait = store.get("finwin_edit_wait") or {}
+            if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
+                return
             cleared = clear_finwin_edit_wait_state(chat_id, prompt_message_id, delete_prompt=True)
             if cleared:
                 log_info(f"finwin edit_wait auto-cancelled for chat {chat_id}")
@@ -14020,33 +14037,16 @@ def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: flo
 
 
 def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float = 40.0):
+    """Автоотмена редактирования без ежесекундного редактирования таймера."""
     key = (int(chat_id), "edit_wait")
 
     def _job():
         try:
-            total = int(delay)
-            while total > 0:
-                store = get_chat_store(chat_id)
-                wait = store.get("edit_wait") or {}
-                if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
-                    return
-                base_text = wait.get("countdown_base_text") or "✏️ Редактирование записи"
-                day_key = wait.get("day_key") or today_key()
-                insert_text = wait.get("insert_text") or ""
-                try:
-                    _tg_call_retry(
-                        bot.edit_message_text,
-                        _edit_countdown_text(base_text, total),
-                        chat_id=chat_id,
-                        message_id=int(prompt_message_id),
-                        reply_markup=build_cancel_edit_keyboard(day_key, insert_text=insert_text),
-                        purpose="edit_countdown",
-                    )
-                except Exception as e:
-                    if "message is not modified" not in str(e).lower():
-                        log_error(f"edit countdown {chat_id}:{prompt_message_id}: {e}")
-                time.sleep(1)
-                total -= 1
+            time.sleep(float(delay))
+            store = get_chat_store(chat_id)
+            wait = store.get("edit_wait") or {}
+            if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
+                return
             cleared = clear_edit_wait_state(chat_id, prompt_message_id, delete_prompt=True)
             if cleared:
                 send_and_auto_delete(chat_id, "⌛ Время редактирования истекло. Режим редактирования отменён.", 8)
@@ -14062,6 +14062,7 @@ def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float = 40
     t = threading.Timer(0.0, _job)
     _edit_cancel_timers[key] = t
     t.start()
+
 
 def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
     """
@@ -14670,6 +14671,10 @@ def _flush_dirty_backups():
 def schedule_backup_flush(chat_id: int, delay: float = 3.0):
     """Debounced backup queue: много операций за короткое время = один flush."""
     global _backup_global_timer
+    try:
+        delay = max(float(delay or 0), 8.0)
+    except Exception:
+        delay = 8.0
     try:
         if chat_id is not None:
             with timer_lock:
@@ -15562,7 +15567,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🦷Бот запущен (версия {VERSION}).\n"
+                    f"✅ ❌Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
