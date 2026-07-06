@@ -123,7 +123,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v76_fin_secret_forward"
+VERSION = "bot_v77_stable_fast"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -513,6 +513,32 @@ def toggle_total_secret_mask() -> bool:
 
 def total_secret_mask_label() -> str:
     return "🪷 Маска: ВКЛ" if total_secret_mask_enabled() else "🪷 Маска: ВЫКЛ"
+
+def verbose_process_journal_enabled() -> bool:
+    """Подробный PROCESS-журнал нужен только для диагностики. По умолчанию выключен, чтобы не тормозить бот."""
+    try:
+        if _env_bool("BOT_JOURNAL_VERBOSE_PROCESS", "0"):
+            return True
+    except Exception:
+        pass
+    try:
+        return bool((data or {}).setdefault("_global_settings", {}).get("bot_journal_verbose_process", False))
+    except Exception:
+        return False
+
+
+def verbose_telegram_journal_enabled() -> bool:
+    """Успешные Telegram API-вызовы сильно раздувают журнал. Включать только для диагностики."""
+    try:
+        if _env_bool("BOT_JOURNAL_VERBOSE_TELEGRAM", "0"):
+            return True
+    except Exception:
+        pass
+    try:
+        return bool((data or {}).setdefault("_global_settings", {}).get("bot_journal_verbose_telegram", False))
+    except Exception:
+        return False
+
 
 def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
     """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
@@ -1024,7 +1050,8 @@ class ProcessTrace:
     def start(self):
         self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — старт")
         try:
-            bot_journal("process_start", self.chat_id, self.title)
+            if self.enabled or verbose_process_journal_enabled():
+                bot_journal("process_start", self.chat_id, self.title)
         except Exception:
             pass
         if not self.enabled:
@@ -1046,7 +1073,8 @@ class ProcessTrace:
     def step(self, label: str):
         self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {label}")
         try:
-            bot_journal("process_step", self.chat_id, f"{self.title}: {label}")
+            if self.enabled or verbose_process_journal_enabled():
+                bot_journal("process_step", self.chat_id, f"{self.title}: {label}")
         except Exception:
             pass
         self._update_message(running=True)
@@ -1086,7 +1114,8 @@ class ProcessTrace:
     def finish(self, final_label: str = "завершено"):
         self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {final_label}")
         try:
-            bot_journal("process_finish", self.chat_id, f"{self.title}: {final_label}")
+            if self.enabled or verbose_process_journal_enabled():
+                bot_journal("process_finish", self.chat_id, f"{self.title}: {final_label}")
         except Exception:
             pass
         if not self.enabled:
@@ -1388,6 +1417,14 @@ DOZVON_BURST_SECONDS = 10
 DOZVON_PAUSE_SECONDS = 5
 OWNER_TOTAL_WINDOW_DELETE_DELAY = 60
 AUX_WINDOW_DELETE_DELAY = 120
+try:
+    BACKUP_MIN_DELAY_SECONDS = max(30.0, float(os.getenv("BACKUP_MIN_DELAY_SECONDS", "120") or "120"))
+except Exception:
+    BACKUP_MIN_DELAY_SECONDS = 120.0
+try:
+    BACKUP_BUSY_RETRY_SECONDS = max(15.0, float(os.getenv("BACKUP_BUSY_RETRY_SECONDS", "60") or "60"))
+except Exception:
+    BACKUP_BUSY_RETRY_SECONDS = 60.0
 
 _dozvon_sessions = {}
 _dozvon_target_index = defaultdict(set)
@@ -2932,7 +2969,8 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
             if chat_id is not None:
                 _telegram_rate_limit_chat(chat_id)
             try:
-                bot_journal("telegram_api_call", chat_id, f"{purpose}: {getattr(func, '__name__', str(func))} attempt={attempt}/{attempts}")
+                if verbose_telegram_journal_enabled():
+                    bot_journal("telegram_api_call", chat_id, f"{purpose}: {getattr(func, '__name__', str(func))} attempt={attempt}/{attempts}")
             except Exception:
                 pass
             # Важно для send_document/edit_media: при повторной попытке после 429
@@ -3670,9 +3708,9 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
     и не влияет на сохранность, потому что операции всё равно уже записаны в SQLite/data.
     """
     try:
-        delay = max(float(delay or 0), 30.0)
+        delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
     except Exception:
-        delay = 30.0
+        delay = BACKUP_MIN_DELAY_SECONDS
     ids = set()
     for cid in chat_ids:
         try:
@@ -4036,7 +4074,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False},
+        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -4250,17 +4288,28 @@ def get_chat_store(chat_id: int) -> dict:
 
 
 def _chat_identity_key(cid: int, info: dict | None = None) -> str:
+    """Безопасный ключ дубля: username можно считать одним чатом, а одинаковый title — только подозрение, не удаление."""
     info = info or {}
     username = str(info.get("username") or "").strip().lower().lstrip("@")
     if username:
         return "u:" + username
-    title = re.sub(r"\s+", " ", str(info.get("title") or get_chat_display_name(cid) or "").strip().lower())
+    return "id:" + str(int(cid))
+
+
+def _chat_title_suspect_key(cid: int, info: dict | None = None) -> str:
+    info = info or {}
+    title = re.sub(r"\s+", " ", str(info.get("title") or get_chat_display_name(cid) or "").strip().casefold())
     typ = str(info.get("type") or "")
-    return f"t:{typ}:{title}"
+    return f"t:{typ}:{title}" if title else f"id:{cid}"
 
 
 def normalize_known_chats_for_owner() -> int:
-    """Убирает дубли карточек чатов у владельца по username/title, оставляя один chat_id."""
+    """
+    Убирает только безопасные дубли карточек чатов у владельца:
+    • одинаковый chat_id невозможен в dict, но битые ключи чистим;
+    • одинаковый username считаем дублем;
+    • одинаковые названия НЕ удаляем, а складываем в suspected_duplicate_titles.
+    """
     if not OWNER_ID:
         return 0
     try:
@@ -4271,7 +4320,6 @@ def normalize_known_chats_for_owner() -> int:
             return 0
         keep = {}
         removed = 0
-        # Сначала предпочитаем чаты, которые реально есть в data["chats"].
         rows = []
         for cid_s, info in known.items():
             try:
@@ -4281,16 +4329,22 @@ def normalize_known_chats_for_owner() -> int:
                 continue
             rows.append((cid, info if isinstance(info, dict) else {}, str(cid_s) in (data.get("chats", {}) or {})))
         rows.sort(key=lambda x: (not x[2], str(x[0])))
-        seen = set()
+
+        seen_identity = set()
+        title_map = defaultdict(list)
         for cid, info, exists in rows:
             key = _chat_identity_key(cid, info)
-            if key in seen:
+            if key in seen_identity:
                 removed += 1
                 continue
-            seen.add(key)
+            seen_identity.add(key)
             keep[str(cid)] = info
-        if keep != known:
+            title_map[_chat_title_suspect_key(cid, info)].append(str(cid))
+
+        suspects = {k: v for k, v in title_map.items() if len(v) > 1 and k and not k.startswith("id:")}
+        if keep != known or owner_store.get("suspected_duplicate_titles") != suspects:
             owner_store["known_chats"] = keep
+            owner_store["suspected_duplicate_titles"] = suspects
             save_data(data)
         return removed
     except Exception as e:
@@ -4941,6 +4995,34 @@ def parse_amount(raw: str) -> float:
     if not is_positive and not is_negative:
         is_negative = True
     return -value if is_negative else value
+def note_has_income_marker(note: str) -> bool:
+    """True, если текст явно говорит о приходе денег.
+    Учитывает «приход» в любом регистре, но не срабатывает на «не приход», «без прихода», «нет прихода».
+    """
+    t = re.sub(r"\s+", " ", str(note or "").casefold()).strip()
+    if not t:
+        return False
+    negative_patterns = (
+        r"(?:^|\s)не\s+приход",
+        r"(?:^|\s)без\s+приход",
+        r"(?:^|\s)нет\s+приход",
+        r"(?:^|\s)ne\s+prihod",
+        r"(?:^|\s)bez\s+prihod",
+        r"(?:^|\s)net\s+prihod",
+    )
+    if any(re.search(pat, t, re.I) for pat in negative_patterns):
+        return False
+    income_patterns = (
+        r"приход",
+        r"prihod",
+        r"prixod",
+        r"обмен",
+        r"возврат",
+        r"сдача",
+    )
+    return any(re.search(pat, t, re.I) for pat in income_patterns)
+
+
 def split_amount_and_note(text: str):
     """
     Возвращает:
@@ -4955,10 +5037,9 @@ def split_amount_and_note(text: str):
     note = text.replace(raw_number, " ").strip()
     note = re.sub(r"\s+", " ", note).lower()
 
-    # Приход без знака "+": слова "обмен" и "возврат" считаем приходом.
-    # Примеры: "1000 возврат", "500 обмен", "возврат 300".
-    income_words = ("обмен", "возврат", "приход", "prihod", "prixod")
-    if amount < 0 and any(w in note for w in income_words):
+    # Приход без знака "+": «приход/обмен/возврат/сдача» считаем поступлением,
+    # но «не приход / без прихода / нет прихода» не переворачивает сумму.
+    if amount < 0 and note_has_income_marker(note):
         amount = abs(amount)
 
     return amount, note
@@ -8017,7 +8098,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 existing = r
                 break
 
-        entry_day = day_key_from_message(source_msg) if source_msg is not None else today_key()
+        entry_day = finance_day_key_from_message(source_msg) if source_msg is not None else finance_today_key()
         store["current_view_day"] = entry_day
 
         if text and looks_like_amount(text):
@@ -11291,15 +11372,56 @@ def _send_category_pick_start(chat_id: int, message_id: int, year: int, month: i
     send_or_edit_categories_window(chat_id, wm_common(text, 13), reply_markup=kb, preferred_message_id=message_id)
 
 
-def _send_category_pick_end(chat_id: int, message_id: int, year: int, month: int, start_day: int, selected_end: int | None = None):
-    kb = _category_picker_day_buttons(year, month, "end", start_day=start_day, selected_day=selected_end)
-    if selected_end:
-        kb.row(IB("✅ Выбрать конечное", callback_data=cat_callback(f"cat_range_custom:{year}:{month}:{start_day}:{selected_end}")))
-    kb.row(IB("🔙 Назад к началу", callback_data=cat_callback(f"cat_pick_set_start:{year}:{month}:{start_day}")))
-    text = f"📅 Начало: {start_day:02d}.{month:02d}.{year}\nВыберите конечную дату"
-    if selected_end:
-        text += f"\n✅ Конец: {selected_end:02d}.{month:02d}.{year}"
+def _shift_month(year: int, month: int, delta: int = 0) -> tuple[int, int]:
+    base = datetime(int(year), int(month), 1)
+    m0 = (base.year * 12 + base.month - 1) + int(delta or 0)
+    y = m0 // 12
+    m = m0 % 12 + 1
+    return y, m
+
+
+def _date_key_from_ymd(year: int, month: int, day: int) -> str:
+    last_day = calendar.monthrange(int(year), int(month))[1]
+    d = max(1, min(int(day), last_day))
+    return f"{int(year):04d}-{int(month):02d}-{d:02d}"
+
+
+def _category_picker_day_buttons_end_any_month(start_key: str, view_year: int, view_month: int, selected_key: str | None = None):
+    kb = types.InlineKeyboardMarkup(row_width=7)
+    last_day = calendar.monthrange(int(view_year), int(view_month))[1]
+    buttons = []
+    for dnum in range(1, last_day + 1):
+        dk = _date_key_from_ymd(view_year, view_month, dnum)
+        label = f"✅{dnum}" if selected_key == dk else str(dnum)
+        buttons.append(IB(label, callback_data=cat_callback(f"cat_pick_set_end2:{start_key}:{int(view_year)}:{int(view_month)}:{dnum}")))
+    for i in range(0, len(buttons), 7):
+        kb.row(*buttons[i:i + 7])
+    return kb
+
+
+def _send_category_pick_end_any_month(chat_id: int, message_id: int, start_key: str, view_year: int, view_month: int, selected_end_key: str | None = None):
+    start_dt = datetime.strptime(str(start_key)[:10], "%Y-%m-%d")
+    kb = _category_picker_day_buttons_end_any_month(start_key, view_year, view_month, selected_key=selected_end_key)
+    prev_y, prev_m = _shift_month(view_year, view_month, -1)
+    next_y, next_m = _shift_month(view_year, view_month, 1)
+    kb.row(
+        IB("⬅️ Месяц", callback_data=cat_callback(f"cat_pick_end2:{start_key}:{prev_y}:{prev_m}")),
+        IB(f"{int(view_month):02d}.{int(view_year)}", callback_data="none"),
+        IB("Месяц ➡️", callback_data=cat_callback(f"cat_pick_end2:{start_key}:{next_y}:{next_m}")),
+    )
+    if selected_end_key:
+        kb.row(IB("✅ Выбрать конечное", callback_data=cat_callback(f"cat_range_custom2:{start_key}:{selected_end_key}")))
+    kb.row(IB("🔙 Назад к началу", callback_data=cat_callback(f"cat_pick_set_start:{start_dt.year}:{start_dt.month}:{start_dt.day}")))
+    text = f"📅 Начало: {fmt_date_ddmmyy(start_key)}\nВыберите конечную дату: {int(view_month):02d}.{int(view_year)}"
+    if selected_end_key:
+        text += f"\n✅ Конец: {fmt_date_ddmmyy(selected_end_key)}"
     send_or_edit_categories_window(chat_id, wm_common(text, 13), reply_markup=kb, preferred_message_id=message_id)
+
+
+def _send_category_pick_end(chat_id: int, message_id: int, year: int, month: int, start_day: int, selected_end: int | None = None):
+    start_key = _date_key_from_ymd(year, month, start_day)
+    selected_end_key = _date_key_from_ymd(year, month, selected_end) if selected_end else None
+    _send_category_pick_end_any_month(chat_id, message_id, start_key, int(year), int(month), selected_end_key)
 
 
 def handle_categories_callback(call, data_str: str) -> bool:
@@ -11430,8 +11552,11 @@ def handle_categories_callback(call, data_str: str) -> bool:
         send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
         return True
 
-    if data_str == "cat_months":
-        year = now_local().year
+    if data_str == "cat_months" or data_str.startswith("cat_months_y:"):
+        try:
+            year = int(data_str.split(":", 1)[1]) if data_str.startswith("cat_months_y:") else now_local().year
+        except Exception:
+            year = now_local().year
         kb = types.InlineKeyboardMarkup(row_width=2)
         month_buttons = []
         for m in range(1, 13):
@@ -11439,6 +11564,11 @@ def handle_categories_callback(call, data_str: str) -> bool:
             month_buttons.append(IB(label, callback_data=cat_callback(f"cat_m:{year}:{m}")))
         for i in range(0, len(month_buttons), 2):
             kb.row(*month_buttons[i:i + 2])
+        kb.row(
+            IB("⬅️ Год", callback_data=cat_callback(f"cat_months_y:{year - 1}")),
+            IB(str(year), callback_data="none"),
+            IB("Год ➡️", callback_data=cat_callback(f"cat_months_y:{year + 1}")),
+        )
         kb.row(
             IB("📅 Сегодня", callback_data=cat_callback("cat_today")),
             IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
@@ -11499,6 +11629,36 @@ def handle_categories_callback(call, data_str: str) -> bool:
             _send_category_pick_end(chat_id, call.message.message_id, int(y), int(m), int(start_d), int(end_d))
         except Exception as e:
             log_error(f"cat_pick_set_end: {e}")
+        return True
+
+    if data_str.startswith("cat_pick_end2:"):
+        try:
+            _, start_key, y, m = data_str.split(":")
+            _send_category_pick_end_any_month(chat_id, call.message.message_id, start_key, int(y), int(m))
+        except Exception as e:
+            log_error(f"cat_pick_end2: {e}")
+        return True
+
+    if data_str.startswith("cat_pick_set_end2:"):
+        try:
+            _, start_key, y, m, d = data_str.split(":")
+            end_key = _date_key_from_ymd(int(y), int(m), int(d))
+            _send_category_pick_end_any_month(chat_id, call.message.message_id, start_key, int(y), int(m), end_key)
+        except Exception as e:
+            log_error(f"cat_pick_set_end2: {e}")
+        return True
+
+    if data_str.startswith("cat_range_custom2:"):
+        try:
+            _, start, end = data_str.split(":", 2)
+            if end < start:
+                start, end = end, start
+            label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
+            text, _ = summarize_categories(store, start, end, label)
+            kb = build_categories_summary_keyboard("rng", start, end, store=store)
+            send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
+        except Exception as e:
+            log_error(f"cat_range_custom2: {e}")
         return True
 
     if data_str.startswith("cat_range_custom:"):
@@ -11590,8 +11750,11 @@ def handle_categories_callback(call, data_str: str) -> bool:
             back_callback = f"cat_wk:{start}"
             label += " (Пн–Вс)"
         else:
-            y, m = start_dt.year, start_dt.month
-            back_callback = f"cat_rng:{y}:{m}:{start_dt.day}:{end_dt.day}"
+            if start_dt.year != end_dt.year or start_dt.month != end_dt.month:
+                back_callback = f"cat_range_custom2:{start}:{end}"
+            else:
+                y, m = start_dt.year, start_dt.month
+                back_callback = f"cat_rng:{y}:{m}:{start_dt.day}:{end_dt.day}"
 
         mode = None
         if (end_dt - start_dt).days == 6 and start == week_start_thursday(start):
@@ -15050,7 +15213,7 @@ def _flush_dirty_backups():
         # Если предыдущий бэкап ещё идёт, не блокируем бота: переносим пачку немного позже.
         with timer_lock:
             if _backup_dirty_chats:
-                t = threading.Timer(5.0, _flush_dirty_backups)
+                t = threading.Timer(BACKUP_BUSY_RETRY_SECONDS, _flush_dirty_backups)
                 _backup_global_timer = t
                 t.start()
         return
@@ -15135,9 +15298,9 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
     """Debounced backup queue: много операций за короткое время = один flush."""
     global _backup_global_timer
     try:
-        delay = max(float(delay or 0), 30.0)
+        delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
     except Exception:
-        delay = 30.0
+        delay = BACKUP_MIN_DELAY_SECONDS
     try:
         if chat_id is not None:
             with timer_lock:
@@ -15160,12 +15323,14 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
 def _safe_stabilize(action_name, func):
     try:
         try:
-            bot_journal("process_call_start", None, str(action_name))
+            if verbose_process_journal_enabled():
+                bot_journal("process_call_start", None, str(action_name))
         except Exception:
             pass
         res = func()
         try:
-            bot_journal("process_call_done", None, str(action_name))
+            if verbose_process_journal_enabled():
+                bot_journal("process_call_done", None, str(action_name))
         except Exception:
             pass
         return res
@@ -15231,7 +15396,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         trace.step("ставит бэкап в отдельную очередь")
-        _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, 30.0))
+        _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, BACKUP_MIN_DELAY_SECONDS))
 
         # Важно: действия в других чатах не должны менять личное окно владельца.
         # Поэтому здесь не вызываем backup_window_for_owner/refresh_owner_after_chat_change.
@@ -16031,7 +16196,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🫀Бот запущен (версия {VERSION}).\n"
+                    f"✅ Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
