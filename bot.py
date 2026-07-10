@@ -124,7 +124,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v78_unique_window_markers"
+VERSION = "bot_v79_constant_window_markers"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1189,16 +1189,176 @@ def today_key() -> str:
 # - разные переходы не получают один и тот же номер внутри своей группы;
 # - реальный chat_id, дата, message_id и другие переменные параметры не создают
 #   новые имена: метка указывает именно на участок логики/кнопку;
-# - реестр хранится в data['_global_settings']['window_marker_registry'] и
-#   попадает в обычный save_data/бэкап, поэтому номера сохраняются между версиями.
+# - все маркеры заранее прописаны в WINDOW_MARKER_CONSTANTS;
+# - при нажатиях новые номера не создаются и данные бота на нумерацию не влияют.
 # ─────────────────────────────────────────────────────────────
 WINDOW_MARK_RE = re.compile(r"(?:^|\s)([СФП]\d{1,6}|[ов]\d{1,3})\s*$", re.IGNORECASE)
-_WINDOW_MARK_LOCK = threading.RLock()
 _WINDOW_MARK_GROUPS = ("С", "Ф", "П")
+
+# ФИКСИРОВАННЫЕ МАРКЕРЫ ОКОН.
+# Все имена назначены заранее в коде и не создаются при нажатии кнопок.
+# Не менять существующие номера: по ним пользователь даёт точные ориентиры.
+WINDOW_MARKER_CONSTANTS = {
+    'forward_menu_style_toggle': 'П1',
+    'fw_': 'П2',
+    'fw_back_root': 'П3',
+    'fw_back_src': 'П4',
+    'fw_back_tgt:*': 'П5',
+    'fw_finpair:*': 'П6',
+    'fw_finpair:*:ab': 'П7',
+    'fw_finpair:*:ba': 'П8',
+    'fw_mode:*': 'П9',
+    'fw_mode:*:del': 'П10',
+    'fw_mode:*:from': 'П11',
+    'fw_mode:*:to': 'П12',
+    'fw_mode:*:two': 'П13',
+    'fw_new_back_src': 'П14',
+    'fw_new_clear:*': 'П15',
+    'fw_new_fin:*': 'П16',
+    'fw_new_fin:*:ab': 'П17',
+    'fw_new_fin:*:ba': 'П18',
+    'fw_new_mode:*': 'П19',
+    'fw_new_mode:*:from': 'П20',
+    'fw_new_mode:*:to': 'П21',
+    'fw_new_mode:*:two': 'П22',
+    'fw_new_pair:*': 'П23',
+    'fw_new_src:*': 'П24',
+    'fw_new_tgt:*': 'П25',
+    'fw_open': 'П26',
+    'fw_probe_all': 'П27',
+    'fw_probe_one:*': 'П28',
+    'fw_removed_list': 'П29',
+    'fw_src:*': 'П30',
+    'fw_tgt:*': 'П31',
+    'secbacklist': 'С1',
+    'secchatcal:*': 'С2',
+    'secclose': 'С3',
+    'secday:*': 'С4',
+    'secdel:*': 'С5',
+    'secdelgo:*': 'С6',
+    'secdelt:*': 'С7',
+    'secedit:*': 'С8',
+    'secedselected:*': 'С9',
+    'secedtoggle:*': 'С10',
+    'seclist:*': 'С11',
+    'secmclose': 'С12',
+    'secmedia:*': 'С13',
+    'secmon:*': 'С14',
+    'secmonthlist:*': 'С15',
+    'secmwait': 'С16',
+    'secret_cancel': 'С17',
+    'sectoggle:*': 'С18',
+    'secview:*': 'С19',
+    'total_secret_mask_toggle': 'С20',
+    'additional_owners': 'Ф1',
+    'addown:*': 'Ф2',
+    'articles_desc': 'Ф3',
+    'aux_close': 'Ф4',
+    'bp:collapse': 'Ф5',
+    'bp:open': 'Ф6',
+    'buttons_current_toggle': 'Ф7',
+    'c:*': 'Ф8',
+    'cat_': 'Ф9',
+    'cat_add': 'Ф10',
+    'cat_add_cancel': 'Ф11',
+    'cat_close': 'Ф12',
+    'cat_del_menu': 'Ф13',
+    'cat_del_selected': 'Ф14',
+    'cat_del_toggle:*': 'Ф15',
+    'cat_desc': 'Ф16',
+    'cat_edit_menu': 'Ф17',
+    'cat_edit_pick:*': 'Ф18',
+    'cat_m:*': 'Ф19',
+    'cat_months': 'Ф20',
+    'cat_months_y:*': 'Ф21',
+    'cat_pick_end2:*': 'Ф22',
+    'cat_pick_end:*': 'Ф23',
+    'cat_pick_set_end2:*': 'Ф24',
+    'cat_pick_set_end:*': 'Ф25',
+    'cat_pick_set_start:*': 'Ф26',
+    'cat_pick_start:*': 'Ф27',
+    'cat_range_custom2:*': 'Ф28',
+    'cat_range_custom:*': 'Ф29',
+    'cat_rng:*': 'Ф30',
+    'cat_show:*': 'Ф31',
+    'cat_show_wk:*': 'Ф32',
+    'cat_show_wthu:*': 'Ф33',
+    'cat_today': 'Ф34',
+    'cat_wk:*': 'Ф35',
+    'cat_wthu:*': 'Ф36',
+    'catx:*': 'Ф37',
+    'cbx:*': 'Ф38',
+    'd:*': 'Ф39',
+    'd:*:back_main': 'Ф40',
+    'd:*:backup_menu': 'Ф41',
+    'd:*:bk_channel': 'Ф42',
+    'd:*:bk_chat': 'Ф43',
+    'd:*:bk_mega': 'Ф44',
+    'd:*:calendar': 'Ф45',
+    'd:*:cancel_edit': 'Ф46',
+    'd:*:csv_all': 'Ф47',
+    'd:*:del_selected': 'Ф48',
+    'd:*:edit_list': 'Ф49',
+    'd:*:edit_menu': 'Ф50',
+    'd:*:fin_windows_menu': 'Ф51',
+    'd:*:forward_finmode_menu': 'Ф52',
+    'd:*:forward_menu': 'Ф53',
+    'd:*:info': 'Ф54',
+    'd:*:next': 'Ф55',
+    'd:*:open': 'Ф56',
+    'd:*:prev': 'Ф57',
+    'd:*:process_menu': 'Ф58',
+    'd:*:report': 'Ф59',
+    'd:*:today': 'Ф60',
+    'd:*:total': 'Ф61',
+    'dzv:*': 'Ф62',
+    'dzv:close': 'Ф63',
+    'fc:*': 'Ф64',
+    'finance:plain_window': 'Ф65',
+    'finance_day5_toggle': 'Ф66',
+    'fv:*': 'Ф67',
+    'fv:*:bk_channel:*': 'Ф68',
+    'fv:*:bk_chat:*': 'Ф69',
+    'fv:*:bk_mega:*': 'Ф70',
+    'fv:*:calendar:*': 'Ф71',
+    'fv:*:cancel_edit:*': 'Ф72',
+    'fv:*:clear_delete_back:*': 'Ф73',
+    'fv:*:csv_menu:*': 'Ф74',
+    'fv:*:del_selected:*': 'Ф75',
+    'fv:*:edit_list:*': 'Ф76',
+    'fv:*:info:*': 'Ф77',
+    'fv:*:open:*': 'Ф78',
+    'fv:*:report:*': 'Ф79',
+    'fv:*:reset:*': 'Ф80',
+    'fv:*:total:*': 'Ф81',
+    'fvcat_': 'Ф82',
+    'fvcatx:*': 'Ф83',
+    'icon_buttons_toggle': 'Ф84',
+    'info_close': 'Ф85',
+    'info_finance_off': 'Ф86',
+    'journal_back': 'Ф87',
+    'journal_file': 'Ф88',
+    'journal_open': 'Ф89',
+    'journal_toggle': 'Ф90',
+    'legacy_common:*': 'Ф91',
+    'legacy_owner:*': 'Ф92',
+    'markup:plain': 'Ф93',
+    'ncb:*': 'Ф94',
+    'ncb:*:no': 'Ф95',
+    'ncb:*:yes': 'Ф96',
+    'none': 'Ф97',
+    'ojr:*': 'Ф98',
+    'ojr:*:no': 'Ф99',
+    'ojr:*:yes': 'Ф100',
+    'rep:*': 'Ф101',
+    'rep_close': 'Ф102',
+    'rep_today': 'Ф103',
+}
+
+WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
 
 
 def has_window_mark(text: str) -> bool:
-    """True, если внизу окна уже есть новая или старая метка."""
     try:
         tail = str(text or "")[-160:]
         tail = re.sub(r"<[^>]+>", "", tail)
@@ -1208,7 +1368,6 @@ def has_window_mark(text: str) -> bool:
 
 
 def strip_window_mark(text: str) -> str:
-    """Убирает старую метку в конце перед установкой новой."""
     try:
         text = str(text or "")
         text = re.sub(r"\n\s*<i>(?:[СФП]\d{1,6}|[ов]\d{1,3})</i>\s*$", "", text, flags=re.IGNORECASE)
@@ -1232,49 +1391,7 @@ def window_mark(text: str, code: str, html_mode: bool = False) -> str:
         return str(text or "")
 
 
-def _window_marker_registry() -> dict:
-    """Возвращает и одновременно чинит постоянный реестр меток."""
-    try:
-        root = globals().get("data")
-        if not isinstance(root, dict):
-            raise RuntimeError("data not ready")
-        gs = root.setdefault("_global_settings", {})
-        reg = gs.setdefault("window_marker_registry", {})
-        if not isinstance(reg, dict):
-            reg = {}
-            gs["window_marker_registry"] = reg
-        for group in _WINDOW_MARK_GROUPS:
-            bucket = reg.get(group)
-            if not isinstance(bucket, dict):
-                bucket = {}
-                reg[group] = bucket
-            # Самовосстановление дублей/битых номеров. Первый ключ сохраняет номер,
-            # последующие получают новые свободные номера.
-            used = set()
-            next_num = 1
-            for key in sorted(list(bucket.keys())):
-                try:
-                    n = int(bucket.get(key) or 0)
-                except Exception:
-                    n = 0
-                if n <= 0 or n in used:
-                    while next_num in used:
-                        next_num += 1
-                    n = next_num
-                    bucket[key] = n
-                used.add(n)
-                next_num = max(next_num, n + 1)
-        return reg
-    except Exception:
-        # Резервный реестр до загрузки data. В нормальной работе используется редко.
-        reg = globals().setdefault("_WINDOW_MARK_FALLBACK_REGISTRY", {g: {} for g in _WINDOW_MARK_GROUPS})
-        for g in _WINDOW_MARK_GROUPS:
-            reg.setdefault(g, {})
-        return reg
-
-
 def _normalize_window_action(data_str: str) -> str:
-    """Нормализует callback до имени участка логики, убирая даты/id/суммы."""
     d = str(data_str or "").strip()
     try:
         d = resolve_short_callback(d) or d
@@ -1282,33 +1399,28 @@ def _normalize_window_action(data_str: str) -> str:
         pass
     if not d:
         return "finance:unknown"
-    # Служебные ключи отдельных окон тоже должны иметь стабильное имя.
     d = d.replace(" ", "_")
     parts = d.split(":")
     norm = []
     for idx, part in enumerate(parts):
-        p = str(part or "").strip()
-        low = p.casefold()
+        low = str(part or "").strip().casefold()
         if idx == 0:
             norm.append(low or "unknown")
             continue
-        # Сохраняем именно названия действий, а переменные значения заменяем '*'.
         if re.fullmatch(r"[a-zа-яё_][a-zа-яё0-9_\-]{0,48}", low, flags=re.IGNORECASE):
             norm.append(low)
         else:
             norm.append("*")
-    # Схлопываем повторяющиеся '*' для компактного и стабильного ключа.
     compact = []
-    for p in norm:
-        if p == "*" and compact and compact[-1] == "*":
+    for item in norm:
+        if item == "*" and compact and compact[-1] == "*":
             continue
-        compact.append(p)
+        compact.append(item)
     return ":".join(compact)
 
 
 def _window_group_for_action(action_key: str) -> str:
-    k = str(action_key or "").casefold()
-    head = k.split(":", 1)[0]
+    head = str(action_key or "").casefold().split(":", 1)[0]
     if head.startswith("sec") or head.startswith("secret") or head.startswith("total_secret"):
         return "С"
     if head.startswith("fw") or head.startswith("forward"):
@@ -1318,38 +1430,24 @@ def _window_group_for_action(action_key: str) -> str:
 
 def _window_marker_code(action_key: str, forced_group: str | None = None) -> str:
     key = _normalize_window_action(action_key)
+    code = WINDOW_MARKER_CONSTANTS.get(key)
+    if code:
+        return code
     group = str(forced_group or _window_group_for_action(key)).upper()
     if group not in _WINDOW_MARK_GROUPS:
         group = "Ф"
-    with _WINDOW_MARK_LOCK:
-        reg = _window_marker_registry()
-        bucket = reg.setdefault(group, {})
-        try:
-            current = int(bucket.get(key) or 0)
-        except Exception:
-            current = 0
-        # Защита от повторов даже при ручном повреждении JSON/SQLite.
-        used_by_other = {
-            int(v) for k, v in bucket.items()
-            if k != key and str(v).lstrip("-").isdigit() and int(v) > 0
-        }
-        if current <= 0 or current in used_by_other:
-            current = 1
-            if used_by_other:
-                current = max(used_by_other) + 1
-            while current in used_by_other:
-                current += 1
-            bucket[key] = current
-        return f"{group}{current}"
+    try:
+        log_error(f"WINDOW_MARKER_NOT_DECLARED: {key}")
+    except Exception:
+        pass
+    return WINDOW_MARKER_UNKNOWN[group]
 
 
 def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
-    """Уникальная метка для каждой логической кнопки/перехода."""
     return _window_marker_code(str(data_str or ""))
 
 
 def _window_key_from_markup(reply_markup) -> str:
-    """Строит стабильный ключ по набору кнопок для окон, открытых не из callback."""
     try:
         rows = getattr(reply_markup, "keyboard", None) or []
         values = []
@@ -1359,45 +1457,37 @@ def _window_key_from_markup(reply_markup) -> str:
                 if cb:
                     values.append(_normalize_window_action(str(cb)))
         if values:
-            return "markup:" + "|".join(sorted(set(values)))
+            # Окна без callback должны использовать заранее объявленный общий маркер.
+            return "markup:plain"
     except Exception:
         pass
     return "finance:plain_window"
 
 
 def auto_window_mark(text: str, data_str: str = "", owner_chat: bool = False, html_mode: bool = False) -> str:
-    code = window_code_for_callback(data_str, owner_chat=owner_chat)
-    return window_mark(text, code, html_mode=html_mode)
+    return window_mark(text, window_code_for_callback(data_str, owner_chat=owner_chat), html_mode=html_mode)
 
 
 def wm_common(text: str, n: int, html_mode: bool = False) -> str:
-    # Старые ручные номера больше не используются как видимая метка.
-    # Текстовый отпечаток не даёт разным окнам с одним старым n повторить имя.
     body = strip_window_mark(str(text or ""))
-    digest = hashlib.sha1(body.encode("utf-8", errors="ignore")).hexdigest()[:12]
-    return window_mark(body, _window_marker_code(f"legacy_common:{int(n)}:{digest}", "Ф"), html_mode=html_mode)
+    return window_mark(body, _window_marker_code(f"legacy_common:{int(n)}", "Ф"), html_mode=html_mode)
 
 
 def wm_owner(text: str, n: int, html_mode: bool = False) -> str:
     body = strip_window_mark(str(text or ""))
-    digest = hashlib.sha1(body.encode("utf-8", errors="ignore")).hexdigest()[:12]
-    return window_mark(body, _window_marker_code(f"legacy_owner:{int(n)}:{digest}", "Ф"), html_mode=html_mode)
+    return window_mark(body, _window_marker_code(f"legacy_owner:{int(n)}", "Ф"), html_mode=html_mode)
 
 
 def audit_window_marker_registry() -> dict:
-    """Проверка/самоисправление повторов маркеров. Возвращает краткий отчёт."""
-    with _WINDOW_MARK_LOCK:
-        reg = _window_marker_registry()
-        report = {"fixed": 0, "groups": {}}
-        for group in _WINDOW_MARK_GROUPS:
-            bucket = reg.setdefault(group, {})
-            before = list(bucket.values())
-            # Повторный вызов чинит данные функцией выше.
-            _window_marker_registry()
-            after = list(bucket.values())
-            report["fixed"] += sum(1 for a, b in zip(before, after) if a != b)
-            report["groups"][group] = len(bucket)
-        return report
+    """Проверяет статическую таблицу констант на повторы."""
+    values = list(WINDOW_MARKER_CONSTANTS.values())
+    duplicates = sorted({v for v in values if values.count(v) > 1})
+    return {
+        "fixed": 0,
+        "duplicates": duplicates,
+        "groups": {g: sum(1 for v in values if v.startswith(g)) for g in _WINDOW_MARK_GROUPS},
+        "constant": True,
+    }
 
 _v98_auto_close_timers = {}
 _v98_auto_close_lock = threading.RLock()
@@ -16235,7 +16325,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ ⌛️Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🤫Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
