@@ -124,7 +124,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v79_constant_window_markers"
+VERSION = "bot_v80_precise_ranges"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1353,6 +1353,21 @@ WINDOW_MARKER_CONSTANTS = {
     'rep:*': 'Ф101',
     'rep_close': 'Ф102',
     'rep_today': 'Ф103',
+    'cat_pick_start_record:*': 'Ф104',
+    'cat_pick_end3:*': 'Ф105',
+    'cat_pick_set_end3:*': 'Ф106',
+    'cat_pick_end_record:*': 'Ф107',
+    'cat_range_records:*': 'Ф108',
+    'cat_show_records:*': 'Ф109',
+    'cat_back_records:*': 'Ф110',
+    'exp_pick_start:*': 'Ф111',
+    'exp_pick_set_start:*': 'Ф112',
+    'exp_pick_start_record:*': 'Ф113',
+    'exp_pick_end:*': 'Ф114',
+    'exp_pick_set_end:*': 'Ф115',
+    'exp_pick_end_record:*': 'Ф116',
+    'exp_send:*:csv:*': 'Ф117',
+    'exp_send:*:xlsx:*': 'Ф118',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -1428,11 +1443,41 @@ def _window_group_for_action(action_key: str) -> str:
     return "Ф"
 
 
+def _marker_constant_pattern_matches(pattern: str, key: str) -> bool:
+    """Сопоставляет статический ключ с константным шаблоном.
+
+    Звёздочка внутри шаблона соответствует одному сегменту callback, а
+    последняя звёздочка — всему оставшемуся хвосту. Это не создаёт маркеры
+    динамически: номера по-прежнему берутся только из таблицы констант.
+    """
+    p_parts = str(pattern or "").split(":")
+    k_parts = str(key or "").split(":")
+    for idx, part in enumerate(p_parts):
+        if idx >= len(k_parts):
+            return False
+        if part == "*":
+            if idx == len(p_parts) - 1:
+                return True
+            continue
+        if part != k_parts[idx]:
+            return False
+    return len(k_parts) == len(p_parts)
+
+
 def _window_marker_code(action_key: str, forced_group: str | None = None) -> str:
     key = _normalize_window_action(action_key)
     code = WINDOW_MARKER_CONSTANTS.get(key)
     if code:
         return code
+    # Более конкретные шаблоны проверяются первыми. Все номера всё равно
+    # заранее записаны в WINDOW_MARKER_CONSTANTS.
+    candidates = sorted(
+        WINDOW_MARKER_CONSTANTS.items(),
+        key=lambda item: (item[0].count("*"), -len(item[0])),
+    )
+    for pattern, marker in candidates:
+        if "*" in pattern and _marker_constant_pattern_matches(pattern, key):
+            return marker
     group = str(forced_group or _window_group_for_action(key)).upper()
     if group not in _WINDOW_MARK_GROUPS:
         group = "Ф"
@@ -1448,6 +1493,12 @@ def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
 
 
 def _window_key_from_markup(reply_markup) -> str:
+    """Определяет фиксированный маркер окна по его кнопкам.
+
+    Ф93 оставлен только за окном выбора месяцев. Остальные окна получают
+    собственный заранее объявленный маркер по первой содержательной кнопке,
+    поэтому один и тот же Ф93 больше не повторяется во всех окнах статей.
+    """
     try:
         rows = getattr(reply_markup, "keyboard", None) or []
         values = []
@@ -1457,8 +1508,18 @@ def _window_key_from_markup(reply_markup) -> str:
                 if cb:
                     values.append(_normalize_window_action(str(cb)))
         if values:
-            # Окна без callback должны использовать заранее объявленный общий маркер.
-            return "markup:plain"
+            # Ф93 — конкретно окно 2×6 с месяцами и переключением года.
+            if any(v.startswith("cat_m:") for v in values) and any(v.startswith("cat_months_y:") for v in values):
+                return "markup:plain"
+            # Берём первую содержательную кнопку, для которой маркер объявлен константой.
+            for value in values:
+                if value == "none":
+                    continue
+                if value in WINDOW_MARKER_CONSTANTS:
+                    return value
+            for value in values:
+                if value != "none":
+                    return value
     except Exception:
         pass
     return "finance:plain_window"
@@ -1611,7 +1672,20 @@ def finance_today_key() -> str:
 def finance_day_start_label() -> str:
     return "05:00" if finance_day_start_5am_enabled() else "00:00"
 
-    
+
+RU_MONTH_NAMES = (
+    "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+)
+
+
+def russian_month_name(month: int) -> str:
+    try:
+        return RU_MONTH_NAMES[int(month) - 1]
+    except Exception:
+        return str(month)
+
+
 def fmt_date_ddmmyy(day_key: str) -> str:
     """YYYY-MM-DD -> DD.MM.YY"""
     try:
@@ -5384,6 +5458,153 @@ def calc_categories_for_period(store: dict, start: str, end: str) -> dict:
     return out
 
 
+
+def _record_int_id(rec: dict) -> int:
+    try:
+        return int((rec or {}).get("id", 0) or 0)
+    except Exception:
+        return 0
+
+
+def sorted_records_for_day(store: dict, day_key: str) -> list:
+    return sorted((store.get("daily_records", {}) or {}).get(str(day_key), []) or [], key=record_sort_key)
+
+
+def expense_anchor_records_for_day(store: dict, day_key: str) -> list:
+    """Расходные записи дня, которые можно выбрать как точную границу периода."""
+    out = []
+    for rec in sorted_records_for_day(store, day_key):
+        try:
+            if float(rec.get("amount", 0) or 0) < 0:
+                out.append(rec)
+        except Exception:
+            continue
+    return out
+
+
+def expense_anchor_button_label(rec: dict, store: dict | None = None) -> str:
+    """Короткая, но понятная подпись кнопки точного расхода."""
+    try:
+        amount = fmt_num(float(rec.get("amount", 0) or 0))
+    except Exception:
+        amount = str(rec.get("amount", ""))
+    note = re.sub(r"\s+", " ", str(rec.get("note", "") or "")).strip()
+    category = resolve_expense_category(note, store) or ""
+    rec_code = str(rec.get("short_id") or f"R{_record_int_id(rec)}")
+    parts = [rec_code, amount]
+    if note:
+        parts.append(note[:30])
+    if category and category.casefold() not in note.casefold():
+        parts.append(f"[{category[:16]}]")
+    return " • ".join(parts)[:62]
+
+
+def exact_record_range(store: dict, start_day: str, start_rid: int | None, end_day: str, end_rid: int | None):
+    """Записи между двумя точными границами включительно.
+
+    start_rid=0/None означает начало стартового дня.
+    end_rid=0/None означает конец конечного дня.
+    Граница выбирается по расходу, но в экспорт попадают все записи между
+    выбранными позициями: и расходы, и приходы.
+    """
+    start_day = str(start_day)[:10]
+    end_day = str(end_day)[:10]
+    try:
+        start_rid = int(start_rid or 0)
+    except Exception:
+        start_rid = 0
+    try:
+        end_rid = int(end_rid or 0)
+    except Exception:
+        end_rid = 0
+
+    if end_day < start_day:
+        start_day, end_day = end_day, start_day
+        start_rid, end_rid = end_rid, start_rid
+
+    rows = []
+    daily = store.get("daily_records", {}) or {}
+    for day_key in sorted(daily.keys()):
+        if not (start_day <= day_key <= end_day):
+            continue
+        recs = sorted_records_for_day(store, day_key)
+        if not recs:
+            continue
+
+        lo = 0
+        hi = len(recs) - 1
+        if day_key == start_day and start_rid:
+            found = next((idx for idx, rec in enumerate(recs) if _record_int_id(rec) == start_rid), None)
+            if found is not None:
+                lo = found
+        if day_key == end_day and end_rid:
+            found = next((idx for idx, rec in enumerate(recs) if _record_int_id(rec) == end_rid), None)
+            if found is not None:
+                hi = found
+        if lo > hi:
+            continue
+        for rec in recs[lo:hi + 1]:
+            rows.append((day_key, rec))
+    return rows
+
+
+def exact_boundary_text(store: dict, day_key: str, rid: int | None, is_start: bool) -> str:
+    rid = int(rid or 0)
+    if not rid:
+        return f"{fmt_date_ddmmyy(day_key)} — {'с начала дня' if is_start else 'до конца дня'}"
+    rec = next((_r for _r in sorted_records_for_day(store, day_key) if _record_int_id(_r) == rid), None)
+    if not rec:
+        return f"{fmt_date_ddmmyy(day_key)} — {'с начала дня' if is_start else 'до конца дня'}"
+    return f"{fmt_date_ddmmyy(day_key)} — {expense_anchor_button_label(rec, store)}"
+
+
+def calc_categories_for_record_range(store: dict, start_day: str, start_rid: int, end_day: str, end_rid: int) -> dict:
+    out = {}
+    for _day, rec in exact_record_range(store, start_day, start_rid, end_day, end_rid):
+        try:
+            amt = float(rec.get("amount", 0) or 0)
+        except Exception:
+            continue
+        if amt >= 0:
+            continue
+        category = resolve_expense_category(rec.get("note", ""), store)
+        if not category:
+            continue
+        out[category] = out.get(category, 0) + (-amt)
+    return out
+
+
+def collect_items_for_category_record_range(store: dict, start_day: str, start_rid: int, end_day: str, end_rid: int, category: str):
+    items = []
+    for day_key, rec in exact_record_range(store, start_day, start_rid, end_day, end_rid):
+        try:
+            amt = float(rec.get("amount", 0) or 0)
+        except Exception:
+            continue
+        if amt >= 0:
+            continue
+        note = rec.get("note", "")
+        if resolve_expense_category(note, store) == category:
+            items.append((day_key, -amt, note))
+    return items
+
+
+def summarize_categories_record_range(store: dict, start_day: str, start_rid: int, end_day: str, end_rid: int):
+    cats = calc_categories_for_record_range(store, start_day, start_rid, end_day, end_rid)
+    lines = [
+        "📦 Расходы по статьям — точный период",
+        f"▶️ {exact_boundary_text(store, start_day, start_rid, True)}",
+        f"⏹ {exact_boundary_text(store, end_day, end_rid, False)}",
+        "",
+    ]
+    if not cats:
+        lines.append("Нет данных по статьям в выбранных границах.")
+    else:
+        for category in get_ordered_category_names(cats=cats, store=store):
+            lines.append(f"{category}: {fmt_num_plain(cats.get(category, 0))}")
+    return wm_common("\n".join(lines), 7), cats
+
+
 def collect_items_for_category(store: dict, start: str, end: str, category: str):
     """Возвращает список (day, amount, note) для указанной статьи и периода."""
     items = []
@@ -5538,6 +5759,11 @@ def cat_callback(data_str: str) -> str:
 
 def fvcat_callback(data_str: str) -> str:
     return make_short_callback(data_str, "fvcatx")
+
+
+def export_callback(data_str: str) -> str:
+    return make_short_callback(data_str, "cbx")
+
 
 def build_categories_buttons(start: str, end: str, store: dict | None = None):
     kb = types.InlineKeyboardMarkup(row_width=3)
@@ -9678,9 +9904,204 @@ def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | 
         )
 
 
+
+def _export_calendar_start_keyboard(view_year: int, view_month: int, return_day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=7)
+    last_day = calendar.monthrange(int(view_year), int(view_month))[1]
+    buttons = [
+        IB(str(day_num), callback_data=export_callback(f"exp_pick_set_start:{view_year}:{view_month}:{day_num}:{return_day_key}"))
+        for day_num in range(1, last_day + 1)
+    ]
+    for idx in range(0, len(buttons), 7):
+        kb.row(*buttons[idx:idx + 7])
+    prev_y, prev_m = _shift_month(view_year, view_month, -1)
+    next_y, next_m = _shift_month(view_year, view_month, 1)
+    kb.row(
+        IB("⬅️ Месяц", callback_data=export_callback(f"exp_pick_start:{prev_y}:{prev_m}:{return_day_key}")),
+        IB(f"{russian_month_name(view_month)} {view_year}", callback_data="none"),
+        IB("Месяц ➡️", callback_data=export_callback(f"exp_pick_start:{next_y}:{next_m}:{return_day_key}")),
+    )
+    kb.row(IB("🔙 Назад в CSV / Excel", callback_data=f"d:{return_day_key}:csv_all"))
+    return kb
+
+
+def _export_start_record_keyboard(chat_id: int, start_key: str, return_day_key: str):
+    store = get_chat_store(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    _expense_anchor_rows(
+        kb,
+        store,
+        start_key,
+        lambda rid: export_callback(f"exp_pick_start_record:{start_key}:{rid}:{return_day_key}"),
+    )
+    kb.row(IB("➡️ Продолжить с начала дня", callback_data=export_callback(f"exp_pick_start_record:{start_key}:0:{return_day_key}")))
+    dt = datetime.strptime(start_key, "%Y-%m-%d")
+    kb.row(IB("🔙 Назад к календарю", callback_data=export_callback(f"exp_pick_start:{dt.year}:{dt.month}:{return_day_key}")))
+    return kb
+
+
+def _export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int, view_month: int, return_day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=7)
+    last_day = calendar.monthrange(int(view_year), int(view_month))[1]
+    buttons = []
+    for day_num in range(1, last_day + 1):
+        day_key = _date_key_from_ymd(view_year, view_month, day_num)
+        if day_key < start_key:
+            buttons.append(IB("·", callback_data="none"))
+        else:
+            buttons.append(IB(str(day_num), callback_data=export_callback(
+                f"exp_pick_set_end:{start_key}:{int(start_rid)}:{view_year}:{view_month}:{day_num}:{return_day_key}"
+            )))
+    for idx in range(0, len(buttons), 7):
+        kb.row(*buttons[idx:idx + 7])
+    prev_y, prev_m = _shift_month(view_year, view_month, -1)
+    next_y, next_m = _shift_month(view_year, view_month, 1)
+    nav = []
+    if f"{prev_y:04d}-{prev_m:02d}" >= start_key[:7]:
+        nav.append(IB("⬅️ Месяц", callback_data=export_callback(
+            f"exp_pick_end:{start_key}:{int(start_rid)}:{prev_y}:{prev_m}:{return_day_key}"
+        )))
+    else:
+        nav.append(IB(" ", callback_data="none"))
+    nav.append(IB(f"{russian_month_name(view_month)} {view_year}", callback_data="none"))
+    nav.append(IB("Месяц ➡️", callback_data=export_callback(
+        f"exp_pick_end:{start_key}:{int(start_rid)}:{next_y}:{next_m}:{return_day_key}"
+    )))
+    kb.row(*nav)
+    kb.row(IB("🔙 Изменить начало", callback_data=export_callback(
+        f"exp_pick_set_start:{datetime.strptime(start_key, '%Y-%m-%d').year}:{datetime.strptime(start_key, '%Y-%m-%d').month}:{datetime.strptime(start_key, '%Y-%m-%d').day}:{return_day_key}"
+    )))
+    return kb
+
+
+def _export_end_record_keyboard(chat_id: int, start_key: str, start_rid: int, end_key: str, return_day_key: str):
+    store = get_chat_store(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    all_recs = sorted_records_for_day(store, end_key)
+    positions = {_record_int_id(rec): idx for idx, rec in enumerate(all_recs)}
+    displayed = 0
+    for rec in expense_anchor_records_for_day(store, end_key):
+        rid = _record_int_id(rec)
+        if end_key == start_key and start_rid and positions.get(rid, -1) < positions.get(int(start_rid), 0):
+            continue
+        displayed += 1
+        kb.row(IB(expense_anchor_button_label(rec, store), callback_data=export_callback(
+            f"exp_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:{rid}:{return_day_key}"
+        )))
+    if not displayed:
+        kb.row(IB("Нет подходящих расходов в этот день", callback_data="none"))
+    kb.row(IB("✅ Продолжить до конца дня", callback_data=export_callback(
+        f"exp_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:0:{return_day_key}"
+    )))
+    end_dt = datetime.strptime(end_key, "%Y-%m-%d")
+    kb.row(IB("🔙 Назад к календарю", callback_data=export_callback(
+        f"exp_pick_end:{start_key}:{int(start_rid)}:{end_dt.year}:{end_dt.month}:{return_day_key}"
+    )))
+    return kb
+
+
+def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, return_day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        IB("📄 CSV", callback_data=export_callback(
+            f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:csv:{return_day_key}"
+        )),
+        IB("📊 Excel", callback_data=export_callback(
+            f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsx:{return_day_key}"
+        )),
+    )
+    end_dt = datetime.strptime(end_key, "%Y-%m-%d")
+    kb.row(IB("🔙 Изменить конец", callback_data=export_callback(
+        f"exp_pick_set_end:{start_key}:{int(start_rid)}:{end_dt.year}:{end_dt.month}:{end_dt.day}:{return_day_key}"
+    )))
+    kb.row(IB("❌ Вернуться в CSV / Excel", callback_data=f"d:{return_day_key}:csv_all"))
+    return kb
+
+
+def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
+    store = get_chat_store(chat_id)
+    rows = []
+    for day_key, rec in exact_record_range(store, start_key, start_rid, end_key, end_rid):
+        rows.append((fmt_date_backup(day_key), fmt_csv_amount(rec.get("amount")), rec.get("note", "")))
+    return rows
+
+
+def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str):
+    """Фоновый экспорт между двумя точными границами включительно."""
+    trace = ProcessTrace(recipient_chat_id, f"Точный экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
+    tmp_name = None
+    try:
+        file_type = "xlsx" if str(file_type).lower() == "xlsx" else "csv"
+        rows = _exact_export_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
+        if not rows:
+            send_and_auto_delete(recipient_chat_id, "Нет записей в выбранном точном диапазоне.", 10)
+            trace.finish("экспорт завершён без данных")
+            return
+        ext = file_type
+        tmp_name = os.path.join(
+            MEGA_LOCAL_TMP_DIR,
+            f"exact_export_{target_chat_id}_{int(time.time() * 1000)}.{ext}",
+        )
+        if ext == "xlsx":
+            xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
+            for date_v, amount_v, note_v in rows:
+                try:
+                    parsed_amount = parse_csv_amount(amount_v)
+                except Exception:
+                    parsed_amount = 0.0
+                xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
+            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Точный период")
+        else:
+            with open(tmp_name, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["date", "amount", "note"])
+                write_csv_rows_with_day_gaps(writer, rows, 3)
+
+        chat_name = _safe_export_name_part(
+            get_chat_name_for_filename(target_chat_id) or get_chat_display_name(target_chat_id),
+            f"chat_{target_chat_id}",
+        )
+        start_label = fmt_date_backup(start_key).replace(":", ".")
+        end_label = fmt_date_backup(end_key).replace(":", ".")
+        display_name = f"{chat_name}_({start_label}-{end_label})_точный.{ext}"
+        store = get_chat_store(target_chat_id)
+        caption = (
+            f"🎯 {'Excel' if ext == 'xlsx' else 'CSV'} — точный период\n"
+            f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}\n"
+            f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}"
+        )
+        fobj = file_bytesio_named(tmp_name, display_name)
+        if fobj:
+            _tg_call_retry(
+                bot.send_document,
+                recipient_chat_id,
+                fobj,
+                caption=caption,
+                purpose="exact_export_send_document",
+            )
+        trace.finish("точный экспорт завершён")
+    except Exception as exc:
+        trace.fail(exc)
+        log_error(f"send_exact_range_export({target_chat_id}): {exc}")
+    finally:
+        if tmp_name:
+            try:
+                os.remove(tmp_name)
+            except Exception:
+                pass
+
+
 def build_csv_menu(day_key: str, chat_id: int | None = None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     _add_export_period_rows(kb, day_key, "d")
+    try:
+        ref_dt = datetime.strptime(day_key, "%Y-%m-%d")
+    except Exception:
+        ref_dt = now_local()
+    kb.row(IB(
+        "🎯 Произвольный точный период",
+        callback_data=export_callback(f"exp_pick_start:{ref_dt.year}:{ref_dt.month}:{day_key}"),
+    ))
     # Выбор вида/направления бэкапа оставлен только владельцу.
     if chat_id is not None and is_owner_chat(chat_id):
         kb.row(
@@ -11350,10 +11771,15 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
         pass
     return result in {"ok", "scheduled", "rate_limited"}
 
-def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None, preferred_message_id=None):
-    """Отдельное окно для отчёта по статьям расходов (одно сообщение на чат)."""
+def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None, preferred_message_id=None, marker_action: str | None = None):
+    """Отдельное окно для отчёта по статьям расходов (одно сообщение на чат).
+
+    marker_action позволяет заранее и однозначно закрепить константный маркер
+    за конкретным окном, независимо от порядка кнопок.
+    """
     try:
-        text = window_mark(text, _window_marker_code(_window_key_from_markup(reply_markup), "Ф"), html_mode=(str(parse_mode or "").upper() == "HTML"))
+        marker_key = marker_action or _window_key_from_markup(reply_markup)
+        text = window_mark(text, _window_marker_code(marker_key, "Ф"), html_mode=(str(parse_mode or "").upper() == "HTML"))
     except Exception:
         pass
     store = get_chat_store(chat_id)
@@ -11469,6 +11895,170 @@ def open_info_window(chat_id: int):
     )
 
 
+
+def _expense_anchor_rows(kb, store: dict, day_key: str, callback_builder, empty_text: str = "Нет расходов в этот день"):
+    records = expense_anchor_records_for_day(store, day_key)
+    if records:
+        for rec in records:
+            rid = _record_int_id(rec)
+            kb.row(IB(expense_anchor_button_label(rec, store), callback_data=callback_builder(rid)))
+    else:
+        kb.row(IB(empty_text, callback_data="none"))
+    return records
+
+
+def _send_category_pick_start_record(chat_id: int, message_id: int, start_key: str):
+    store = get_chat_store(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    _expense_anchor_rows(
+        kb,
+        store,
+        start_key,
+        lambda rid: cat_callback(f"cat_pick_start_record:{start_key}:{rid}"),
+    )
+    kb.row(IB("➡️ Продолжить с начала дня", callback_data=cat_callback(f"cat_pick_start_record:{start_key}:0")))
+    dt = datetime.strptime(start_key, "%Y-%m-%d")
+    kb.row(IB("🔙 Назад к календарю", callback_data=cat_callback(f"cat_pick_start:{dt.year}:{dt.month}")))
+    text = (
+        "🎯 Точное начало периода\n"
+        f"📅 День: {fmt_date_ddmmyy(start_key)}\n\n"
+        "Выберите расход, с которого начинать расчёт, или продолжите с начала дня."
+    )
+    send_or_edit_categories_window(
+        chat_id,
+        text,
+        reply_markup=kb,
+        preferred_message_id=message_id,
+        marker_action="cat_pick_start_record:*",
+    )
+
+
+def _category_end_day_buttons_precise(start_key: str, start_rid: int, view_year: int, view_month: int):
+    kb = types.InlineKeyboardMarkup(row_width=7)
+    last_day = calendar.monthrange(int(view_year), int(view_month))[1]
+    buttons = []
+    for dnum in range(1, last_day + 1):
+        day_key = _date_key_from_ymd(view_year, view_month, dnum)
+        if day_key < start_key:
+            buttons.append(IB("·", callback_data="none"))
+        else:
+            buttons.append(IB(str(dnum), callback_data=cat_callback(f"cat_pick_set_end3:{start_key}:{int(start_rid)}:{view_year}:{view_month}:{dnum}")))
+    for idx in range(0, len(buttons), 7):
+        kb.row(*buttons[idx:idx + 7])
+    return kb
+
+
+def _send_category_pick_end_precise(chat_id: int, message_id: int, start_key: str, start_rid: int, view_year: int, view_month: int):
+    store = get_chat_store(chat_id)
+    kb = _category_end_day_buttons_precise(start_key, start_rid, view_year, view_month)
+    prev_y, prev_m = _shift_month(view_year, view_month, -1)
+    next_y, next_m = _shift_month(view_year, view_month, 1)
+    start_month_key = start_key[:7]
+    nav = []
+    if f"{prev_y:04d}-{prev_m:02d}" >= start_month_key:
+        nav.append(IB("⬅️ Месяц", callback_data=cat_callback(f"cat_pick_end3:{start_key}:{int(start_rid)}:{prev_y}:{prev_m}")))
+    else:
+        nav.append(IB(" ", callback_data="none"))
+    nav.append(IB(f"{russian_month_name(view_month)} {view_year}", callback_data="none"))
+    nav.append(IB("Месяц ➡️", callback_data=cat_callback(f"cat_pick_end3:{start_key}:{int(start_rid)}:{next_y}:{next_m}")))
+    kb.row(*nav)
+    start_dt = datetime.strptime(start_key, "%Y-%m-%d")
+    kb.row(IB("🔙 Изменить начало", callback_data=cat_callback(f"cat_pick_set_start:{start_dt.year}:{start_dt.month}:{start_dt.day}")))
+    text = (
+        "🎯 Точный период расходов\n"
+        f"▶️ Начало: {exact_boundary_text(store, start_key, start_rid, True)}\n\n"
+        f"Выберите конечный день: {russian_month_name(view_month)} {view_year}"
+    )
+    send_or_edit_categories_window(
+        chat_id,
+        text,
+        reply_markup=kb,
+        preferred_message_id=message_id,
+        marker_action="cat_pick_end3:*",
+    )
+
+
+def _send_category_pick_end_record(chat_id: int, message_id: int, start_key: str, start_rid: int, end_key: str):
+    store = get_chat_store(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    records = expense_anchor_records_for_day(store, end_key)
+    displayed = 0
+    all_recs = sorted_records_for_day(store, end_key)
+    pos = {_record_int_id(r): i for i, r in enumerate(all_recs)}
+    for rec in records:
+        rid = _record_int_id(rec)
+        # В тот же день нельзя закончить раньше выбранного начала.
+        if end_key == start_key and start_rid:
+            if pos.get(rid, -1) < pos.get(int(start_rid), 0):
+                continue
+        displayed += 1
+        kb.row(IB(expense_anchor_button_label(rec, store), callback_data=cat_callback(f"cat_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:{rid}")))
+    if not displayed:
+        kb.row(IB("Нет подходящих расходов в этот день", callback_data="none"))
+    kb.row(IB("✅ Продолжить до конца дня", callback_data=cat_callback(f"cat_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:0")))
+    end_dt = datetime.strptime(end_key, "%Y-%m-%d")
+    kb.row(IB("🔙 Назад к календарю", callback_data=cat_callback(f"cat_pick_end3:{start_key}:{int(start_rid)}:{end_dt.year}:{end_dt.month}")))
+    text = (
+        "🎯 Точный конец периода\n"
+        f"▶️ Начало: {exact_boundary_text(store, start_key, start_rid, True)}\n"
+        f"📅 Конечный день: {fmt_date_ddmmyy(end_key)}\n\n"
+        "Выберите последний расход, который включить в расчёт, или продолжите до конца дня."
+    )
+    send_or_edit_categories_window(
+        chat_id,
+        text,
+        reply_markup=kb,
+        preferred_message_id=message_id,
+        marker_action="cat_pick_end_record:*",
+    )
+
+
+def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, store: dict):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    cats = calc_categories_for_record_range(store, start_key, start_rid, end_key, end_rid)
+    buttons = []
+    for category in get_ordered_category_names(cats=cats, store=store):
+        slug = get_expense_category_slug(category, store)
+        if slug:
+            buttons.append(IB(category, callback_data=cat_callback(f"cat_show_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{slug}")))
+    add_buttons_in_rows(kb, buttons, 3)
+    start_dt = datetime.strptime(start_key, "%Y-%m-%d")
+    kb.row(IB("🎯 Выбрать заново", callback_data=cat_callback(f"cat_pick_start:{start_dt.year}:{start_dt.month}")))
+    kb.row(
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+        IB("❌ Закрыть", callback_data=cat_callback("cat_close")),
+    )
+    return kb
+
+
+def build_category_record_detail_text(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int, category: str):
+    items = collect_items_for_category_record_range(store, start_key, start_rid, end_key, end_rid, category)
+    lines = [
+        f"📦 {category}",
+        f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}",
+        f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}",
+        "",
+        f"Итого: {fmt_num_plain(sum(amount for _, amount, _ in items))}",
+        "",
+    ]
+    if not items:
+        lines.append("Нет операций по этой статье.")
+    else:
+        for day_key, amount, note in items:
+            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {fmt_num_plain(amount)} {str(note or '').strip()}".rstrip())
+    return wm_common("\n".join(lines), 8)
+
+
+def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(IB("🔙 Назад к итогам", callback_data=cat_callback(f"cat_back_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    kb.row(
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+        IB("❌ Закрыть", callback_data=cat_callback("cat_close")),
+    )
+    return kb
+
+
 def _category_picker_day_buttons(year: int, month: int, stage: str, start_day: int | None = None, selected_day: int | None = None):
     kb = types.InlineKeyboardMarkup(row_width=7)
     last_day = calendar.monthrange(int(year), int(month))[1]
@@ -11493,7 +12083,13 @@ def _send_category_pick_start(chat_id: int, message_id: int, year: int, month: i
     text = f"📅 Выберите начальную дату: {month:02d}.{year}"
     if selected:
         text += f"\n✅ Начало: {selected:02d}.{month:02d}.{year}"
-    send_or_edit_categories_window(chat_id, wm_common(text, 13), reply_markup=kb, preferred_message_id=message_id)
+    send_or_edit_categories_window(
+        chat_id,
+        wm_common(text, 13),
+        reply_markup=kb,
+        preferred_message_id=message_id,
+        marker_action="cat_pick_start:*",
+    )
 
 
 def _shift_month(year: int, month: int, delta: int = 0) -> tuple[int, int]:
@@ -11684,7 +12280,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         kb = types.InlineKeyboardMarkup(row_width=2)
         month_buttons = []
         for m in range(1, 13):
-            label = datetime(year, m, 1).strftime("%m.%Y")
+            label = russian_month_name(m)
             month_buttons.append(IB(label, callback_data=cat_callback(f"cat_m:{year}:{m}")))
         for i in range(0, len(month_buttons), 2):
             kb.row(*month_buttons[i:i + 2])
@@ -11698,7 +12294,12 @@ def handle_categories_callback(call, data_str: str) -> bool:
             IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
             IB("❌ Закрыть статьи", callback_data=cat_callback("cat_close"))
         )
-        send_or_edit_categories_window(chat_id, wm_common(f"📦 Выберите месяц, год {year}:", 12), reply_markup=kb)
+        send_or_edit_categories_window(
+            chat_id,
+            wm_common(f"📦 Выберите месяц, год {year}:", 12),
+            reply_markup=kb,
+            marker_action="markup:plain",
+        )
         return True
 
     if data_str.startswith("cat_m:"):
@@ -11720,7 +12321,12 @@ def handle_categories_callback(call, data_str: str) -> bool:
             row.append(IB("📅 Сегодня", callback_data=cat_callback("cat_today")))
         row.append(IB("🔙 Назад", callback_data=cat_callback("cat_months")))
         kb.row(*row)
-        send_or_edit_categories_window(chat_id, wm_common(f"📆 Выберите неделю: {month:02d}.{year}", 13), reply_markup=kb)
+        send_or_edit_categories_window(
+            chat_id,
+            wm_common(f"📆 Выберите неделю: {russian_month_name(month)} {year}", 13),
+            reply_markup=kb,
+            marker_action="cat_m:*",
+        )
         return True
 
     if data_str.startswith("cat_pick_start:"):
@@ -11734,9 +12340,114 @@ def handle_categories_callback(call, data_str: str) -> bool:
     if data_str.startswith("cat_pick_set_start:"):
         try:
             _, y, m, d = data_str.split(":")
-            _send_category_pick_start(chat_id, call.message.message_id, int(y), int(m), int(d))
+            start_key = _date_key_from_ymd(int(y), int(m), int(d))
+            _send_category_pick_start_record(chat_id, call.message.message_id, start_key)
         except Exception as e:
             log_error(f"cat_pick_set_start: {e}")
+        return True
+
+    if data_str.startswith("cat_pick_start_record:"):
+        try:
+            _, start_key, start_rid = data_str.split(":")
+            start_dt = datetime.strptime(start_key, "%Y-%m-%d")
+            _send_category_pick_end_precise(
+                chat_id,
+                call.message.message_id,
+                start_key,
+                int(start_rid),
+                start_dt.year,
+                start_dt.month,
+            )
+        except Exception as e:
+            log_error(f"cat_pick_start_record: {e}")
+        return True
+
+    if data_str.startswith("cat_pick_end3:"):
+        try:
+            _, start_key, start_rid, y, m = data_str.split(":")
+            _send_category_pick_end_precise(chat_id, call.message.message_id, start_key, int(start_rid), int(y), int(m))
+        except Exception as e:
+            log_error(f"cat_pick_end3: {e}")
+        return True
+
+    if data_str.startswith("cat_pick_set_end3:"):
+        try:
+            _, start_key, start_rid, y, m, d = data_str.split(":")
+            end_key = _date_key_from_ymd(int(y), int(m), int(d))
+            _send_category_pick_end_record(chat_id, call.message.message_id, start_key, int(start_rid), end_key)
+        except Exception as e:
+            log_error(f"cat_pick_set_end3: {e}")
+        return True
+
+    if data_str.startswith("cat_pick_end_record:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            text, _ = summarize_categories_record_range(store, start_key, int(start_rid), end_key, int(end_rid))
+            kb = build_categories_record_summary_keyboard(start_key, int(start_rid), end_key, int(end_rid), store)
+            send_or_edit_categories_window(
+                chat_id,
+                text,
+                reply_markup=kb,
+                preferred_message_id=call.message.message_id,
+                marker_action="cat_range_records:*",
+            )
+        except Exception as e:
+            log_error(f"cat_pick_end_record: {e}")
+        return True
+
+    if data_str.startswith("cat_range_records:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            text, _ = summarize_categories_record_range(store, start_key, int(start_rid), end_key, int(end_rid))
+            kb = build_categories_record_summary_keyboard(start_key, int(start_rid), end_key, int(end_rid), store)
+            send_or_edit_categories_window(
+                chat_id,
+                text,
+                reply_markup=kb,
+                preferred_message_id=call.message.message_id,
+                marker_action="cat_range_records:*",
+            )
+        except Exception as e:
+            log_error(f"cat_range_records: {e}")
+        return True
+
+    if data_str.startswith("cat_back_records:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            text, _ = summarize_categories_record_range(store, start_key, int(start_rid), end_key, int(end_rid))
+            kb = build_categories_record_summary_keyboard(start_key, int(start_rid), end_key, int(end_rid), store)
+            send_or_edit_categories_window(
+                chat_id,
+                text,
+                reply_markup=kb,
+                preferred_message_id=call.message.message_id,
+                marker_action="cat_back_records:*",
+            )
+        except Exception as e:
+            log_error(f"cat_back_records: {e}")
+        return True
+
+    if data_str.startswith("cat_show_records:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid, slug = data_str.split(":", 5)
+            category = get_category_by_slug(slug, store)
+            if not category:
+                try:
+                    bot.answer_callback_query(call.id, "Статья не найдена", show_alert=False)
+                except Exception:
+                    pass
+                return True
+            text = build_category_record_detail_text(store, start_key, int(start_rid), end_key, int(end_rid), category)
+            kb = build_category_record_detail_keyboard(start_key, int(start_rid), end_key, int(end_rid))
+            send_or_edit_categories_window(
+                chat_id,
+                text,
+                reply_markup=kb,
+                preferred_message_id=call.message.message_id,
+                marker_action="cat_show_records:*",
+            )
+        except Exception as e:
+            log_error(f"cat_show_records: {e}")
         return True
 
     if data_str.startswith("cat_pick_end:"):
@@ -13115,6 +13826,153 @@ def on_callback(call):
                 send_export_for_chat_to(chat_id, target_chat_id, mode, view_day, file_type)
                 return
             return
+
+        if data_str.startswith("exp_pick_start:"):
+            try:
+                _, y, m, return_day_key = data_str.split(":")
+                y, m = int(y), int(m)
+                safe_edit(
+                    bot,
+                    call,
+                    f"🎯 Точный CSV / Excel\nВыберите начальную дату: {russian_month_name(m)} {y}",
+                    reply_markup=_export_calendar_start_keyboard(y, m, return_day_key),
+                )
+            except Exception as e:
+                log_error(f"exp_pick_start: {e}")
+            return
+
+        if data_str.startswith("exp_pick_set_start:"):
+            try:
+                _, y, m, d, return_day_key = data_str.split(":")
+                start_key = _date_key_from_ymd(int(y), int(m), int(d))
+                store = get_chat_store(chat_id)
+                safe_edit(
+                    bot,
+                    call,
+                    "🎯 Точное начало экспорта\n"
+                    f"📅 День: {fmt_date_ddmmyy(start_key)}\n\n"
+                    "Выберите расход, с которого начинать файл, или продолжите с начала дня.",
+                    reply_markup=_export_start_record_keyboard(chat_id, start_key, return_day_key),
+                )
+            except Exception as e:
+                log_error(f"exp_pick_set_start: {e}")
+            return
+
+        if data_str.startswith("exp_pick_start_record:"):
+            try:
+                _, start_key, start_rid, return_day_key = data_str.split(":")
+                start_dt = datetime.strptime(start_key, "%Y-%m-%d")
+                store = get_chat_store(chat_id)
+                safe_edit(
+                    bot,
+                    call,
+                    "🎯 Точный CSV / Excel\n"
+                    f"▶️ Начало: {exact_boundary_text(store, start_key, int(start_rid), True)}\n\n"
+                    "Выберите конечную дату:",
+                    reply_markup=_export_end_calendar_keyboard(
+                        start_key,
+                        int(start_rid),
+                        start_dt.year,
+                        start_dt.month,
+                        return_day_key,
+                    ),
+                )
+            except Exception as e:
+                log_error(f"exp_pick_start_record: {e}")
+            return
+
+        if data_str.startswith("exp_pick_end:"):
+            try:
+                _, start_key, start_rid, y, m, return_day_key = data_str.split(":")
+                store = get_chat_store(chat_id)
+                safe_edit(
+                    bot,
+                    call,
+                    "🎯 Точный CSV / Excel\n"
+                    f"▶️ Начало: {exact_boundary_text(store, start_key, int(start_rid), True)}\n\n"
+                    f"Выберите конечную дату: {russian_month_name(int(m))} {int(y)}",
+                    reply_markup=_export_end_calendar_keyboard(
+                        start_key,
+                        int(start_rid),
+                        int(y),
+                        int(m),
+                        return_day_key,
+                    ),
+                )
+            except Exception as e:
+                log_error(f"exp_pick_end: {e}")
+            return
+
+        if data_str.startswith("exp_pick_set_end:"):
+            try:
+                _, start_key, start_rid, y, m, d, return_day_key = data_str.split(":")
+                end_key = _date_key_from_ymd(int(y), int(m), int(d))
+                store = get_chat_store(chat_id)
+                safe_edit(
+                    bot,
+                    call,
+                    "🎯 Точный конец экспорта\n"
+                    f"▶️ Начало: {exact_boundary_text(store, start_key, int(start_rid), True)}\n"
+                    f"📅 Конечный день: {fmt_date_ddmmyy(end_key)}\n\n"
+                    "Выберите последний расход, который включить в файл, или продолжите до конца дня.",
+                    reply_markup=_export_end_record_keyboard(
+                        chat_id,
+                        start_key,
+                        int(start_rid),
+                        end_key,
+                        return_day_key,
+                    ),
+                )
+            except Exception as e:
+                log_error(f"exp_pick_set_end: {e}")
+            return
+
+        if data_str.startswith("exp_pick_end_record:"):
+            try:
+                _, start_key, start_rid, end_key, end_rid, return_day_key = data_str.split(":")
+                store = get_chat_store(chat_id)
+                text = (
+                    "🎯 Точный период выбран\n\n"
+                    f"▶️ {exact_boundary_text(store, start_key, int(start_rid), True)}\n"
+                    f"⏹ {exact_boundary_text(store, end_key, int(end_rid), False)}\n\n"
+                    "Выберите формат файла:"
+                )
+                safe_edit(
+                    bot,
+                    call,
+                    text,
+                    reply_markup=_export_format_keyboard(
+                        start_key,
+                        int(start_rid),
+                        end_key,
+                        int(end_rid),
+                        return_day_key,
+                    ),
+                )
+            except Exception as e:
+                log_error(f"exp_pick_end_record: {e}")
+            return
+
+        if data_str.startswith("exp_send:"):
+            try:
+                _, start_key, start_rid, end_key, end_rid, file_type, return_day_key = data_str.split(":")
+                try:
+                    bot.answer_callback_query(call.id, "Готовлю файл…", show_alert=False)
+                except Exception:
+                    pass
+                try:
+                    send_and_auto_delete(chat_id, "⏳ Готовлю точный экспорт в фоне…", 12)
+                except Exception:
+                    pass
+                threading.Thread(
+                    target=send_exact_range_export,
+                    args=(chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type),
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                log_error(f"exp_send: {e}")
+            return
+
         if not data_str.startswith("d:"):
             return
         _, day_key, cmd = data_str.split(":", 2)
@@ -16325,7 +17183,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🤫Бот запущен (версия {VERSION}).\n"
+                    f"✅ Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
