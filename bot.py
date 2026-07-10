@@ -13,6 +13,7 @@ import subprocess
 import shutil
 import tempfile
 import calendar
+import hashlib
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -123,7 +124,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v78_window_markers"
+VERSION = "bot_v78_unique_window_markers"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -724,12 +725,13 @@ def _secret_wait_prompt_text(remaining: int | None = None) -> str:
     tail = ""
     if remaining is not None:
         tail = f"\n\n⏳ Осталось: {_format_mmss(remaining)}"
-    return wm_secret(
+    return wm_common(
         "🔐 Секретные данные\n\n"
         "Отправь одним сообщением текст, который нужно сохранить.\n"
         "Бот удалит твоё сообщение после сохранения.\n\n"
         "Важно: сейчас хранение обычным текстом, без шифрования."
-        + tail
+        + tail,
+        9,
     )
 
 
@@ -1177,47 +1179,26 @@ def today_key() -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# Метки окон по режимам
+# Уникальные метки окон для точного ориентира при отладке
 # С1/С2/... — секретный режим.
-# Ф1/Ф2/... — финансовый режим и все финансовые/служебные окна.
+# Ф1/Ф2/... — финансовый режим и общие служебные окна бота.
 # П1/П2/... — пересылка.
 #
-# Важно по ТЗ: каждая открытая/перерисованная кнопкой страница получает
-# новый уникальный маркер. Старые о/в-метки снимаются автоматически.
+# ВАЖНО:
+# - один нормализованный переход/нажатая кнопка всегда получает одну и ту же метку;
+# - разные переходы не получают один и тот же номер внутри своей группы;
+# - реальный chat_id, дата, message_id и другие переменные параметры не создают
+#   новые имена: метка указывает именно на участок логики/кнопку;
+# - реестр хранится в data['_global_settings']['window_marker_registry'] и
+#   попадает в обычный save_data/бэкап, поэтому номера сохраняются между версиями.
 # ─────────────────────────────────────────────────────────────
-WINDOW_MARK_RE = re.compile(r"(?:^|\s)([СФП]\d{1,9}|[ов]\d{1,4})\s*$")
-_WINDOW_MARKER_LETTERS = {"secret": "С", "finance": "Ф", "forward": "П"}
-_WINDOW_MARKER_LOCK = threading.RLock()
-_WINDOW_MARKER_SAVE_TIMER = None
-
-
-def _schedule_window_marker_counter_save(delay: float = 3.0):
-    """Мягко сохраняет счётчики маркеров, чтобы номера не повторялись после рестарта."""
-    global _WINDOW_MARKER_SAVE_TIMER
-    try:
-        prev = _WINDOW_MARKER_SAVE_TIMER
-        if prev and getattr(prev, "is_alive", lambda: False)():
-            try:
-                prev.cancel()
-            except Exception:
-                pass
-
-        def _job():
-            try:
-                save_data(data)
-            except Exception as e:
-                log_error(f"window marker counter save: {e}")
-
-        t = threading.Timer(float(delay), _job)
-        t.daemon = True
-        _WINDOW_MARKER_SAVE_TIMER = t
-        t.start()
-    except Exception:
-        pass
+WINDOW_MARK_RE = re.compile(r"(?:^|\s)([СФП]\d{1,6}|[ов]\d{1,3})\s*$", re.IGNORECASE)
+_WINDOW_MARK_LOCK = threading.RLock()
+_WINDOW_MARK_GROUPS = ("С", "Ф", "П")
 
 
 def has_window_mark(text: str) -> bool:
-    """True, если внизу окна уже есть метка С1/Ф1/П1 или старая о1/в1."""
+    """True, если внизу окна уже есть новая или старая метка."""
     try:
         tail = str(text or "")[-160:]
         tail = re.sub(r"<[^>]+>", "", tail)
@@ -1227,147 +1208,196 @@ def has_window_mark(text: str) -> bool:
 
 
 def strip_window_mark(text: str) -> str:
-    """Убирает старую метку окна в самом конце."""
+    """Убирает старую метку в конце перед установкой новой."""
     try:
         text = str(text or "")
-        text = re.sub(r"\n\s*<i>[СФП]\d{1,9}</i>\s*$", "", text)
-        text = re.sub(r"\n\s*<i>[ов]\d{1,4}</i>\s*$", "", text)
-        text = re.sub(r"\n\s*[СФП]\d{1,9}\s*$", "", text)
-        text = re.sub(r"\n\s*[ов]\d{1,4}\s*$", "", text)
+        text = re.sub(r"\n\s*<i>(?:[СФП]\d{1,6}|[ов]\d{1,3})</i>\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\n\s*(?:[СФП]\d{1,6}|[ов]\d{1,3})\s*$", "", text, flags=re.IGNORECASE)
         return text.rstrip()
     except Exception:
         return str(text or "")
 
 
-def _window_marker_counters() -> dict:
-    gs = data.setdefault("_global_settings", {})
-    counters = gs.setdefault("window_marker_counters", {})
-    if not isinstance(counters, dict):
-        counters = {}
-        gs["window_marker_counters"] = counters
-    return counters
-
-
-def _next_window_marker(mode: str) -> str:
-    """Выдаёт следующий уникальный маркер нужного режима без повторов."""
-    mode = str(mode or "finance").strip().lower()
-    if mode not in _WINDOW_MARKER_LETTERS:
-        mode = "finance"
-    with _WINDOW_MARKER_LOCK:
-        counters = _window_marker_counters()
-        n = int(counters.get(mode, 0) or 0) + 1
-        counters[mode] = n
-        # Не сохраняем синхронно внутри кнопки. Сохраняем мягко, с debounce,
-        # чтобы номера не повторялись после деплоя/рестарта и не тормозили UI.
-        _schedule_window_marker_counter_save(3.0)
-        return f"{_WINDOW_MARKER_LETTERS[mode]}{n}"
-
-
-def _window_mode_from_legacy_code(code: str) -> str:
-    """Совместимость со старым кодом о/в: переводим старые вызовы в новые режимы."""
-    c = str(code or "").strip().lower()
-    if c in {"secret", "секрет", "с", "c"}:
-        return "secret"
-    if c in {"forward", "пересылка", "п", "p"}:
-        return "forward"
-    if c in {"finance", "фин", "ф", "f"}:
-        return "finance"
-    m = re.fullmatch(r"[сc](\d{1,9})", c, re.I)
-    if m:
-        return "secret"
-    m = re.fullmatch(r"[пp](\d{1,9})", c, re.I)
-    if m:
-        return "forward"
-    m = re.fullmatch(r"[фf](\d{1,9})", c, re.I)
-    if m:
-        return "finance"
-    # Старые окна о22/в22 и часть 23/24/27/28/29 были меню пересылки.
-    # Но о25/о26 часто использовались финансами, поэтому их не относим к П.
-    m = re.fullmatch(r"[ов](\d{1,4})", c)
-    if m:
-        n = int(m.group(1))
-        if n in {22, 23, 24, 27, 28, 29}:
-            return "forward"
-    return "finance"
-
-
-def window_mode_for_callback(data_str: str, owner_chat: bool = False) -> str:
-    """Определяет режим окна по callback_data."""
-    d = str(data_str or "")
-    try:
-        d = resolve_short_callback(d) or d
-    except Exception:
-        pass
-    if d.startswith((
-        "sec", "seclist", "sectoggle", "secchatcal", "secview", "secday", "secmon",
-        "secedit", "secedtoggle", "secedselected", "secdel", "secdelt", "secdelgo",
-        "secmonthlist", "secm", "secret",
-    )):
-        return "secret"
-    if d.startswith((
-        "fw_", "forward", "fw:", "fwnew", "fw_new_", "fw_new:", "fw_src:",
-        "fw_tgt:", "fw_mode:", "fw_finpair:", "fw_back", "fw_open", "fw_probe",
-    )):
-        return "forward"
-    if d.startswith("d:"):
-        action = d.split(":", 2)[2] if d.count(":") >= 2 else ""
-        if action.startswith(("forward", "fw_")) or action in {"forward_menu", "forward_finmode_menu"}:
-            return "forward"
-    return "finance"
-
-
-def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
-    """Возвращает новый уникальный маркер окна по callback_data."""
-    return _next_window_marker(window_mode_for_callback(data_str, owner_chat=owner_chat))
-
-
 def window_mark(text: str, code: str, html_mode: bool = False) -> str:
     try:
-        text = str(text or "")
-        raw_code = str(code or "").strip()
-        if not raw_code:
+        text = strip_window_mark(str(text or ""))
+        code = str(code or "").strip()
+        if not code:
             return text
-        if has_window_mark(text):
-            text = strip_window_mark(text)
-        if re.fullmatch(r"[СФП]\d{1,9}", raw_code):
-            code_final = raw_code
-        else:
-            code_final = _next_window_marker(_window_mode_from_legacy_code(raw_code))
         pad = " " * 26
         if html_mode:
-            return text + "\n\n" + pad + f"<i>{html.escape(code_final)}</i>"
-        return text + "\n\n" + pad + code_final
+            return text + "\n\n" + pad + f"<i>{html.escape(code)}</i>"
+        return text + "\n\n" + pad + code
     except Exception:
         return str(text or "")
 
 
-def wm_common(text: str, n: int, html_mode: bool = False) -> str:
-    return window_mark(text, f"о{int(n)}", html_mode=html_mode)
+def _window_marker_registry() -> dict:
+    """Возвращает и одновременно чинит постоянный реестр меток."""
+    try:
+        root = globals().get("data")
+        if not isinstance(root, dict):
+            raise RuntimeError("data not ready")
+        gs = root.setdefault("_global_settings", {})
+        reg = gs.setdefault("window_marker_registry", {})
+        if not isinstance(reg, dict):
+            reg = {}
+            gs["window_marker_registry"] = reg
+        for group in _WINDOW_MARK_GROUPS:
+            bucket = reg.get(group)
+            if not isinstance(bucket, dict):
+                bucket = {}
+                reg[group] = bucket
+            # Самовосстановление дублей/битых номеров. Первый ключ сохраняет номер,
+            # последующие получают новые свободные номера.
+            used = set()
+            next_num = 1
+            for key in sorted(list(bucket.keys())):
+                try:
+                    n = int(bucket.get(key) or 0)
+                except Exception:
+                    n = 0
+                if n <= 0 or n in used:
+                    while next_num in used:
+                        next_num += 1
+                    n = next_num
+                    bucket[key] = n
+                used.add(n)
+                next_num = max(next_num, n + 1)
+        return reg
+    except Exception:
+        # Резервный реестр до загрузки data. В нормальной работе используется редко.
+        reg = globals().setdefault("_WINDOW_MARK_FALLBACK_REGISTRY", {g: {} for g in _WINDOW_MARK_GROUPS})
+        for g in _WINDOW_MARK_GROUPS:
+            reg.setdefault(g, {})
+        return reg
 
 
-def wm_owner(text: str, n: int, html_mode: bool = False) -> str:
-    return window_mark(text, f"в{int(n)}", html_mode=html_mode)
+def _normalize_window_action(data_str: str) -> str:
+    """Нормализует callback до имени участка логики, убирая даты/id/суммы."""
+    d = str(data_str or "").strip()
+    try:
+        d = resolve_short_callback(d) or d
+    except Exception:
+        pass
+    if not d:
+        return "finance:unknown"
+    # Служебные ключи отдельных окон тоже должны иметь стабильное имя.
+    d = d.replace(" ", "_")
+    parts = d.split(":")
+    norm = []
+    for idx, part in enumerate(parts):
+        p = str(part or "").strip()
+        low = p.casefold()
+        if idx == 0:
+            norm.append(low or "unknown")
+            continue
+        # Сохраняем именно названия действий, а переменные значения заменяем '*'.
+        if re.fullmatch(r"[a-zа-яё_][a-zа-яё0-9_\-]{0,48}", low, flags=re.IGNORECASE):
+            norm.append(low)
+        else:
+            norm.append("*")
+    # Схлопываем повторяющиеся '*' для компактного и стабильного ключа.
+    compact = []
+    for p in norm:
+        if p == "*" and compact and compact[-1] == "*":
+            continue
+        compact.append(p)
+    return ":".join(compact)
 
 
-def wm_secret(text: str, html_mode: bool = False) -> str:
-    return window_mark(text, "secret", html_mode=html_mode)
+def _window_group_for_action(action_key: str) -> str:
+    k = str(action_key or "").casefold()
+    head = k.split(":", 1)[0]
+    if head.startswith("sec") or head.startswith("secret") or head.startswith("total_secret"):
+        return "С"
+    if head.startswith("fw") or head.startswith("forward"):
+        return "П"
+    return "Ф"
 
 
-def wm_finance(text: str, html_mode: bool = False) -> str:
-    return window_mark(text, "finance", html_mode=html_mode)
+def _window_marker_code(action_key: str, forced_group: str | None = None) -> str:
+    key = _normalize_window_action(action_key)
+    group = str(forced_group or _window_group_for_action(key)).upper()
+    if group not in _WINDOW_MARK_GROUPS:
+        group = "Ф"
+    with _WINDOW_MARK_LOCK:
+        reg = _window_marker_registry()
+        bucket = reg.setdefault(group, {})
+        try:
+            current = int(bucket.get(key) or 0)
+        except Exception:
+            current = 0
+        # Защита от повторов даже при ручном повреждении JSON/SQLite.
+        used_by_other = {
+            int(v) for k, v in bucket.items()
+            if k != key and str(v).lstrip("-").isdigit() and int(v) > 0
+        }
+        if current <= 0 or current in used_by_other:
+            current = 1
+            if used_by_other:
+                current = max(used_by_other) + 1
+            while current in used_by_other:
+                current += 1
+            bucket[key] = current
+        return f"{group}{current}"
 
 
-def wm_forward(text: str, html_mode: bool = False) -> str:
-    return window_mark(text, "forward", html_mode=html_mode)
+def window_code_for_callback(data_str: str, owner_chat: bool = False) -> str:
+    """Уникальная метка для каждой логической кнопки/перехода."""
+    return _window_marker_code(str(data_str or ""))
+
+
+def _window_key_from_markup(reply_markup) -> str:
+    """Строит стабильный ключ по набору кнопок для окон, открытых не из callback."""
+    try:
+        rows = getattr(reply_markup, "keyboard", None) or []
+        values = []
+        for row in rows:
+            for btn in row:
+                cb = getattr(btn, "callback_data", None)
+                if cb:
+                    values.append(_normalize_window_action(str(cb)))
+        if values:
+            return "markup:" + "|".join(sorted(set(values)))
+    except Exception:
+        pass
+    return "finance:plain_window"
 
 
 def auto_window_mark(text: str, data_str: str = "", owner_chat: bool = False, html_mode: bool = False) -> str:
-    return window_mark(
-        text,
-        _next_window_marker(window_mode_for_callback(data_str, owner_chat=owner_chat)),
-        html_mode=html_mode,
-    )
+    code = window_code_for_callback(data_str, owner_chat=owner_chat)
+    return window_mark(text, code, html_mode=html_mode)
 
+
+def wm_common(text: str, n: int, html_mode: bool = False) -> str:
+    # Старые ручные номера больше не используются как видимая метка.
+    # Текстовый отпечаток не даёт разным окнам с одним старым n повторить имя.
+    body = strip_window_mark(str(text or ""))
+    digest = hashlib.sha1(body.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return window_mark(body, _window_marker_code(f"legacy_common:{int(n)}:{digest}", "Ф"), html_mode=html_mode)
+
+
+def wm_owner(text: str, n: int, html_mode: bool = False) -> str:
+    body = strip_window_mark(str(text or ""))
+    digest = hashlib.sha1(body.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return window_mark(body, _window_marker_code(f"legacy_owner:{int(n)}:{digest}", "Ф"), html_mode=html_mode)
+
+
+def audit_window_marker_registry() -> dict:
+    """Проверка/самоисправление повторов маркеров. Возвращает краткий отчёт."""
+    with _WINDOW_MARK_LOCK:
+        reg = _window_marker_registry()
+        report = {"fixed": 0, "groups": {}}
+        for group in _WINDOW_MARK_GROUPS:
+            bucket = reg.setdefault(group, {})
+            before = list(bucket.values())
+            # Повторный вызов чинит данные функцией выше.
+            _window_marker_registry()
+            after = list(bucket.values())
+            report["fixed"] += sum(1 for a, b in zip(before, after) if a != b)
+            report["groups"][group] = len(bucket)
+        return report
 
 _v98_auto_close_timers = {}
 _v98_auto_close_lock = threading.RLock()
@@ -1405,9 +1435,14 @@ def _schedule_v98_auto_close(chat_id: int, message_id: int, delay: int = 60):
 
 
 def _touch_v98_auto_close_for_callback(chat_id: int, message_id: int, data_str: str):
-    # Старый авто-закрыватель окон о98/в98 больше не используется после перехода
-    # на режимные маркеры С/Ф/П. Оставлено как совместимый no-op.
-    return
+    try:
+        code = window_code_for_callback(data_str, owner_chat=is_owner_chat(chat_id))
+        if code in {"о98", "в98"}:
+            _schedule_v98_auto_close(chat_id, message_id, 60)
+        else:
+            _cancel_v98_auto_close(chat_id, message_id)
+    except Exception:
+        pass
 
 DAY_WINDOW_MAX_RECORDS = 35
 DAY_WINDOW_MAX_CHARS = 3500
@@ -2419,17 +2454,12 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
         except Exception:
             pass
     try:
-        mark_map = {
-            "report_window_id": 3,
-            "total_msg_id": 4,
-            "info_msg_id": 9,
-            "categories_msg_id": 7,
-            "calendar_msg_id": 2,
-        }
-        if str(store_key) in mark_map:
-            text = wm_common(text, mark_map[str(store_key)], html_mode=(str(parse_mode or "").upper() == "HTML"))
-        else:
-            text = auto_window_mark(text, str(store_key), owner_chat=is_owner_chat(chat_id), html_mode=(str(parse_mode or "").upper() == "HTML"))
+        marker_key = f"stored:{store_key}:" + _window_key_from_markup(reply_markup)
+        text = window_mark(
+            text,
+            _window_marker_code(marker_key),
+            html_mode=(str(parse_mode or "").upper() == "HTML"),
+        )
     except Exception:
         pass
     message_id = store.get(store_key)
@@ -7601,7 +7631,7 @@ def cmd_secret_access(msg):
         return
     sent = bot.send_message(
         msg.chat.id,
-        wm_secret("🔐 Выберите чат с секретными данными:"),
+        "🔐 Выберите чат с секретными данными:",
         reply_markup=build_secret_chat_list_keyboard(),
     )
     register_secret_list_window(msg.chat.id, sent.message_id)
@@ -11233,8 +11263,7 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
 def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=None, preferred_message_id=None):
     """Отдельное окно для отчёта по статьям расходов (одно сообщение на чат)."""
     try:
-        if not has_window_mark(text):
-            text = wm_finance(text, html_mode=(str(parse_mode or "").upper() == "HTML"))
+        text = window_mark(text, _window_marker_code(_window_key_from_markup(reply_markup), "Ф"), html_mode=(str(parse_mode or "").upper() == "HTML"))
     except Exception:
         pass
     store = get_chat_store(chat_id)
@@ -16165,6 +16194,11 @@ def main():
         log_error(f"main mega_autorestore_if_needed: {e}")
         restored = False
     migrate_legacy_owner_secrets()
+    try:
+        marker_report = audit_window_marker_registry()
+        log_info(f"Маркеры окон проверены: {marker_report}")
+    except Exception as e:
+        log_error(f"audit_window_marker_registry: {e}")
     for cid in list((data.get("chats", {}) or {}).keys()):
         try:
             store = get_chat_store(int(cid))
@@ -16201,7 +16235,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🔥Бот запущен (версия {VERSION}).\n"
+                    f"✅ ⌛️Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
