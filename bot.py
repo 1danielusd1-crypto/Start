@@ -355,7 +355,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v82_mega_first_readable_json"
+VERSION = "bot_v83_compact_fast_backup"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1982,71 +1982,22 @@ def fmt_date_backup(day_key: str) -> str:
         return str(day_key)
 
 
-def _backup_human_datetime(value) -> tuple[str, str, str]:
-    """Возвращает дату, время и понятную дату-время для JSON-бэкапа."""
-    try:
-        text = str(value or "").strip()
-        if not text:
-            raise ValueError
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=get_tz())
-        dt = dt.astimezone(get_tz())
-        return dt.strftime("%d.%m.%Y"), dt.strftime("%H:%M:%S"), dt.strftime("%d.%m.%Y %H:%M:%S")
-    except Exception:
-        return "", "", str(value or "")
-
-def backup_file_time_fields() -> dict:
-    dt = now_local()
-    return {
-        "file_modified_at": dt.strftime("%d.%m.%Y %H:%M:%S"),
-        "file_modified_at_iso": dt.isoformat(timespec="seconds"),
-        "timezone": str(getattr(dt.tzinfo, "key", None) or dt.tzname() or "local"),
-    }
-
 def backup_record_copy(rec: dict) -> dict:
-    """Человекочитаемая копия записи; технические поля сохраняются для восстановления."""
+    """Компактная техническая копия записи для быстрого бэкапа и восстановления."""
     try:
-        raw = json.loads(json.dumps(rec or {}, ensure_ascii=False, default=str))
+        return json.loads(json.dumps(rec or {}, ensure_ascii=False, default=str))
     except Exception:
-        raw = dict(rec or {})
-    dk = raw.get("day_key") or (_record_day_key(raw) if isinstance(raw, dict) else today_key())
-    date_h, time_h, datetime_h = _backup_human_datetime(raw.get("timestamp"))
-    if not date_h:
-        try:
-            date_h = datetime.strptime(str(dk)[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
-        except Exception:
-            date_h = str(dk)
-    try:
-        amount = float(raw.get("amount", 0) or 0)
-    except Exception:
-        amount = 0.0
-    readable = {
-        "date": date_h,
-        "time": time_h,
-        "datetime": datetime_h or date_h,
-        "movement": "ПРИХОД" if amount >= 0 else "РАСХОД",
-        "amount": amount,
-        "amount_abs": abs(amount),
-        "description": raw.get("note", ""),
-        "day_key": str(dk),
-    }
-    for k, v in raw.items():
-        if k not in readable:
-            readable[k] = v
-    return readable
+        return dict(rec or {})
 
 def backup_records_list(records) -> list:
-    """Последнее движение денег всегда сверху."""
-    clean = [r for r in (records or []) if isinstance(r, dict)]
-    clean.sort(key=record_sort_key, reverse=True)
-    return [backup_record_copy(r) for r in clean]
+    """Сохраняет исходный порядок записей без тяжёлого преобразования."""
+    return [backup_record_copy(r) for r in (records or []) if isinstance(r, dict)]
 
 def backup_daily_records(daily: dict) -> dict:
-    """Последние даты и последние записи дня идут первыми."""
+    """Компактная копия дневных записей без дополнительных дублирующих полей."""
     out = {}
-    for dk in sorted((daily or {}).keys(), reverse=True):
-        out[str(dk)] = backup_records_list((daily or {}).get(dk, []))
+    for dk, recs in (daily or {}).items():
+        out[str(dk)] = backup_records_list(recs)
     return out
 
 
@@ -4162,7 +4113,7 @@ def build_chat_monthly_backup_payload(chat_id: int, month_key: str | None = None
     month_key = month_key or current_month_key()
     store = get_chat_store(chat_id)
     opening = calc_opening_balance_for_month(store, month_key)
-    recs = sorted(month_records_for_chat(store, month_key), key=record_sort_key, reverse=True)
+    recs = sorted(month_records_for_chat(store, month_key), key=record_sort_key)
     total_income = 0.0
     total_expense = 0.0
     clean_recs = []
@@ -4177,13 +4128,10 @@ def build_chat_monthly_backup_payload(chat_id: int, month_key: str | None = None
         rr["date"] = fmt_date_backup(rr["day_key"])
         clean_recs.append(rr)
     closing = opening + total_income - total_expense
-    file_time = backup_file_time_fields()
     return {
         "kind": "chat_monthly_backup",
         "version": VERSION,
-        **file_time,
-        "created_at": file_time["file_modified_at_iso"],
-        "latest_financial_record": clean_recs[0] if clean_recs else None,
+        "created_at": now_local().isoformat(timespec="seconds"),
         "date_format": "DD:MM:YY",
         "month": month_key,
         "chat_id": int(chat_id),
@@ -4338,43 +4286,19 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
 
 
 def make_global_backup_payload() -> dict:
-    """Глобальный JSON для восстановления всего бота, с понятными датами и свежими записями сверху."""
+    """Компактный глобальный JSON для быстрого MEGA-бэкапа и восстановления."""
     with data_lock:
         raw_payload = json.loads(json.dumps(data or {}, ensure_ascii=False, default=str))
     raw_payload.setdefault("chats", {})
     raw_payload.setdefault("forward_rules", data.get("forward_rules", {}) if isinstance(data, dict) else {})
     raw_payload.setdefault("forward_finance", data.get("forward_finance", {}) if isinstance(data, dict) else {})
-    latest = {}
-    try:
-        for cid, store in (raw_payload.get("chats", {}) or {}).items():
-            if not isinstance(store, dict):
-                continue
-            records = backup_records_list(store.get("records", []))
-            daily = backup_daily_records(store.get("daily_records", {}))
-            store["records_newest_first"] = records
-            store["records"] = records
-            store["daily_records_newest_first"] = daily
-            store["daily_records"] = daily
-            store["daily_records_by_date"] = {fmt_date_backup(k): backup_records_list(v) for k, v in sorted((store.get("daily_records", {}) or {}).items(), reverse=True)}
-            latest[str(cid)] = records[0] if records else None
-    except Exception as e:
-        log_error(f"make_global_backup_payload humanize: {e}")
-    file_time = backup_file_time_fields()
-    meta = {
-        "kind": "mega_latest_global",
-        "version": VERSION,
-        **file_time,
-        "created_at": file_time["file_modified_at_iso"],
-        "chat_count": len(raw_payload.get("chats", {}) or {}),
-        "finance_active_chats": raw_payload.get("finance_active_chats", {}),
-        "forward_rules_count": sum(len(v or {}) for v in (raw_payload.get("forward_rules", {}) or {}).values()),
-        "forward_finance_count": sum(len(v or {}) for v in (raw_payload.get("forward_finance", {}) or {}).values()),
-        "records_order": "newest_first",
-        "note": "Полный JSON для восстановления. Последние финансовые движения находятся сверху.",
-    }
     return {
-        "_backup_meta": meta,
-        "latest_financial_values_by_chat": latest,
+        "_backup_meta": {
+            "kind": "mega_latest_global",
+            "version": VERSION,
+            "created_at": now_local().isoformat(timespec="seconds"),
+            "chat_count": len(raw_payload.get("chats", {}) or {}),
+        },
         **raw_payload,
     }
 
@@ -4653,6 +4577,8 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool = True) -> None:
             if not fobj:
                 return
             try:
+                actual_write_time = now_local()
+                caption = f"📦 {file_name}\n🕒 Фактически перезаписан: {actual_write_time.strftime('%d.%m.%Y %H:%M:%S')}"
                 _tg_call_retry(
                     bot.edit_message_media,
                     chat_id=chat_id,
@@ -4664,7 +4590,7 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool = True) -> None:
                     purpose="backup_edit_message_media"
                 )
                 log_info(f"Chat backup UPDATED in chat {chat_id}")
-                meta[ts_key] = now_local().isoformat(timespec="seconds")
+                meta[ts_key] = (actual_write_time if "actual_write_time" in locals() else now_local()).isoformat(timespec="seconds")
                 _save_chat_backup_meta(meta)
                 return
             except Exception as e:
@@ -4676,7 +4602,7 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool = True) -> None:
             return
         sent = _tg_call_retry(bot.send_document, chat_id, fobj, caption=caption, purpose="backup_send_document")
         meta[msg_key] = sent.message_id
-        meta[ts_key] = now_local().isoformat(timespec="seconds")
+        meta[ts_key] = (actual_write_time if "actual_write_time" in locals() else now_local()).isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
         log_info(f"Chat backup CREATED in chat {chat_id}")
 
@@ -5421,30 +5347,22 @@ def snapshot_chat_store(chat_id: int) -> dict:
 
 
 def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
+    """Компактный JSON чата: минимальный объём, быстрое создание и восстановление."""
     store = store or snapshot_chat_store(chat_id)
-    records = backup_records_list(store.get("records", []))
-    file_time = backup_file_time_fields()
-    daily = backup_daily_records(store.get("daily_records", {}))
     return {
         "kind": "chat_full_backup",
         "version": VERSION,
-        **file_time,
-        "created_at": file_time["file_modified_at_iso"],
+        "created_at": now_local().isoformat(timespec="seconds"),
+        "date_format": "DD:MM:YY",
         "chat_id": chat_id,
         "chat_name": get_chat_display_name(chat_id),
-        "current_balance": store.get("balance", 0),
-        "latest_financial_record": records[0] if records else None,
-        "record_count": len(records),
-        "records_newest_first": records,
-        "records": records,
-        "daily_records_newest_first": daily,
-        "daily_records": daily,
-        "daily_records_by_date": {fmt_date_backup(k): backup_records_list(v) for k, v in sorted((store.get("daily_records", {}) or {}).items(), reverse=True)},
+        "balance": store.get("balance", 0),
+        "records": backup_records_list(store.get("records", [])),
+        "daily_records": backup_daily_records(store.get("daily_records", {})),
         "next_id": store.get("next_id", 1),
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
         "settings_backup": build_chat_settings_backup_payload(chat_id, store),
-        "date_format_note": "Читаемая дата DD.MM.YYYY, время HH:MM:SS; day_key YYYY-MM-DD сохранён для восстановления.",
     }
 
 
@@ -9154,7 +9072,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         else:
             file_name = base_name
 
-        caption = f"📦 {file_name} — {now_local().strftime('%Y-%m-%d %H:%M')}"
+        caption = None
 
         def _open_for_telegram() -> io.BytesIO | None:
             if not os.path.exists(base_path):
@@ -9195,6 +9113,8 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
             fobj = _open_for_telegram()
             if not fobj:
                 return
+            actual_write_time = now_local()
+            caption = f"📦 {file_name}\n🕒 Фактически записан: {actual_write_time.strftime('%d.%m.%Y %H:%M:%S')}"
             sent_msg = _tg_call_retry(
                 bot.send_document,
                 int(BACKUP_CHAT_ID),
@@ -9205,7 +9125,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
             meta[msg_key] = sent_msg.message_id
             log_info(f"[BACKUP] channel file sent new: {base_path}")
 
-        meta[ts_key] = now_local().isoformat(timespec="seconds")
+        meta[ts_key] = (actual_write_time if "actual_write_time" in locals() else now_local()).isoformat(timespec="seconds")
         _save_csv_meta(meta)
 
     except Exception as e:
