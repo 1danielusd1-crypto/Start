@@ -33,7 +33,6 @@ from contextlib import contextmanager
 
 window_locks = defaultdict(threading.Lock)
 
-
 # ─────────────────────────────────────────────────────────────
 # Ограниченные очереди с сохранением порядка внутри одного чата
 # ─────────────────────────────────────────────────────────────
@@ -356,7 +355,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v83_compact_json🪬"
+VERSION = "bot_v84_persistent_windows"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -4141,6 +4140,8 @@ def build_chat_settings_backup_payload(chat_id: int, store: dict | None = None) 
         "quick_balance_enabled": is_quick_balance_enabled(chat_id),
         "quick_balance_behavior": get_quick_balance_behavior(chat_id),
         "process_trace_enabled": is_process_trace_enabled(chat_id),
+        "active_messages": _persistent_active_messages_for_chat(int(chat_id)) if "_persistent_active_messages_for_chat" in globals() else {},
+        "message_references": _persistent_message_reference_state(store) if "_persistent_message_reference_state" in globals() else {},
         "forward_rules_outgoing": outgoing_rules,
         "forward_rules_incoming": incoming_rules,
         "forward_finance_outgoing": outgoing_finance,
@@ -4367,7 +4368,7 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
 
 
 def make_global_backup_payload() -> dict:
-    """Компактный глобальный JSON v83 для быстрого восстановления всего бота.
+    """Compact global JSON v84 with persistent Telegram message references.
 
     В файле нет дубликатов records/daily_records. Каждая финансовая запись хранится
     один раз внутри соответствующего дня.
@@ -4904,6 +4905,16 @@ def save_data(d, chat_ids=None, full: bool = False, root_only: bool = False):
                     SQLITE.save_chat(cid, payload)
         else:
             SQLITE.save_chats(chats)
+
+    # Render's local filesystem may be replaced by a clean deploy. Mirror the
+    # complete root state (settings, chat names, forward message links and all
+    # saved Telegram message IDs) to the compact global MEGA backup. The global
+    # scheduler keeps the earliest due snapshot, so this remains lightweight.
+    try:
+        if mega_is_configured() and "_schedule_global_mega_snapshot" in globals():
+            _schedule_global_mega_snapshot(5.0 if mega_priority_enabled() else 20.0)
+    except Exception as e:
+        log_error(f"save_data state mirror schedule: {e}")
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
 
@@ -5454,7 +5465,7 @@ def snapshot_chat_store(chat_id: int) -> dict:
         return json.loads(json.dumps(store, ensure_ascii=False, default=str))
 
 
-COMPACT_JSON_SCHEMA = 1
+COMPACT_JSON_SCHEMA = 2
 COMPACT_RECORD_FIELDS = (
     "id",
     "amount",
@@ -5472,17 +5483,67 @@ _COMPACT_RECORD_KNOWN_KEYS = {
     "description",
 }
 
+# v84: Telegram message_id/window_id are NOT ephemeral. They are deliberately
+# preserved so, after a deploy or MEGA restore, the bot can edit the exact same
+# messages that it created before the restart. Only duplicate financial arrays
+# and unfinished input/timer states are omitted from the compact backup.
 _COMPACT_CHAT_EPHEMERAL_KEYS = {
     "records", "daily_records", "daily_records_by_date", "balance", "next_id",
-    "active_windows", "edit_wait", "edit_target", "current_view_day",
-    "balance_panel_id", "balance_panel_mode", "balance_panel_msg_count",
-    "main_window_msg_count", "total_msg_id", "categories_msg_id",
+    "edit_wait", "edit_target",
     "category_add_wait", "category_edit_wait", "category_delete_selection",
-    "report_window_id", "report_month", "reset_wait", "reset_time",
-    "finance_toggle_wait", "finwin_edit_wait", "finwin_reset_wait",
-    "secret_active_window", "secret_delete_selection",
-    "secret_edit_delete_selection", "secret_wait",
+    "reset_wait", "reset_time", "finance_toggle_wait",
+    "finwin_edit_wait", "finwin_reset_wait",
+    "secret_delete_selection", "secret_edit_delete_selection", "secret_wait",
 }
+
+
+def _persistent_active_messages_for_chat(chat_id: int) -> dict:
+    """Main-window Telegram IDs for one chat, stored outside the chat store."""
+    try:
+        raw = (data.get("active_messages", {}) or {}).get(str(int(chat_id)), {}) or {}
+        return {
+            str(day): int(message_id)
+            for day, message_id in raw.items()
+            if message_id is not None and str(message_id).strip()
+        }
+    except Exception:
+        return {}
+
+
+def _restore_active_messages_for_chat(chat_id: int, refs) -> None:
+    """Restores main-window IDs without deleting any Telegram messages."""
+    try:
+        cid = str(int(chat_id))
+        target = data.setdefault("active_messages", {})
+        if isinstance(refs, dict) and refs:
+            clean = {}
+            for day, message_id in refs.items():
+                try:
+                    clean[str(day)] = int(message_id)
+                except Exception:
+                    pass
+            if clean:
+                target[cid] = clean
+                return
+        target.setdefault(cid, {})
+    except Exception as e:
+        log_error(f"_restore_active_messages_for_chat({chat_id}): {e}")
+
+
+def _persistent_message_reference_state(store: dict) -> dict:
+    """Small diagnostic map of all stored Telegram message/window references."""
+    out = {}
+    for key, value in (store or {}).items():
+        key_s = str(key)
+        if (
+            key_s.endswith(("_msg_id", "_message_id", "_window_id"))
+            or key_s in {
+                "active_windows", "current_view_day", "balance_panel_id",
+                "balance_panel_mode", "secret_active_window", "report_month",
+            }
+        ):
+            out[key_s] = _json_clone(value, value)
+    return out
 
 
 def _json_clone(value, default=None):
@@ -5493,13 +5554,18 @@ def _json_clone(value, default=None):
 
 
 def _compact_chat_state(store: dict) -> dict:
-    """Оставляет только постоянное состояние чата, без Telegram-окон и ожиданий."""
+    """Permanent chat state, including Telegram message/window IDs.
+
+    v84 intentionally keeps *_msg_id, *_message_id and *_window_id. Pending
+    input selections and timer waits are omitted because their in-memory timers
+    cannot safely continue after a process restart.
+    """
     out = {}
     for key, value in (store or {}).items():
         key = str(key)
         if key in _COMPACT_CHAT_EPHEMERAL_KEYS:
             continue
-        if key.endswith(("_msg_id", "_window_id", "_wait", "_selection")):
+        if key.endswith(("_wait", "_selection", "_timer", "_deadline")):
             continue
         out[key] = _json_clone(value, value)
     return out
@@ -5575,6 +5641,10 @@ def _build_compact_chat_core(
         "next_id": store.get("next_id", 1),
         "last_change": latest_change,
         "state": _compact_chat_state(store),
+        # Root data["active_messages"] is stored here per chat, so the global
+        # compact backup has no duplicate giant root map and per-chat /json can
+        # independently restore the same main Telegram window after deploy.
+        "active_messages": _persistent_active_messages_for_chat(int(chat_id)),
         "days": days,
     }
     if include_identity:
@@ -5587,7 +5657,7 @@ def _build_compact_chat_core(
 
 
 def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
-    """Основной компактный JSON v83. Каждая запись хранится ровно один раз."""
+    """Основной компактный JSON v84: records once, settings and Telegram IDs preserved."""
     store = store or snapshot_chat_store(chat_id)
     payload = {
         "kind": "chat_compact_backup",
@@ -5625,6 +5695,9 @@ def build_chat_full_backup_payload(chat_id: int, store: dict | None = None) -> d
         "next_id": store.get("next_id", 1),
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
+        "persistent_state": _compact_chat_state(store),
+        "active_messages": _persistent_active_messages_for_chat(int(chat_id)),
+        "message_references": _persistent_message_reference_state(store),
         "settings_backup": build_chat_settings_backup_payload(chat_id, store),
     }
 
@@ -5677,7 +5750,7 @@ def save_chat_json(chat_id: int):
             save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
-            "json_format": "compact_v83",
+            "json_format": "compact_v84_persistent_windows",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
             "excel_enabled": backup_excel_all_enabled(),
         }
@@ -5798,6 +5871,7 @@ def _restore_global_compact(payload: dict):
     if isinstance(root, dict):
         restored.update(root)
     restored["chats"] = {}
+    restored.setdefault("active_messages", {})
     inherited_fields = payload.get("record_fields") or list(COMPACT_RECORD_FIELDS)
     for cid, compact_store in (payload.get("chats", {}) or {}).items():
         if isinstance(compact_store, dict):
@@ -5805,6 +5879,16 @@ def _restore_global_compact(payload: dict):
                 compact_store,
                 inherited_fields=inherited_fields,
             )
+            refs = compact_store.get("active_messages")
+            if isinstance(refs, dict) and refs:
+                clean = {}
+                for day, message_id in refs.items():
+                    try:
+                        clean[str(day)] = int(message_id)
+                    except Exception:
+                        pass
+                if clean:
+                    restored["active_messages"][str(cid)] = clean
     data = restored
 
     flags = data.get("backup_flags") or {}
@@ -5836,7 +5920,7 @@ def _restore_global_compact(payload: dict):
 
 
 def restore_from_json(chat_id: int, path: str):
-    """Восстанавливает v83 compact, /json_full и старые JSON предыдущих версий."""
+    """Restores v84/v83 compact, /json_full and legacy JSON backups."""
     global data
     payload = _load_json(path, None)
     if not isinstance(payload, dict):
@@ -5867,6 +5951,7 @@ def restore_from_json(chat_id: int, path: str):
         target_chat_id = int(payload.get("chat_id") or chat_id)
         store = _unpack_compact_chat_store(payload)
         data.setdefault("chats", {})[str(target_chat_id)] = store
+        _restore_active_messages_for_chat(target_chat_id, payload.get("active_messages"))
         _restore_compact_chat_links(target_chat_id, payload.get("links"))
         if bool(store.get("finance_mode")):
             finance_active_chats.add(target_chat_id)
@@ -5916,6 +6001,12 @@ def restore_from_json(chat_id: int, path: str):
         store["next_id"] = int(payload.get("next_id", 1) or 1)
         store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
         store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
+        persistent_state = payload.get("persistent_state") or {}
+        if isinstance(persistent_state, dict):
+            for key, value in persistent_state.items():
+                if key not in {"records", "daily_records", "daily_records_by_date", "balance", "next_id"}:
+                    store[str(key)] = value
+        _restore_active_messages_for_chat(target_chat_id, payload.get("active_messages"))
         settings_backup = payload.get("settings_backup") or {}
         if isinstance(settings_backup, dict):
             if isinstance(settings_backup.get("settings"), dict):
@@ -15741,9 +15832,22 @@ def renumber_chat_records(chat_id: int):
 def get_or_create_active_windows(chat_id: int) -> dict:
     return data.setdefault("active_messages", {}).setdefault(str(chat_id), {})
 def set_active_window_id(chat_id: int, day_key: str, message_id: int):
+    """Stores the exact Telegram message ID and mirrors it to compact backups."""
     aw = get_or_create_active_windows(chat_id)
+    day_key = str(day_key)
+    message_id = int(message_id)
+    changed = int(aw.get(day_key) or 0) != message_id
     aw[day_key] = message_id
     save_data(data)
+    if changed:
+        try:
+            # Per-chat JSON goes to MEGA quickly; global JSON is the source used
+            # by autorestore after a clean Render deploy.
+            schedule_quick_backup(int(chat_id), 3.0)
+            _schedule_priority_mega_for_chat(int(chat_id), delay=0.5)
+            _schedule_global_mega_snapshot(8.0)
+        except Exception as e:
+            log_error(f"set_active_window_id backup schedule({chat_id}): {e}")
 def get_active_window_id(chat_id: int, day_key: str):
     aw = get_or_create_active_windows(chat_id)
     return aw.get(day_key)
@@ -15754,8 +15858,44 @@ def clear_active_window_id(chat_id: int, day_key: str):
         if str(day_key) in aw:
             aw.pop(str(day_key), None)
             save_data(data)
+            try:
+                schedule_quick_backup(int(chat_id), 3.0)
+                _schedule_priority_mega_for_chat(int(chat_id), delay=0.5)
+                _schedule_global_mega_snapshot(8.0)
+            except Exception:
+                pass
     except Exception as e:
         log_error(f"clear_active_window_id({chat_id},{day_key}): {e}")
+
+def _is_stale_telegram_message_reference(err: Exception) -> bool:
+    """Errors proving that a stored Telegram message can no longer be edited."""
+    text = str(err or "").lower()
+    markers = (
+        "message to edit not found",
+        "message_id_invalid",
+        "message not found",
+        "message can't be edited",
+        "message can not be edited",
+        "message to be edited not found",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _schedule_persistent_window_retry(chat_id: int, day_key: str, delay: float = 12.0):
+    """Retries editing the same saved message after a temporary API failure."""
+    try:
+        chat_id = int(chat_id)
+        day_key = str(day_key)
+        DELAYED_SCHEDULER.schedule(
+            f"persistent-window-retry:{chat_id}:{day_key}",
+            max(3.0, float(delay)),
+            update_or_send_day_window,
+            chat_id,
+            day_key,
+        )
+    except Exception as e:
+        log_error(f"_schedule_persistent_window_retry({chat_id},{day_key}): {e}")
+
 
 def close_previous_main_window_before_back(chat_id: int, day_key: str, current_message_id: int | None = None):
     """При возврате в основное окно удаляет прежнее О1, чтобы не оставалось дубля."""
@@ -15807,10 +15947,17 @@ def update_or_send_day_window(chat_id: int, day_key: str):
                 if "message is not modified" in err:
                     schedule_balance_panel_refresh(chat_id, 0.5)
                     return
-                try:
-                    bot.delete_message(chat_id, old_mid)
-                except Exception:
-                    pass
+                if _is_stale_telegram_message_reference(e):
+                    # The old message was already removed manually or Telegram
+                    # refuses to edit it. Forget only the reference; never issue
+                    # delete_message during restart recovery.
+                    clear_active_window_id(chat_id, day_key)
+                else:
+                    # A temporary API/network error must not create a duplicate
+                    # and must not destroy the saved ID. Retry the same message.
+                    log_error(f"update_or_send_day_window keep old {chat_id}/{old_mid}: {e}")
+                    _schedule_persistent_window_retry(chat_id, day_key, delay=12.0)
+                    return
 
         sent = bot.send_message(
             chat_id,
@@ -17137,7 +17284,7 @@ def collect_finance_chat_ids():
 
 
 def schedule_startup_main_windows(delay: float = 3.0):
-    """После deploy/рестарта создаёт или обновляет основное окно у владельца и финчатов, кроме скрытых."""
+    """After deploy, first edits the exact saved main message; never deletes it during recovery."""
     def _job():
         try:
             for cid in collect_finance_chat_ids():
@@ -17166,17 +17313,34 @@ def schedule_all_finance_backups(delay: float = 10.0):
 
 
 def _schedule_global_mega_snapshot(delay: float = 30.0):
+    """Schedules a global state snapshot without endlessly postponing it.
+
+    Frequent save_data() calls keep occurring in active chats. v84 keeps the
+    earliest already scheduled snapshot, so continuous activity cannot defer
+    persistent settings/message IDs forever.
+    """
     global _global_mega_timer
     if not mega_is_configured():
         return
-    _global_mega_timer = time.time() + max(5.0, float(delay))
-    def _fire():
+    delay = max(5.0, float(delay))
+    new_due = time.time() + delay
+    with timer_lock:
+        if _global_mega_timer is not None and float(_global_mega_timer) <= new_due:
+            return
+        _global_mega_timer = new_due
+
+    def _fire(expected_due=new_due):
         global _global_mega_timer
-        _global_mega_timer = None
+        with timer_lock:
+            current = _global_mega_timer
+            if current is None or abs(float(current) - float(expected_due)) > 0.01:
+                return
+            _global_mega_timer = None
         if not BACKUP_TASK_POOL.submit("mega-global", mega_upload_latest_global_backup):
             log_error("GLOBAL MEGA QUEUE FULL, RETRY")
             _schedule_global_mega_snapshot(BACKUP_BUSY_RETRY_SECONDS)
-    DELAYED_SCHEDULER.schedule("mega-global-snapshot", max(5.0, float(delay)), _fire)
+
+    DELAYED_SCHEDULER.schedule("mega-global-snapshot", delay, _fire)
 
 
 def _run_quick_chat_backup(chat_id: int):
@@ -17447,22 +17611,16 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
                 err = str(e).lower()
                 if "message is not modified" in err:
                     return
-                # Старое окно могли удалить руками или Telegram уже не даёт его редактировать.
-                # Это не критическая ошибка: очищаем сохранённый id и создаём новое окно.
-                if any(x in err for x in ("message to edit not found", "message_id_invalid", "message not found")):
-                    try:
-                        aw = get_or_create_active_windows(chat_id)
-                        if aw.get(day_key) == mid:
-                            aw.pop(day_key, None)
-                            save_data(data)
-                    except Exception:
-                        pass
+                # v84: restart/deploy recovery never deletes the old Telegram
+                # message. If the reference is truly stale, forget only the ID
+                # and create one replacement. On a temporary failure, keep the
+                # ID and retry instead of creating duplicates.
+                if _is_stale_telegram_message_reference(e):
+                    clear_active_window_id(chat_id, day_key)
                 else:
-                    log_error(f"backup_window_for_owner edit failed: {e}")
-                try:
-                    bot.delete_message(chat_id, mid)
-                except Exception:
-                    pass
+                    log_error(f"backup_window_for_owner keep old {chat_id}/{mid}: {e}")
+                    _schedule_persistent_window_retry(chat_id, day_key, delay=12.0)
+                    return
 
         sent = bot.send_message(
             chat_id,
@@ -17944,6 +18102,21 @@ def cmd_mega_backup_now(msg):
         send_and_auto_delete(chat_id, "☁️ MEGA backup: ❌ ошибка, смотри /errors", 60)
 
 
+def persistent_message_reference_count() -> int:
+    """Number of saved Telegram message/window references in current state."""
+    total = 0
+    try:
+        total += sum(len(v or {}) for v in (data.get("active_messages", {}) or {}).values())
+    except Exception:
+        pass
+    try:
+        for store in (data.get("chats", {}) or {}).values():
+            total += len(_persistent_message_reference_state(store if isinstance(store, dict) else {}))
+    except Exception:
+        pass
+    return total
+
+
 def build_diag_text() -> str:
     chats = data.get("chats", {}) or {}
     finance_ids = collect_finance_chat_ids()
@@ -17982,6 +18155,8 @@ def build_diag_text() -> str:
         f"Быстрый остаток включён: {len(quick_on)}",
         f"Связей пересылки: {forward_pairs}",
         f"Активных окон: {active_windows_count}",
+        f"Сохранённых Telegram-ID: {persistent_message_reference_count()}",
+        "Восстановление окон после deploy: ВКЛ",
         f"Dirty-бэкапов в очереди: {dirty_count}",
         f"Очередь webhook: {WEBHOOK_TASK_POOL.stats()['pending']}",
         f"Очередь пересылки: {FORWARD_TASK_POOL.stats()['pending']}",
@@ -18223,7 +18398,10 @@ def main():
             finance_active_chats.add(int(OWNER_ID))
         except Exception:
             pass
-    log_info(f"Данные загружены из SQLite ({DB_FILE}). Версия бота: {VERSION}")
+    log_info(
+        f"Данные загружены из SQLite ({DB_FILE}). Версия бота: {VERSION}. "
+        f"Сохранённых Telegram-ID: {persistent_message_reference_count()}"
+    )
     set_webhook()
     start_keep_alive_thread()
     owner_id = None
@@ -18236,7 +18414,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🛠️Бот запущен (версия {VERSION}).\n"
+                    f"✅ 👾Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
