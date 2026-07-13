@@ -355,7 +355,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v83_compact_fast_backup"
+VERSION = "bot_v82_mega_priority_json"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -1643,7 +1643,7 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_prompt_back': 'Ф122',
     'info_instruction': 'Ф123',
     'info_queues': 'Ф124',
-    'mega_first_toggle': 'Ф125',
+    'mega_priority_toggle': 'Ф125',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -1983,21 +1983,31 @@ def fmt_date_backup(day_key: str) -> str:
 
 
 def backup_record_copy(rec: dict) -> dict:
-    """Компактная техническая копия записи для быстрого бэкапа и восстановления."""
+    """Копия записи для JSON-бэкапа: добавляем date в формате DD:MM:YY, не ломая day_key для восстановления."""
     try:
-        return json.loads(json.dumps(rec or {}, ensure_ascii=False, default=str))
+        rr = json.loads(json.dumps(rec or {}, ensure_ascii=False, default=str))
     except Exception:
-        return dict(rec or {})
+        rr = dict(rec or {})
+    dk = rr.get("day_key") or _record_day_key(rr) if isinstance(rr, dict) else today_key()
+    rr["date"] = fmt_date_backup(dk)
+    return rr
+
 
 def backup_records_list(records) -> list:
-    """Сохраняет исходный порядок записей без тяжёлого преобразования."""
-    return [backup_record_copy(r) for r in (records or []) if isinstance(r, dict)]
+    """Записи JSON: самые новые сверху, чтобы файл не приходилось листать вниз."""
+    rows = [backup_record_copy(r) for r in (records or []) if isinstance(r, dict)]
+    try:
+        rows.sort(key=record_sort_key, reverse=True)
+    except Exception:
+        rows.reverse()
+    return rows
+
 
 def backup_daily_records(daily: dict) -> dict:
-    """Компактная копия дневных записей без дополнительных дублирующих полей."""
+    """JSON-friendly daily_records с прежними ключами YYYY-MM-DD и дополнительными date в записях."""
     out = {}
-    for dk, recs in (daily or {}).items():
-        out[str(dk)] = backup_records_list(recs)
+    for dk in sorted((daily or {}).keys(), reverse=True):
+        out[str(dk)] = backup_records_list((daily or {}).get(dk, []))
     return out
 
 
@@ -2299,23 +2309,27 @@ def backup_excel_all_label() -> str:
     return "ВКЛ" if backup_excel_all_enabled() else "ВЫКЛ"
 
 
-def mega_first_mode_enabled() -> bool:
+def mega_priority_enabled() -> bool:
+    """Приоритетный аварийный JSON в MEGA после каждого важного изменения."""
     try:
-        return bool((data or {}).setdefault("_global_settings", {}).get("mega_first_mode_enabled", False))
+        return bool((data or {}).setdefault("_global_settings", {}).get("mega_priority_enabled", False))
     except Exception:
         return False
 
-def set_mega_first_mode_enabled(enabled: bool):
-    data.setdefault("_global_settings", {})["mega_first_mode_enabled"] = bool(enabled)
+
+def set_mega_priority_enabled(enabled: bool):
+    data.setdefault("_global_settings", {})["mega_priority_enabled"] = bool(enabled)
     save_data(data, root_only=True)
 
-def toggle_mega_first_mode_enabled() -> bool:
-    new_value = not mega_first_mode_enabled()
-    set_mega_first_mode_enabled(new_value)
-    return new_value
 
-def mega_first_mode_label() -> str:
-    return "⚡ MEGA сразу: ВКЛ" if mega_first_mode_enabled() else "🕒 MEGA обычно: ВЫКЛ"
+def toggle_mega_priority_enabled() -> bool:
+    value = not mega_priority_enabled()
+    set_mega_priority_enabled(value)
+    return value
+
+
+def mega_priority_label() -> str:
+    return "☁️ MEGA сразу: " + ("ВКЛ" if mega_priority_enabled() else "ВЫКЛ")
 
 
 def _backup_target_all_state(target: str) -> tuple[int, int]:
@@ -3110,11 +3124,11 @@ def build_help_text(chat_id: int) -> str:
             "/articles — описание статей: статья = ключевые слова",
             "/mega_status — статус MEGA/MEGAcmd",
             "/mega_backup_now — сразу загрузить latest_global.json в MEGA",
+            "/mega_priority — приоритетный аварийный JSON в MEGA ВКЛ/ВЫКЛ",
             "/buttons — переключить кнопки: text/icons",
             "/mask — переключить маскировку тотального секрета",
             "/day5 — финсутки: 00:00 / 05:00",
             "/off_on_backup_excel — Excel-бэкап всех чатов ВКЛ/ВЫКЛ",
-            "/mega_first — приоритетное почти мгновенное сохранение JSON в MEGA",
             "/queues — состояние очередей и нагрузки",
         ])
     lines.append("/help — эта справка")
@@ -3127,6 +3141,7 @@ def build_info_text(chat_id: int) -> str:
     if is_owner_chat(chat_id):
         text += f"\n/buttons — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
         text += f"\n/mask — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
+        text += f"\n/mega_priority — {'ВКЛ' if mega_priority_enabled() else 'ВЫКЛ'}"
     return text
 
 
@@ -4286,21 +4301,30 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
 
 
 def make_global_backup_payload() -> dict:
-    """Компактный глобальный JSON для быстрого MEGA-бэкапа и восстановления."""
+    """Глобальный JSON для восстановления всего бота."""
     with data_lock:
-        raw_payload = json.loads(json.dumps(data or {}, ensure_ascii=False, default=str))
-    raw_payload.setdefault("chats", {})
-    raw_payload.setdefault("forward_rules", data.get("forward_rules", {}) if isinstance(data, dict) else {})
-    raw_payload.setdefault("forward_finance", data.get("forward_finance", {}) if isinstance(data, dict) else {})
-    return {
-        "_backup_meta": {
-            "kind": "mega_latest_global",
-            "version": VERSION,
-            "created_at": now_local().isoformat(timespec="seconds"),
-            "chat_count": len(raw_payload.get("chats", {}) or {}),
-        },
-        **raw_payload,
+        payload = json.loads(json.dumps(data or {}, ensure_ascii=False, default=str))
+    payload.setdefault("chats", {})
+    payload.setdefault("forward_rules", data.get("forward_rules", {}) if isinstance(data, dict) else {})
+    payload.setdefault("forward_finance", data.get("forward_finance", {}) if isinstance(data, dict) else {})
+    try:
+        for _cid, _store in (payload.get("chats", {}) or {}).items():
+            if isinstance(_store, dict):
+                _store["records"] = backup_records_list(_store.get("records", []))
+                _store["daily_records_by_date"] = {fmt_date_backup(k): backup_records_list(v) for k, v in (_store.get("daily_records", {}) or {}).items()}
+    except Exception as e:
+        log_error(f"make_global_backup_payload date annotate: {e}")
+    payload["_backup_meta"] = {
+        "kind": "mega_latest_global",
+        "version": VERSION,
+        "created_at": now_local().isoformat(timespec="seconds"),
+        "chat_count": len(payload.get("chats", {}) or {}),
+        "finance_active_chats": payload.get("finance_active_chats", {}),
+        "forward_rules_count": sum(len(v or {}) for v in (payload.get("forward_rules", {}) or {}).values()),
+        "forward_finance_count": sum(len(v or {}) for v in (payload.get("forward_finance", {}) or {}).values()),
+        "note": "Полный JSON: чаты, финрежимы, скрытые режимы, быстрый остаток, пересылка, фин-учёт пересылки.",
     }
+    return payload
 
 
 def save_global_backup_snapshot(path: str) -> str:
@@ -4577,8 +4601,6 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool = True) -> None:
             if not fobj:
                 return
             try:
-                actual_write_time = now_local()
-                caption = f"📦 {file_name}\n🕒 Фактически перезаписан: {actual_write_time.strftime('%d.%m.%Y %H:%M:%S')}"
                 _tg_call_retry(
                     bot.edit_message_media,
                     chat_id=chat_id,
@@ -4590,7 +4612,7 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool = True) -> None:
                     purpose="backup_edit_message_media"
                 )
                 log_info(f"Chat backup UPDATED in chat {chat_id}")
-                meta[ts_key] = (actual_write_time if "actual_write_time" in locals() else now_local()).isoformat(timespec="seconds")
+                meta[ts_key] = now_local().isoformat(timespec="seconds")
                 _save_chat_backup_meta(meta)
                 return
             except Exception as e:
@@ -4602,7 +4624,7 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool = True) -> None:
             return
         sent = _tg_call_retry(bot.send_document, chat_id, fobj, caption=caption, purpose="backup_send_document")
         meta[msg_key] = sent.message_id
-        meta[ts_key] = (actual_write_time if "actual_write_time" in locals() else now_local()).isoformat(timespec="seconds")
+        meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_chat_backup_meta(meta)
         log_info(f"Chat backup CREATED in chat {chat_id}")
 
@@ -4623,7 +4645,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_first_mode_enabled": False},
+        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_priority_enabled": False},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -5347,18 +5369,24 @@ def snapshot_chat_store(chat_id: int) -> dict:
 
 
 def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
-    """Компактный JSON чата: минимальный объём, быстрое создание и восстановление."""
     store = store or snapshot_chat_store(chat_id)
+    generated_at = now_local().isoformat(timespec="seconds")
+    latest_records = backup_records_list(store.get("records", []))
+    latest_change = str((latest_records[0] if latest_records else {}).get("timestamp") or generated_at)
     return {
         "kind": "chat_full_backup",
         "version": VERSION,
-        "created_at": now_local().isoformat(timespec="seconds"),
+        "file_modified_at": generated_at,
+        "last_financial_change_at": latest_change,
+        "records_order": "newest_first",
+        "created_at": generated_at,
         "date_format": "DD:MM:YY",
         "chat_id": chat_id,
         "chat_name": get_chat_display_name(chat_id),
         "balance": store.get("balance", 0),
-        "records": backup_records_list(store.get("records", [])),
+        "records": latest_records,
         "daily_records": backup_daily_records(store.get("daily_records", {})),
+        "daily_records_by_date": {fmt_date_backup(k): backup_records_list(v) for k, v in (store.get("daily_records", {}) or {}).items()},
         "next_id": store.get("next_id", 1),
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
@@ -7042,8 +7070,6 @@ _secret_mega_upload_lock = threading.RLock()
 
 
 def schedule_secret_mega_upload(chat_id: int, delay: float = 45.0):
-    if mega_first_mode_enabled():
-        delay = min(float(delay or 45.0), 1.0)
     """Debounce для MEGA секретов: много секретных действий = одна загрузка позже."""
     try:
         if not mega_is_configured():
@@ -8460,7 +8486,7 @@ def cmd_toggle_finance_day5(msg):
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
-    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/off_on_backup_excel", "/mega_first", "/queues", "/queue_status"}
+    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/off_on_backup_excel", "/mega_priority", "/queues", "/queue_status"}
 ))
 def cmd_total_secret_capture(msg):
     forward_secret_message_now(msg)
@@ -9072,7 +9098,11 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         else:
             file_name = base_name
 
-        caption = None
+        try:
+            actual_mtime = datetime.fromtimestamp(os.path.getmtime(base_path), tz=get_tz()).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            actual_mtime = now_local().strftime("%Y-%m-%d %H:%M:%S")
+        caption = f"📦 {file_name}\nФактически изменён: {actual_mtime}"
 
         def _open_for_telegram() -> io.BytesIO | None:
             if not os.path.exists(base_path):
@@ -9113,8 +9143,6 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
             fobj = _open_for_telegram()
             if not fobj:
                 return
-            actual_write_time = now_local()
-            caption = f"📦 {file_name}\n🕒 Фактически записан: {actual_write_time.strftime('%d.%m.%Y %H:%M:%S')}"
             sent_msg = _tg_call_retry(
                 bot.send_document,
                 int(BACKUP_CHAT_ID),
@@ -9125,7 +9153,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
             meta[msg_key] = sent_msg.message_id
             log_info(f"[BACKUP] channel file sent new: {base_path}")
 
-        meta[ts_key] = (actual_write_time if "actual_write_time" in locals() else now_local()).isoformat(timespec="seconds")
+        meta[ts_key] = now_local().isoformat(timespec="seconds")
         _save_csv_meta(meta)
 
     except Exception as e:
@@ -12260,7 +12288,7 @@ def build_owner_instruction_text() -> str:
         "4. Секрет: сообщение сначала пересылается, если включена пересылка, затем сохраняется и удаляется из исходного чата.\n"
         "5. SQLite сохраняется сразу. В обычной операции точечно обновляется только изменившийся чат.\n"
         "6. Быстрый JSON: примерно через 15 секунд после последнего изменения конкретного чата. При включённой MEGA обновляется latest JSON этого чата.\n"
-        "7. Полный бэкап: примерно через 120 секунд тишины именно в этом чате. JSON/CSV создаются всегда; Excel зависит от /off_on_backup_excel; канал получает JSON и при включении Excel; MEGA получает JSON.\n"
+        "7. Если включён /mega_priority: примерно через 0,5–1 секунду ставится аварийный JSON чата и global JSON в очередь MEGA; интерфейс при этом не ждёт загрузку. Полный бэкап: примерно через 120 секунд тишины именно в этом чате. JSON/CSV создаются всегда; Excel зависит от /off_on_backup_excel; канал получает JSON и при включении Excel; MEGA получает JSON.\n"
         "8. У каждого чата собственный таймер бэкапа: активность одного чата не переносит бэкап остальных.\n"
         "9. Очереди ограничены. При перегрузке webhook вернёт 503, и Telegram повторит доставку вместо потери update.\n"
         "10. /queues показывает размер очередей, работников, отказы и ожидание. /diag показывает общее состояние."
@@ -12300,7 +12328,6 @@ def build_queue_status_text() -> str:
     lines.append(f"Планировщик: задач {ds['scheduled']}, отменено {ds['cancelled']}, выполнено {ds['executed']}")
     lines.append(f"Excel-бэкап всех чатов: {backup_excel_all_label()}")
     lines.append(f"Telegram общий интервал: {TELEGRAM_GLOBAL_MIN_GAP:.3f}с")
-    lines.append(f"Режим MEGA-first: {'ВКЛ' if mega_first_mode_enabled() else 'ВЫКЛ'}")
     return "\n".join(lines)
 
 
@@ -12327,7 +12354,7 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
-        kb.row(IB(mega_first_mode_label(), callback_data="mega_first_toggle"))
+        kb.row(IB(mega_priority_label(), callback_data="mega_priority_toggle"))
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
@@ -14083,15 +14110,18 @@ def on_callback(call):
             new_state = toggle_finance_day_start_5am()
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nФинансовые сутки: с {'05:00' if new_state else '00:00'}", reply_markup=build_info_keyboard(chat_id))
             return
-        if data_str == "mega_first_toggle":
+        if data_str == "mega_priority_toggle":
             if not is_owner_chat(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Только для владельца", show_alert=True)
+                except Exception:
+                    pass
                 return
-            new_state = toggle_mega_first_mode_enabled()
-            schedule_config_backup_for_chats(*collect_finance_chat_ids(), delay=1.0 if new_state else BACKUP_MIN_DELAY_SECONDS)
-            text = "включён" if new_state else "выключен"
-            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nПриоритетный MEGA-бэкап: {text}.", reply_markup=build_info_keyboard(chat_id))
+            new_state = toggle_mega_priority_enabled()
+            if new_state:
+                _schedule_priority_mega_for_chat(chat_id, delay=0.2)
+            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nПриоритетный MEGA JSON: {'ВКЛ' if new_state else 'ВЫКЛ'}", reply_markup=build_info_keyboard(chat_id))
             return
-
         if data_str == "info_instruction":
             if not is_owner_chat(chat_id):
                 try:
@@ -16698,12 +16728,7 @@ def _run_quick_chat_backup(chat_id: int):
             save_chat_json_only(chat_id)
             if is_backup_to_mega_enabled(chat_id):
                 mega_upload_chat_latest_json_only(chat_id)
-                if mega_first_mode_enabled():
-                    # Глобальный latest_global нужен автovосстановлению после deploy/sleep.
-                    # Снимки объединяются планировщиком, чтобы серия сообщений не создала шторм MEGA.
-                    _schedule_global_mega_snapshot(1.0)
-                else:
-                    _schedule_global_mega_snapshot(30.0)
+                _schedule_global_mega_snapshot(30.0)
         finally:
             with timer_lock:
                 _quick_backup_dirty_chats.discard(chat_id)
@@ -16725,15 +16750,11 @@ def _run_full_chat_backup(chat_id: int):
             save_data(data, chat_ids=[chat_id])
             trace.step("создаёт JSON/CSV" + ("/Excel" if backup_excel_all_enabled() else ""))
             save_chat_json(chat_id)
-            if mega_first_mode_enabled() and is_backup_to_mega_enabled(chat_id):
-                trace.step("сначала сохраняет JSON в MEGA")
-                mega_upload_chat_backup_bundle(chat_id, current_month_key())
-                _schedule_global_mega_snapshot(1.0)
             if is_backup_to_chat_enabled(chat_id) and can_receive_direct_json_backup(chat_id) and not is_finance_output_suppressed(chat_id):
                 send_backup_to_chat(chat_id, ensure_files=False)
             if is_backup_to_channel_enabled(chat_id):
                 send_backup_to_channel(chat_id, ensure_files=False)
-            if (not mega_first_mode_enabled()) and is_backup_to_mega_enabled(chat_id):
+            if is_backup_to_mega_enabled(chat_id):
                 mega_upload_chat_backup_bundle(chat_id, current_month_key())
                 _schedule_global_mega_snapshot(20.0)
             trace.finish("бэкап завершён")
@@ -16745,6 +16766,41 @@ def _run_full_chat_backup(chat_id: int):
                 _backup_dirty_chats.discard(chat_id)
                 _backup_timers.pop(chat_id, None)
 
+
+_priority_mega_due = {}
+_priority_mega_lock = threading.RLock()
+
+def _run_priority_mega_backup(chat_id: int):
+    """Аварийное сохранение: только latest JSON чата, затем global JSON. Не блокирует кнопку."""
+    chat_id = int(chat_id)
+    try:
+        save_data(data, chat_ids=[chat_id])
+        save_chat_json_only(chat_id)
+        if is_backup_to_mega_enabled(chat_id) and mega_is_configured():
+            mega_upload_chat_latest_json_only(chat_id)
+            mega_upload_latest_global_backup()
+    except Exception as e:
+        log_error(f"priority MEGA backup({chat_id}): {e}")
+    finally:
+        with _priority_mega_lock:
+            _priority_mega_due.pop(chat_id, None)
+
+def _schedule_priority_mega_for_chat(chat_id: int, delay: float = 1.0):
+    if not mega_priority_enabled() or not mega_is_configured():
+        return
+    chat_id = int(chat_id)
+    delay = max(0.2, float(delay or 0.2))
+    due = time.time() + delay
+    with _priority_mega_lock:
+        _priority_mega_due[chat_id] = due
+    def _fire():
+        with _priority_mega_lock:
+            expected = _priority_mega_due.get(chat_id)
+            if expected is None or abs(expected - due) > 0.01:
+                return
+        if not BACKUP_TASK_POOL.submit(f"priority-mega:{chat_id}", _run_priority_mega_backup, chat_id):
+            DELAYED_SCHEDULER.schedule(f"priority-mega-retry:{chat_id}", 5.0, lambda: _schedule_priority_mega_for_chat(chat_id, 0.2))
+    DELAYED_SCHEDULER.schedule(f"priority-mega:{chat_id}", delay, _fire)
 
 def schedule_quick_backup(chat_id: int, delay: float = 15.0):
     chat_id = int(chat_id)
@@ -16768,7 +16824,8 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
         delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
     except Exception:
         delay = BACKUP_MIN_DELAY_SECONDS
-    schedule_quick_backup(chat_id, 1.0 if mega_first_mode_enabled() else 15.0)
+    _schedule_priority_mega_for_chat(chat_id, delay=0.5)
+    schedule_quick_backup(chat_id, 15.0)
     due = time.time() + delay
     with timer_lock:
         _backup_dirty_chats.add(chat_id)
@@ -17360,6 +17417,24 @@ def on_edited_message(msg):
         log_error(f"[EDIT-FWD] schedule failed: {e}")
                                             
 
+@bot.message_handler(commands=["mega_priority"])
+def cmd_mega_priority(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    enabled = toggle_mega_priority_enabled()
+    if enabled:
+        for cid in collect_finance_chat_ids():
+            _schedule_priority_mega_for_chat(cid, delay=0.2)
+    send_and_auto_delete(chat_id, f"☁️ Приоритетный MEGA JSON: {'ВКЛ' if enabled else 'ВЫКЛ'}", 25)
+
+
 @bot.message_handler(commands=["mega_status"])
 def cmd_mega_status(msg):
     try:
@@ -17456,6 +17531,7 @@ def build_diag_text() -> str:
         f"BACKUP_CHAT_ID: {'есть' if BACKUP_CHAT_ID else 'нет'}",
         f"Бэкап в канал: {'ВКЛ' if backup_flags.get('channel', True) else 'ВЫКЛ'}",
         f"MEGA: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'} / {'настроено' if mega_is_configured() else 'не настроено'}",
+        f"MEGA приоритет: {'ВКЛ' if mega_priority_enabled() else 'ВЫКЛ'}",
         f"MEGA dir: {MEGA_BACKUP_DIR}",
         f"Ошибок в журнале: {len(get_recent_errors(80))}",
     ]
@@ -17466,19 +17542,6 @@ def build_diag_text() -> str:
             lines.append(f"• {e.get('ts','')} — {format_error_for_owner(e.get('msg',''))[:160]}")
     return "\n".join(lines)
 
-
-@bot.message_handler(commands=["mega_first"])
-def cmd_mega_first(msg):
-    update_chat_info_from_message(msg)
-    schedule_command_delete(msg)
-    uid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
-    if not is_owner_chat(uid):
-        send_and_auto_delete(msg.chat.id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
-        return
-    enabled = toggle_mega_first_mode_enabled()
-    schedule_config_backup_for_chats(*collect_finance_chat_ids(), delay=1.0 if enabled else BACKUP_MIN_DELAY_SECONDS)
-    send_info(msg.chat.id, f"{'⚡' if enabled else '🕒'} Приоритетный MEGA-бэкап {'ВКЛ' if enabled else 'ВЫКЛ'}.\n"
-                           + ("JSON чата отправляется примерно через 1 секунду, latest_global — объединённым снимком сразу после него." if enabled else "Работает обычная схема: быстрый JSON через 15 секунд, полный бэкап позже."))
 
 @bot.message_handler(commands=["off_on_backup_excel"])
 def cmd_off_on_backup_excel(msg):
@@ -17714,7 +17777,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ Бот запущен (версия {VERSION}).\n"
+                    f"✅ 👾Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
