@@ -14,6 +14,8 @@ import shutil
 import tempfile
 import calendar
 import hashlib
+import queue
+import heapq
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -32,20 +34,251 @@ from contextlib import contextmanager
 window_locks = defaultdict(threading.Lock)
 
 # ─────────────────────────────────────────────────────────────
-# Потокобезопасность / очереди по чатам
+# Ограниченные очереди с сохранением порядка внутри одного чата
 # ─────────────────────────────────────────────────────────────
-# Flask webhook работает в threaded=True, поэтому разные апдейты Telegram
-# могут приходить одновременно. Эти замки делают обработку стабильной:
-# • один и тот же чат обрабатывается строго по очереди;
-# • data/save_data защищены отдельным глобальным замком;
-# • forward_map защищён отдельным замком;
-# • пересылка вынесена из основного lock чата и выполняется через общий
-#   forward_delivery_lock, чтобы не было deadlock при связках A ⇄ B.
+# KeyedTaskPool выполняет задачи разных чатов параллельно, но задачи одного
+# chat_id/source_chat_id всегда идут строго по порядку. Это не даёт 100 активным
+# чатам создавать сотни бесконтрольных потоков.
+class KeyedTaskPool:
+    def __init__(self, name: str, workers: int = 4, max_pending: int = 1000):
+        self.name = str(name)
+        self.workers = max(1, int(workers))
+        self.max_pending = max(10, int(max_pending))
+        self._ready = queue.Queue()
+        self._lock = threading.RLock()
+        self._by_key = defaultdict(deque)
+        self._active_keys = set()
+        self._pending = 0
+        self._active_workers = 0
+        self._submitted = 0
+        self._completed = 0
+        self._failed = 0
+        self._rejected = 0
+        self._max_wait = 0.0
+        self._last_error = ""
+        for idx in range(self.workers):
+            t = threading.Thread(target=self._worker, name=f"{self.name}-{idx+1}", daemon=True)
+            t.start()
+
+    def submit(self, key, func, *args, **kwargs) -> bool:
+        key = str(key)
+        with self._lock:
+            if self._pending >= self.max_pending:
+                self._rejected += 1
+                return False
+            self._by_key[key].append((func, args, kwargs, time.time()))
+            self._pending += 1
+            self._submitted += 1
+            if key not in self._active_keys:
+                self._active_keys.add(key)
+                self._ready.put(key)
+        return True
+
+    def _worker(self):
+        while True:
+            key = self._ready.get()
+            task = None
+            with self._lock:
+                q = self._by_key.get(key)
+                if q:
+                    task = q.popleft()
+                    self._active_workers += 1
+                else:
+                    self._active_keys.discard(key)
+                    self._by_key.pop(key, None)
+            if task is None:
+                self._ready.task_done()
+                continue
+            func, args, kwargs, enqueued_at = task
+            wait = max(0.0, time.time() - enqueued_at)
+            with self._lock:
+                self._max_wait = max(self._max_wait, wait)
+            try:
+                func(*args, **kwargs)
+                with self._lock:
+                    self._completed += 1
+            except Exception as exc:
+                with self._lock:
+                    self._failed += 1
+                    self._last_error = str(exc)[:300]
+                try:
+                    log_error(f"POOL {self.name}: {exc}")
+                except Exception:
+                    logging.exception("POOL %s", self.name)
+            finally:
+                with self._lock:
+                    self._pending = max(0, self._pending - 1)
+                    self._active_workers = max(0, self._active_workers - 1)
+                    q = self._by_key.get(key)
+                    if q:
+                        self._ready.put(key)
+                    else:
+                        self._by_key.pop(key, None)
+                        self._active_keys.discard(key)
+                self._ready.task_done()
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "name": self.name,
+                "workers": self.workers,
+                "active": self._active_workers,
+                "pending": self._pending,
+                "keys": len(self._active_keys),
+                "submitted": self._submitted,
+                "completed": self._completed,
+                "failed": self._failed,
+                "rejected": self._rejected,
+                "max_wait": round(self._max_wait, 3),
+                "last_error": self._last_error,
+            }
+
+
+class DelayedTaskScheduler:
+    """Один поток хранит все логические таймеры без сотен threading.Timer."""
+    def __init__(self, executor_pool: KeyedTaskPool):
+        self.executor_pool = executor_pool
+        self._cv = threading.Condition(threading.RLock())
+        self._heap = []
+        self._versions = {}
+        self._deadlines = {}
+        self._seq = 0
+        self._submitted = 0
+        self._executed = 0
+        self._cancelled = 0
+        self._failed_dispatch = 0
+        threading.Thread(target=self._worker, name="delayed-scheduler", daemon=True).start()
+
+    def schedule(self, key, delay: float, func, *args, **kwargs):
+        key = str(key)
+        run_at = time.time() + max(0.0, float(delay or 0))
+        with self._cv:
+            self._seq += 1
+            version = int(self._versions.get(key, 0)) + 1
+            self._versions[key] = version
+            self._deadlines[key] = run_at
+            heapq.heappush(self._heap, (run_at, self._seq, key, version, func, args, kwargs))
+            self._submitted += 1
+            self._cv.notify_all()
+        return run_at
+
+    def cancel(self, key):
+        key = str(key)
+        with self._cv:
+            self._versions[key] = int(self._versions.get(key, 0)) + 1
+            if key in self._deadlines:
+                self._deadlines.pop(key, None)
+                self._cancelled += 1
+            self._cv.notify_all()
+
+    def deadline(self, key):
+        with self._cv:
+            return self._deadlines.get(str(key))
+
+    def stats(self):
+        with self._cv:
+            return {
+                "scheduled": len(self._deadlines),
+                "heap": len(self._heap),
+                "submitted": self._submitted,
+                "executed": self._executed,
+                "cancelled": self._cancelled,
+                "dispatch_failed": self._failed_dispatch,
+            }
+
+    def _worker(self):
+        while True:
+            with self._cv:
+                while not self._heap:
+                    self._cv.wait()
+                run_at, seq, key, version, func, args, kwargs = self._heap[0]
+                wait = run_at - time.time()
+                if wait > 0:
+                    self._cv.wait(timeout=wait)
+                    continue
+                heapq.heappop(self._heap)
+                if int(self._versions.get(key, 0)) != int(version):
+                    continue
+                self._deadlines.pop(key, None)
+            dispatch_key = f"delay:{key}:{seq}"
+            ok = self.executor_pool.submit(dispatch_key, self._execute, func, args, kwargs)
+            if not ok:
+                # Не теряем таймер при кратком всплеске: возвращаем его в heap и пробуем позже.
+                with self._cv:
+                    self._failed_dispatch += 1
+                    if int(self._versions.get(key, 0)) == int(version):
+                        retry_at = time.time() + 0.5
+                        self._seq += 1
+                        self._deadlines[key] = retry_at
+                        heapq.heappush(self._heap, (retry_at, self._seq, key, version, func, args, kwargs))
+                        self._cv.notify_all()
+                try:
+                    log_error(f"DELAYED QUEUE FULL, RETRY: {key}")
+                except Exception:
+                    pass
+
+    def _execute(self, func, args, kwargs):
+        try:
+            func(*args, **kwargs)
+        finally:
+            with self._cv:
+                self._executed += 1
+
+
+def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 128) -> int:
+    try:
+        return max(minimum, min(maximum, int(os.getenv(name, str(default)) or default)))
+    except Exception:
+        return int(default)
+
+
+WEBHOOK_TASK_POOL = KeyedTaskPool(
+    "webhook",
+    _env_int("WEBHOOK_WORKERS", 12, 2, 32),
+    _env_int("WEBHOOK_MAX_PENDING", 5000, 100, 20000),
+)
+FINANCE_TASK_POOL = KeyedTaskPool(
+    "finance",
+    _env_int("FINANCE_WORKERS", 8, 2, 24),
+    _env_int("FINANCE_MAX_PENDING", 2000, 100, 10000),
+)
+FORWARD_TASK_POOL = KeyedTaskPool(
+    "forward",
+    _env_int("FORWARD_WORKERS", 8, 2, 24),
+    _env_int("FORWARD_MAX_PENDING", 3000, 100, 10000),
+)
+BACKUP_TASK_POOL = KeyedTaskPool(
+    "backup",
+    _env_int("BACKUP_WORKERS", 2, 1, 6),
+    _env_int("BACKUP_MAX_PENDING", 1000, 50, 5000),
+)
+EXPORT_TASK_POOL = KeyedTaskPool(
+    "export",
+    _env_int("EXPORT_WORKERS", 2, 1, 6),
+    _env_int("EXPORT_MAX_PENDING", 300, 20, 2000),
+)
+GENERAL_TASK_POOL = KeyedTaskPool(
+    "general",
+    _env_int("GENERAL_WORKERS", 4, 1, 12),
+    _env_int("GENERAL_MAX_PENDING", 1000, 50, 5000),
+)
+DELAYED_TASK_POOL = KeyedTaskPool(
+    "delayed",
+    _env_int("DELAYED_WORKERS", 4, 1, 12),
+    _env_int("DELAYED_MAX_PENDING", 2000, 100, 10000),
+)
+DOZVON_TASK_POOL = KeyedTaskPool(
+    "dozvon",
+    _env_int("DOZVON_WORKERS", 2, 1, 4),
+    _env_int("DOZVON_MAX_PENDING", 100, 10, 500),
+)
+DELAYED_SCHEDULER = DelayedTaskScheduler(DELAYED_TASK_POOL)
+
 chat_locks = defaultdict(threading.RLock)
 data_lock = threading.RLock()
 forward_map_lock = threading.RLock()
-forward_delivery_lock = threading.RLock()
 timer_lock = threading.RLock()
+_state_context = threading.local()
 
 
 def chat_lock_for(chat_id: int):
@@ -58,6 +291,20 @@ def locked_chat(chat_id: int):
         yield
 
 
+@contextmanager
+def state_chat_context(chat_id):
+    prev = getattr(_state_context, "chat_id", None)
+    try:
+        _state_context.chat_id = int(chat_id) if chat_id is not None else None
+        yield
+    finally:
+        _state_context.chat_id = prev
+
+
+def current_state_chat_id():
+    return getattr(_state_context, "chat_id", None)
+
+
 def _extract_update_chat_id(payload: dict):
     """Достаёт chat_id из сырого Telegram update до передачи в telebot."""
     try:
@@ -67,7 +314,6 @@ def _extract_update_chat_id(payload: dict):
                 chat = item.get("chat") or {}
                 if "id" in chat:
                     return int(chat["id"])
-
         cq = payload.get("callback_query")
         if isinstance(cq, dict):
             msg = cq.get("message") or {}
@@ -80,39 +326,24 @@ def _extract_update_chat_id(payload: dict):
 
 
 def schedule_forward_any_message(source_chat_id: int, msg):
-    """Запускает пересылку после выхода из lock исходного чата."""
-    def _job():
-        try:
-            with forward_delivery_lock:
-                forward_any_message(source_chat_id, msg)
-        except Exception as e:
-            log_error(f"schedule_forward_any_message({source_chat_id}): {e}")
-
-    threading.Thread(target=_job, daemon=True).start()
+    """Пересылка: порядок сохраняется по исходному чату, разные чаты идут параллельно."""
+    if not FORWARD_TASK_POOL.submit(int(source_chat_id), forward_any_message, source_chat_id, msg):
+        # При редком переполнении не теряем пересылку: выполняем в текущем ограниченном webhook-worker.
+        log_error(f"FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
+        forward_any_message(source_chat_id, msg)
 
 
 def schedule_propagate_edited_to_copies(msg):
-    """Синхронизация правок копий вынесена из lock исходного чата."""
-    def _job():
-        try:
-            with forward_delivery_lock:
-                propagate_edited_to_copies(msg)
-        except Exception as e:
-            log_error(f"schedule_propagate_edited_to_copies: {e}")
-
-    threading.Thread(target=_job, daemon=True).start()
+    source_chat_id = int(getattr(getattr(msg, "chat", None), "id", 0) or 0)
+    if not FORWARD_TASK_POOL.submit(source_chat_id, propagate_edited_to_copies, msg):
+        log_error(f"FORWARD EDIT QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
+        propagate_edited_to_copies(msg)
 
 
 def schedule_delete_forward_copies_for_source(source_chat_id: int, source_msg_id: int):
-    """Удаление копий вынесено из lock исходного чата."""
-    def _job():
-        try:
-            with forward_delivery_lock:
-                delete_forward_copies_for_source(source_chat_id, source_msg_id)
-        except Exception as e:
-            log_error(f"schedule_delete_forward_copies_for_source: {e}")
-
-    threading.Thread(target=_job, daemon=True).start()
+    if not FORWARD_TASK_POOL.submit(int(source_chat_id), delete_forward_copies_for_source, source_chat_id, source_msg_id):
+        log_error(f"FORWARD DELETE QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
+        delete_forward_copies_for_source(source_chat_id, source_msg_id)
 BOT_TOKEN = os.getenv("B_T", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
 APP_URL = os.getenv("APP_URL", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip()
@@ -124,7 +355,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v80_precise_ranges"
+VERSION = "bot_v81_100chats_queues"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -253,6 +484,20 @@ class SQLiteState:
                 )
             for stale in existing - {str(k) for k in chats.keys()}:
                 self.conn.execute("DELETE FROM chats WHERE chat_id=?", (stale,))
+            self.conn.commit()
+
+    def save_chat(self, chat_id, payload: dict):
+        """Точечно сохраняет только один изменившийся чат."""
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v",
+                (str(chat_id), self._dump(payload or {})),
+            )
+            self.conn.commit()
+
+    def delete_chat(self, chat_id):
+        with self.lock:
+            self.conn.execute("DELETE FROM chats WHERE chat_id=?", (str(chat_id),))
             self.conn.commit()
 
     def get_meta(self, kind: str, key: str, default=None):
@@ -697,11 +942,17 @@ def _is_o9_owner_call(call) -> bool:
         return False
 
 
+def _o9_action_scheduler_key(key) -> str:
+    try:
+        return f"o9-action:{int(key[0])}:{int(key[1])}:{str(key[2])}"
+    except Exception:
+        return f"o9-action:{str(key)}"
+
+
 def _cancel_o9_secret_timer(key):
     try:
-        t = _o9_secret_action_timers.pop(key, None)
-        if t and getattr(t, "is_alive", lambda: False)():
-            t.cancel()
+        _o9_secret_action_timers.pop(key, None)
+        DELAYED_SCHEDULER.cancel(_o9_action_scheduler_key(key))
     except Exception:
         pass
 
@@ -742,6 +993,10 @@ def _cancel_o9_secret_wait_timer(chat_id: int):
         if isinstance(item, dict):
             item["cancelled"] = True
         _o9_secret_wait_timers.pop(key, None)
+    try:
+        DELAYED_SCHEDULER.cancel(f"o9-secret-wait:{key}")
+    except Exception:
+        pass
 
 
 def schedule_o9_secret_wait_timeout(chat_id: int, prompt_message_id: int, delay: int = O9_SECRET_WAIT_SECONDS):
@@ -757,7 +1012,6 @@ def schedule_o9_secret_wait_timeout(chat_id: int, prompt_message_id: int, delay:
 
     def _job():
         try:
-            time.sleep(int(delay))
             with _o9_secret_click_lock:
                 current = _o9_secret_wait_timers.get(key)
                 if current is not token or token.get("cancelled"):
@@ -768,7 +1022,7 @@ def schedule_o9_secret_wait_timeout(chat_id: int, prompt_message_id: int, delay:
         except Exception as e:
             log_error(f"schedule_o9_secret_wait_timeout({chat_id},{prompt_message_id}): {e}")
 
-    threading.Thread(target=_job, daemon=True).start()
+    DELAYED_SCHEDULER.schedule(f"o9-secret-wait:{key}", int(delay), _job)
 
 
 def _o9_delayed_close(chat_id: int, message_id: int, key):
@@ -977,12 +1231,27 @@ def handle_o9_secret_triple_click(call, data_str: str) -> bool:
             count = int(item["count"])
 
             if count < 3:
+                scheduler_key = _o9_action_scheduler_key(key)
                 if kind == "close":
-                    t = threading.Timer(O9_SECRET_CLICK_WINDOW_SECONDS + 0.2, _o9_delayed_close, args=(chat_id, msg_id, key))
+                    deadline = DELAYED_SCHEDULER.schedule(
+                        scheduler_key,
+                        O9_SECRET_CLICK_WINDOW_SECONDS + 0.2,
+                        _o9_delayed_close,
+                        chat_id,
+                        msg_id,
+                        key,
+                    )
                 else:
-                    t = threading.Timer(O9_SECRET_CLICK_WINDOW_SECONDS + 0.2, _o9_delayed_back_main, args=(chat_id, msg_id, day_key, key))
-                _o9_secret_action_timers[key] = t
-                t.start()
+                    deadline = DELAYED_SCHEDULER.schedule(
+                        scheduler_key,
+                        O9_SECRET_CLICK_WINDOW_SECONDS + 0.2,
+                        _o9_delayed_back_main,
+                        chat_id,
+                        msg_id,
+                        day_key,
+                        key,
+                    )
+                _o9_secret_action_timers[key] = deadline
 
         if count >= 3:
             _cancel_o9_secret_timer(key)
@@ -1368,6 +1637,12 @@ WINDOW_MARKER_CONSTANTS = {
     'exp_pick_end_record:*': 'Ф116',
     'exp_send:*:csv:*': 'Ф117',
     'exp_send:*:xlsx:*': 'Ф118',
+    'd:*:backup_mass_chat': 'Ф119',
+    'd:*:backup_mass_channel': 'Ф120',
+    'd:*:backup_mass_mega': 'Ф121',
+    'cat_prompt_back': 'Ф122',
+    'info_instruction': 'Ф123',
+    'info_queues': 'Ф124',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -1554,15 +1829,15 @@ _v98_auto_close_timers = {}
 _v98_auto_close_lock = threading.RLock()
 
 
+def _v98_scheduler_key(chat_id: int, message_id: int) -> str:
+    return f"v98-close:{int(chat_id)}:{int(message_id)}"
+
+
 def _cancel_v98_auto_close(chat_id: int, message_id: int):
     key = (int(chat_id), int(message_id))
     with _v98_auto_close_lock:
-        t = _v98_auto_close_timers.pop(key, None)
-    if t and getattr(t, "is_alive", lambda: False)():
-        try:
-            t.cancel()
-        except Exception:
-            pass
+        _v98_auto_close_timers.pop(key, None)
+    DELAYED_SCHEDULER.cancel(_v98_scheduler_key(chat_id, message_id))
 
 
 def _schedule_v98_auto_close(chat_id: int, message_id: int, delay: int = 60):
@@ -1579,10 +1854,13 @@ def _schedule_v98_auto_close(chat_id: int, message_id: int, delay: int = 60):
         except Exception:
             pass
 
-    t = threading.Timer(int(delay), _job)
+    deadline = DELAYED_SCHEDULER.schedule(
+        _v98_scheduler_key(chat_id, message_id),
+        int(delay),
+        _job,
+    )
     with _v98_auto_close_lock:
-        _v98_auto_close_timers[(chat_id, message_id)] = t
-    t.start()
+        _v98_auto_close_timers[(chat_id, message_id)] = deadline
 
 
 def _touch_v98_auto_close_for_callback(chat_id: int, message_id: int, data_str: str):
@@ -2002,6 +2280,56 @@ def is_finance_output_suppressed(chat_id: int) -> bool:
         return False
 
 
+def backup_excel_all_enabled() -> bool:
+    try:
+        return bool((data or {}).setdefault("_global_settings", {}).get("backup_excel_all_enabled", True))
+    except Exception:
+        return True
+
+
+def set_backup_excel_all_enabled(enabled: bool):
+    data.setdefault("_global_settings", {})["backup_excel_all_enabled"] = bool(enabled)
+    save_data(data, full=True)
+
+
+def toggle_backup_excel_all_enabled() -> bool:
+    new_value = not backup_excel_all_enabled()
+    set_backup_excel_all_enabled(new_value)
+    return new_value
+
+
+def backup_excel_all_label() -> str:
+    return "ВКЛ" if backup_excel_all_enabled() else "ВЫКЛ"
+
+
+def _backup_target_all_state(target: str) -> tuple[int, int]:
+    ids = [int(cid) for cid, _ in _collect_backup_menu_items()]
+    if target == "chat":
+        ids = [cid for cid in ids if is_owner_chat(cid)]
+    enabled = sum(1 for cid in ids if is_backup_target_enabled(cid, target))
+    return enabled, len(ids)
+
+
+def set_backup_target_for_all(target: str, enabled: bool) -> int:
+    count = 0
+    for cid, _title in _collect_backup_menu_items():
+        cid = int(cid)
+        if target == "chat" and not is_owner_chat(cid):
+            continue
+        settings = _ensure_backup_settings(cid)
+        settings[_backup_target_setting_key(target)] = bool(enabled)
+        settings["auto_backup_enabled"] = any((
+            bool(settings.get("auto_backup_to_chat_enabled", True)),
+            bool(settings.get("auto_backup_to_channel_enabled", True)),
+            bool(settings.get("auto_backup_to_mega_enabled", True)),
+        ))
+        count += 1
+    save_data(data, full=True)
+    for cid, _title in _collect_backup_menu_items():
+        schedule_backup_flush(int(cid), BACKUP_MIN_DELAY_SECONDS)
+    return count
+
+
 def _backup_target_setting_key(target: str) -> str:
     target = str(target or "").strip().lower()
     if target in {"chat", "owner", "self"}:
@@ -2393,16 +2721,11 @@ def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
         except Exception as e:
             log_error(f"schedule_main_window_recreate_after_quiet({get_chat_display_name(chat_id)}): {e}")
 
+    scheduler_key = f"main-window-recreate:{chat_id}"
     with timer_lock:
-        prev = _balance_panel_recreate_timers.get(("main", chat_id))
-        if prev and prev.is_alive():
-            try:
-                prev.cancel()
-            except Exception:
-                pass
-        t = threading.Timer(delay, _job)
-        _balance_panel_recreate_timers[("main", chat_id)] = t
-        t.start()
+        DELAYED_SCHEDULER.cancel(scheduler_key)
+        deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
+        _balance_panel_recreate_timers[("main", chat_id)] = deadline
 
 
 def bump_quick_balance_recreate_counter(chat_id: int, count: int = 1):
@@ -2467,16 +2790,11 @@ def schedule_quick_balance_first_recreate(chat_id: int, delay: float = 60.0):
         except Exception as e:
             log_error(f"schedule_quick_balance_first_recreate({chat_id}): {e}")
 
+    scheduler_key = f"quick-balance-first:{chat_id}"
     with timer_lock:
-        prev = _balance_panel_first_timers.get(chat_id)
-        if prev and prev.is_alive():
-            try:
-                prev.cancel()
-            except Exception:
-                pass
-        t = threading.Timer(delay, _job)
-        _balance_panel_first_timers[chat_id] = t
-        t.start()
+        DELAYED_SCHEDULER.cancel(scheduler_key)
+        deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
+        _balance_panel_first_timers[chat_id] = deadline
 
 
 
@@ -2503,16 +2821,11 @@ def schedule_quick_balance_recreate_after_quiet(chat_id: int, delay: float = 4.0
         except Exception as e:
             log_error(f"schedule_quick_balance_recreate_after_quiet({get_chat_display_name(chat_id)}): {e}")
 
+    scheduler_key = f"quick-balance-recreate:{chat_id}"
     with timer_lock:
-        prev = _balance_panel_recreate_timers.get(chat_id)
-        if prev and prev.is_alive():
-            try:
-                prev.cancel()
-            except Exception:
-                pass
-        t = threading.Timer(delay, _job)
-        _balance_panel_recreate_timers[chat_id] = t
-        t.start()
+        DELAYED_SCHEDULER.cancel(scheduler_key)
+        deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
+        _balance_panel_recreate_timers[chat_id] = deadline
 
 
 def _set_panel_open_state(chat_id: int, message_id: int):
@@ -2539,16 +2852,10 @@ def schedule_owner_total_window_delete(chat_id: int, message_id: int, delay: int
         except Exception as e:
             log_error(f"schedule_owner_total_window_delete({chat_id}): {e}")
 
-    prev = _total_message_timers.get(key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-
-    t = threading.Timer(delay, _job)
-    _total_message_timers[key] = t
-    t.start()
+    scheduler_key = f"owner-total-delete:{key}"
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
+    _total_message_timers[key] = deadline
 
 
 _aux_window_timers = {}
@@ -2587,16 +2894,10 @@ def schedule_stored_window_delete(chat_id: int, store_key: str, delay: int = AUX
         except Exception as e:
             log_error(f"schedule_stored_window_delete({chat_id},{store_key}): {e}")
 
-    prev = _aux_window_timers.get(key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-
-    t = threading.Timer(delay, _job)
-    _aux_window_timers[key] = t
-    t.start()
+    scheduler_key = f"stored-window-delete:{int(chat_id)}:{str(store_key)}"
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
+    _aux_window_timers[key] = deadline
 
 
 def default_window_nav_keyboard(chat_id: int):
@@ -2796,6 +3097,8 @@ def build_help_text(chat_id: int) -> str:
             "/buttons — переключить кнопки: text/icons",
             "/mask — переключить маскировку тотального секрета",
             "/day5 — финсутки: 00:00 / 05:00",
+            "/off_on_backup_excel — Excel-бэкап всех чатов ВКЛ/ВЫКЛ",
+            "/queues — состояние очередей и нагрузки",
         ])
     lines.append("/help — эта справка")
     return "\n".join(lines)
@@ -2940,7 +3243,8 @@ def start_dozvon(source_chat_id: int, target_chat_id: int):
     _dozvon_target_index[target_chat_id].add(session_key)
 
     send_and_auto_delete(source_chat_id, f"📞 Дозвон запущен: {get_chat_display_name(target_chat_id)}", HELPER_DELETE_DELAY)
-    threading.Thread(target=_run_dozvon_session, args=(session_key,), daemon=True).start()
+    if not DOZVON_TASK_POOL.submit(f"{source_chat_id}:{target_chat_id}", _run_dozvon_session, session_key):
+        send_and_auto_delete(source_chat_id, "⛔ Очередь дозвона переполнена.", 12)
 
 
 def _direction_state_label(enabled: bool, left: str, arrow: str, right: str) -> str:
@@ -3093,6 +3397,12 @@ def resolve_reply_target_message_id(source_chat_id: int, reply_to_message_id: in
 
 _telegram_send_last_ts = {}
 _telegram_send_rate_lock = threading.RLock()
+_telegram_global_rate_lock = threading.RLock()
+_telegram_global_last_ts = 0.0
+try:
+    TELEGRAM_GLOBAL_MIN_GAP = max(0.01, float(os.getenv("TELEGRAM_GLOBAL_MIN_GAP", "0.04") or "0.04"))
+except Exception:
+    TELEGRAM_GLOBAL_MIN_GAP = 0.04
 
 
 def _telegram_retry_after_seconds(err: Exception):
@@ -3147,6 +3457,17 @@ def _telegram_rate_limit_chat(chat_id, min_gap: float = 0.35):
         _telegram_send_last_ts[cid] = time.time()
 
 
+def _telegram_rate_limit_global():
+    """Общий лимитер Telegram API для всех чатов, чтобы не ловить шквал 429."""
+    global _telegram_global_last_ts
+    with _telegram_global_rate_lock:
+        now_ts = time.time()
+        wait = TELEGRAM_GLOBAL_MIN_GAP - (now_ts - _telegram_global_last_ts)
+        if wait > 0:
+            time.sleep(wait)
+        _telegram_global_last_ts = time.time()
+
+
 def _tg_first_chat_id(args, kwargs):
     if "chat_id" in kwargs:
         return kwargs.get("chat_id")
@@ -3164,6 +3485,7 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
     for attempt in range(1, int(attempts) + 1):
         try:
             chat_id = _tg_first_chat_id(args, kwargs)
+            _telegram_rate_limit_global()
             if chat_id is not None:
                 _telegram_rate_limit_chat(chat_id)
             try:
@@ -3242,11 +3564,11 @@ def build_balance_panel_keyboard(chat_id: int):
     return kb
 
 
-def _cancel_timer(timer_map: dict, key):
-    prev = timer_map.get(key)
-    if prev and getattr(prev, "is_alive", lambda: False)():
+def _cancel_timer(timer_map: dict, key, scheduler_key: str | None = None):
+    timer_map.pop(key, None)
+    if scheduler_key:
         try:
-            prev.cancel()
+            DELAYED_SCHEDULER.cancel(scheduler_key)
         except Exception:
             pass
 
@@ -3281,10 +3603,10 @@ def schedule_balance_panel_collapse(chat_id: int, delay: float = BALANCE_PANEL_C
 
     store = get_chat_store(chat_id)
     key = store.get("balance_panel_id") or chat_id
-    _cancel_timer(_balance_panel_collapse_timers, key)
-    t = threading.Timer(delay, _job)
-    _balance_panel_collapse_timers[key] = t
-    t.start()
+    scheduler_key = f"balance-panel-collapse:{int(chat_id)}:{int(key)}"
+    _cancel_timer(_balance_panel_collapse_timers, key, scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
+    _balance_panel_collapse_timers[key] = deadline
 
 
 def send_minimized_balance_panel(chat_id: int):
@@ -3395,10 +3717,10 @@ def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_RE
         except Exception as e:
             log_error(f"schedule_balance_panel_refresh({chat_id}): {e}")
 
-    _cancel_timer(_balance_panel_refresh_timers, chat_id)
-    t = threading.Timer(delay, _job)
-    _balance_panel_refresh_timers[chat_id] = t
-    t.start()
+    scheduler_key = f"balance-panel-refresh:{int(chat_id)}"
+    _cancel_timer(_balance_panel_refresh_timers, chat_id, scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
+    _balance_panel_refresh_timers[chat_id] = deadline
 
 
 def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | None = None):
@@ -3899,6 +4221,24 @@ def mega_upload_chat_backup_bundle(chat_id: int, month_key: str | None = None) -
         return False
 
 
+def mega_upload_chat_latest_json_only(chat_id: int) -> bool:
+    """Быстрый MEGA JSON без Excel/CSV и месячного пакета."""
+    if not is_backup_to_mega_enabled(chat_id) or not mega_is_configured():
+        return False
+    try:
+        local_path = chat_json_file(chat_id)
+        if not os.path.exists(local_path):
+            local_path = save_chat_json_only(chat_id)
+        if not local_path:
+            return False
+        slug = mega_chat_slug(chat_id)
+        remote_chat_dir = mega_remote_chat_dir(chat_id)
+        return bool(mega_put_replace(local_path, remote_chat_dir, f"latest_{slug}.json"))
+    except Exception as e:
+        log_error(f"mega_upload_chat_latest_json_only({chat_id}): {e}")
+        return False
+
+
 def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
     """После изменения настроек/пересылки обновляем JSON/канал/MEGA с мягким debounce.
 
@@ -4153,7 +4493,7 @@ def _save_chat_backup_meta(meta: dict) -> None:
         log_info("chat_backup_meta updated in sqlite/data")
     except Exception as e:
         log_error(f"_save_chat_backup_meta: {e}")
-def send_backup_to_chat(chat_id: int) -> None:
+def send_backup_to_chat(chat_id: int, ensure_files: bool = True) -> None:
     # JSON-бэкап прямо в чат больше не рассылаем пользователям/группам.
     # Разрешено только владельцу и, если эта функция будет вызвана напрямую, backup-каналу.
     if not can_receive_direct_json_backup(chat_id):
@@ -4175,10 +4515,11 @@ def send_backup_to_chat(chat_id: int) -> None:
         if not chat_id:
             return
 
-        try:
-            save_chat_json(chat_id)
-        except Exception as e:
-            log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
+        if ensure_files:
+            try:
+                save_chat_json(chat_id)
+            except Exception as e:
+                log_error(f"send_backup_to_chat save_chat_json({chat_id}): {e}")
 
         json_path = chat_json_file(chat_id)
         if not os.path.exists(json_path):
@@ -4272,7 +4613,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False},
+        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -4400,12 +4741,15 @@ def load_data():
 
     return d
 
-def save_data(d):
-    """Потокобезопасное сохранение общего состояния."""
+def save_data(d, chat_ids=None, full: bool = False, root_only: bool = False):
+    """Потокобезопасное сохранение.
+
+    В обработчике конкретного чата SQLite обновляет только этот чат. Полный
+    проход по всем чатам выполняется при старте, восстановлении и глобальном
+    бэкапе. Это убирает квадратичную нагрузку при 100 активных чатах.
+    """
     with data_lock:
-        fac = {}
-        for cid in list(finance_active_chats):
-            fac[str(cid)] = True
+        fac = {str(cid): True for cid in list(finance_active_chats)}
         d["finance_active_chats"] = fac
         d["backup_flags"] = {
             "drive": bool(backup_flags.get("drive", True)),
@@ -4415,9 +4759,37 @@ def save_data(d):
             _persist_forward_index_in_data(d)
         except Exception as e:
             log_error(f"save_data forward_index: {e}")
-
         SQLITE.save_root(_sqlite_pack_root(d))
-        SQLITE.save_chats(d.get("chats", {}) or {})
+        if root_only:
+            return
+
+        ids = set()
+        if chat_ids is not None:
+            if isinstance(chat_ids, (list, tuple, set)):
+                source_ids = chat_ids
+            else:
+                source_ids = [chat_ids]
+            for cid in source_ids:
+                try:
+                    ids.add(int(cid))
+                except Exception:
+                    pass
+        elif not full:
+            cid = current_state_chat_id()
+            if cid is not None:
+                try:
+                    ids.add(int(cid))
+                except Exception:
+                    pass
+
+        chats = d.get("chats", {}) or {}
+        if ids and not full:
+            for cid in ids:
+                payload = chats.get(str(cid))
+                if isinstance(payload, dict):
+                    SQLITE.save_chat(cid, payload)
+        else:
+            SQLITE.save_chats(chats)
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
 def chat_csv_file(chat_id: int) -> str:
@@ -4956,58 +5328,80 @@ def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = N
         log_error(f"save_chat_xlsx({get_chat_display_name(chat_id)}): {e}")
         return None
 
-def save_chat_json(chat_id: int):
-    """Save per-chat JSON, CSV, XLSX and META for one chat."""
+def snapshot_chat_store(chat_id: int) -> dict:
+    """Стабильный снимок одного чата для файлового бэкапа."""
+    with locked_chat(int(chat_id)):
+        normalize_chat_records(int(chat_id))
+        store = data.get("chats", {}).get(str(chat_id)) or get_chat_store(chat_id)
+        return json.loads(json.dumps(store, ensure_ascii=False, default=str))
+
+
+def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
+    store = store or snapshot_chat_store(chat_id)
+    return {
+        "kind": "chat_full_backup",
+        "version": VERSION,
+        "created_at": now_local().isoformat(timespec="seconds"),
+        "date_format": "DD:MM:YY",
+        "chat_id": chat_id,
+        "chat_name": get_chat_display_name(chat_id),
+        "balance": store.get("balance", 0),
+        "records": backup_records_list(store.get("records", [])),
+        "daily_records": backup_daily_records(store.get("daily_records", {})),
+        "daily_records_by_date": {fmt_date_backup(k): backup_records_list(v) for k, v in (store.get("daily_records", {}) or {}).items()},
+        "next_id": store.get("next_id", 1),
+        "info": store.get("info", {}),
+        "known_chats": store.get("known_chats", {}),
+        "settings_backup": build_chat_settings_backup_payload(chat_id, store),
+    }
+
+
+def save_chat_json_only(chat_id: int) -> str | None:
+    """Быстрый лёгкий JSON без CSV/Excel."""
     try:
-        store = data.get("chats", {}).get(str(chat_id))
-        if not store:
-            store = get_chat_store(chat_id)
-        normalize_chat_records(chat_id)
+        store = snapshot_chat_store(chat_id)
+        payload = build_chat_backup_payload(chat_id, store)
+        path = chat_json_file(chat_id)
+        _save_json(path, payload)
+        return path
+    except Exception as e:
+        log_error(f"save_chat_json_only({get_chat_display_name(chat_id)}): {e}")
+        return None
+
+
+def save_chat_json(chat_id: int):
+    """Полный локальный пакет чата: JSON + CSV + опциональный Excel + META."""
+    try:
+        store = snapshot_chat_store(chat_id)
+        payload = build_chat_backup_payload(chat_id, store)
         chat_path_json = chat_json_file(chat_id)
+        _save_json(chat_path_json, payload)
         chat_path_csv = chat_csv_file(chat_id)
         chat_path_xlsx = chat_xlsx_file(chat_id)
         chat_path_meta = chat_meta_file(chat_id)
-        for p in (chat_path_json, chat_path_csv, chat_path_xlsx, chat_path_meta):
-            if not os.path.exists(p):
-                with open(p, "a", encoding="utf-8"):
-                    pass
-        payload = {
-            "kind": "chat_full_backup",
-            "version": VERSION,
-            "created_at": now_local().isoformat(timespec="seconds"),
-            "date_format": "DD:MM:YY",
-            "chat_id": chat_id,
-            "chat_name": get_chat_display_name(chat_id),
-            "balance": store.get("balance", 0),
-            "records": backup_records_list(store.get("records", [])),
-            "daily_records": backup_daily_records(store.get("daily_records", {})),
-            "daily_records_by_date": {fmt_date_backup(k): backup_records_list(v) for k, v in (store.get("daily_records", {}) or {}).items()},
-            "next_id": store.get("next_id", 1),
-            "info": store.get("info", {}),
-            "known_chats": store.get("known_chats", {}),
-            "settings_backup": build_chat_settings_backup_payload(chat_id, store),
-        }
-        _save_json(chat_path_json, payload)
         with open(chat_path_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["date", "amount", "note"])
             daily = store.get("daily_records", {}) or {}
             rows = []
             for dk in sorted(daily.keys()):
-                recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
-                for r in recs_sorted:
+                for r in sorted(daily.get(dk, []) or [], key=record_sort_key):
                     rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             write_csv_rows_with_day_gaps(w, rows, 3)
-        save_chat_xlsx(chat_id, chat_path_xlsx, store)
+        if backup_excel_all_enabled():
+            save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
             "date_format": "DD:MM:YY",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
+            "excel_enabled": backup_excel_all_enabled(),
         }
         _save_json(chat_path_meta, meta)
         log_info(f"Per-chat files saved for chat {get_chat_display_name(chat_id)}")
+        return chat_path_json
     except Exception as e:
         log_error(f"save_chat_json({get_chat_display_name(chat_id)}): {e}")
+        return None
 def restore_from_json(chat_id: int, path: str):
     """
     Восстановление из JSON.
@@ -5038,7 +5432,7 @@ def restore_from_json(chat_id: int, path: str):
                         pass
 
         rebuild_global_records()
-        save_data(data)
+        save_data(data, full=True)
         schedule_all_finance_backups(delay=0.5)
         log_info("restore_from_json: global data restored")
         return
@@ -5249,6 +5643,7 @@ EXPENSE_CATEGORIES = {
     "СВЯЗЬ": ["тел", "tel", "пополнение"],
     "АВТО": ["авто", "бензин", "билет"],
     "ПЕРЕВОДЫ": ["переводы", "перевод", "переводчик"],
+    "ПРОЧЕЕ": [],
 }
 
 EXPENSE_CATEGORY_SLUGS = {
@@ -5257,6 +5652,7 @@ EXPENSE_CATEGORY_SLUGS = {
     "СВЯЗЬ": "link",
     "АВТО": "auto",
     "ПЕРЕВОДЫ": "transfers",
+    "ПРОЧЕЕ": "other",
 }
 CATEGORY_BY_SLUG = {v: k for k, v in EXPENSE_CATEGORY_SLUGS.items()}
 EXPENSE_CATEGORY_ORDER = [
@@ -5265,6 +5661,7 @@ EXPENSE_CATEGORY_ORDER = [
     "СВЯЗЬ",
     "АВТО",
     "ПЕРЕВОДЫ",
+    "ПРОЧЕЕ",
 ]
 
 
@@ -5427,18 +5824,20 @@ def expense_keyword_matches(note: str, keyword: str) -> bool:
 
 
 def resolve_expense_category(note: str, store: dict | None = None):
-    if not note:
-        return None
+    """Определяет статью расхода; всё без совпавших ключей попадает в ПРОЧЕЕ."""
     # Сначала пользовательские статьи: они важнее стандартных, если ключ совпал.
     for item in _custom_category_list(store):
         for kw in item.get("keywords", []):
             if expense_keyword_matches(note, kw):
                 return item.get("name")
     for item in _base_category_items(store):
+        if item.get("slug") == "other":
+            continue
         for kw in item.get("keywords", []):
             if expense_keyword_matches(note, kw):
                 return item.get("name")
-    return None
+    other = _base_category_item_by_slug(store, "other")
+    return (other or {}).get("name") or "ПРОЧЕЕ"
 
 def calc_categories_for_period(store: dict, start: str, end: str) -> dict:
     """Считает суммы расходов по статьям (только отрицательные amount) в диапазоне дат включительно."""
@@ -5676,6 +6075,7 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
     else:
         for cat in get_ordered_category_names(cats=cats, store=store):
             lines.append(f"{cat}: {fmt_num_plain(cats.get(cat, 0))}")
+    lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
 
 
@@ -5995,13 +6395,8 @@ def clear_category_wait_state(chat_id: int, field: str, expected_prompt_id: int 
     if expected_prompt_id is not None and prompt_id and int(prompt_id) != int(expected_prompt_id):
         return False
     key = _category_wait_key(chat_id, field)
-    prev = _category_wait_timers.get(key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-        _category_wait_timers.pop(key, None)
+    _category_wait_timers.pop(key, None)
+    DELAYED_SCHEDULER.cancel(f"category-wait:{int(chat_id)}:{str(field)}")
     store[field] = None
     save_data(data)
     if delete_prompt and prompt_id:
@@ -6023,7 +6418,6 @@ def schedule_cancel_category_wait(chat_id: int, field: str, prompt_message_id: i
 
     def _job():
         try:
-            time.sleep(float(delay))
             store = get_chat_store(chat_id)
             wait = store.get(field) or {}
             if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
@@ -6034,17 +6428,12 @@ def schedule_cancel_category_wait(chat_id: int, field: str, prompt_message_id: i
         except Exception as e:
             log_error(f"schedule_cancel_category_wait({chat_id},{field},{prompt_message_id}): {e}")
 
-    prev = _category_wait_timers.get(key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-    t = threading.Timer(0.0, _job)
-    _category_wait_timers[key] = t
-    t.start()
+    scheduler_key = f"category-wait:{int(chat_id)}:{str(field)}"
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
+    _category_wait_timers[key] = deadline
 
-def _category_prompt_keyboard(chat_id: int, owner_day_key: str | None = None, back_callback: str | None = None):
+def _category_prompt_keyboard(chat_id: int, owner_day_key: str | None = None, back_callback: str | None = None, insert_text: str | None = None):
     kb = types.InlineKeyboardMarkup()
     day = owner_day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
     owner_store = get_chat_store(chat_id)
@@ -6054,12 +6443,13 @@ def _category_prompt_keyboard(chat_id: int, owner_day_key: str | None = None, ba
         delete_callback = fvcat_callback(f"fvcat_del_menu:{target_chat_id}:{day}:{day}")
     else:
         delete_callback = cat_callback("cat_del_menu")
+    if insert_text:
+        kb.row(make_copy_or_inline_button("✏️ Изменить значение", str(insert_text)))
+    kb.row(IB("🗑 Удалить статью", callback_data=delete_callback))
     kb.row(
-        IB("🗑 Удалить статью", callback_data=delete_callback),
-    )
-    kb.row(
+        IB("⬅️ Назад", callback_data=cat_callback("cat_prompt_back")),
         IB("❌ Закрыть", callback_data=cat_callback("cat_add_cancel")),
-        IB("⬅️ Назад осн. окно", callback_data=back_callback or f"d:{day}:back_main"),
+        IB("⬅️ Осн. окно", callback_data=back_callback or f"d:{day}:back_main"),
     )
     return kb
 
@@ -6172,7 +6562,8 @@ def start_category_edit_wait(chat_id: int, target_chat_id: int, slug: str):
         "Если нужно изменить только ключи — оставь то же название.\n"
         "Через 1 минуту режим автоматически закроется."
     ), 11)
-    kb = _category_prompt_keyboard(chat_id)
+    current_edit_text = f"{item.get('name')}: {', '.join(item.get('keywords', []))}"
+    kb = _category_prompt_keyboard(chat_id, insert_text=current_edit_text)
     prev = store.get("category_edit_wait") or {}
     prev_id = prev.get("prompt_msg_id") if isinstance(prev, dict) else None
     if prev_id:
@@ -6650,26 +7041,26 @@ def schedule_secret_mega_upload(chat_id: int, delay: float = 45.0):
     except Exception:
         return False
 
+    generation = time.time_ns()
+    scheduler_key = f"secret-mega-upload:{chat_id}"
+
     def _job():
         try:
-            upload_chat_secrets_to_mega(chat_id)
+            with _secret_mega_upload_lock:
+                if _secret_mega_upload_timers.get(chat_id) != generation:
+                    return
+            if not BACKUP_TASK_POOL.submit(f"secret-mega:{chat_id}", upload_chat_secrets_to_mega, chat_id):
+                log_error(f"SECRET MEGA QUEUE FULL, RETRY: {chat_id}")
+                schedule_secret_mega_upload(chat_id, BACKUP_BUSY_RETRY_SECONDS)
         finally:
             with _secret_mega_upload_lock:
-                cur = _secret_mega_upload_timers.get(chat_id)
-                if cur is timer:
+                if _secret_mega_upload_timers.get(chat_id) == generation:
                     _secret_mega_upload_timers.pop(chat_id, None)
 
     with _secret_mega_upload_lock:
-        prev = _secret_mega_upload_timers.get(chat_id)
-        if prev and getattr(prev, "is_alive", lambda: False)():
-            try:
-                prev.cancel()
-            except Exception:
-                pass
-        timer = threading.Timer(delay, _job)
-        _secret_mega_upload_timers[chat_id] = timer
-        timer.daemon = True
-        timer.start()
+        DELAYED_SCHEDULER.cancel(scheduler_key)
+        _secret_mega_upload_timers[chat_id] = generation
+        DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
     return True
 
 def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> dict:
@@ -6710,9 +7101,11 @@ def delete_secret_source_message(msg):
                 bot.delete_message(msg.chat.id, msg.message_id)
             except Exception as retry_error:
                 log_error(f"secret source delete retry {msg.chat.id}:{msg.message_id}: {retry_error}")
-        timer = threading.Timer(1.0, retry)
-        timer.daemon = True
-        timer.start()
+        DELAYED_SCHEDULER.schedule(
+            f"secret-source-delete-retry:{int(msg.chat.id)}:{int(msg.message_id)}",
+            1.0,
+            retry,
+        )
 
 
 def is_total_secret_mode(chat_id: int) -> bool:
@@ -6772,9 +7165,8 @@ def forward_secret_message_now(msg):
         source_chat_id = int(msg.chat.id)
         if not resolve_forward_targets(source_chat_id):
             return
-        with forward_delivery_lock:
-            for dst_chat_id, mode, finance_enabled in resolve_forward_targets(source_chat_id):
-                _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
+        for dst_chat_id, mode, finance_enabled in resolve_forward_targets(source_chat_id):
+            _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
     except Exception as e:
         log_error(f"forward_secret_message_now({getattr(getattr(msg, 'chat', None), 'id', '?')}): {e}")
 
@@ -6926,6 +7318,7 @@ def cancel_secret_media_timer(chat_id: int, message_id: int):
     key = (int(chat_id), int(message_id))
     with _secret_media_timer_lock:
         _secret_media_timer_generation.pop(key, None)
+    DELAYED_SCHEDULER.cancel(f"secret-media-close:{chat_id}:{message_id}")
 
 
 def schedule_secret_media_close(chat_id: int, message_id: int):
@@ -6936,7 +7329,6 @@ def schedule_secret_media_close(chat_id: int, message_id: int):
         _secret_media_timer_generation[key] = generation
 
     def run():
-        time.sleep(int(SECRET_AUTO_CLOSE_SECONDS))
         with _secret_media_timer_lock:
             if _secret_media_timer_generation.get(key) != generation:
                 return
@@ -6948,7 +7340,7 @@ def schedule_secret_media_close(chat_id: int, message_id: int):
             if _secret_media_timer_generation.get(key) == generation:
                 _secret_media_timer_generation.pop(key, None)
 
-    threading.Thread(target=run, daemon=True).start()
+    DELAYED_SCHEDULER.schedule(f"secret-media-close:{chat_id}:{message_id}", SECRET_AUTO_CLOSE_SECONDS, run)
 
 
 def _send_secret_media_caption_message(viewer_chat_id: int, caption: str):
@@ -7280,7 +7672,7 @@ def delete_secret_records_by_modes(target_chat_id: int, modes: set[str], day_key
     save_data(data)
     schedule_config_backup_for_chats(target_chat_id, delay=0.2)
     if media_paths:
-        threading.Thread(target=_delete_secret_mega_media_paths, args=(media_paths,), daemon=True).start()
+        BACKUP_TASK_POOL.submit(f"secret-media-delete:{target_chat_id}", _delete_secret_mega_media_paths, media_paths)
     schedule_secret_mega_upload(target_chat_id)
     refresh_secret_windows(target_chat_id)
     return len(deleted)
@@ -7301,7 +7693,7 @@ def delete_secret_records_by_ids(target_chat_id: int, record_ids: set[int]) -> i
     save_data(data)
     schedule_config_backup_for_chats(target_chat_id, delay=0.2)
     if media_paths:
-        threading.Thread(target=_delete_secret_mega_media_paths, args=(media_paths,), daemon=True).start()
+        BACKUP_TASK_POOL.submit(f"secret-media-delete:{target_chat_id}", _delete_secret_mega_media_paths, media_paths)
     schedule_secret_mega_upload(target_chat_id)
     refresh_secret_windows(target_chat_id)
     return len(deleted)
@@ -7634,6 +8026,7 @@ def _cancel_secret_calendar_timer(chat_id: int, message_id: int):
         token = _secret_calendar_timers.pop(key, None)
         if isinstance(token, dict):
             token["cancelled"] = True
+    DELAYED_SCHEDULER.cancel(f"secret-calendar-close:{chat_id}:{message_id}")
 
 
 def _build_secret_active_keyboard(viewer_chat_id: int, active: dict, remaining: int):
@@ -7707,7 +8100,6 @@ def schedule_secret_calendar_close(chat_id: int, message_id: int):
 
     def close():
         try:
-            time.sleep(int(SECRET_AUTO_CLOSE_SECONDS))
             with _secret_calendar_lock:
                 if _secret_calendar_timers.get(key) is not token or token.get("cancelled"):
                     return
@@ -7720,7 +8112,7 @@ def schedule_secret_calendar_close(chat_id: int, message_id: int):
             with _secret_calendar_lock:
                 if _secret_calendar_timers.get(key) is token:
                     _secret_calendar_timers.pop(key, None)
-    threading.Thread(target=close, daemon=True).start()
+    DELAYED_SCHEDULER.schedule(f"secret-calendar-close:{chat_id}:{message_id}", SECRET_AUTO_CLOSE_SECONDS, close)
 
 
 def _secret_month_records(target_chat_id: int, month_key: str) -> list[dict]:
@@ -8056,7 +8448,7 @@ def cmd_toggle_finance_day5(msg):
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
-    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki"}
+    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/off_on_backup_excel", "/queues", "/queue_status"}
 ))
 def cmd_total_secret_capture(msg):
     forward_secret_message_now(msg)
@@ -8724,7 +9116,7 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
 
     except Exception as e:
         log_error(f"send_backup_to_channel_for_file({base_path}): {e}")
-def send_backup_to_channel(chat_id: int):
+def send_backup_to_channel(chat_id: int, ensure_files: bool = True):
     bot_journal("backup_to_channel_start", chat_id, "send_backup_to_channel")
     if not is_backup_to_channel_enabled(chat_id):
         return
@@ -8749,9 +9141,9 @@ def send_backup_to_channel(chat_id: int):
         except Exception:
             log_error("send_backup_to_channel: BACKUP_CHAT_ID не является числом.")
             return
-        # Файлы чата уже сохраняются в flush-очереди; здесь на всякий случай
-        # обновляем только файлы конкретного чата, без тяжёлого глобального экспорта.
-        save_chat_json(chat_id)
+        # При прямом вызове гарантируем файлы; full backup передаёт ensure_files=False.
+        if ensure_files:
+            save_chat_json(chat_id)
         chat_title = _get_chat_title_for_backup(chat_id)
         meta = _load_csv_meta()
         notify_key = f"emoji_notified_{chat_id}"
@@ -8771,7 +9163,8 @@ def send_backup_to_channel(chat_id: int):
         xlsx_path = chat_xlsx_file(chat_id)
         # В backup-канал отправляем только JSON и Excel. CSV убран по требованию.
         send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
-        send_backup_to_channel_for_file(xlsx_path, f"xlsx_{chat_id}", chat_title)
+        if backup_excel_all_enabled() and os.path.exists(xlsx_path):
+            send_backup_to_channel_for_file(xlsx_path, f"xlsx_{chat_id}", chat_title)
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
 def _owner_data_file() -> str | None:
@@ -8970,20 +9363,14 @@ def _schedule_persist_forward_state(delay: float = 1.2):
 
     def _job():
         try:
-            save_data(data)
+            # Индекс пересылки хранится в root SQLite; чаты повторно не переписываем.
+            save_data(data, root_only=True)
         except Exception as e:
             log_error(f"_schedule_persist_forward_state: {e}")
 
-    prev = _forward_state_timer
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-
-    t = threading.Timer(delay, _job)
-    _forward_state_timer = t
-    t.start()
+    scheduler_key = "forward-state-save"
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    _forward_state_timer = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
 
 
 def _persist_forward_index_in_data(d: dict):
@@ -9383,19 +9770,15 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
 
 
 def _flush_media_group_forward(source_chat_id: int, media_group_id: str):
-    with forward_delivery_lock:
-        return _flush_media_group_forward_locked(source_chat_id, media_group_id)
+    if not FORWARD_TASK_POOL.submit(int(source_chat_id), _flush_media_group_forward_locked, source_chat_id, media_group_id):
+        log_error(f"MEDIA GROUP FORWARD QUEUE FULL: {source_chat_id}")
 
 
 def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
     cache_key = (int(source_chat_id), str(media_group_id))
     messages = _media_group_cache.pop(cache_key, [])
-    timer = _media_group_timers.pop(cache_key, None)
-    if timer and timer.is_alive():
-        try:
-            timer.cancel()
-        except Exception:
-            pass
+    _media_group_timers.pop(cache_key, None)
+    DELAYED_SCHEDULER.cancel(f"media-group:{int(source_chat_id)}:{str(media_group_id)}")
 
     if not messages:
         return
@@ -9465,16 +9848,16 @@ def _collect_media_group_for_forward(source_chat_id: int, msg):
     if not any(m.message_id == msg.message_id for m in bucket):
         bucket.append(msg)
 
-    prev = _media_group_timers.get(cache_key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-
-    t = threading.Timer(0.8, lambda: _flush_media_group_forward(source_chat_id, msg.media_group_id))
-    _media_group_timers[cache_key] = t
-    t.start()
+    scheduler_key = f"media-group:{int(source_chat_id)}:{str(msg.media_group_id)}"
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(
+        scheduler_key,
+        0.8,
+        _flush_media_group_forward,
+        source_chat_id,
+        msg.media_group_id,
+    )
+    _media_group_timers[cache_key] = deadline
 
 
 def forward_any_message(source_chat_id: int, msg):
@@ -9639,9 +10022,15 @@ def _collect_backup_menu_items():
 
 
 def build_backup_owner_menu(day_key: str):
-    """Меню владельца BACKUP: каждая строка = чат | в чат | канал | MEGA."""
+    """Ф41: верхняя строка массово включает/выключает три вида бэкапа."""
     kb = types.InlineKeyboardMarkup(row_width=4)
     owner_id = int(OWNER_ID) if OWNER_ID else None
+    headers = []
+    for target, label in (("chat", "чат"), ("channel", "канал"), ("mega", "MEGA")):
+        enabled, total = _backup_target_all_state(target)
+        all_on = bool(total and enabled == total)
+        headers.append(IB(("✅" if all_on else "❌") + f" все {label}", callback_data=f"d:{day_key}:backup_mass_{target}"))
+    kb.row(IB("Чаты", callback_data="none"), *headers)
     for cid, title in _collect_backup_menu_items():
         # Если бот удалён из чата, название остаётся с ➖ и само нажатие на название
         # показывает владельцу понятное сообщение, а не молчит через callback_data="none".
@@ -9663,7 +10052,7 @@ def build_backup_owner_menu_text() -> str:
     return wm_owner((
         "💾 BACKUP\n"
         "Настройка авто-бэкапов по чатам. По умолчанию все бэкапы включены.\n"
-        "Канал = JSON + Excel. MEGA = только JSON. В чат = только для владельца, чтобы JSON не уходил пользователям."
+        f"Канал = JSON + Excel (Excel сейчас {backup_excel_all_label()}). MEGA = только JSON. В чат = только для владельца. Верхняя строка переключает сразу все чаты."
     ), 7)
 
 
@@ -11643,16 +12032,15 @@ def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_ma
         wait = max(0.0, float(UI_EDIT_MIN_INTERVAL_SECONDS) - (now_ts - last_ts))
         if wait > 0:
             _ui_edit_pending[key] = payload
-            prev = _ui_edit_timers.get(key)
-            if prev and getattr(prev, "is_alive", lambda: False)():
-                try:
-                    prev.cancel()
-                except Exception:
-                    pass
-            t = threading.Timer(wait + 0.05, _run_pending_ui_edit, args=(key,))
-            _ui_edit_timers[key] = t
-            t.daemon = True
-            t.start()
+            scheduler_key = f"ui-edit:{int(chat_id)}:{int(message_id)}"
+            DELAYED_SCHEDULER.cancel(scheduler_key)
+            deadline = DELAYED_SCHEDULER.schedule(
+                scheduler_key,
+                wait + 0.05,
+                _run_pending_ui_edit,
+                key,
+            )
+            _ui_edit_timers[key] = deadline
             return "scheduled"
         _ui_edit_last_ts[key] = now_ts
     return _perform_fast_ui_edit(payload)
@@ -11662,12 +12050,8 @@ def cancel_fast_ui_edit(chat_id: int, message_id: int):
     key = _ui_edit_key(chat_id, message_id)
     with _ui_edit_lock:
         _ui_edit_pending.pop(key, None)
-        t = _ui_edit_timers.pop(key, None)
-    if t and getattr(t, "is_alive", lambda: False)():
-        try:
-            t.cancel()
-        except Exception:
-            pass
+        _ui_edit_timers.pop(key, None)
+    DELAYED_SCHEDULER.cancel(f"ui-edit:{int(chat_id)}:{int(message_id)}")
 
 def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
     """Быстрое обновление окна.
@@ -11853,6 +12237,58 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
     save_data(data)
 
 
+def build_owner_instruction_text() -> str:
+    return (
+        "📘 Инструкция владельца\n\n"
+        "1. Webhook сразу кладёт update в очередь и отвечает Telegram. Один чат обрабатывается по порядку, разные чаты — параллельно.\n"
+        "2. Финансы: сумма без знака = расход; слово «приход» = поступление. Режим /day5 переносит границу суток на 05:00.\n"
+        "3. Пересылка: порядок сохраняется внутри исходного чата. Несколько разных чатов пересылаются параллельно.\n"
+        "4. Секрет: сообщение сначала пересылается, если включена пересылка, затем сохраняется и удаляется из исходного чата.\n"
+        "5. SQLite сохраняется сразу. В обычной операции точечно обновляется только изменившийся чат.\n"
+        "6. Быстрый JSON: примерно через 15 секунд после последнего изменения конкретного чата. При включённой MEGA обновляется latest JSON этого чата.\n"
+        "7. Полный бэкап: примерно через 120 секунд тишины именно в этом чате. JSON/CSV создаются всегда; Excel зависит от /off_on_backup_excel; канал получает JSON и при включении Excel; MEGA получает JSON.\n"
+        "8. У каждого чата собственный таймер бэкапа: активность одного чата не переносит бэкап остальных.\n"
+        "9. Очереди ограничены. При перегрузке webhook вернёт 503, и Telegram повторит доставку вместо потери update.\n"
+        "10. /queues показывает размер очередей, работников, отказы и ожидание. /diag показывает общее состояние."
+    )
+
+
+def build_owner_instruction_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(IB("🚦 Очереди", callback_data="info_queues"))
+    kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
+    kb.row(IB("❌ Закрыть", callback_data="info_close"))
+    return kb
+
+
+def all_task_pool_stats() -> list[dict]:
+    return [
+        WEBHOOK_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
+        BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
+        DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
+    ]
+
+
+def build_queue_status_text() -> str:
+    lines = ["🚦 Очереди и нагрузка", ""]
+    for st in all_task_pool_stats():
+        lines.append(
+            f"{st['name']}: {st['active']}/{st['workers']} работают, "
+            f"ожидают {st['pending']}, ключей {st['keys']}, "
+            f"отказов {st['rejected']}, ошибок {st['failed']}, max ожидание {st['max_wait']}с"
+        )
+    with timer_lock:
+        lines.append("")
+        lines.append(f"Таймеров полного бэкапа: {len(_backup_timers)}")
+        lines.append(f"Таймеров быстрого JSON: {len(_quick_backup_timers)}")
+        lines.append(f"Dirty чатов: {len(_backup_dirty_chats)}")
+    ds = DELAYED_SCHEDULER.stats()
+    lines.append(f"Планировщик: задач {ds['scheduled']}, отменено {ds['cancelled']}, выполнено {ds['executed']}")
+    lines.append(f"Excel-бэкап всех чатов: {backup_excel_all_label()}")
+    lines.append(f"Telegram общий интервал: {TELEGRAM_GLOBAL_MIN_GAP:.3f}с")
+    return "\n".join(lines)
+
+
 def build_info_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     if is_owner_chat(chat_id):
@@ -11871,6 +12307,10 @@ def build_info_keyboard(chat_id: int):
         kb.row(
             IB(total_secret_mask_label(), callback_data="total_secret_mask_toggle"),
             IB(f"🕔 {finance_day_start_label()}", callback_data="finance_day5_toggle"),
+        )
+        kb.row(
+            IB("📘 Инструкция", callback_data="info_instruction"),
+            IB("🚦 Очереди", callback_data="info_queues"),
         )
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
@@ -12023,7 +12463,11 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
             buttons.append(IB(category, callback_data=cat_callback(f"cat_show_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{slug}")))
     add_buttons_in_rows(kb, buttons, 3)
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
-    kb.row(IB("🎯 Выбрать заново", callback_data=cat_callback(f"cat_pick_start:{start_dt.year}:{start_dt.month}")))
+    end_dt = datetime.strptime(end_key, "%Y-%m-%d")
+    kb.row(
+        IB("⬅️ Назад", callback_data=cat_callback(f"cat_pick_set_end3:{start_key}:{int(start_rid)}:{end_dt.year}:{end_dt.month}:{end_dt.day}")),
+        IB("🎯 Выбрать заново", callback_data=cat_callback(f"cat_pick_start:{start_dt.year}:{start_dt.month}")),
+    )
     kb.row(
         IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
         IB("❌ Закрыть", callback_data=cat_callback("cat_close")),
@@ -12051,7 +12495,7 @@ def build_category_record_detail_text(store: dict, start_key: str, start_rid: in
 
 def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int):
     kb = types.InlineKeyboardMarkup()
-    kb.row(IB("🔙 Назад к итогам", callback_data=cat_callback(f"cat_back_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    kb.row(IB("⬅️ Назад", callback_data=cat_callback(f"cat_back_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     kb.row(
         IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
         IB("❌ Закрыть", callback_data=cat_callback("cat_close")),
@@ -12148,6 +12592,21 @@ def handle_categories_callback(call, data_str: str) -> bool:
     """UI окна расходов по статьям."""
     chat_id = call.message.chat.id
     store = get_chat_store(chat_id)
+
+    if data_str == "cat_prompt_back":
+        was_edit = bool(store.get("category_edit_wait"))
+        clear_category_wait_state(chat_id, "category_add_wait", call.message.message_id, delete_prompt=False)
+        clear_category_wait_state(chat_id, "category_edit_wait", call.message.message_id, delete_prompt=False)
+        if was_edit:
+            send_or_edit_categories_window(
+                chat_id,
+                wm_common("✏️ Изменить статью\n\nВыберите статью. Б = базовая, С = своя.", 14),
+                reply_markup=build_category_edit_keyboard(chat_id),
+                preferred_message_id=call.message.message_id,
+            )
+        else:
+            return handle_categories_callback(call, "cat_today")
+        return True
 
     if data_str == "cat_add_cancel":
         clear_category_wait_state(chat_id, "category_add_wait", call.message.message_id, delete_prompt=True)
@@ -12280,7 +12739,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         kb = types.InlineKeyboardMarkup(row_width=2)
         month_buttons = []
         for m in range(1, 13):
-            label = russian_month_name(m)
+            label = f"{russian_month_name(m)} ({m})"
             month_buttons.append(IB(label, callback_data=cat_callback(f"cat_m:{year}:{m}")))
         for i in range(0, len(month_buttons), 2):
             kb.row(*month_buttons[i:i + 2])
@@ -12323,7 +12782,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
         kb.row(*row)
         send_or_edit_categories_window(
             chat_id,
-            wm_common(f"📆 Выберите неделю: {russian_month_name(month)} {year}", 13),
+            wm_common(f"📆 Выберите неделю: {russian_month_name(month)} ({month}) {year}", 13),
             reply_markup=kb,
             marker_action="cat_m:*",
         )
@@ -12651,9 +13110,14 @@ _secret_edit_refresh_timers = {}
 
 def schedule_secret_edit_refresh_window(viewer_chat_id: int, message_id: int, target_chat_id: int, day_key: str, self_only: bool = False, delay: float = 0.7):
     key = (int(viewer_chat_id), int(message_id))
+    generation = time.time_ns()
+    scheduler_key = f"secret-edit-refresh:{key[0]}:{key[1]}"
 
     def _job():
         try:
+            with _secret_edit_refresh_lock:
+                if _secret_edit_refresh_timers.get(key) != generation:
+                    return
             text = build_secret_edit_text(int(target_chat_id), day_key)
             kb = build_secret_edit_keyboard(int(viewer_chat_id), int(target_chat_id), day_key, self_only=bool(self_only))
             try:
@@ -12665,20 +13129,13 @@ def schedule_secret_edit_refresh_window(viewer_chat_id: int, message_id: int, ta
             schedule_secret_calendar_close(int(viewer_chat_id), int(message_id))
         finally:
             with _secret_edit_refresh_lock:
-                cur = _secret_edit_refresh_timers.get(key)
-                if cur is timer:
+                if _secret_edit_refresh_timers.get(key) == generation:
                     _secret_edit_refresh_timers.pop(key, None)
 
     with _secret_edit_refresh_lock:
-        prev = _secret_edit_refresh_timers.get(key)
-        if prev and getattr(prev, "is_alive", lambda: False)():
-            try:
-                prev.cancel()
-            except Exception:
-                pass
-        timer = threading.Timer(float(delay), _job)
-        _secret_edit_refresh_timers[key] = timer
-        timer.start()
+        DELAYED_SCHEDULER.cancel(scheduler_key)
+        _secret_edit_refresh_timers[key] = generation
+        DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
 
 @bot.callback_query_handler(func=lambda c: True)
 
@@ -12762,11 +13219,8 @@ def on_callback(call):
                 bot.answer_callback_query(call.id, "Принято, обновляю JSON…")
             except Exception:
                 pass
-            threading.Thread(
-                target=run_owner_json_restore_prompt_job,
-                args=(chat_id, item),
-                daemon=True,
-            ).start()
+            if not GENERAL_TASK_POOL.submit(f"restore:{chat_id}", run_owner_json_restore_prompt_job, chat_id, item):
+                send_and_auto_delete(chat_id, "⛔ Очередь восстановления переполнена.", 15)
             return
 
         if data_str.startswith("ncb:"):
@@ -12930,11 +13384,8 @@ def on_callback(call):
                     bot.answer_callback_query(call.id, "Отправляю медиа…")
                 except Exception:
                     pass
-                threading.Thread(
-                    target=send_secret_media,
-                    args=(chat_id, target_chat_id, day_key),
-                    daemon=True,
-                ).start()
+                if not EXPORT_TASK_POOL.submit(f"secret-media:{chat_id}", send_secret_media, chat_id, target_chat_id, day_key):
+                    send_and_auto_delete(chat_id, "⛔ Очередь медиа переполнена.", 12)
             except Exception as e:
                 log_error(f"secret media callback: {e}")
             return
@@ -13616,6 +14067,27 @@ def on_callback(call):
             new_state = toggle_finance_day_start_5am()
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nФинансовые сутки: с {'05:00' if new_state else '00:00'}", reply_markup=build_info_keyboard(chat_id))
             return
+        if data_str == "info_instruction":
+            if not is_owner_chat(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Только для владельца", show_alert=True)
+                except Exception:
+                    pass
+                return
+            safe_edit(bot, call, build_owner_instruction_text(), reply_markup=build_owner_instruction_keyboard(chat_id))
+            return
+        if data_str == "info_queues":
+            if not is_owner_chat(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Только для владельца", show_alert=True)
+                except Exception:
+                    pass
+                return
+            kbq = types.InlineKeyboardMarkup()
+            kbq.row(IB("🔄 Обновить", callback_data="info_queues"))
+            kbq.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
+            safe_edit(bot, call, build_queue_status_text(), reply_markup=kbq)
+            return
         if data_str == "info_finance_off":
             try:
                 if is_finance_mode(chat_id):
@@ -13964,11 +14436,11 @@ def on_callback(call):
                     send_and_auto_delete(chat_id, "⏳ Готовлю точный экспорт в фоне…", 12)
                 except Exception:
                     pass
-                threading.Thread(
-                    target=send_exact_range_export,
-                    args=(chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type),
-                    daemon=True,
-                ).start()
+                if not EXPORT_TASK_POOL.submit(
+                    f"export:{chat_id}", send_exact_range_export,
+                    chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type,
+                ):
+                    send_and_auto_delete(chat_id, "⛔ Очередь экспортов переполнена.", 12)
             except Exception as e:
                 log_error(f"exp_send: {e}")
             return
@@ -14177,6 +14649,23 @@ def on_callback(call):
                 except Exception:
                     pass
                 return
+            safe_edit(bot, call, build_backup_owner_menu_text(), reply_markup=build_backup_owner_menu(day_key))
+            return
+        if cmd.startswith("backup_mass_"):
+            if not is_owner_chat(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "BACKUP доступен только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            target = cmd.replace("backup_mass_", "", 1)
+            enabled_count, total_count = _backup_target_all_state(target)
+            new_value = not bool(total_count and enabled_count == total_count)
+            count = set_backup_target_for_all(target, new_value)
+            try:
+                bot.answer_callback_query(call.id, f"{'Включено' if new_value else 'Выключено'} для чатов: {count}")
+            except Exception:
+                pass
             safe_edit(bot, call, build_backup_owner_menu_text(), reply_markup=build_backup_owner_menu(day_key))
             return
         if cmd.startswith("backup_toggle_"):
@@ -15300,7 +15789,8 @@ def cmd_tabl_lsx(msg):
         delete_message_later(chat_id, notice.message_id, 20)
     except Exception:
         pass
-    threading.Thread(target=send_tabl_lsx_for_chat, args=(chat_id, chat_id), daemon=True).start()
+    if not EXPORT_TASK_POOL.submit(f"tabl-lsx:{chat_id}", send_tabl_lsx_for_chat, chat_id, chat_id):
+        send_and_auto_delete(chat_id, "⛔ Очередь Excel переполнена.", 12)
 
 
 @bot.message_handler(commands=["xlsx", "excel"])
@@ -15499,12 +15989,11 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DEL
     try:
         msg = bot.send_message(chat_id, text)
         def _delete():
-            time.sleep(delay)
             try:
                 bot.delete_message(chat_id, msg.message_id)
             except Exception:
                 pass
-        threading.Thread(target=_delete, daemon=True).start()
+        DELAYED_SCHEDULER.schedule(f"auto-delete:{chat_id}:{msg.message_id}", delay, _delete)
     except Exception as e:
         log_error(f"send_and_auto_delete: {e}")
 
@@ -15518,12 +16007,11 @@ def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = HELPER_
     try:
         msg = bot.send_message(chat_id, html_text, parse_mode="HTML")
         def _delete():
-            time.sleep(delay)
             try:
                 bot.delete_message(chat_id, msg.message_id)
             except Exception:
                 pass
-        threading.Thread(target=_delete, daemon=True).start()
+        DELAYED_SCHEDULER.schedule(f"auto-delete-html:{chat_id}:{msg.message_id}", delay, _delete)
     except Exception as e:
         log_error(f"send_html_and_auto_delete: {e}")
 def delete_message_later(chat_id: int, message_id: int, delay: int = 30):
@@ -15532,12 +16020,11 @@ def delete_message_later(chat_id: int, message_id: int, delay: int = 30):
     """
     try:
         def _job():
-            time.sleep(delay)
             try:
                 bot.delete_message(chat_id, message_id)
             except Exception:
                 pass
-        threading.Thread(target=_job, daemon=True).start()
+        DELAYED_SCHEDULER.schedule(f"delete-later:{chat_id}:{message_id}", delay, _job)
     except Exception as e:
         log_error(f"delete_message_later: {e}")
 _edit_cancel_timers = {}
@@ -15552,13 +16039,8 @@ def clear_edit_wait_state(chat_id: int, expected_prompt_id: int | None = None, d
         return False
 
     key = (int(chat_id), "edit_wait")
-    prev = _edit_cancel_timers.get(key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-        _edit_cancel_timers.pop(key, None)
+    _edit_cancel_timers.pop(key, None)
+    DELAYED_SCHEDULER.cancel(f"edit-wait:{int(chat_id)}")
 
     store["edit_wait"] = None
     save_data(data)
@@ -15580,13 +16062,8 @@ def clear_finwin_edit_wait_state(chat_id: int, expected_prompt_id: int | None = 
         return False
 
     key = (int(chat_id), "finwin_edit_wait")
-    prev = _edit_cancel_timers.get(key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-        _edit_cancel_timers.pop(key, None)
+    _edit_cancel_timers.pop(key, None)
+    DELAYED_SCHEDULER.cancel(f"finwin-edit-wait:{int(chat_id)}")
 
     store["finwin_edit_wait"] = None
     save_data(data)
@@ -15605,12 +16082,12 @@ def _edit_countdown_text(base_text: str, remaining: int) -> str:
 
 
 def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: float = 40.0):
-    """Автоотмена фин-редактирования без ежесекундного редактирования таймера."""
+    """Автоотмена фин-редактирования без отдельного потока на каждое окно."""
     key = (int(chat_id), "finwin_edit_wait")
+    scheduler_key = f"finwin-edit-wait:{int(chat_id)}"
 
     def _job():
         try:
-            time.sleep(float(delay))
             store = get_chat_store(chat_id)
             wait = store.get("finwin_edit_wait") or {}
             if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
@@ -15621,24 +16098,18 @@ def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: flo
         except Exception as e:
             log_error(f"schedule_cancel_finwin_edit({chat_id},{prompt_message_id}): {e}")
 
-    prev = _edit_cancel_timers.get(key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-    t = threading.Timer(0.0, _job)
-    _edit_cancel_timers[key] = t
-    t.start()
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
+    _edit_cancel_timers[key] = deadline
 
 
 def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float = 40.0):
-    """Автоотмена редактирования без ежесекундного редактирования таймера."""
+    """Автоотмена редактирования без отдельного потока на каждое окно."""
     key = (int(chat_id), "edit_wait")
+    scheduler_key = f"edit-wait:{int(chat_id)}"
 
     def _job():
         try:
-            time.sleep(float(delay))
             store = get_chat_store(chat_id)
             wait = store.get("edit_wait") or {}
             if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
@@ -15649,48 +16120,33 @@ def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float = 40
         except Exception as e:
             log_error(f"schedule_cancel_edit({chat_id},{prompt_message_id}): {e}")
 
-    prev = _edit_cancel_timers.get(key)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
-    t = threading.Timer(0.0, _job)
-    _edit_cancel_timers[key] = t
-    t.start()
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
+    _edit_cancel_timers[key] = deadline
 
 
 def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
-    """
-    Через delay секунд сбрасывает флаг reset_wait,
-    если он всё ещё активен.
-    """
+    """Через delay секунд сбрасывает reset_wait через общий планировщик."""
+    scheduler_key = f"reset-wait:{int(chat_id)}"
+
     def _job():
         try:
             store = get_chat_store(chat_id)
             changed = False
-
             if store.get("reset_wait", False):
                 store["reset_wait"] = False
                 store["reset_time"] = 0
                 changed = True
-
             if changed:
                 save_data(data)
         except Exception as e:
             log_error(f"schedule_cancel_wait job: {e}")
 
-    prev = _edit_cancel_timers.get(chat_id)
-    if prev and prev.is_alive():
-        try:
-            prev.cancel()
-        except Exception:
-            pass
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
+    _edit_cancel_timers[int(chat_id)] = deadline
 
-    t = threading.Timer(delay, _job)
-    _edit_cancel_timers[chat_id] = t
-    t.start()
-    
+
 def update_chat_info_from_message(msg):
     """
     Обновляет информацию о чате в памяти.
@@ -15938,7 +16394,7 @@ def _schedule_owner_json_restore_prompt_cleanup(key: int, delay: int = 12):
     def _job():
         _cleanup_owner_json_restore_prompt(key, remove_prompt=True)
     try:
-        threading.Timer(delay, _job).start()
+        DELAYED_SCHEDULER.schedule(f"owner-json-restore-cleanup:{int(key)}", delay, _job)
     except Exception as e:
         log_error(f"_schedule_owner_json_restore_prompt_cleanup({key}): {e}")
 
@@ -16113,27 +16569,32 @@ def calc_day_balance(store: dict, day_key: str) -> float:
 
 
 def rebuild_global_records():
+    """Быстрый общий итог без копирования всех записей всех чатов при каждом сообщении."""
     with data_lock:
-        all_recs = []
-        for cid, st in list((data.get("chats", {}) or {}).items()):
+        total = 0.0
+        for _cid, store in (data.get("chats", {}) or {}).items():
             try:
-                normalize_chat_records(int(cid))
+                if "balance" in store:
+                    total += float(store.get("balance", 0) or 0)
+                else:
+                    total += sum(float(r.get("amount", 0) or 0) for r in (store.get("records", []) or []))
             except Exception:
                 pass
-            all_recs.extend(st.get("records", []) or [])
-        data["records"] = all_recs
-        data["overall_balance"] = sum(float(r.get("amount", 0) or 0) for r in all_recs)
+        # Полные записи уже находятся в chats; дублировать их в root больше не нужно.
+        data["records"] = []
+        data["overall_balance"] = total
 
 _finalize_timers = {}
 _backup_timers = {}
+_quick_backup_timers = {}
 _balance_panel_refresh_timers = {}
 _balance_panel_collapse_timers = {}
 _balance_panel_first_timers = {}
 _balance_panel_recreate_timers = {}
 _total_message_timers = {}
 _backup_dirty_chats = set()
-_backup_global_timer = None
-_backup_run_lock = threading.Lock()
+_quick_backup_dirty_chats = set()
+_global_mega_timer = None
 
 def collect_finance_chat_ids():
     ids = set()
@@ -16181,7 +16642,7 @@ def schedule_startup_main_windows(delay: float = 3.0):
             log_error(f"schedule_startup_main_windows job: {e}")
 
     try:
-        threading.Timer(delay, _job).start()
+        DELAYED_SCHEDULER.schedule("startup-main-windows", delay, _job)
     except Exception as e:
         log_error(f"schedule_startup_main_windows: {e}")
 
@@ -16189,119 +16650,103 @@ def schedule_all_finance_backups(delay: float = 10.0):
     for cid in collect_finance_chat_ids():
         schedule_backup_flush(cid, delay=delay)
 
-def _flush_dirty_backups():
-    global _backup_global_timer
-    if not _backup_run_lock.acquire(blocking=False):
-        # Если предыдущий бэкап ещё идёт, не блокируем бота: переносим пачку немного позже.
-        with timer_lock:
-            if _backup_dirty_chats:
-                t = threading.Timer(BACKUP_BUSY_RETRY_SECONDS, _flush_dirty_backups)
-                _backup_global_timer = t
-                t.start()
+
+def _schedule_global_mega_snapshot(delay: float = 30.0):
+    global _global_mega_timer
+    if not mega_is_configured():
         return
+    _global_mega_timer = time.time() + max(5.0, float(delay))
+    def _fire():
+        global _global_mega_timer
+        _global_mega_timer = None
+        if not BACKUP_TASK_POOL.submit("mega-global", mega_upload_latest_global_backup):
+            log_error("GLOBAL MEGA QUEUE FULL, RETRY")
+            _schedule_global_mega_snapshot(BACKUP_BUSY_RETRY_SECONDS)
+    DELAYED_SCHEDULER.schedule("mega-global-snapshot", max(5.0, float(delay)), _fire)
 
-    try:
-        with timer_lock:
-            dirty = sorted(int(x) for x in _backup_dirty_chats)
-            _backup_dirty_chats.clear()
-            _backup_global_timer = None
 
-        if not dirty:
-            return
-
-        # Локальное сохранение/глобальный снимок — без chat_lock и без сетевых вызовов.
+def _run_quick_chat_backup(chat_id: int):
+    chat_id = int(chat_id)
+    with state_chat_context(chat_id):
         try:
-            export_global_csv(data)
-            save_data(data)
-        except Exception as e:
-            log_error(f"_flush_dirty_backups global export/save: {e}")
+            save_data(data, chat_ids=[chat_id])
+            save_chat_json_only(chat_id)
+            if is_backup_to_mega_enabled(chat_id):
+                mega_upload_chat_latest_json_only(chat_id)
+                _schedule_global_mega_snapshot(30.0)
+        finally:
+            with timer_lock:
+                _quick_backup_dirty_chats.discard(chat_id)
 
-        any_mega = any(is_backup_to_mega_enabled(cid) for cid in dirty)
-        if any_mega:
-            try:
-                mega_upload_latest_global_backup()
-            except Exception as e:
-                log_error(f"_flush_dirty_backups mega global upload: {e}")
 
-        month_key_for_mega = current_month_key()
-
-        for cid in dirty:
-            trace = ProcessTrace(cid, f"Бэкап: {get_chat_display_name(cid)}").start()
-            try:
-                if not is_finance_mode(cid):
-                    trace.step("финрежим выключен — пропуск")
-                    trace.finish("бэкап завершён")
-                    continue
-                if not is_auto_backup_enabled(cid):
-                    trace.step("все авто-бэкапы выключены — пропуск")
-                    trace.finish("бэкап завершён")
-                    continue
-
-                trace.step("проверяет настройки бэкапов чата")
-                trace.step("создаёт локальный JSON")
-                trace.step("создаёт локальный CSV")
-                trace.step("создаёт локальный Excel")
-                save_chat_json(cid)
-                trace.step("локальные файлы готовы")
-
-                if is_backup_to_chat_enabled(cid) and can_receive_direct_json_backup(cid) and not is_finance_output_suppressed(cid):
-                    trace.step("обновляет прямой JSON-бэкап в чат")
-                    send_backup_to_chat(cid)
-                else:
-                    trace.step("прямой бэкап в чат выключен/не разрешён — пропуск")
-
-                if is_backup_to_channel_enabled(cid):
-                    trace.step("обновляет backup-канал JSON+Excel")
-                    send_backup_to_channel(cid)
-                else:
-                    trace.step("бэкап в канал выключен — пропуск")
-
-                if is_backup_to_mega_enabled(cid):
-                    trace.step("грузит JSON в MEGA")
-                    try:
-                        mega_upload_chat_backup_bundle(cid, month_key_for_mega)
-                    except Exception as e:
-                        log_error(f"_flush_dirty_backups mega chat {cid}: {e}")
-                else:
-                    trace.step("бэкап в MEGA выключен — пропуск")
-
+def _run_full_chat_backup(chat_id: int):
+    chat_id = int(chat_id)
+    trace = ProcessTrace(chat_id, f"Бэкап: {get_chat_display_name(chat_id)}").start()
+    with state_chat_context(chat_id):
+        try:
+            if not is_finance_mode(chat_id):
+                trace.step("финрежим выключен — пропуск")
                 trace.finish("бэкап завершён")
-            except Exception as e:
-                log_error(f"_flush_dirty_backups chat {cid}: {e}")
-                trace.fail(e)
-    finally:
-        try:
-            _backup_run_lock.release()
-        except Exception:
-            pass
+                return
+            if not is_auto_backup_enabled(chat_id):
+                trace.step("все авто-бэкапы выключены — пропуск")
+                trace.finish("бэкап завершён")
+                return
+            save_data(data, chat_ids=[chat_id])
+            trace.step("создаёт JSON/CSV" + ("/Excel" if backup_excel_all_enabled() else ""))
+            save_chat_json(chat_id)
+            if is_backup_to_chat_enabled(chat_id) and can_receive_direct_json_backup(chat_id) and not is_finance_output_suppressed(chat_id):
+                send_backup_to_chat(chat_id, ensure_files=False)
+            if is_backup_to_channel_enabled(chat_id):
+                send_backup_to_channel(chat_id, ensure_files=False)
+            if is_backup_to_mega_enabled(chat_id):
+                mega_upload_chat_backup_bundle(chat_id, current_month_key())
+                _schedule_global_mega_snapshot(20.0)
+            trace.finish("бэкап завершён")
+        except Exception as exc:
+            trace.fail(exc)
+            log_error(f"_run_full_chat_backup({chat_id}): {exc}")
+        finally:
+            with timer_lock:
+                _backup_dirty_chats.discard(chat_id)
+                _backup_timers.pop(chat_id, None)
+
+
+def schedule_quick_backup(chat_id: int, delay: float = 15.0):
+    chat_id = int(chat_id)
+    due = time.time() + max(1.0, float(delay))
+    with timer_lock:
+        _quick_backup_dirty_chats.add(chat_id)
+        _quick_backup_timers[chat_id] = due
+    def _fire():
+        with timer_lock:
+            _quick_backup_timers.pop(chat_id, None)
+        if not BACKUP_TASK_POOL.submit(f"quick:{chat_id}", _run_quick_chat_backup, chat_id):
+            log_error(f"QUICK BACKUP QUEUE FULL, RETRY: {chat_id}")
+            schedule_quick_backup(chat_id, BACKUP_BUSY_RETRY_SECONDS)
+    DELAYED_SCHEDULER.schedule(f"quick-backup:{chat_id}", max(1.0, float(delay)), _fire)
 
 
 def schedule_backup_flush(chat_id: int, delay: float = 3.0):
-    """Debounced backup queue: много операций за короткое время = один flush."""
-    global _backup_global_timer
+    """Отдельный логический debounce каждого чата без отдельного OS-потока."""
+    chat_id = int(chat_id)
     try:
         delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
     except Exception:
         delay = BACKUP_MIN_DELAY_SECONDS
-    try:
-        if chat_id is not None:
-            with timer_lock:
-                _backup_dirty_chats.add(int(chat_id))
-    except Exception:
-        pass
-
+    schedule_quick_backup(chat_id, 15.0)
+    due = time.time() + delay
     with timer_lock:
-        prev = _backup_global_timer
-        if prev and getattr(prev, "is_alive", lambda: False)():
-            try:
-                prev.cancel()
-            except Exception:
-                pass
-        t = threading.Timer(delay, _flush_dirty_backups)
-        t.daemon = True
-        _backup_global_timer = t
-        t.start()
-    
+        _backup_dirty_chats.add(chat_id)
+        _backup_timers[chat_id] = due
+    def _fire():
+        with timer_lock:
+            _backup_timers.pop(chat_id, None)
+        if not BACKUP_TASK_POOL.submit(f"full:{chat_id}", _run_full_chat_backup, chat_id):
+            log_error(f"FULL BACKUP QUEUE FULL, RETRY: {chat_id}")
+            schedule_backup_flush(chat_id, BACKUP_BUSY_RETRY_SECONDS)
+    DELAYED_SCHEDULER.schedule(f"full-backup:{chat_id}", delay, _fire)
+
 def _safe_stabilize(action_name, func):
     try:
         try:
@@ -16356,7 +16801,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
 
             trace.step("записывает финрежимы в общий словарь")
             trace.step("сохраняет SQLite/data")
-            _safe_stabilize("save_data", lambda: save_data(data))
+            _safe_stabilize("save_data", lambda: save_data(data, chat_ids=[chat_id]))
 
             trace.step("проверяет скрытый финрежим")
             hidden = is_finance_output_suppressed(chat_id)
@@ -16396,18 +16841,19 @@ def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "cha
     day_key = day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
 
     def _job():
-        _finance_changed_now(chat_id, day_key, reason)
+        if not FINANCE_TASK_POOL.submit(chat_id, _finance_changed_now, chat_id, day_key, reason):
+            log_error(f"FINANCE QUEUE FULL, RETRY: {chat_id}")
+            with timer_lock:
+                _finalize_timers[chat_id] = time.time() + 1.0
+            DELAYED_SCHEDULER.schedule(f"finance-finalize:{chat_id}", 1.0, _fire_finance)
 
     with timer_lock:
-        t_prev = _finalize_timers.get(chat_id)
-        if t_prev and getattr(t_prev, "is_alive", lambda: False)():
-            try:
-                t_prev.cancel()
-            except Exception:
-                pass
-        t = threading.Timer(delay, _job)
-        _finalize_timers[chat_id] = t
-        t.start()
+        _finalize_timers[chat_id] = time.time() + max(0.0, float(delay))
+    def _fire_finance():
+        with timer_lock:
+            _finalize_timers.pop(chat_id, None)
+        _job()
+    DELAYED_SCHEDULER.schedule(f"finance-finalize:{chat_id}", delay, _fire_finance)
 
 
 def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.35):
@@ -16969,6 +17415,10 @@ def build_diag_text() -> str:
         f"Связей пересылки: {forward_pairs}",
         f"Активных окон: {active_windows_count}",
         f"Dirty-бэкапов в очереди: {dirty_count}",
+        f"Очередь webhook: {WEBHOOK_TASK_POOL.stats()['pending']}",
+        f"Очередь пересылки: {FORWARD_TASK_POOL.stats()['pending']}",
+        f"Очередь финансов: {FINANCE_TASK_POOL.stats()['pending']}",
+        f"Очередь backup: {BACKUP_TASK_POOL.stats()['pending']}",
         f"BACKUP_CHAT_ID: {'есть' if BACKUP_CHAT_ID else 'нет'}",
         f"Бэкап в канал: {'ВКЛ' if backup_flags.get('channel', True) else 'ВЫКЛ'}",
         f"MEGA: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'} / {'настроено' if mega_is_configured() else 'не настроено'}",
@@ -16981,6 +17431,32 @@ def build_diag_text() -> str:
         for e in errors:
             lines.append(f"• {e.get('ts','')} — {format_error_for_owner(e.get('msg',''))[:160]}")
     return "\n".join(lines)
+
+
+@bot.message_handler(commands=["off_on_backup_excel"])
+def cmd_off_on_backup_excel(msg):
+    update_chat_info_from_message(msg)
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    enabled = toggle_backup_excel_all_enabled()
+    if enabled:
+        for cid in collect_finance_chat_ids():
+            schedule_backup_flush(cid, BACKUP_MIN_DELAY_SECONDS)
+    send_and_auto_delete(chat_id, f"📊 Excel-бэкап всех чатов: {'ВКЛ' if enabled else 'ВЫКЛ'}", 20)
+
+
+@bot.message_handler(commands=["queues", "queue_status"])
+def cmd_queues(msg):
+    update_chat_info_from_message(msg)
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    send_and_auto_delete(chat_id, build_queue_status_text(), 90)
 
 
 @bot.message_handler(commands=["diag", "diagnostics"])
@@ -17097,14 +17573,22 @@ def telegram_webhook():
 
         update = telebot.types.Update.de_json(payload)
         update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
-        if update_chat_id is None:
-            bot.process_new_updates([update])
-        else:
-            # Главная очередь: один и тот же чат всегда обрабатывается строго последовательно.
-            with locked_chat(update_chat_id):
-                bot.process_new_updates([update])
+        update_key = update_chat_id if update_chat_id is not None else getattr(update, "update_id", time.time_ns())
+
+        def _process_update():
+            with state_chat_context(update_chat_id):
+                if update_chat_id is None:
+                    bot.process_new_updates([update])
+                else:
+                    with locked_chat(update_chat_id):
+                        bot.process_new_updates([update])
+
+        if not WEBHOOK_TASK_POOL.submit(update_key, _process_update):
+            log_error(f"WEBHOOK QUEUE FULL: chat={update_chat_id}")
+            # Telegram повторит update позже; данные не теряются молча.
+            return "BUSY", 503
     except Exception as e:
-        log_error(f"WEBHOOK: process update error: {e}")
+        log_error(f"WEBHOOK: enqueue update error: {e}")
         return "ERROR", 500
 
     return "OK", 200
@@ -17156,7 +17640,7 @@ def main():
             settings.setdefault("quick_balance_user_selected", False)
             settings.setdefault("hidden_finance", False)
             settings.setdefault("auto_backup_enabled", True)
-            settings["auto_backup_to_mega_enabled"] = True
+            settings.setdefault("auto_backup_to_mega_enabled", True)
             settings.setdefault("total_secret_mode", False)
             store.setdefault("secret_messages", [])
             _ensure_secret_media_numbers(int(cid))
@@ -17183,7 +17667,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ Бот запущен (версия {VERSION}).\n"
+                    f"✅ 👽Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
