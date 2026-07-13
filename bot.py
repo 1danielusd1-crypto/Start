@@ -355,7 +355,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v81_100chats_queues"
+VERSION = "bot_v82_readable_json_mega_first"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -910,8 +910,7 @@ def _save_secret_notes_plain_to_file() -> str | None:
             "notes": _secret_notes_list(),
         }
         path = _secret_notes_local_path()
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        _save_json(path, payload)
         return path
     except Exception as e:
         log_error(f"_save_secret_notes_plain_to_file: {e}")
@@ -1643,6 +1642,7 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_prompt_back': 'Ф122',
     'info_instruction': 'Ф123',
     'info_queues': 'Ф124',
+    'mega_first_toggle': 'Ф125',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -1973,7 +1973,7 @@ def fmt_date_ddmmyy(day_key: str) -> str:
         return str(day_key)
 
 def fmt_date_backup(day_key: str) -> str:
-    """Формат даты для backup-файлов: DD:MM:YY. Внутренний day_key YYYY-MM-DD сохраняем отдельно."""
+    """Старый совместимый формат DD:MM:YY. Для человека дополнительно пишем DD.MM.YYYY."""
     try:
         d = datetime.strptime(str(day_key)[:10], "%Y-%m-%d")
         return d.strftime("%d:%m:%y")
@@ -1981,16 +1981,68 @@ def fmt_date_backup(day_key: str) -> str:
         return str(day_key)
 
 
+def fmt_date_human(day_key: str) -> str:
+    try:
+        d = datetime.strptime(str(day_key)[:10], "%Y-%m-%d")
+        return d.strftime("%d.%m.%Y")
+    except Exception:
+        return str(day_key or "")
+
+
+def parse_timestamp_local(value) -> datetime | None:
+    try:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=get_tz())
+        return dt.astimezone(get_tz())
+    except Exception:
+        return None
+
+
+def fmt_time_human(value) -> str:
+    dt = parse_timestamp_local(value)
+    return dt.strftime("%H:%M:%S") if dt else ""
+
+
+def fmt_datetime_human(value) -> str:
+    dt = parse_timestamp_local(value)
+    return dt.strftime("%d.%m.%Y %H:%M:%S") if dt else str(value or "")
+
+
+def json_file_info(path: str | None = None) -> dict:
+    now = now_local()
+    return {
+        "имя_файла": os.path.basename(path or "") if path else "",
+        "дата_изменения_файла": now.strftime("%d.%m.%Y"),
+        "время_изменения_файла": now.strftime("%H:%M:%S"),
+        "дата_и_время_изменения_файла": now.strftime("%d.%m.%Y %H:%M:%S"),
+        "время_изменения_файла_iso": now.isoformat(timespec="seconds"),
+        "часовой_пояс": str(get_tz()),
+    }
+
+
 def backup_record_copy(rec: dict) -> dict:
-    """Копия записи для JSON-бэкапа: добавляем date в формате DD:MM:YY, не ломая day_key для восстановления."""
+    """Человекочитаемая копия записи без удаления служебных полей для восстановления."""
     try:
         rr = json.loads(json.dumps(rec or {}, ensure_ascii=False, default=str))
     except Exception:
         rr = dict(rec or {})
-    dk = rr.get("day_key") or _record_day_key(rr) if isinstance(rr, dict) else today_key()
+    dk = rr.get("day_key") or (_record_day_key(rr) if isinstance(rr, dict) else today_key())
+    ts = rr.get("timestamp") or ""
+    try:
+        amount = float(rr.get("amount", 0) or 0)
+    except Exception:
+        amount = 0.0
     rr["date"] = fmt_date_backup(dk)
+    rr["дата"] = fmt_date_human(dk)
+    rr["время"] = fmt_time_human(ts)
+    rr["дата_и_время"] = fmt_datetime_human(ts)
+    rr["тип_операции"] = "Приход" if amount >= 0 else "Расход"
+    rr["сумма_без_знака"] = abs(amount)
     return rr
-
 
 def backup_records_list(records) -> list:
     return [backup_record_copy(r) for r in (records or []) if isinstance(r, dict)]
@@ -2300,6 +2352,33 @@ def toggle_backup_excel_all_enabled() -> bool:
 
 def backup_excel_all_label() -> str:
     return "ВКЛ" if backup_excel_all_enabled() else "ВЫКЛ"
+
+
+def mega_first_mode_enabled() -> bool:
+    """Строгий режим сохранности: лёгкий JSON чата отправляется в MEGA до обновления интерфейса."""
+    try:
+        return bool((data or {}).setdefault("_global_settings", {}).get("mega_first_mode", False))
+    except Exception:
+        return False
+
+
+def set_mega_first_mode(enabled: bool):
+    data.setdefault("_global_settings", {})["mega_first_mode"] = bool(enabled)
+    save_data(data, full=True)
+
+
+def toggle_mega_first_mode() -> bool:
+    enabled = not mega_first_mode_enabled()
+    set_mega_first_mode(enabled)
+    return enabled
+
+
+def mega_first_mode_label() -> str:
+    return "ВКЛ" if mega_first_mode_enabled() else "ВЫКЛ"
+
+
+def mega_first_button_label() -> str:
+    return f"☁️ Сначала MEGA: {mega_first_mode_label()}"
 
 
 def _backup_target_all_state(target: str) -> tuple[int, int]:
@@ -3098,6 +3177,7 @@ def build_help_text(chat_id: int) -> str:
             "/mask — переключить маскировку тотального секрета",
             "/day5 — финсутки: 00:00 / 05:00",
             "/off_on_backup_excel — Excel-бэкап всех чатов ВКЛ/ВЫКЛ",
+            "/mega_first — строгий режим: сначала быстрый JSON в MEGA",
             "/queues — состояние очередей и нагрузки",
         ])
     lines.append("/help — эта справка")
@@ -3110,6 +3190,7 @@ def build_info_text(chat_id: int) -> str:
     if is_owner_chat(chat_id):
         text += f"\n/buttons — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
         text += f"\n/mask — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
+        text += f"\n/mega_first — сначала MEGA: {mega_first_mode_label()}"
     return text
 
 
@@ -3849,9 +3930,19 @@ def _load_json(path: str, default):
         return default
 
 def _save_json(path: str, obj):
+    """Пишет JSON с отступами и понятным временем изменения файла, не меняя рабочий объект в памяти."""
     try:
+        payload = obj
+        if isinstance(obj, dict):
+            try:
+                payload = json.loads(json.dumps(obj, ensure_ascii=False, default=str))
+            except Exception:
+                payload = dict(obj)
+            info = json_file_info(path)
+            payload["время_изменения_файла"] = info["дата_и_время_изменения_файла"]
+            payload["_file_info"] = info
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
+            json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log_error(f"JSON save error {path}: {e}")
 
@@ -3995,7 +4086,7 @@ def _copy_file_for_mega(src_path: str, dst_name: str) -> str | None:
         return None
 
 
-def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None = None) -> bool:
+def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None = None, timeout: int | None = None) -> bool:
     """Загрузить файл в MEGA с заменой файла того же имени."""
     if not mega_is_configured():
         return False
@@ -4011,7 +4102,7 @@ def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None =
         final_name = remote_name or os.path.basename(upload_path)
         remote_file = remote_dir.rstrip("/") + "/" + final_name
         _mega_run("mega-rm", [remote_file], check=False, timeout=30)
-        _mega_run("mega-put", [upload_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+        _mega_run("mega-put", [upload_path, remote_dir], check=True, timeout=timeout or MEGA_TIMEOUT)
         return True
     except Exception as e:
         log_error(f"[MEGA PUT ERROR] {local_path} -> {remote_dir}: {e}")
@@ -4115,7 +4206,11 @@ def build_chat_monthly_backup_payload(chat_id: int, month_key: str | None = None
         "kind": "chat_monthly_backup",
         "version": VERSION,
         "created_at": now_local().isoformat(timespec="seconds"),
+        "создано": now_local().strftime("%d.%m.%Y %H:%M:%S"),
+        "время_изменения_файла": now_local().strftime("%d.%m.%Y %H:%M:%S"),
         "date_format": "DD:MM:YY",
+        "readable_date_format": "DD.MM.YYYY",
+        "readable_time_format": "HH:MM:SS",
         "month": month_key,
         "chat_id": int(chat_id),
         "chat_name": get_chat_display_name(chat_id),
@@ -4140,8 +4235,7 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
     xlsx_path = os.path.join(MEGA_LOCAL_TMP_DIR, base + ".xlsx")
     payload = build_chat_monthly_backup_payload(chat_id, month_key)
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    _save_json(json_path, payload)
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -4174,7 +4268,7 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         [],
         ["Дата", "Описание", "Приход", "Расход", "ID", "Номер", "Время", "Автор"],
     ]
-    for r in payload.get("records", []):
+    for r in reversed(payload.get("records", [])):
         base_row = _xlsx_record_row(r.get("date") or fmt_date_backup(r.get("day_key")), r.get("amount"), r.get("note", ""))
         rows.append(base_row + [
             r.get("id", ""),
@@ -4221,9 +4315,9 @@ def mega_upload_chat_backup_bundle(chat_id: int, month_key: str | None = None) -
         return False
 
 
-def mega_upload_chat_latest_json_only(chat_id: int) -> bool:
+def mega_upload_chat_latest_json_only(chat_id: int, force: bool = False, timeout: int | None = None) -> bool:
     """Быстрый MEGA JSON без Excel/CSV и месячного пакета."""
-    if not is_backup_to_mega_enabled(chat_id) or not mega_is_configured():
+    if (not force and not is_backup_to_mega_enabled(chat_id)) or not mega_is_configured():
         return False
     try:
         local_path = chat_json_file(chat_id)
@@ -4233,10 +4327,76 @@ def mega_upload_chat_latest_json_only(chat_id: int) -> bool:
             return False
         slug = mega_chat_slug(chat_id)
         remote_chat_dir = mega_remote_chat_dir(chat_id)
-        return bool(mega_put_replace(local_path, remote_chat_dir, f"latest_{slug}.json"))
+        return bool(mega_put_replace(local_path, remote_chat_dir, f"latest_{slug}.json", timeout=timeout))
     except Exception as e:
         log_error(f"mega_upload_chat_latest_json_only({chat_id}): {e}")
         return False
+
+
+_MEGA_FIRST_CHAT_LOCKS = defaultdict(threading.RLock)
+_MEGA_FIRST_LAST_RUN = {}
+try:
+    MEGA_FIRST_TIMEOUT = max(5, int(os.getenv("MEGA_FIRST_TIMEOUT", "20")))
+except Exception:
+    MEGA_FIRST_TIMEOUT = 20
+
+
+def mega_upload_secret_json_only(chat_id: int, timeout: int | None = None) -> bool:
+    """Срочно сохраняет только JSON секретов; тяжёлые медиа продолжают грузиться обычной очередью."""
+    if not mega_is_configured():
+        return False
+    try:
+        chat_id = int(chat_id)
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        slug = mega_chat_slug(chat_id)
+        filename = f"secret_{slug}.json"
+        path = os.path.join(MEGA_LOCAL_TMP_DIR, filename)
+        remote_dir = f"{MEGA_BACKUP_DIR.rstrip('/')}/secrets/{slug}"
+        _save_json(path, _secret_chat_payload(chat_id))
+        return bool(mega_put_replace(path, remote_dir, filename, timeout=timeout))
+    except Exception as e:
+        log_error(f"mega_upload_secret_json_only({chat_id}): {e}")
+        return False
+
+
+def mega_first_checkpoint(chat_id: int, reason: str = "change", include_secret: bool = False) -> bool:
+    """
+    Строгая точка сохранности. SQLite уже сохранён; затем свежий полный JSON чата
+    синхронно отправляется в MEGA. Интерфейс продолжает работу только после ответа MEGA.
+    Повторные вызовы в течение 1 секунды объединяются.
+    """
+    if not mega_first_mode_enabled():
+        return True
+    if not mega_is_configured():
+        log_error(f"MEGA-FIRST включён, но MEGA не настроена: chat={chat_id} reason={reason}")
+        return False
+    chat_id = int(chat_id)
+    lock = _MEGA_FIRST_CHAT_LOCKS[chat_id]
+    with lock:
+        last = _MEGA_FIRST_LAST_RUN.get(chat_id) or {}
+        if time.monotonic() - float(last.get("ts", 0) or 0) < 1.0:
+            return bool(last.get("ok", False))
+        started = time.monotonic()
+        try:
+            save_data(data, chat_ids=[chat_id])
+            save_chat_json_only(chat_id)
+            ok = mega_upload_chat_latest_json_only(chat_id, force=True, timeout=MEGA_FIRST_TIMEOUT)
+            if include_secret:
+                ok = mega_upload_secret_json_only(chat_id, timeout=MEGA_FIRST_TIMEOUT) and ok
+            # Глобальный JSON нужен для появления новых чатов и общих правил.
+            # Он ставится почти сразу, но не задерживает каждую кнопку повторной полной загрузкой.
+            try:
+                _schedule_global_mega_snapshot(1.0)
+            except Exception as e:
+                log_error(f"mega_first global schedule {chat_id}: {e}")
+            elapsed = round(time.monotonic() - started, 3)
+            _MEGA_FIRST_LAST_RUN[chat_id] = {"ts": time.monotonic(), "ok": bool(ok), "elapsed": elapsed, "reason": reason}
+            bot_journal("mega_first_checkpoint", chat_id, f"ok={bool(ok)} elapsed={elapsed}s reason={reason}")
+            return bool(ok)
+        except Exception as e:
+            _MEGA_FIRST_LAST_RUN[chat_id] = {"ts": time.monotonic(), "ok": False, "elapsed": round(time.monotonic() - started, 3), "reason": reason}
+            log_error(f"mega_first_checkpoint({chat_id},{reason}): {e}")
+            return False
 
 
 def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
@@ -4261,6 +4421,18 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
             ids.update(collect_finance_chat_ids())
         except Exception:
             pass
+    if mega_first_mode_enabled():
+        ordered_ids = sorted(ids)
+        for cid in ordered_ids:
+            try:
+                # До трёх изменённых чатов сохраняем строго до возврата кнопки.
+                # Массовые операции не блокируем десятками MEGA-команд подряд.
+                if len(ordered_ids) <= 3:
+                    mega_first_checkpoint(cid, reason="config")
+                else:
+                    BACKUP_TASK_POOL.submit(f"mega-first-config:{cid}", mega_first_checkpoint, cid, "config-bulk", False)
+            except Exception as e:
+                log_error(f"schedule_config mega-first {cid}: {e}")
     for cid in ids:
         try:
             schedule_backup_flush(cid, delay=delay)
@@ -4286,6 +4458,8 @@ def make_global_backup_payload() -> dict:
         "kind": "mega_latest_global",
         "version": VERSION,
         "created_at": now_local().isoformat(timespec="seconds"),
+        "создано": now_local().strftime("%d.%m.%Y %H:%M:%S"),
+        "время_изменения_файла": now_local().strftime("%d.%m.%Y %H:%M:%S"),
         "chat_count": len(payload.get("chats", {}) or {}),
         "finance_active_chats": payload.get("finance_active_chats", {}),
         "forward_rules_count": sum(len(v or {}) for v in (payload.get("forward_rules", {}) or {}).values()),
@@ -4297,8 +4471,7 @@ def make_global_backup_payload() -> dict:
 
 def save_global_backup_snapshot(path: str) -> str:
     payload = make_global_backup_payload()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    _save_json(path, payload)
     return path
 
 
@@ -4366,6 +4539,104 @@ def is_data_effectively_empty_for_restore(d: dict) -> bool:
     return True
 
 
+def mega_download_chat_latest_json(chat_id: int) -> str | None:
+    if not mega_is_configured():
+        return None
+    try:
+        chat_id = int(chat_id)
+        slug = mega_chat_slug(chat_id)
+        remote_file = f"{mega_remote_chat_dir(chat_id).rstrip('/')}/latest_{slug}.json"
+        restore_dir = tempfile.mkdtemp(prefix=f"mega_chat_restore_{chat_id}_")
+        _mega_run("mega-get", [remote_file, restore_dir], check=True, timeout=MEGA_TIMEOUT)
+        local_path = os.path.join(restore_dir, f"latest_{slug}.json")
+        if not os.path.exists(local_path):
+            for name in os.listdir(restore_dir):
+                if name.lower().endswith(".json"):
+                    local_path = os.path.join(restore_dir, name)
+                    break
+        return local_path if os.path.exists(local_path) else None
+    except Exception as e:
+        log_error(f"mega_download_chat_latest_json({chat_id}): {e}")
+        return None
+
+
+def _json_payload_modified_iso(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    info = payload.get("_file_info") or {}
+    return str(
+        info.get("время_изменения_файла_iso")
+        or payload.get("created_at")
+        or payload.get("updated_at")
+        or payload.get("время_изменения_файла")
+        or ""
+    )
+
+
+def _iso_newer(left: str, right: str) -> bool:
+    ldt = parse_timestamp_local(left)
+    rdt = parse_timestamp_local(right)
+    if ldt and rdt:
+        return ldt > rdt
+    if ldt and not rdt:
+        return True
+    return False
+
+
+def merge_newer_chat_snapshots_from_mega(global_payload: dict | None = None) -> int:
+    """После global restore накладывает более свежие latest JSON отдельных чатов."""
+    global data
+    global_payload = global_payload if isinstance(global_payload, dict) else data
+    global_ts = str(((global_payload.get("_backup_meta") or {}).get("created_at") or ""))
+    merged = 0
+    for cid_s in list((data.get("chats", {}) or {}).keys()):
+        try:
+            cid = int(cid_s)
+        except Exception:
+            continue
+        local_path = mega_download_chat_latest_json(cid)
+        if not local_path:
+            continue
+        payload = _load_json(local_path, None)
+        if not isinstance(payload, dict):
+            continue
+        snapshot_ts = _json_payload_modified_iso(payload)
+        if global_ts and snapshot_ts and not _iso_newer(snapshot_ts, global_ts):
+            continue
+        chat_store = payload.get("chat_store")
+        if isinstance(chat_store, dict):
+            data.setdefault("chats", {})[str(cid)] = chat_store
+        elif "records" in payload or "daily_records" in payload:
+            store = data.setdefault("chats", {}).setdefault(str(cid), {})
+            store["records"] = payload.get("records", []) or []
+            store["daily_records"] = payload.get("daily_records", {}) or {}
+            store["next_id"] = int(payload.get("next_id", store.get("next_id", 1)) or 1)
+            store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
+            store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
+        else:
+            continue
+        settings_backup = payload.get("settings_backup") or {}
+        if isinstance(settings_backup, dict):
+            for key in ("global_forward_rules", "global_forward_finance", "finance_active_chats", "backup_flags"):
+                value = settings_backup.get(key)
+                if isinstance(value, dict):
+                    target_key = {
+                        "global_forward_rules": "forward_rules",
+                        "global_forward_finance": "forward_finance",
+                        "finance_active_chats": "finance_active_chats",
+                        "backup_flags": "backup_flags",
+                    }[key]
+                    data[target_key] = value
+        normalize_chat_records(cid)
+        recalc_balance(cid)
+        merged += 1
+    if merged:
+        rebuild_global_records()
+        save_data(data, full=True)
+        log_info(f"[MEGA] merged newer per-chat snapshots: {merged}")
+    return merged
+
+
 def mega_autorestore_if_needed() -> bool:
     """При старте: если SQLite/data пустые, пробуем восстановиться из MEGA latest_global.json."""
     global data
@@ -4381,8 +4652,11 @@ def mega_autorestore_if_needed() -> bool:
     try:
         # restore_from_json уже умеет глобальный JSON с ключом chats.
         restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
+        global_payload = _load_json(local_path, {})
         restore_from_json(restore_chat_id, local_path)
-        log_info("[MEGA] autorestore completed")
+        strict_restore = bool((global_payload.get("_global_settings") or {}).get("mega_first_mode", False))
+        merged = merge_newer_chat_snapshots_from_mega(global_payload) if strict_restore else 0
+        log_info(f"[MEGA] autorestore completed: global + per-chat merged={merged}")
         return True
     except Exception as e:
         log_error(f"[MEGA AUTORESTORE ERROR] {e}")
@@ -4393,6 +4667,7 @@ def mega_status_text() -> str:
     lines = ["☁️ MEGA.nz / MEGAcmd"]
     lines.append(f"MEGA_ENABLED: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'}")
     lines.append(f"MEGA_AUTORESTORE: {'ВКЛ' if MEGA_AUTORESTORE else 'ВЫКЛ'}")
+    lines.append(f"MEGA_FIRST_MODE: {mega_first_mode_label()}")
     lines.append(f"MEGA_EMAIL: {'есть' if MEGA_EMAIL else 'нет'}")
     lines.append(f"MEGA_BACKUP_DIR: {MEGA_BACKUP_DIR}")
     lines.append(f"MEGA_CHAT_BACKUP_DIR: {MEGA_CHAT_BACKUP_DIR}")
@@ -4613,7 +4888,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True},
+        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_first_mode": False},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -5318,8 +5593,8 @@ def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = N
         path = path or chat_xlsx_file(chat_id)
         rows = [["Дата", "Описание", "Приход", "Расход"]]
         daily = store.get("daily_records", {}) or {}
-        for dk in sorted(daily.keys()):
-            recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
+        for dk in sorted(daily.keys(), reverse=True):
+            recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key, reverse=True)
             for r in recs_sorted:
                 rows.append(_xlsx_record_row(fmt_date_backup(dk), r.get("amount", 0), r.get("note", "")))
         _write_simple_xlsx(path, rows, sheet_name="Данные")
@@ -5338,21 +5613,30 @@ def snapshot_chat_store(chat_id: int) -> dict:
 
 def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
     store = store or snapshot_chat_store(chat_id)
+    now = now_local()
+    full_store = json.loads(json.dumps(store, ensure_ascii=False, default=str))
+    full_store["records"] = backup_records_list(full_store.get("records", []))
+    full_store["daily_records"] = backup_daily_records(full_store.get("daily_records", {}))
     return {
         "kind": "chat_full_backup",
         "version": VERSION,
-        "created_at": now_local().isoformat(timespec="seconds"),
+        "created_at": now.isoformat(timespec="seconds"),
+        "создано": now.strftime("%d.%m.%Y %H:%M:%S"),
+        "время_изменения_файла": now.strftime("%d.%m.%Y %H:%M:%S"),
         "date_format": "DD:MM:YY",
+        "readable_date_format": "DD.MM.YYYY",
+        "readable_time_format": "HH:MM:SS",
         "chat_id": chat_id,
         "chat_name": get_chat_display_name(chat_id),
         "balance": store.get("balance", 0),
         "records": backup_records_list(store.get("records", [])),
         "daily_records": backup_daily_records(store.get("daily_records", {})),
-        "daily_records_by_date": {fmt_date_backup(k): backup_records_list(v) for k, v in (store.get("daily_records", {}) or {}).items()},
+        "daily_records_by_date": {fmt_date_human(k): backup_records_list(v) for k, v in (store.get("daily_records", {}) or {}).items()},
         "next_id": store.get("next_id", 1),
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
         "settings_backup": build_chat_settings_backup_payload(chat_id, store),
+        "chat_store": full_store,
     }
 
 
@@ -5392,7 +5676,9 @@ def save_chat_json(chat_id: int):
             save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
+            "время_изменения_файла": now_local().strftime("%d.%m.%Y %H:%M:%S"),
             "date_format": "DD:MM:YY",
+            "readable_date_format": "DD.MM.YYYY",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
             "excel_enabled": backup_excel_all_enabled(),
         }
@@ -5416,6 +5702,8 @@ def restore_from_json(chat_id: int, path: str):
 
     if "chats" in payload and isinstance(payload.get("chats"), dict):
         data = payload
+        data.pop("_file_info", None)
+        data.pop("время_изменения_файла", None)
         base = default_data()
         for k, v in base.items():
             if k not in data:
@@ -5437,14 +5725,17 @@ def restore_from_json(chat_id: int, path: str):
         log_info("restore_from_json: global data restored")
         return
 
-    if "records" in payload or "daily_records" in payload:
+    if "records" in payload or "daily_records" in payload or isinstance(payload.get("chat_store"), dict):
+        if isinstance(payload.get("chat_store"), dict):
+            data.setdefault("chats", {})[str(chat_id)] = payload.get("chat_store")
         store = get_chat_store(chat_id)
 
-        store["records"] = payload.get("records", []) or []
-        store["daily_records"] = payload.get("daily_records", {}) or {}
-        store["next_id"] = int(payload.get("next_id", 1) or 1)
-        store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
-        store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
+        if not isinstance(payload.get("chat_store"), dict):
+            store["records"] = payload.get("records", []) or []
+            store["daily_records"] = payload.get("daily_records", {}) or {}
+            store["next_id"] = int(payload.get("next_id", 1) or 1)
+            store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
+            store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
 
         if not store["records"] and store["daily_records"]:
             all_recs = []
@@ -6879,13 +7170,21 @@ def _extract_secret_codeword(text: str):
 
 
 def _secret_chat_payload(chat_id: int) -> dict:
+    now = now_local()
+    messages = []
+    for rec in list(_secret_records(int(chat_id))):
+        rr = backup_record_copy(rec)
+        rr["тип_данных"] = "Секретное сообщение"
+        messages.append(rr)
     return {
         "kind": "chat_secret_messages_plain_text",
         "version": VERSION,
         "chat_id": int(chat_id),
         "chat_name": get_chat_display_name(int(chat_id)),
-        "updated_at": now_local().isoformat(),
-        "messages": list(_secret_records(int(chat_id))),
+        "updated_at": now.isoformat(timespec="seconds"),
+        "обновлено": now.strftime("%d.%m.%Y %H:%M:%S"),
+        "время_изменения_файла": now.strftime("%d.%m.%Y %H:%M:%S"),
+        "messages": messages,
     }
 
 
@@ -7037,7 +7336,7 @@ def schedule_secret_mega_upload(chat_id: int, delay: float = 45.0):
         if not mega_is_configured():
             return False
         chat_id = int(chat_id)
-        delay = max(float(delay or 0), 30.0)
+        delay = max(float(delay or 0), 1.0 if mega_first_mode_enabled() else 30.0)
     except Exception:
         return False
 
@@ -7085,6 +7384,8 @@ def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> d
     settings = get_chat_store(chat_id).setdefault("settings", {})
     settings["auto_backup_to_mega_enabled"] = True
     save_data(data)
+    if mega_first_mode_enabled():
+        mega_first_checkpoint(chat_id, reason="secret-new", include_secret=True)
     schedule_config_backup_for_chats(chat_id, delay=0.2)
     schedule_secret_mega_upload(chat_id)
     refresh_secret_windows(chat_id)
@@ -8448,7 +8749,7 @@ def cmd_toggle_finance_day5(msg):
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
-    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/off_on_backup_excel", "/queues", "/queue_status"}
+    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/off_on_backup_excel", "/mega_first", "/queues", "/queue_status"}
 ))
 def cmd_total_secret_capture(msg):
     forward_secret_message_now(msg)
@@ -8771,6 +9072,8 @@ def handle_finance_text(msg):
             source_msg=msg,
             day_key=entry_day
         )
+        if mega_first_mode_enabled():
+            mega_first_checkpoint(chat_id, reason="finance-new")
         schedule_finalize(chat_id, entry_day)
         return True
     except Exception as e:
@@ -8820,6 +9123,8 @@ def handle_finance_edit(msg):
         f"amount={amount} note={note}"
     )
     save_data(data)
+    if mega_first_mode_enabled():
+        mega_first_checkpoint(chat_id, reason="finance-edit")
     return True
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0, source_msg=None):
     with locked_chat(dst_chat_id):
@@ -8891,6 +9196,8 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 log_error(f"[FWD FINANCE SKIP] amount not recognized: dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}")
             return False
 
+    if mega_first_mode_enabled():
+        mega_first_checkpoint(dst_chat_id, reason="forward-finance")
     schedule_finalize(dst_chat_id, entry_day)
     return True
 
@@ -10433,7 +10740,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         )
         if ext == "xlsx":
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
-            for date_v, amount_v, note_v in rows:
+            for date_v, amount_v, note_v in reversed(rows):
                 try:
                     parsed_amount = parse_csv_amount(amount_v)
                 except Exception:
@@ -11589,7 +11896,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         if ext == "xlsx":
             trace.step("создаёт временный Excel файл")
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
-            for date_v, amount_v, note_v in rows:
+            for date_v, amount_v, note_v in reversed(rows):
                 try:
                     parsed_amount = parse_csv_amount(amount_v)
                 except Exception as e_amount:
@@ -12249,7 +12556,9 @@ def build_owner_instruction_text() -> str:
         "7. Полный бэкап: примерно через 120 секунд тишины именно в этом чате. JSON/CSV создаются всегда; Excel зависит от /off_on_backup_excel; канал получает JSON и при включении Excel; MEGA получает JSON.\n"
         "8. У каждого чата собственный таймер бэкапа: активность одного чата не переносит бэкап остальных.\n"
         "9. Очереди ограничены. При перегрузке webhook вернёт 503, и Telegram повторит доставку вместо потери update.\n"
-        "10. /queues показывает размер очередей, работников, отказы и ожидание. /diag показывает общее состояние."
+        "10. /queues показывает размер очередей, работников, отказы и ожидание. /diag показывает общее состояние.\n"
+        "11. Режим «Сначала MEGA»: после локального SQLite бот синхронно отправляет лёгкий полный JSON изменённого чата в MEGA и только затем обновляет интерфейс. Это надёжнее для бесплатного Render, но каждое важное действие может стать медленнее на время ответа MEGA.\n"
+        "12. При автовосстановлении бот берёт latest_global.json, затем проверяет более свежие latest JSON отдельных чатов и накладывает их поверх глобальной копии."
     )
 
 
@@ -12285,6 +12594,10 @@ def build_queue_status_text() -> str:
     ds = DELAYED_SCHEDULER.stats()
     lines.append(f"Планировщик: задач {ds['scheduled']}, отменено {ds['cancelled']}, выполнено {ds['executed']}")
     lines.append(f"Excel-бэкап всех чатов: {backup_excel_all_label()}")
+    lines.append(f"Режим «сначала MEGA»: {mega_first_mode_label()}")
+    if _MEGA_FIRST_LAST_RUN:
+        last_cid, last_info = max(_MEGA_FIRST_LAST_RUN.items(), key=lambda item: float((item[1] or {}).get("ts", 0) or 0))
+        lines.append(f"Последний MEGA-first: {get_chat_display_name(last_cid)}, ok={bool(last_info.get('ok'))}, {last_info.get('elapsed', 0)}с")
     lines.append(f"Telegram общий интервал: {TELEGRAM_GLOBAL_MIN_GAP:.3f}с")
     return "\n".join(lines)
 
@@ -12308,6 +12621,7 @@ def build_info_keyboard(chat_id: int):
             IB(total_secret_mask_label(), callback_data="total_secret_mask_toggle"),
             IB(f"🕔 {finance_day_start_label()}", callback_data="finance_day5_toggle"),
         )
+        kb.row(IB(mega_first_button_label(), callback_data="mega_first_toggle"))
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
@@ -14066,6 +14380,29 @@ def on_callback(call):
                 return
             new_state = toggle_finance_day_start_5am()
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nФинансовые сутки: с {'05:00' if new_state else '00:00'}", reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "mega_first_toggle":
+            if not is_owner_chat(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Только для владельца", show_alert=True)
+                except Exception:
+                    pass
+                return
+            enabled = toggle_mega_first_mode()
+            if enabled and mega_is_configured():
+                mega_first_checkpoint(chat_id, reason="mode-toggle")
+            else:
+                try:
+                    _schedule_global_mega_snapshot(1.0)
+                except Exception:
+                    pass
+            msg_text = (
+                "Строгий режим MEGA включён. Сначала сохраняется лёгкий JSON чата в MEGA, "
+                "после этого обновляются окна и запускаются обычные бэкапы."
+                if enabled else
+                "Обычный быстрый режим включён. Интерфейс обновляется сразу, MEGA работает через фоновые очереди."
+            )
+            safe_edit(bot, call, build_info_text(chat_id) + "\n\n" + msg_text, reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "info_instruction":
             if not is_owner_chat(chat_id):
@@ -16655,14 +16992,16 @@ def _schedule_global_mega_snapshot(delay: float = 30.0):
     global _global_mega_timer
     if not mega_is_configured():
         return
-    _global_mega_timer = time.time() + max(5.0, float(delay))
+    min_delay = 1.0 if mega_first_mode_enabled() else 5.0
+    effective_delay = max(min_delay, float(delay))
+    _global_mega_timer = time.time() + effective_delay
     def _fire():
         global _global_mega_timer
         _global_mega_timer = None
         if not BACKUP_TASK_POOL.submit("mega-global", mega_upload_latest_global_backup):
             log_error("GLOBAL MEGA QUEUE FULL, RETRY")
             _schedule_global_mega_snapshot(BACKUP_BUSY_RETRY_SECONDS)
-    DELAYED_SCHEDULER.schedule("mega-global-snapshot", max(5.0, float(delay)), _fire)
+    DELAYED_SCHEDULER.schedule("mega-global-snapshot", effective_delay, _fire)
 
 
 def _run_quick_chat_backup(chat_id: int):
@@ -16805,6 +17144,11 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
 
             trace.step("проверяет скрытый финрежим")
             hidden = is_finance_output_suppressed(chat_id)
+
+        # В строгом режиме сначала защищаем данные в MEGA, затем меняем Telegram-интерфейс.
+        if mega_first_mode_enabled():
+            trace.step("сначала сохраняет быстрый JSON в MEGA")
+            _safe_stabilize("mega_first", lambda: mega_first_checkpoint(chat_id, reason=f"finance:{reason}"))
 
         # Ниже тяжёлые Telegram-вызовы уже вне chat_lock.
         if not hidden:
@@ -17422,6 +17766,7 @@ def build_diag_text() -> str:
         f"BACKUP_CHAT_ID: {'есть' if BACKUP_CHAT_ID else 'нет'}",
         f"Бэкап в канал: {'ВКЛ' if backup_flags.get('channel', True) else 'ВЫКЛ'}",
         f"MEGA: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'} / {'настроено' if mega_is_configured() else 'не настроено'}",
+        f"Сначала MEGA: {mega_first_mode_label()}",
         f"MEGA dir: {MEGA_BACKUP_DIR}",
         f"Ошибок в журнале: {len(get_recent_errors(80))}",
     ]
@@ -17446,6 +17791,30 @@ def cmd_off_on_backup_excel(msg):
         for cid in collect_finance_chat_ids():
             schedule_backup_flush(cid, BACKUP_MIN_DELAY_SECONDS)
     send_and_auto_delete(chat_id, f"📊 Excel-бэкап всех чатов: {'ВКЛ' if enabled else 'ВЫКЛ'}", 20)
+
+
+@bot.message_handler(commands=["mega_first"])
+def cmd_mega_first(msg):
+    update_chat_info_from_message(msg)
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    enabled = toggle_mega_first_mode()
+    if enabled and mega_is_configured():
+        mega_first_checkpoint(chat_id, reason="mode-command")
+    else:
+        try:
+            _schedule_global_mega_snapshot(1.0)
+        except Exception:
+            pass
+    send_and_auto_delete(
+        chat_id,
+        f"☁️ Режим «сначала MEGA»: {'ВКЛ' if enabled else 'ВЫКЛ'}\n"
+        + ("Сохранность выше, но операции могут ждать ответ MEGA." if enabled else "Интерфейс снова работает в обычном быстром режиме."),
+        25,
+    )
 
 
 @bot.message_handler(commands=["queues", "queue_status"])
@@ -17667,7 +18036,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 👽Бот запущен (версия {VERSION}).\n"
+                    f"✅ Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
