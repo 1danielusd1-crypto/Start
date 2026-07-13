@@ -355,7 +355,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v82_mega_priority_json"
+VERSION = "bot_v83_compact_json"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -3108,7 +3108,8 @@ def build_help_text(chat_id: int) -> str:
         "/csv — CSV этого чата",
         "/xlsx — Excel этого чата",
         "/tabl_lsx — таблица за последние 4 недели Чт–Ср",
-        "/json — JSON этого чата",
+        "/json — компактный JSON этого чата",
+        "/json_full — подробный JSON этого чата",
         "/reset — обнулить данные чата (с подтверждением)",
         "/ping — проверка, жив ли бот",
         "/restore / /restore_off — режим восстановления JSON/CSV",
@@ -3888,6 +3889,32 @@ def _save_json(path: str, obj):
         log_error(f"JSON save error {path}: {e}")
 
 
+def _save_json_compact(path: str, obj) -> str | None:
+    """Атомарная запись компактного JSON без пробелов и отступов."""
+    tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    try:
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp_path, path)
+        return path
+    except Exception as e:
+        log_error(f"Compact JSON save error {path}: {e}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        return None
+
+
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -4219,39 +4246,77 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
     return {"json": json_path, "csv": csv_path, "xlsx": xlsx_path}
 
 
+def save_chat_monthly_compact_json(chat_id: int, month_key: str | None = None) -> str | None:
+    """Месячный архив MEGA: только компактный JSON, записи сгруппированы по дням."""
+    try:
+        month_key = month_key or current_month_key()
+        store = snapshot_chat_store(int(chat_id))
+        opening = calc_opening_balance_for_month(store, month_key)
+        days = _pack_compact_days(store, month_prefix=month_key + "-")
+        movement = 0.0
+        count = 0
+        for rows in days.values():
+            count += len(rows or [])
+            for row in rows or []:
+                try:
+                    movement += float(row[1] or 0)
+                except Exception:
+                    pass
+        payload = {
+            "kind": "chat_month_compact_archive",
+            "schema": COMPACT_JSON_SCHEMA,
+            "version": VERSION,
+            "month": month_key,
+            "modified": now_local().isoformat(timespec="seconds"),
+            "chat_id": int(chat_id),
+            "chat_name": get_chat_display_name(int(chat_id)),
+            "opening_balance": opening,
+            "closing_balance": opening + movement,
+            "record_count": count,
+            "record_fields": list(COMPACT_RECORD_FIELDS),
+            "days": days,
+        }
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        path = os.path.join(MEGA_LOCAL_TMP_DIR, f"{month_key}_{mega_chat_slug(chat_id)}.json")
+        return _save_json_compact(path, payload)
+    except Exception as e:
+        log_error(f"save_chat_monthly_compact_json({chat_id}): {e}")
+        return None
+
+
 def mega_upload_chat_backup_bundle(chat_id: int, month_key: str | None = None) -> bool:
-    """MEGA-бэкап одного чата: только JSON (latest + месячный JSON)."""
+    """MEGA-бэкап v83: компактный latest JSON + компактный месячный JSON."""
     if not mega_is_configured():
         return False
     if not is_backup_to_mega_enabled(chat_id):
         return False
     try:
-        save_chat_json(chat_id)
+        local_latest = save_chat_json_only(chat_id)
+        if not local_latest:
+            return False
         slug = mega_chat_slug(chat_id)
         remote_chat_dir = mega_remote_chat_dir(chat_id)
-        ok = True
-
-        # В MEGA больше не грузим CSV/XLSX — только JSON.
         ok = mega_put_replace(
-            chat_json_file(chat_id),
+            local_latest,
             remote_chat_dir,
-            f"latest_{slug}.json"
-        ) and ok
+            f"latest_{slug}.json",
+        )
 
         month_key = month_key or current_month_key()
-        month_files = save_chat_monthly_backup_files(chat_id, month_key)
-        remote_month_dir = mega_remote_month_dir(month_key)
-        json_month_path = month_files.get("json")
-        if json_month_path:
-            ok = mega_put_replace(json_month_path, remote_month_dir, os.path.basename(json_month_path)) and ok
+        month_path = save_chat_monthly_compact_json(chat_id, month_key)
+        if month_path:
+            ok = mega_put_replace(
+                month_path,
+                mega_remote_month_dir(month_key),
+                os.path.basename(month_path),
+            ) and ok
 
         if ok:
-            log_info(f"[MEGA] JSON-only chat backup uploaded: {get_chat_display_name(chat_id)} / {month_key}")
-        return ok
+            log_info(f"[MEGA] compact JSON backup uploaded: {get_chat_display_name(chat_id)} / {month_key}")
+        return bool(ok)
     except Exception as e:
         log_error(f"[MEGA CHAT BACKUP ERROR] {chat_id}: {e}")
         return False
-
 
 def mega_upload_chat_latest_json_only(chat_id: int) -> bool:
     """Быстрый MEGA JSON без Excel/CSV и месячного пакета."""
@@ -4301,38 +4366,54 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
 
 
 def make_global_backup_payload() -> dict:
-    """Глобальный JSON для восстановления всего бота."""
+    """Компактный глобальный JSON v83 для быстрого восстановления всего бота.
+
+    В файле нет дубликатов records/daily_records. Каждая финансовая запись хранится
+    один раз внутри соответствующего дня.
+    """
+    generated_at = now_local().isoformat(timespec="seconds")
     with data_lock:
-        payload = json.loads(json.dumps(data or {}, ensure_ascii=False, default=str))
-    payload.setdefault("chats", {})
-    payload.setdefault("forward_rules", data.get("forward_rules", {}) if isinstance(data, dict) else {})
-    payload.setdefault("forward_finance", data.get("forward_finance", {}) if isinstance(data, dict) else {})
-    try:
-        for _cid, _store in (payload.get("chats", {}) or {}).items():
-            if isinstance(_store, dict):
-                _store["records"] = backup_records_list(_store.get("records", []))
-                _store["daily_records_by_date"] = {fmt_date_backup(k): backup_records_list(v) for k, v in (_store.get("daily_records", {}) or {}).items()}
-    except Exception as e:
-        log_error(f"make_global_backup_payload date annotate: {e}")
-    payload["_backup_meta"] = {
-        "kind": "mega_latest_global",
+        root = {
+            str(k): json.loads(json.dumps(v, ensure_ascii=False, default=str))
+            for k, v in (data or {}).items()
+            if k not in {
+                "chats", "records", "overall_balance", "active_messages",
+                "bot_errors", "_backup_meta",
+            }
+        }
+        chat_ids = list((data.get("chats", {}) or {}).keys())
+
+    chats_payload = {}
+    for cid_raw in chat_ids:
+        try:
+            cid = int(cid_raw)
+            store = snapshot_chat_store(cid)
+            chats_payload[str(cid)] = _build_compact_chat_core(
+                cid,
+                store,
+                include_identity=False,
+                include_links=False,
+                include_record_fields=False,
+            )
+        except Exception as e:
+            log_error(f"make_global_backup_payload chat {cid_raw}: {e}")
+
+    return {
+        "kind": "global_compact_backup",
+        "schema": COMPACT_JSON_SCHEMA,
         "version": VERSION,
-        "created_at": now_local().isoformat(timespec="seconds"),
-        "chat_count": len(payload.get("chats", {}) or {}),
-        "finance_active_chats": payload.get("finance_active_chats", {}),
-        "forward_rules_count": sum(len(v or {}) for v in (payload.get("forward_rules", {}) or {}).values()),
-        "forward_finance_count": sum(len(v or {}) for v in (payload.get("forward_finance", {}) or {}).values()),
-        "note": "Полный JSON: чаты, финрежимы, скрытые режимы, быстрый остаток, пересылка, фин-учёт пересылки.",
+        "modified": generated_at,
+        "record_fields": list(COMPACT_RECORD_FIELDS),
+        "root": root,
+        "chats": chats_payload,
     }
-    return payload
 
 
 def save_global_backup_snapshot(path: str) -> str:
     payload = make_global_backup_payload()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    if not _save_json_compact(path, payload):
+        raise RuntimeError(f"Не удалось сохранить глобальный JSON: {path}")
     return path
-
 
 def mega_upload_latest_global_backup() -> bool:
     """Загружает latest_global.json в MEGA. Не ломает основной бот при ошибке."""
@@ -4564,7 +4645,7 @@ def send_backup_to_chat(chat_id: int, ensure_files: bool = True) -> None:
 
         chat_title = _get_chat_title_for_backup(chat_id)
         caption = (
-            f"🧾 Авто-бэкап JSON чата: {chat_title}\n"
+            f"🧾 Авто-бэкап compact JSON чата: {chat_title}\n"
             f"⏱ {now_local().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
@@ -4824,6 +4905,10 @@ def save_data(d, chat_ids=None, full: bool = False, root_only: bool = False):
             SQLITE.save_chats(chats)
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
+
+def chat_full_json_file(chat_id: int) -> str:
+    return f"data_{chat_id}_full.json"
+
 def chat_csv_file(chat_id: int) -> str:
     return f"data_{chat_id}.csv"
 def chat_xlsx_file(chat_id: int) -> str:
@@ -5368,7 +5453,153 @@ def snapshot_chat_store(chat_id: int) -> dict:
         return json.loads(json.dumps(store, ensure_ascii=False, default=str))
 
 
+COMPACT_JSON_SCHEMA = 1
+COMPACT_RECORD_FIELDS = (
+    "id",
+    "amount",
+    "note",
+    "timestamp",
+    "owner",
+    "source_msg_id",
+    "source_order_msg_id",
+)
+
+_COMPACT_RECORD_KNOWN_KEYS = {
+    "id", "short_id", "timestamp", "amount", "note", "owner",
+    "source_msg_id", "source_order_msg_id", "msg_id", "origin_msg_id",
+    "day_key", "date", "time", "datetime", "movement", "amount_abs",
+    "description",
+}
+
+_COMPACT_CHAT_EPHEMERAL_KEYS = {
+    "records", "daily_records", "daily_records_by_date", "balance", "next_id",
+    "active_windows", "edit_wait", "edit_target", "current_view_day",
+    "balance_panel_id", "balance_panel_mode", "balance_panel_msg_count",
+    "main_window_msg_count", "total_msg_id", "categories_msg_id",
+    "category_add_wait", "category_edit_wait", "category_delete_selection",
+    "report_window_id", "report_month", "reset_wait", "reset_time",
+    "finance_toggle_wait", "finwin_edit_wait", "finwin_reset_wait",
+    "secret_active_window", "secret_delete_selection",
+    "secret_edit_delete_selection", "secret_wait",
+}
+
+
+def _json_clone(value, default=None):
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return default
+
+
+def _compact_chat_state(store: dict) -> dict:
+    """Оставляет только постоянное состояние чата, без Telegram-окон и ожиданий."""
+    out = {}
+    for key, value in (store or {}).items():
+        key = str(key)
+        if key in _COMPACT_CHAT_EPHEMERAL_KEYS:
+            continue
+        if key.endswith(("_msg_id", "_window_id", "_wait", "_selection")):
+            continue
+        out[key] = _json_clone(value, value)
+    return out
+
+
+def _pack_compact_record(rec: dict) -> list:
+    row = [rec.get(field) for field in COMPACT_RECORD_FIELDS]
+    extra = {
+        str(k): _json_clone(v, v)
+        for k, v in (rec or {}).items()
+        if str(k) not in _COMPACT_RECORD_KNOWN_KEYS
+    }
+    if extra:
+        row.append(extra)
+    # Убираем только хвостовые None, чтобы не раздувать записи пустыми полями.
+    while row and row[-1] is None:
+        row.pop()
+    return row
+
+
+def _pack_compact_days(store: dict, month_prefix: str | None = None) -> dict:
+    daily = (store or {}).get("daily_records", {}) or {}
+    if not daily and (store or {}).get("records"):
+        daily = {}
+        for rec in (store or {}).get("records", []) or []:
+            if isinstance(rec, dict):
+                daily.setdefault(_record_day_key(rec), []).append(rec)
+    out = {}
+    for day_key in sorted(daily.keys(), reverse=True):
+        day_key = str(day_key)[:10]
+        if month_prefix and not day_key.startswith(month_prefix):
+            continue
+        rows = [
+            _pack_compact_record(rec)
+            for rec in sorted(daily.get(day_key, []) or [], key=record_sort_key, reverse=True)
+            if isinstance(rec, dict)
+        ]
+        if rows:
+            out[day_key] = rows
+    return out
+
+
+def _build_chat_compact_links(chat_id: int) -> dict:
+    cid = str(int(chat_id))
+    with data_lock:
+        rules = _json_clone(data.get("forward_rules", {}) or {}, {})
+        finance = _json_clone(data.get("forward_finance", {}) or {}, {})
+    return {
+        "rules_out": rules.get(cid, {}) or {},
+        "rules_in": {src: (dsts or {}).get(cid) for src, dsts in rules.items() if cid in (dsts or {})},
+        "finance_out": finance.get(cid, {}) or {},
+        "finance_in": {src: (dsts or {}).get(cid) for src, dsts in finance.items() if cid in (dsts or {})},
+    }
+
+
+def _build_compact_chat_core(
+    chat_id: int,
+    store: dict,
+    include_identity: bool = True,
+    include_links: bool = True,
+    include_record_fields: bool = True,
+) -> dict:
+    days = _pack_compact_days(store)
+    all_records = [r for rows in days.values() for r in (rows or [])]
+    latest_change = ""
+    try:
+        latest_change = str(all_records[0][3] or "") if all_records else ""
+    except Exception:
+        latest_change = ""
+    core = {
+        "name": get_chat_display_name(int(chat_id)),
+        "balance": store.get("balance", 0),
+        "next_id": store.get("next_id", 1),
+        "last_change": latest_change,
+        "state": _compact_chat_state(store),
+        "days": days,
+    }
+    if include_identity:
+        core["chat_id"] = int(chat_id)
+    if include_record_fields:
+        core["record_fields"] = list(COMPACT_RECORD_FIELDS)
+    if include_links:
+        core["links"] = _build_chat_compact_links(int(chat_id))
+    return core
+
+
 def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
+    """Основной компактный JSON v83. Каждая запись хранится ровно один раз."""
+    store = store or snapshot_chat_store(chat_id)
+    payload = {
+        "kind": "chat_compact_backup",
+        "schema": COMPACT_JSON_SCHEMA,
+        "version": VERSION,
+        "modified": now_local().isoformat(timespec="seconds"),
+    }
+    payload.update(_build_compact_chat_core(int(chat_id), store))
+    return payload
+
+
+def build_chat_full_backup_payload(chat_id: int, store: dict | None = None) -> dict:
+    """Подробный совместимый JSON для ручной диагностики: команда /json_full."""
     store = store or snapshot_chat_store(chat_id)
     generated_at = now_local().isoformat(timespec="seconds")
     latest_records = backup_records_list(store.get("records", []))
@@ -5381,12 +5612,15 @@ def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
         "records_order": "newest_first",
         "created_at": generated_at,
         "date_format": "DD:MM:YY",
-        "chat_id": chat_id,
+        "chat_id": int(chat_id),
         "chat_name": get_chat_display_name(chat_id),
         "balance": store.get("balance", 0),
         "records": latest_records,
         "daily_records": backup_daily_records(store.get("daily_records", {})),
-        "daily_records_by_date": {fmt_date_backup(k): backup_records_list(v) for k, v in (store.get("daily_records", {}) or {}).items()},
+        "daily_records_by_date": {
+            fmt_date_backup(k): backup_records_list(v)
+            for k, v in (store.get("daily_records", {}) or {}).items()
+        },
         "next_id": store.get("next_id", 1),
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
@@ -5395,25 +5629,37 @@ def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
 
 
 def save_chat_json_only(chat_id: int) -> str | None:
-    """Быстрый лёгкий JSON без CSV/Excel."""
+    """Быстрый основной JSON: компактный, атомарный, без CSV/Excel."""
     try:
         store = snapshot_chat_store(chat_id)
         payload = build_chat_backup_payload(chat_id, store)
-        path = chat_json_file(chat_id)
-        _save_json(path, payload)
-        return path
+        return _save_json_compact(chat_json_file(chat_id), payload)
     except Exception as e:
         log_error(f"save_chat_json_only({get_chat_display_name(chat_id)}): {e}")
         return None
 
 
+def save_chat_full_json_only(chat_id: int) -> str | None:
+    """Создаёт подробный JSON только по явному запросу /json_full."""
+    try:
+        store = snapshot_chat_store(chat_id)
+        payload = build_chat_full_backup_payload(chat_id, store)
+        path = chat_full_json_file(chat_id)
+        _save_json(path, payload)
+        return path if os.path.exists(path) else None
+    except Exception as e:
+        log_error(f"save_chat_full_json_only({get_chat_display_name(chat_id)}): {e}")
+        return None
+
+
 def save_chat_json(chat_id: int):
-    """Полный локальный пакет чата: JSON + CSV + опциональный Excel + META."""
+    """Локальный пакет: компактный JSON + CSV + опциональный Excel + META."""
     try:
         store = snapshot_chat_store(chat_id)
         payload = build_chat_backup_payload(chat_id, store)
         chat_path_json = chat_json_file(chat_id)
-        _save_json(chat_path_json, payload)
+        if not _save_json_compact(chat_path_json, payload):
+            return None
         chat_path_csv = chat_csv_file(chat_id)
         chat_path_xlsx = chat_xlsx_file(chat_id)
         chat_path_meta = chat_meta_file(chat_id)
@@ -5430,28 +5676,213 @@ def save_chat_json(chat_id: int):
             save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
-            "date_format": "DD:MM:YY",
+            "json_format": "compact_v83",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
             "excel_enabled": backup_excel_all_enabled(),
         }
         _save_json(chat_path_meta, meta)
-        log_info(f"Per-chat files saved for chat {get_chat_display_name(chat_id)}")
+        log_info(f"Compact per-chat files saved for chat {get_chat_display_name(chat_id)}")
         return chat_path_json
     except Exception as e:
         log_error(f"save_chat_json({get_chat_display_name(chat_id)}): {e}")
         return None
+
+
+def _unpack_compact_records(payload: dict, inherited_fields=None) -> list[dict]:
+    fields = payload.get("record_fields") or inherited_fields or list(COMPACT_RECORD_FIELDS)
+    fields = [str(x) for x in fields]
+    days = payload.get("days", {}) or {}
+    records = []
+    for day_key in sorted(days.keys()):
+        for row in days.get(day_key, []) or []:
+            if isinstance(row, dict):
+                rec = dict(row)
+            elif isinstance(row, (list, tuple)):
+                rec = {}
+                for idx, field in enumerate(fields):
+                    if idx >= len(row):
+                        break
+                    if field == "extra":
+                        if isinstance(row[idx], dict):
+                            rec.update(row[idx])
+                    else:
+                        rec[field] = row[idx]
+                # У v83 необязательный словарь дополнительных полей идёт после 7 основных.
+                if len(row) > len(COMPACT_RECORD_FIELDS) and isinstance(row[len(COMPACT_RECORD_FIELDS)], dict):
+                    rec.update(row[len(COMPACT_RECORD_FIELDS)])
+            else:
+                continue
+            rec["day_key"] = str(day_key)[:10]
+            rec.setdefault("timestamp", f"{str(day_key)[:10]}T00:00:00-03:00")
+            rec.setdefault("amount", 0)
+            rec.setdefault("note", "")
+            rec.setdefault("owner", "")
+            rec.setdefault(
+                "source_order_msg_id",
+                rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or rec.get("id") or 0,
+            )
+            source_msg_id = rec.get("source_msg_id")
+            if source_msg_id is not None:
+                rec.setdefault("msg_id", source_msg_id)
+                rec.setdefault("origin_msg_id", source_msg_id)
+            records.append(rec)
+    records.sort(key=record_sort_key)
+    return records
+
+
+def _finalize_restored_chat_store(store: dict) -> dict:
+    records = [r for r in (store.get("records", []) or []) if isinstance(r, dict)]
+    records.sort(key=record_sort_key)
+    daily = {}
+    month_counters = {}
+    for idx, rec in enumerate(records, 1):
+        rec["id"] = idx
+        day_key = _record_day_key(rec)
+        month_key = day_key[:7]
+        month_counters[month_key] = month_counters.get(month_key, 0) + 1
+        rec["short_id"] = f"R{month_counters[month_key]}"
+        daily.setdefault(day_key, []).append(rec)
+    store["records"] = records
+    store["daily_records"] = daily
+    store["next_id"] = len(records) + 1
+    store["balance"] = sum(float(r.get("amount", 0) or 0) for r in records)
+    store.setdefault("info", {})
+    store.setdefault("known_chats", {})
+    store.setdefault("settings", {})
+    store.setdefault("finance_mode", False)
+    store.setdefault("current_view_day", today_key())
+    return store
+
+
+def _unpack_compact_chat_store(payload: dict, inherited_fields=None) -> dict:
+    state = _json_clone(payload.get("state", {}) or {}, {})
+    if not isinstance(state, dict):
+        state = {}
+    for key in ("records", "daily_records", "daily_records_by_date", "balance", "next_id"):
+        state.pop(key, None)
+    state["records"] = _unpack_compact_records(payload, inherited_fields=inherited_fields)
+    return _finalize_restored_chat_store(state)
+
+
+def _restore_compact_chat_links(chat_id: int, links: dict | None):
+    if not isinstance(links, dict):
+        return
+    cid = str(int(chat_id))
+    with data_lock:
+        rules = data.setdefault("forward_rules", {})
+        finance = data.setdefault("forward_finance", {})
+        rules.pop(cid, None)
+        finance.pop(cid, None)
+        for mapping in (rules, finance):
+            for src in list(mapping.keys()):
+                dsts = mapping.get(src)
+                if isinstance(dsts, dict):
+                    dsts.pop(cid, None)
+                    if not dsts:
+                        mapping.pop(src, None)
+        if isinstance(links.get("rules_out"), dict) and links.get("rules_out"):
+            rules[cid] = dict(links.get("rules_out") or {})
+        for src, value in (links.get("rules_in") or {}).items():
+            rules.setdefault(str(src), {})[cid] = value
+        if isinstance(links.get("finance_out"), dict) and links.get("finance_out"):
+            finance[cid] = dict(links.get("finance_out") or {})
+        for src, value in (links.get("finance_in") or {}).items():
+            finance.setdefault(str(src), {})[cid] = value
+
+
+def _restore_global_compact(payload: dict):
+    global data
+    root = _json_clone(payload.get("root", {}) or {}, {})
+    restored = default_data()
+    if isinstance(root, dict):
+        restored.update(root)
+    restored["chats"] = {}
+    inherited_fields = payload.get("record_fields") or list(COMPACT_RECORD_FIELDS)
+    for cid, compact_store in (payload.get("chats", {}) or {}).items():
+        if isinstance(compact_store, dict):
+            restored["chats"][str(cid)] = _unpack_compact_chat_store(
+                compact_store,
+                inherited_fields=inherited_fields,
+            )
+    data = restored
+
+    flags = data.get("backup_flags") or {}
+    backup_flags["drive"] = bool(flags.get("drive", True))
+    backup_flags["channel"] = bool(flags.get("channel", True))
+
+    finance_active_chats.clear()
+    fac = data.get("finance_active_chats") or {}
+    if isinstance(fac, dict):
+        for cid, enabled in fac.items():
+            if enabled:
+                try:
+                    finance_active_chats.add(int(cid))
+                except Exception:
+                    pass
+    for cid, store in (data.get("chats", {}) or {}).items():
+        try:
+            if bool((store or {}).get("finance_mode")):
+                finance_active_chats.add(int(cid))
+        except Exception:
+            pass
+    try:
+        _load_forward_index_from_data(data)
+    except Exception as e:
+        log_error(f"compact restore forward_index: {e}")
+    rebuild_global_records()
+    save_data(data, full=True)
+    schedule_all_finance_backups(delay=0.5)
+
+
 def restore_from_json(chat_id: int, path: str):
-    """
-    Восстановление из JSON.
-    Поддержка:
-      1) data.json (глобальный) — если внутри есть ключ "chats"
-      2) data_<chat_id>.json (пер-чат) — если внутри есть ключи "records"/"daily_records"
-    """
+    """Восстанавливает v83 compact, /json_full и старые JSON предыдущих версий."""
     global data
     payload = _load_json(path, None)
     if not isinstance(payload, dict):
         raise RuntimeError("JSON повреждён или пустой")
 
+    kind = str(payload.get("kind") or "")
+
+    if kind == "global_compact_backup" or (
+        isinstance(payload.get("root"), dict)
+        and isinstance(payload.get("chats"), dict)
+        and isinstance(payload.get("record_fields"), list)
+    ):
+        _restore_global_compact(payload)
+        log_info("restore_from_json: compact global data restored")
+        return
+
+    if kind == "chat_month_compact_archive":
+        raise RuntimeError(
+            "Это месячный архив, а не полный backup чата. Для полного восстановления нужен latest compact JSON или /json_full."
+        )
+
+    if kind == "chat_compact_backup" or (
+        not kind
+        and isinstance(payload.get("days"), dict)
+        and isinstance(payload.get("record_fields"), list)
+        and "chat_id" in payload
+    ):
+        target_chat_id = int(payload.get("chat_id") or chat_id)
+        store = _unpack_compact_chat_store(payload)
+        data.setdefault("chats", {})[str(target_chat_id)] = store
+        _restore_compact_chat_links(target_chat_id, payload.get("links"))
+        if bool(store.get("finance_mode")):
+            finance_active_chats.add(target_chat_id)
+        else:
+            finance_active_chats.discard(target_chat_id)
+        rebuild_global_records()
+        save_data(data, chat_ids=[target_chat_id])
+        finance_changed(
+            target_chat_id,
+            store.get("current_view_day", today_key()),
+            reason="restore_json_compact",
+            delay=0.1,
+        )
+        log_info(f"restore_from_json: compact chat {target_chat_id} restored")
+        return
+
+    # Старый/подробный глобальный JSON.
     if "chats" in payload and isinstance(payload.get("chats"), dict):
         data = payload
         base = default_data()
@@ -5472,35 +5903,48 @@ def restore_from_json(chat_id: int, path: str):
         rebuild_global_records()
         save_data(data, full=True)
         schedule_all_finance_backups(delay=0.5)
-        log_info("restore_from_json: global data restored")
+        log_info("restore_from_json: legacy global data restored")
         return
 
+    # Старый/подробный JSON одного чата, включая /json_full.
     if "records" in payload or "daily_records" in payload:
-        store = get_chat_store(chat_id)
-
+        target_chat_id = int(payload.get("chat_id") or chat_id)
+        store = get_chat_store(target_chat_id)
         store["records"] = payload.get("records", []) or []
         store["daily_records"] = payload.get("daily_records", {}) or {}
         store["next_id"] = int(payload.get("next_id", 1) or 1)
         store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
         store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
+        settings_backup = payload.get("settings_backup") or {}
+        if isinstance(settings_backup, dict):
+            if isinstance(settings_backup.get("settings"), dict):
+                store["settings"] = settings_backup.get("settings") or {}
+            if "finance_mode" in settings_backup:
+                store["finance_mode"] = bool(settings_backup.get("finance_mode"))
 
         if not store["records"] and store["daily_records"]:
-            all_recs = []
-            for dk in sorted(store["daily_records"].keys()):
-                all_recs.extend(store["daily_records"][dk] or [])
-            store["records"] = all_recs
+            store["records"] = [
+                rec
+                for dk in sorted(store["daily_records"].keys())
+                for rec in (store["daily_records"].get(dk) or [])
+                if isinstance(rec, dict)
+            ]
 
-        renumber_chat_records(chat_id)
-        recalc_balance(chat_id)
+        renumber_chat_records(target_chat_id)
+        recalc_balance(target_chat_id)
         rebuild_global_records()
-
-        save_data(data)
-        finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day", today_key()), reason="restore_json_core", delay=0.1)
-
-        log_info(f"restore_from_json: chat {chat_id} restored from per-chat JSON")
+        save_data(data, chat_ids=[target_chat_id])
+        finance_changed(
+            target_chat_id,
+            get_chat_store(target_chat_id).get("current_view_day", today_key()),
+            reason="restore_json_full_or_legacy",
+            delay=0.1,
+        )
+        log_info(f"restore_from_json: full/legacy chat {target_chat_id} restored")
         return
 
-    raise RuntimeError("Неизвестный формат JSON (нет 'chats' и нет 'records/daily_records').")
+    raise RuntimeError("Неизвестный формат JSON: нет compact days, chats или records/daily_records.")
+
 def restore_from_csv(chat_id: int, path: str):
     """
     Восстановление из CSV (пер-чат).
@@ -12287,7 +12731,7 @@ def build_owner_instruction_text() -> str:
         "3. Пересылка: порядок сохраняется внутри исходного чата. Несколько разных чатов пересылаются параллельно.\n"
         "4. Секрет: сообщение сначала пересылается, если включена пересылка, затем сохраняется и удаляется из исходного чата.\n"
         "5. SQLite сохраняется сразу. В обычной операции точечно обновляется только изменившийся чат.\n"
-        "6. Быстрый JSON: примерно через 15 секунд после последнего изменения конкретного чата. При включённой MEGA обновляется latest JSON этого чата.\n"
+        "6. Быстрый JSON v83: компактный файл по дням, примерно через 15 секунд после последнего изменения конкретного чата. /json_full создаёт подробный файл только вручную. При включённой MEGA обновляется compact latest JSON этого чата.\n"
         "7. Если включён /mega_priority: примерно через 0,5–1 секунду ставится аварийный JSON чата и global JSON в очередь MEGA; интерфейс при этом не ждёт загрузку. Полный бэкап: примерно через 120 секунд тишины именно в этом чате. JSON/CSV создаются всегда; Excel зависит от /off_on_backup_excel; канал получает JSON и при включении Excel; MEGA получает JSON.\n"
         "8. У каждого чата собственный таймер бэкапа: активность одного чата не переносит бэкап остальных.\n"
         "9. Очереди ограничены. При перегрузке webhook вернёт 503, и Telegram повторит доставку вместо потери update.\n"
@@ -15914,13 +16358,36 @@ def cmd_json(msg):
         return
     if not require_finance(chat_id):
         return
-    save_chat_json(chat_id)
-    p = chat_json_file(chat_id)
-    if os.path.exists(p):
+    p = save_chat_json_only(chat_id)
+    if p and os.path.exists(p):
         with open(p, "rb") as f:
-            bot.send_document(chat_id, f, caption="🧾 JSON этого чата")
+            bot.send_document(chat_id, f, caption="🧾 Компактный JSON этого чата")
     else:
         send_info(chat_id, "Файл JSON ещё не создан.")
+
+
+@bot.message_handler(commands=["json_full"])
+def cmd_json_full(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+    p = save_chat_full_json_only(chat_id)
+    if p and os.path.exists(p):
+        with open(p, "rb") as f:
+            bot.send_document(chat_id, f, caption="🧾 Подробный JSON этого чата (/json_full)")
+    else:
+        send_info(chat_id, "Подробный JSON ещё не создан.")
 @bot.message_handler(commands=["reset"])
 def cmd_reset(msg):
     try:
@@ -16342,7 +16809,7 @@ def _safe_tmp_json_name(fname: str) -> str:
 def _extract_chat_id_from_json_filename(fname: str):
     """Пытается вытащить chat_id из имени data_<chat_id>.json."""
     try:
-        m = re.search(r"data_(-?\d+)\.json$", str(fname or "").strip().lower())
+        m = re.search(r"data_(-?\d+)(?:_full)?\.json$", str(fname or "").strip().lower())
         if m:
             return int(m.group(1))
     except Exception:
@@ -16356,7 +16823,8 @@ def _describe_json_restore_payload(payload, fname: str = ""):
     if fname_l == "csv_meta.json":
         return "метаданные CSV", None
     if isinstance(payload, dict) and isinstance(payload.get("chats"), dict):
-        return f"глобальный data.json, чатов: {len(payload.get('chats') or {})}", None
+        kind = "компактный глобальный JSON" if payload.get("kind") == "global_compact_backup" else "глобальный data.json"
+        return f"{kind}, чатов: {len(payload.get('chats') or {})}", None
     if isinstance(payload, dict):
         cid = payload.get("chat_id")
         if cid is None:
@@ -16364,51 +16832,45 @@ def _describe_json_restore_payload(payload, fname: str = ""):
         if cid is not None:
             try:
                 cid = int(cid)
-                rec_count = len(payload.get("records") or []) if isinstance(payload.get("records"), list) else 0
-                daily = payload.get("daily_records") or {}
-                if isinstance(daily, dict):
-                    rec_count = rec_count or sum(len(v or []) for v in daily.values())
-                return f"JSON чата {get_chat_display_name(cid)} / ID {cid}, записей: {rec_count}", cid
+                if isinstance(payload.get("days"), dict):
+                    rec_count = sum(len(v or []) for v in (payload.get("days") or {}).values())
+                    fmt = (
+                        "месячный компактный архив"
+                        if payload.get("kind") == "chat_month_compact_archive"
+                        else "компактный JSON"
+                    )
+                else:
+                    rec_count = len(payload.get("records") or []) if isinstance(payload.get("records"), list) else 0
+                    daily = payload.get("daily_records") or {}
+                    if isinstance(daily, dict):
+                        rec_count = rec_count or sum(len(v or []) for v in daily.values())
+                    fmt = "подробный/старый JSON"
+                return f"{fmt} чата {get_chat_display_name(cid)} / ID {cid}, записей: {rec_count}", cid
             except Exception:
                 pass
     return "JSON-файл неизвестного формата", None
 
-
 def _apply_json_restore_from_owner_prompt(owner_chat_id: int, tmp_path: str, fname: str) -> str:
-    """
-    Восстановление JSON, когда владелец прислал файл без /restore и нажал ✅ Да.
-    Поддерживает:
-    • глобальный data.json / JSON с ключом chats;
-    • csv_meta.json;
-    • per-chat JSON data_<chat_id>.json или JSON с chat_id.
-    """
-    global data, restore_mode
+    """Восстановление compact v83, /json_full и старых JSON после подтверждения владельца."""
+    global restore_mode
 
     fname_l = str(fname or "").lower()
     payload = _load_json(tmp_path, None)
     if not isinstance(payload, dict):
         raise RuntimeError("JSON повреждён или не является объектом")
 
-    # csv_meta.json
     if fname_l == "csv_meta.json":
         os.replace(tmp_path, CSV_META_FILE)
         _save_csv_meta(_load_json(CSV_META_FILE, {}) or {})
         restore_mode = None
         return "🟢 csv_meta.json обновлён"
 
-    # Глобальный data.json
     if fname_l == "data.json" or isinstance(payload.get("chats"), dict):
-        os.replace(tmp_path, DATA_FILE)
-        _import_legacy_global_json_to_db(DATA_FILE, force=True)
-        data.clear()
-        data.update(load_data())
-        rebuild_global_records()
-        save_data(data)
+        restore_from_json(owner_chat_id, tmp_path)
         export_global_csv(data)
         restore_mode = None
-        return "🟢 Глобальный data.json обновлён"
+        return "🟢 Глобальный JSON обновлён"
 
-    # JSON конкретного чата
     target_chat_id = payload.get("chat_id")
     if target_chat_id is None:
         target_chat_id = _extract_chat_id_from_json_filename(fname_l)
@@ -16416,13 +16878,9 @@ def _apply_json_restore_from_owner_prompt(owner_chat_id: int, tmp_path: str, fna
         raise RuntimeError("В JSON нет chat_id и его нельзя понять из имени файла")
     target_chat_id = int(target_chat_id)
 
-    # Восстанавливаем именно тот чат, к которому относится файл, даже если файл прислан владельцу.
     restore_from_json(target_chat_id, tmp_path)
-    day_key = get_chat_store(target_chat_id).get("current_view_day", today_key())
-    finance_changed(target_chat_id, day_key, reason="owner_json_restore", delay=0.1)
     restore_mode = None
     return f"🟢 JSON чата обновлён: {get_chat_display_name(target_chat_id)}"
-
 
 def _cleanup_owner_json_restore_prompt(key: int, remove_prompt: bool = False):
     try:
@@ -17777,7 +18235,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 👾Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🛠️Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
