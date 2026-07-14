@@ -346,7 +346,9 @@ def schedule_delete_forward_copies_for_source(source_chat_id: int, source_msg_id
         delete_forward_copies_for_source(source_chat_id, source_msg_id)
 BOT_TOKEN = os.getenv("B_T", "").strip()
 OWNER_ID = os.getenv("ID", "").strip()
-APP_URL = os.getenv("APP_URL", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip()
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
+_RENDER_HOST_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}" if RENDER_EXTERNAL_HOSTNAME else ""
+APP_URL = os.getenv("APP_URL", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip() or _RENDER_HOST_URL
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip() or APP_URL
 try:
     PORT = int(os.getenv("PORT", "5000"))
@@ -355,9 +357,17 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v82_universal_mega_restore"
+VERSION = "bot_v83_flexible_awake"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
-KEEP_ALIVE_INTERVAL_SECONDS = 30
+try:
+    KEEP_ALIVE_INTERVAL_SECONDS = max(20, int(os.getenv("KEEP_ALIVE_INTERVAL_SECONDS", "45") or "45"))
+except Exception:
+    KEEP_ALIVE_INTERVAL_SECONDS = 45
+KEEP_ALIVE_ENABLED = str(os.getenv("KEEP_ALIVE_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "y", "on", "да"}
+try:
+    KEEP_ALIVE_TELEGRAM_EVERY = max(1, int(os.getenv("KEEP_ALIVE_TELEGRAM_EVERY", "4") or "4"))
+except Exception:
+    KEEP_ALIVE_TELEGRAM_EVERY = 4
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
 DATA_FILE = "data.json"
 CSV_FILE = "data.csv"
@@ -365,7 +375,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 1
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 2
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -604,15 +614,15 @@ def _journal_ts() -> str:
 
 
 def is_journal_registration_enabled() -> bool:
-    """Глобальный переключатель регистрации 📓 журнала. По умолчанию включён."""
+    """Глобальный журнал. В v83 по умолчанию выключен."""
     try:
         d = globals().get("data")
         if isinstance(d, dict):
             gs = d.setdefault("_global_settings", {})
-            return bool(gs.get("bot_journal_enabled", True))
+            return bool(gs.get("bot_journal_enabled", False))
     except Exception:
         pass
-    return True
+    return False
 
 
 def set_journal_registration_enabled(enabled: bool):
@@ -633,7 +643,136 @@ def toggle_journal_registration() -> bool:
 
 
 def journal_toggle_label() -> str:
-    return ("✅ Журнал ВКЛ" if is_journal_registration_enabled() else "❌ Журнал ВЫКЛ")
+    return ("✅ Общий журнал ВКЛ" if is_journal_registration_enabled() else "❌ Общий журнал ВЫКЛ")
+
+
+def is_chat_journal_enabled(chat_id: int) -> bool:
+    try:
+        store = get_chat_store(int(chat_id))
+        return bool(store.setdefault("settings", {}).get("journal_enabled", False))
+    except Exception:
+        return False
+
+
+def set_chat_journal_enabled(chat_id: int, enabled: bool):
+    store = get_chat_store(int(chat_id))
+    store.setdefault("settings", {})["journal_enabled"] = bool(enabled)
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+
+
+def toggle_chat_journal(chat_id: int) -> bool:
+    new_value = not is_chat_journal_enabled(int(chat_id))
+    set_chat_journal_enabled(int(chat_id), new_value)
+    return new_value
+
+
+def chat_journal_toggle_label(chat_id: int, short: bool = False) -> str:
+    enabled = is_chat_journal_enabled(int(chat_id))
+    if short:
+        return ("✅ 📓" if enabled else "❌ 📓")
+    return ("✅ Журнал чата ВКЛ" if enabled else "❌ Журнал чата ВЫКЛ")
+
+
+def journal_should_record(chat_id=None) -> bool:
+    if is_journal_registration_enabled():
+        return True
+    if chat_id is None:
+        return False
+    return is_chat_journal_enabled(int(chat_id))
+
+
+BOT_BEHAVIOR_PROFILES = {
+    "v83_flexible": {
+        "title": "v83 Гибкая",
+        "ui_edit_interval": 0.20,
+        "fast_tg_gap": 0.05,
+        "description": "Быстрые кнопки, индивидуальные журналы, статьи-кнопки и универсальный бэкап.",
+    },
+    "v82_stable": {
+        "title": "v82 Стабильная",
+        "ui_edit_interval": 0.35,
+        "fast_tg_gap": 0.08,
+        "description": "Умеренный debounce интерфейса и поведение, близкое к v82.",
+    },
+    "v81_compatible": {
+        "title": "v81 Совместимость",
+        "ui_edit_interval": 1.15,
+        "fast_tg_gap": 0.20,
+        "description": "Медленнее, но максимально осторожно для сравнения со старой логикой кнопок.",
+    },
+}
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v83_flexible"
+
+
+def active_bot_behavior_profile() -> str:
+    try:
+        key = str((data or {}).setdefault("_global_settings", {}).get("bot_behavior_profile") or DEFAULT_BOT_BEHAVIOR_PROFILE)
+    except Exception:
+        key = DEFAULT_BOT_BEHAVIOR_PROFILE
+    return key if key in BOT_BEHAVIOR_PROFILES else DEFAULT_BOT_BEHAVIOR_PROFILE
+
+
+def active_bot_behavior_profile_info() -> dict:
+    return BOT_BEHAVIOR_PROFILES.get(active_bot_behavior_profile(), BOT_BEHAVIOR_PROFILES[DEFAULT_BOT_BEHAVIOR_PROFILE])
+
+
+def set_bot_behavior_profile(profile_key: str) -> str:
+    profile_key = str(profile_key or "").strip()
+    if profile_key not in BOT_BEHAVIOR_PROFILES:
+        profile_key = DEFAULT_BOT_BEHAVIOR_PROFILE
+    data.setdefault("_global_settings", {})["bot_behavior_profile"] = profile_key
+    save_data(data, root_only=True)
+    try:
+        with _ui_edit_lock:
+            _ui_edit_last_ts.clear()
+            _ui_edit_pending.clear()
+    except Exception:
+        pass
+    return profile_key
+
+
+def bot_behavior_profile_label() -> str:
+    return "🧩 " + str(active_bot_behavior_profile_info().get("title") or active_bot_behavior_profile())
+
+
+def effective_ui_edit_interval() -> float:
+    raw = os.getenv("UI_EDIT_MIN_INTERVAL_SECONDS")
+    if raw not in (None, ""):
+        try:
+            return max(0.05, float(raw))
+        except Exception:
+            pass
+    return float(active_bot_behavior_profile_info().get("ui_edit_interval", 0.20))
+
+
+def effective_fast_telegram_gap() -> float:
+    return float(active_bot_behavior_profile_info().get("fast_tg_gap", 0.05))
+
+
+def main_article_buttons_enabled(chat_id: int) -> bool:
+    try:
+        return bool(get_chat_store(int(chat_id)).setdefault("settings", {}).get("main_article_buttons_enabled", False))
+    except Exception:
+        return False
+
+
+def set_main_article_buttons_enabled(chat_id: int, enabled: bool):
+    store = get_chat_store(int(chat_id))
+    store.setdefault("settings", {})["main_article_buttons_enabled"] = bool(enabled)
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+
+
+def toggle_main_article_buttons(chat_id: int) -> bool:
+    new_value = not main_article_buttons_enabled(int(chat_id))
+    set_main_article_buttons_enabled(int(chat_id), new_value)
+    return new_value
+
+
+def main_article_buttons_label(chat_id: int) -> str:
+    return "✅ Статьи-кнопки ВКЛ" if main_article_buttons_enabled(int(chat_id)) else "❌ Статьи-кнопки ВЫКЛ"
+
 
 def buttons_current_window_enabled() -> bool:
     """Глобальный режим владельца: кнопочные переходы стараются открываться в текущем окне."""
@@ -794,8 +933,8 @@ def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"
     """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
     try:
         # Если регистрация выключена — не пишем обычные действия. Ошибки остаются в /errors.
-        if str(action or "") not in {"journal_toggle", "journal_export_requested"} and str(level or "INFO").upper() != "ERROR":
-            if not is_journal_registration_enabled():
+        if str(action or "") not in {"journal_toggle", "journal_chat_toggle", "journal_export_requested"} and str(level or "INFO").upper() != "ERROR":
+            if not journal_should_record(chat_id):
                 return None
         row = {
             "ts": _journal_ts(),
@@ -1648,6 +1787,16 @@ WINDOW_MARKER_CONSTANTS = {
     'info_instruction': 'Ф123',
     'info_queues': 'Ф124',
     'mega_priority_toggle': 'Ф125',
+    'journal_chats_open': 'Ф126',
+    'journal_chats_open:*': 'Ф127',
+    'journal_chat_toggle:*': 'Ф128',
+    'journal_chats_back': 'Ф129',
+    'main_articles_toggle': 'Ф130',
+    'cat_main_edit:*': 'Ф131',
+    'version_menu': 'Ф132',
+    'version_select:*': 'Ф133',
+    'version_back': 'Ф134',
+    'keepalive_status': 'Ф135',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -3080,7 +3229,7 @@ def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
     if is_finance_mode(chat_id):
         return False
 
-    if data_str == "info_close":
+    if data_str in {"info_close", "main_articles_toggle"}:
         return False
     if data_str.startswith("d:") and data_str.endswith(":info"):
         return False
@@ -3138,10 +3287,14 @@ def build_help_text(chat_id: int) -> str:
 def build_info_text(chat_id: int) -> str:
     state = "ВКЛ" if chat_buttons_current_window_enabled(chat_id) else "ВЫКЛ"
     text = build_help_text(chat_id) + f"\n/windows — открывать действия в текущем окне: {state}"
+    text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
+    text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
     if is_owner_chat(chat_id):
         text += f"\n/buttons — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
         text += f"\n/mask — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
         text += f"\n/MEGA — режим: {'сначала MEGA' if mega_backup_priority_enabled() else 'как обычно'}"
+        text += f"\nПрофиль поведения: {active_bot_behavior_profile_info().get('title')}"
+        text += f"\nKeep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}, каждые {KEEP_ALIVE_INTERVAL_SECONDS} сек."
     return text
 
 
@@ -3520,7 +3673,7 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
             _telegram_rate_limit_global()
             if chat_id is not None:
                 # UI-кнопки уже имеют собственный debounce. Не добавляем к ним ещё 0.35 с ожидания.
-                ui_gap = 0.08 if _is_fast_ui_purpose(purpose) else 0.35
+                ui_gap = effective_fast_telegram_gap() if _is_fast_ui_purpose(purpose) else 0.35
                 _telegram_rate_limit_chat(chat_id, min_gap=ui_gap)
             try:
                 if verbose_telegram_journal_enabled():
@@ -4701,7 +4854,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False},
+        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False, "bot_behavior_profile": "v83_flexible", "journal_default_off_v83_applied": True},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -4761,8 +4914,10 @@ def _compact_button_label(text) -> str:
         return f"✖️ {close_match.group(1)}"
     if re.fullmatch(r"[✅❌] Фин режим (?:ВКЛ|ВЫКЛ)", label):
         return ("✅" if label.startswith("✅") else "❌") + " Фин"
-    if re.fullmatch(r"[✅❌] Журнал (?:ВКЛ|ВЫКЛ)", label):
+    if re.fullmatch(r"[✅❌] (?:Общий )?журнал(?: чата)? (?:ВКЛ|ВЫКЛ)", label, flags=re.IGNORECASE):
         return ("✅" if label.startswith("✅") else "❌") + " 📓"
+    if re.fullmatch(r"[✅❌] Статьи-кнопки (?:ВКЛ|ВЫКЛ)", label):
+        return ("✅" if label.startswith("✅") else "❌") + " 📚"
     if label.startswith("✅ В текущем окне"):
         return "✅ 🪟"
     if label.startswith("❌ В текущем окне"):
@@ -4922,7 +5077,9 @@ def get_chat_store(chat_id: int) -> dict:
                     "auto_backup_enabled": True,
                     "auto_backup_to_chat_enabled": True,
                     "auto_backup_to_channel_enabled": True,
-                    "auto_backup_to_mega_enabled": True
+                    "auto_backup_to_mega_enabled": True,
+                    "journal_enabled": False,
+                    "main_article_buttons_enabled": False
                 },
             }
         )
@@ -4937,6 +5094,8 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("auto_backup_to_chat_enabled", legacy_backup_enabled)
         store.setdefault("settings", {}).setdefault("auto_backup_to_channel_enabled", legacy_backup_enabled)
         store.setdefault("settings", {}).setdefault("auto_backup_to_mega_enabled", legacy_backup_enabled)
+        store.setdefault("settings", {}).setdefault("journal_enabled", False)
+        store.setdefault("settings", {}).setdefault("main_article_buttons_enabled", False)
         store.setdefault("finance_mode", False)
 
         if is_owner_chat(chat_id):
@@ -10242,6 +10401,19 @@ def build_main_keyboard(day_key: str, chat_id=None):
         IB("📂 CSV", callback_data=f"d:{day_key}:csv_all"),
         IB("📊 Статьи", callback_data=cat_callback("cat_today")),
     )
+
+    # По настройке чата показываем все статьи прямо в основном финансовом окне.
+    # Нажатие на статью сразу открывает её редактирование.
+    if chat_id is not None and main_article_buttons_enabled(int(chat_id)):
+        article_buttons = []
+        for item in category_edit_items_for_chat(int(chat_id)):
+            slug = str(item.get("slug") or "").strip()
+            name = str(item.get("name") or slug or "Статья").strip()
+            if not slug:
+                continue
+            article_buttons.append(IB(f"✏️ {name}", callback_data=cat_callback(f"cat_main_edit:{slug}:{day_key}")))
+        add_buttons_in_rows(kb, article_buttons[:84], 2)
+
     # Обнуление убрано из основного окна о1 по ТЗ. Оставлена команда /reset в окне ℹ️ Инфо.
     kb.row(
         IB("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
@@ -12097,7 +12269,7 @@ def _one_button_keyboard(label: str, callback_data: str):
 # • редактирование одного сообщения ограничено частотой;
 # • частые клики собираются в одно последнее обновление;
 # • 429 не держит обработчик кнопки, а просто пропускает лишнее обновление.
-UI_EDIT_MIN_INTERVAL_SECONDS = float(os.getenv("UI_EDIT_MIN_INTERVAL_SECONDS", "0.35") or "0.35")
+UI_EDIT_MIN_INTERVAL_SECONDS = float(os.getenv("UI_EDIT_MIN_INTERVAL_SECONDS", "0.20") or "0.20")
 _ui_edit_lock = threading.RLock()
 _ui_edit_last_ts = {}
 _ui_edit_pending = {}
@@ -12193,7 +12365,7 @@ def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_ma
     now_ts = time.time()
     with _ui_edit_lock:
         last_ts = float(_ui_edit_last_ts.get(key, 0) or 0)
-        wait = max(0.0, float(UI_EDIT_MIN_INTERVAL_SECONDS) - (now_ts - last_ts))
+        wait = max(0.0, effective_ui_edit_interval() - (now_ts - last_ts))
         if wait > 0:
             _ui_edit_pending[key] = payload
             scheduler_key = f"ui-edit:{int(chat_id)}:{int(message_id)}"
@@ -12453,12 +12625,109 @@ def build_queue_status_text() -> str:
     return "\n".join(lines)
 
 
+CHAT_JOURNAL_PAGE_SIZE = 20
+
+
+def _journal_chat_items():
+    try:
+        return _collect_process_menu_items()
+    except Exception:
+        items = []
+        for cid in (data.get("chats", {}) or {}).keys():
+            try:
+                items.append((int(cid), get_chat_display_name(int(cid))))
+            except Exception:
+                pass
+        return sorted(items, key=lambda x: str(x[1]).lower())
+
+
+def build_chat_journal_menu_text(page: int = 0) -> str:
+    items = _journal_chat_items()
+    pages = max(1, (len(items) + CHAT_JOURNAL_PAGE_SIZE - 1) // CHAT_JOURNAL_PAGE_SIZE)
+    page = max(0, min(int(page), pages - 1))
+    enabled = sum(1 for cid, _ in items if is_chat_journal_enabled(cid))
+    return wm_owner(
+        "📓 Журналы по чатам\n\n"
+        "Общий журнал по умолчанию выключен. Здесь можно включать запись только для нужных чатов.\n\n"
+        f"Включено: {enabled} из {len(items)}\nСтраница: {page + 1}/{pages}",
+        9,
+    )
+
+
+def build_chat_journal_menu_keyboard(page: int = 0):
+    items = _journal_chat_items()
+    pages = max(1, (len(items) + CHAT_JOURNAL_PAGE_SIZE - 1) // CHAT_JOURNAL_PAGE_SIZE)
+    page = max(0, min(int(page), pages - 1))
+    start = page * CHAT_JOURNAL_PAGE_SIZE
+    chunk = items[start:start + CHAT_JOURNAL_PAGE_SIZE]
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for cid, title in chunk:
+        icon = "✅" if is_chat_journal_enabled(cid) else "❌"
+        kb.row(IB(f"{icon} 📓 {chat_button_title(cid, title)}", callback_data=f"journal_chat_toggle:{cid}:{page}"))
+    if pages > 1:
+        row = []
+        if page > 0:
+            row.append(IB("⬅️", callback_data=f"journal_chats_open:{page - 1}"))
+        row.append(IB(f"{page + 1}/{pages}", callback_data="none"))
+        if page + 1 < pages:
+            row.append(IB("➡️", callback_data=f"journal_chats_open:{page + 1}"))
+        kb.row(*row)
+    kb.row(IB("🔙 Назад в Инфо", callback_data="journal_chats_back"))
+    return kb
+
+
+def build_version_menu_text() -> str:
+    active = active_bot_behavior_profile()
+    lines = [
+        "🧩 Режимы версий бота",
+        "",
+        "Это один код v83, но с переключаемыми профилями поведения. Данные и бэкапы остаются общими, поэтому можно сравнивать скорость и стабильность без нового деплоя.",
+        "",
+    ]
+    for key, cfg in BOT_BEHAVIOR_PROFILES.items():
+        mark = "✅" if key == active else "▫️"
+        lines.append(f"{mark} {cfg['title']} — {cfg['description']}")
+        lines.append(f"   Интервал UI: {cfg['ui_edit_interval']:.2f} сек.")
+    return wm_owner("\n".join(lines), 9)
+
+
+def build_version_menu_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    active = active_bot_behavior_profile()
+    for key, cfg in BOT_BEHAVIOR_PROFILES.items():
+        mark = "✅" if key == active else "▫️"
+        kb.row(IB(f"{mark} {cfg['title']}", callback_data=f"version_select:{key}"))
+    kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
+    return kb
+
+
+def keep_alive_status_text() -> str:
+    state = globals().get("KEEP_ALIVE_STATE") or {}
+    lines = [
+        "💓 Keep-alive / защита от сна",
+        "",
+        f"Автоматический режим: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}",
+        f"Интервал: {KEEP_ALIVE_INTERVAL_SECONDS} сек.",
+        f"APP_URL: {APP_URL or 'не задан'}",
+        f"Последний успешный ping: {state.get('last_ok_at') or 'ещё не было'}",
+        f"Последняя ошибка: {state.get('last_error') or 'нет'}",
+        f"Успешных циклов: {state.get('ok_count', 0)}, ошибок: {state.get('fail_count', 0)}",
+        "",
+        "Важно: внутренний self-ping поддерживает активность процесса, пока он запущен. Для тарифа хостинга с принудительным сном нужен внешний HTTP-монитор, который обращается к /keepalive.",
+    ]
+    return wm_owner("\n".join(lines), 9)
+
+
 def build_info_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     if is_owner_chat(chat_id):
         kb.row(
             IB("📓 Журнал", callback_data="journal_open"),
             IB(journal_toggle_label(), callback_data="journal_toggle"),
+        )
+        kb.row(
+            IB("🗂 Журналы чатов", callback_data="journal_chats_open"),
+            IB(chat_journal_toggle_label(chat_id), callback_data=f"journal_chat_toggle:{chat_id}:0"),
         )
         kb.row(
             IB(buttons_current_window_label(), callback_data="buttons_current_toggle"),
@@ -12474,6 +12743,11 @@ def build_info_keyboard(chat_id: int):
         )
         kb.row(
             IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
+            IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"),
+        )
+        kb.row(
+            IB(bot_behavior_profile_label(), callback_data="version_menu"),
+            IB("💓 Не спать", callback_data="keepalive_status"),
         )
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
@@ -12483,6 +12757,7 @@ def build_info_keyboard(chat_id: int):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
+        kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
     kb.row(
         IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
         IB("❌ Закрыть", callback_data="info_close"),
@@ -12780,6 +13055,19 @@ def handle_categories_callback(call, data_str: str) -> bool:
         clear_category_wait_state(chat_id, "category_edit_wait", call.message.message_id, delete_prompt=True)
         try:
             bot.answer_callback_query(call.id, "Команда отменена")
+        except Exception:
+            pass
+        return True
+
+    if data_str.startswith("cat_main_edit:"):
+        try:
+            parts = data_str.split(":", 2)
+            slug = parts[1]
+        except Exception:
+            return True
+        start_category_edit_wait(chat_id, chat_id, slug)
+        try:
+            bot.answer_callback_query(call.id, "Редактирование статьи", show_alert=False)
         except Exception:
             pass
         return True
@@ -14215,6 +14503,69 @@ def on_callback(call):
             new_state = toggle_journal_registration()
             bot_journal("journal_toggle", chat_id, f"enabled={new_state}")
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "journal_chats_open" or data_str.startswith("journal_chats_open:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                page = int(data_str.split(":", 1)[1]) if ":" in data_str else 0
+            except Exception:
+                page = 0
+            safe_edit(bot, call, build_chat_journal_menu_text(page), reply_markup=build_chat_journal_menu_keyboard(page))
+            return
+        if data_str.startswith("journal_chat_toggle:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                parts = data_str.split(":")
+                target_chat_id = int(parts[1])
+                page = int(parts[2]) if len(parts) > 2 else 0
+            except Exception:
+                return
+            new_state = toggle_chat_journal(target_chat_id)
+            bot_journal("journal_chat_toggle", target_chat_id, f"enabled={new_state}")
+            # Если переключили текущий чат прямо в ИНФО, остаёмся в ИНФО; иначе обновляем список.
+            if int(target_chat_id) == int(chat_id) and not str(getattr(call.message, 'text', '') or '').startswith("📓 Журналы по чатам"):
+                safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            else:
+                safe_edit(bot, call, build_chat_journal_menu_text(page), reply_markup=build_chat_journal_menu_keyboard(page))
+            return
+        if data_str == "journal_chats_back":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "main_articles_toggle":
+            new_state = toggle_main_article_buttons(chat_id)
+            try:
+                bot.answer_callback_query(call.id, "Статьи-кнопки включены" if new_state else "Статьи-кнопки выключены", show_alert=False)
+            except Exception:
+                pass
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "version_menu":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(bot, call, build_version_menu_text(), reply_markup=build_version_menu_keyboard())
+            return
+        if data_str.startswith("version_select:"):
+            if not is_owner_chat(chat_id):
+                return
+            profile_key = data_str.split(":", 1)[1]
+            set_bot_behavior_profile(profile_key)
+            safe_edit(bot, call, build_version_menu_text(), reply_markup=build_version_menu_keyboard())
+            return
+        if data_str == "version_back":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "keepalive_status":
+            if not is_owner_chat(chat_id):
+                return
+            kb = types.InlineKeyboardMarkup()
+            kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
+            safe_edit(bot, call, keep_alive_status_text(), reply_markup=kb)
             return
         if data_str == "journal_back":
             if not is_owner_chat(chat_id):
@@ -17361,46 +17712,93 @@ def cleanup_forward_links(chat_id: int):
     _cleanup_forward_storage_for_chat(chat_id)
 
 KEEP_ALIVE_SEND_TO_OWNER = False
-def keep_alive_task():
-    while True:
-        try:
-            base_candidates = []
-            for raw in (APP_URL, WEBHOOK_URL, os.getenv("RENDER_EXTERNAL_URL", "").strip()):
-                if not raw:
-                    continue
-                base = raw.rstrip("/")
-                if base not in base_candidates:
-                    base_candidates.append(base)
+KEEP_ALIVE_STATE = {
+    "started_at": None,
+    "last_attempt_at": None,
+    "last_ok_at": None,
+    "last_error": "",
+    "last_status_code": None,
+    "ok_count": 0,
+    "fail_count": 0,
+    "telegram_ok_at": None,
+}
+_keep_alive_thread = None
+_keep_alive_thread_lock = threading.RLock()
 
-            if base_candidates:
-                ok = False
-                for base in base_candidates:
-                    for url in (f"{base}/healthz", f"{base}/?ts={int(time.time())}"):
-                        try:
-                            resp = requests.get(
-                                url,
-                                timeout=10,
-                                headers={"Cache-Control": "no-cache"}
-                            )
-                            log_info(f"Keep-alive ping {url} -> {resp.status_code}")
+
+def _keep_alive_base_candidates() -> list[str]:
+    result = []
+    extra = os.getenv("KEEP_ALIVE_URLS", "")
+    values = [APP_URL, WEBHOOK_URL, os.getenv("RENDER_EXTERNAL_URL", "").strip(), _RENDER_HOST_URL]
+    if extra:
+        values.extend(x.strip() for x in extra.split(","))
+    for raw in values:
+        if not raw:
+            continue
+        base = str(raw).strip().rstrip("/")
+        if base and base not in result:
+            result.append(base)
+    return result
+
+
+def keep_alive_task():
+    session = requests.Session()
+    cycle = 0
+    KEEP_ALIVE_STATE["started_at"] = _journal_ts()
+    while True:
+        cycle_started = time.time()
+        try:
+            if not KEEP_ALIVE_ENABLED:
+                time.sleep(max(20, KEEP_ALIVE_INTERVAL_SECONDS))
+                continue
+
+            KEEP_ALIVE_STATE["last_attempt_at"] = _journal_ts()
+            bases = _keep_alive_base_candidates()
+            ok = False
+            last_error = ""
+            last_code = None
+
+            for base in bases:
+                for path in ("/keepalive", "/healthz", "/"):
+                    url = f"{base}{path}?ts={int(time.time() * 1000)}"
+                    try:
+                        resp = session.get(url, timeout=12, headers={"Cache-Control": "no-cache", "User-Agent": f"{VERSION}-keepalive"})
+                        last_code = int(resp.status_code)
+                        if 200 <= resp.status_code < 500:
                             ok = True
                             break
-                        except Exception as e:
-                            log_error(f"Keep-alive self error for {url}: {e}")
-                    if ok:
-                        break
-                if not ok:
-                    log_error("Keep-alive: all self-ping attempts failed")
-            else:
-                log_error("Keep-alive skipped: APP_URL / WEBHOOK_URL / RENDER_EXTERNAL_URL are empty")
-            if KEEP_ALIVE_SEND_TO_OWNER and OWNER_ID:
+                        last_error = f"HTTP {resp.status_code} {url}"
+                    except Exception as e:
+                        last_error = f"{url}: {e}"
+                if ok:
+                    break
+
+            cycle += 1
+            if cycle % KEEP_ALIVE_TELEGRAM_EVERY == 0:
                 try:
-                    pass
+                    bot.get_me()
+                    KEEP_ALIVE_STATE["telegram_ok_at"] = _journal_ts()
                 except Exception as e:
-                    log_error(f"Keep-alive notify error: {e}")
+                    last_error = (last_error + " | " if last_error else "") + f"Telegram getMe: {e}"
+
+            KEEP_ALIVE_STATE["last_status_code"] = last_code
+            if ok:
+                KEEP_ALIVE_STATE["last_ok_at"] = _journal_ts()
+                KEEP_ALIVE_STATE["last_error"] = ""
+                KEEP_ALIVE_STATE["ok_count"] = int(KEEP_ALIVE_STATE.get("ok_count", 0)) + 1
+                if cycle == 1 or cycle % 20 == 0:
+                    log_info(f"Keep-alive OK: status={last_code}, bases={len(bases)}")
+            else:
+                KEEP_ALIVE_STATE["last_error"] = last_error or "APP_URL / WEBHOOK_URL не заданы"
+                KEEP_ALIVE_STATE["fail_count"] = int(KEEP_ALIVE_STATE.get("fail_count", 0)) + 1
+                log_error(f"Keep-alive failed: {KEEP_ALIVE_STATE['last_error']}")
         except Exception as e:
+            KEEP_ALIVE_STATE["last_error"] = str(e)[:500]
+            KEEP_ALIVE_STATE["fail_count"] = int(KEEP_ALIVE_STATE.get("fail_count", 0)) + 1
             log_error(f"Keep-alive loop error: {e}")
-        time.sleep(max(10, KEEP_ALIVE_INTERVAL_SECONDS))
+
+        elapsed = time.time() - cycle_started
+        time.sleep(max(20.0, float(KEEP_ALIVE_INTERVAL_SECONDS) - elapsed))
 
 @bot.channel_post_handler(content_types=[
     "text", "photo", "video", "animation", "audio",
@@ -17735,8 +18133,13 @@ def cmd_sqlite_dump(msg):
 
 
 def start_keep_alive_thread():
-    t = threading.Thread(target=keep_alive_task, daemon=True)
-    t.start()
+    global _keep_alive_thread
+    with _keep_alive_thread_lock:
+        if _keep_alive_thread is not None and _keep_alive_thread.is_alive():
+            return _keep_alive_thread
+        _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
+        _keep_alive_thread.start()
+        return _keep_alive_thread
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -17745,6 +18148,20 @@ def index():
 @app.route("/healthz", methods=["GET"])
 def healthz():
     return "OK", 200
+
+
+@app.route("/keepalive", methods=["GET", "HEAD"])
+def keepalive_endpoint():
+    KEEP_ALIVE_STATE["external_ping_at"] = _journal_ts()
+    if request.method == "HEAD":
+        return "", 200
+    return {
+        "ok": True,
+        "version": VERSION,
+        "time": _journal_ts(),
+        "profile": active_bot_behavior_profile(),
+        "keep_alive": KEEP_ALIVE_ENABLED,
+    }, 200
 
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
@@ -17825,6 +18242,17 @@ def main():
         restored = False
     migrate_legacy_owner_secrets()
     try:
+        gs = data.setdefault("_global_settings", {})
+        if not bool(gs.get("journal_default_off_v83_applied", False)):
+            gs["bot_journal_enabled"] = False
+            for _cid, _store in (data.get("chats", {}) or {}).items():
+                if isinstance(_store, dict):
+                    _store.setdefault("settings", {})["journal_enabled"] = False
+            gs["journal_default_off_v83_applied"] = True
+        gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
+    except Exception as e:
+        log_error(f"v83 defaults migration: {e}")
+    try:
         marker_report = audit_window_marker_registry()
         log_info(f"Маркеры окон проверены: {marker_report}")
     except Exception as e:
@@ -17839,6 +18267,8 @@ def main():
             settings.setdefault("hidden_finance", False)
             settings.setdefault("auto_backup_enabled", True)
             settings.setdefault("auto_backup_to_mega_enabled", True)
+            settings.setdefault("journal_enabled", False)
+            settings.setdefault("main_article_buttons_enabled", False)
             settings.setdefault("total_secret_mode", False)
             store.setdefault("secret_messages", [])
             _ensure_secret_media_numbers(int(cid))
@@ -17868,9 +18298,11 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 82🐷Бот запущен (версия {VERSION}).\n"
+                    f"✅ 83 🙊Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK — полный универсальный снимок' if restored else 'пропущено'}\n"
-                    f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}"
+                    f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
+                    f"Профиль: {active_bot_behavior_profile_info().get('title')}\n"
+                    f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
