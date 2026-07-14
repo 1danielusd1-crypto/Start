@@ -355,13 +355,17 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v81_100chats_queues🙏❌"
+VERSION = "bot_v82_universal_mega_restore"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
 DATA_FILE = "data.json"
 CSV_FILE = "data.csv"
 CSV_META_FILE = "csv_meta.json"
+
+# Стабильный логический формат полного бэкапа между версиями бота.
+UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 1
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -1643,6 +1647,7 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_prompt_back': 'Ф122',
     'info_instruction': 'Ф123',
     'info_queues': 'Ф124',
+    'mega_priority_toggle': 'Ф125',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -2278,6 +2283,32 @@ def is_finance_output_suppressed(chat_id: int) -> bool:
         return bool(is_hidden_finance_mode(chat_id) and not is_owner_chat(chat_id))
     except Exception:
         return False
+
+
+def mega_backup_priority_enabled() -> bool:
+    """True: сначала быстро фиксируем JSON в MEGA, затем выполняем обычные бэкапы."""
+    try:
+        return bool((data or {}).setdefault("_global_settings", {}).get("mega_backup_priority", False))
+    except Exception:
+        return False
+
+
+def set_mega_backup_priority_enabled(enabled: bool):
+    data.setdefault("_global_settings", {})["mega_backup_priority"] = bool(enabled)
+    save_data(data, full=True)
+    # Само изменение режима немедленно фиксируем универсальным снимком.
+    if mega_is_configured():
+        _schedule_global_mega_snapshot(1.0)
+
+
+def toggle_mega_backup_priority() -> bool:
+    new_value = not mega_backup_priority_enabled()
+    set_mega_backup_priority_enabled(new_value)
+    return new_value
+
+
+def mega_backup_priority_label() -> str:
+    return "☁️ Сразу в MEGA" if mega_backup_priority_enabled() else "🕓 MEGA как обычно"
 
 
 def backup_excel_all_enabled() -> bool:
@@ -3110,6 +3141,7 @@ def build_info_text(chat_id: int) -> str:
     if is_owner_chat(chat_id):
         text += f"\n/buttons — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
         text += f"\n/mask — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
+        text += f"\n/MEGA — режим: {'сначала MEGA' if mega_backup_priority_enabled() else 'как обычно'}"
     return text
 
 
@@ -3487,7 +3519,9 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
             chat_id = _tg_first_chat_id(args, kwargs)
             _telegram_rate_limit_global()
             if chat_id is not None:
-                _telegram_rate_limit_chat(chat_id)
+                # UI-кнопки уже имеют собственный debounce. Не добавляем к ним ещё 0.35 с ожидания.
+                ui_gap = 0.08 if _is_fast_ui_purpose(purpose) else 0.35
+                _telegram_rate_limit_chat(chat_id, min_gap=ui_gap)
             try:
                 if verbose_telegram_journal_enabled():
                     bot_journal("telegram_api_call", chat_id, f"{purpose}: {getattr(func, '__name__', str(func))} attempt={attempt}/{attempts}")
@@ -4268,9 +4302,24 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
             pass
 
 
+def _snapshot_runtime_state_for_backup(payload: dict) -> dict:
+    """Минимальный стабильный runtime-слой, необходимый для восстановления между версиями."""
+    return {
+        "backup_flags": json.loads(json.dumps(payload.get("backup_flags", {}) or {}, ensure_ascii=False, default=str)),
+        "finance_active_chats": json.loads(json.dumps(payload.get("finance_active_chats", {}) or {}, ensure_ascii=False, default=str)),
+        "forward_index": json.loads(json.dumps(payload.get("forward_index", {}) or {}, ensure_ascii=False, default=str)),
+        "global_settings": json.loads(json.dumps(payload.get("_global_settings", {}) or {}, ensure_ascii=False, default=str)),
+        "csv_meta": json.loads(json.dumps(payload.get("csv_meta", {}) or {}, ensure_ascii=False, default=str)),
+        "chat_backup_meta": json.loads(json.dumps(payload.get("chat_backup_meta", {}) or {}, ensure_ascii=False, default=str)),
+    }
+
+
 def make_global_backup_payload() -> dict:
-    """Глобальный JSON для восстановления всего бота."""
+    """Универсальный полный JSON: данные, настройки и индекс старых пересланных сообщений."""
     with data_lock:
+        # Важно снять актуальный forward_map ДО копирования. Иначе свежие связи старых/новых
+        # сообщений могли отсутствовать в latest_global.json до срабатывания debounce.
+        _persist_forward_index_in_data(data)
         payload = json.loads(json.dumps(data or {}, ensure_ascii=False, default=str))
     payload.setdefault("chats", {})
     payload.setdefault("forward_rules", data.get("forward_rules", {}) if isinstance(data, dict) else {})
@@ -4282,15 +4331,31 @@ def make_global_backup_payload() -> dict:
                 _store["daily_records_by_date"] = {fmt_date_backup(k): backup_records_list(v) for k, v in (_store.get("daily_records", {}) or {}).items()}
     except Exception as e:
         log_error(f"make_global_backup_payload date annotate: {e}")
+
+    created_at = now_local().isoformat(timespec="seconds")
+    payload["_universal_backup"] = {
+        "kind": UNIVERSAL_BACKUP_KIND,
+        "schema_version": UNIVERSAL_BACKUP_SCHEMA_VERSION,
+        "bot_version": VERSION,
+        "created_at": created_at,
+        "restore_mode": "replace_full_state",
+        "contains": [
+            "all_chats", "records", "settings", "global_settings", "forward_rules",
+            "forward_finance", "forward_index", "secret_messages", "backup_metadata"
+        ],
+    }
+    payload["_runtime_snapshot"] = _snapshot_runtime_state_for_backup(payload)
     payload["_backup_meta"] = {
         "kind": "mega_latest_global",
         "version": VERSION,
-        "created_at": now_local().isoformat(timespec="seconds"),
+        "schema_version": UNIVERSAL_BACKUP_SCHEMA_VERSION,
+        "created_at": created_at,
         "chat_count": len(payload.get("chats", {}) or {}),
         "finance_active_chats": payload.get("finance_active_chats", {}),
         "forward_rules_count": sum(len(v or {}) for v in (payload.get("forward_rules", {}) or {}).values()),
         "forward_finance_count": sum(len(v or {}) for v in (payload.get("forward_finance", {}) or {}).values()),
-        "note": "Полный JSON: чаты, финрежимы, скрытые режимы, быстрый остаток, пересылка, фин-учёт пересылки.",
+        "forward_index_count": len(payload.get("forward_index", {}) or {}),
+        "note": "Универсальный полный JSON: все чаты, записи, настройки, секреты, пересылка и индекс сообщений.",
     }
     return payload
 
@@ -4366,23 +4431,46 @@ def is_data_effectively_empty_for_restore(d: dict) -> bool:
     return True
 
 
+def _parse_iso_timestamp(value: str | None) -> float:
+    try:
+        return datetime.fromisoformat(str(value or "").replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
 def mega_autorestore_if_needed() -> bool:
-    """При старте: если SQLite/data пустые, пробуем восстановиться из MEGA latest_global.json."""
+    """Восстанавливает universal latest при пустой базе или когда снимок MEGA новее локального."""
     global data
     if not MEGA_AUTORESTORE or not mega_is_configured():
         return False
-    if not is_data_effectively_empty_for_restore(data):
-        return False
 
+    local_empty = is_data_effectively_empty_for_restore(data)
     local_path = mega_download_latest_global_backup()
     if not local_path:
         return False
 
     try:
-        # restore_from_json уже умеет глобальный JSON с ключом chats.
+        remote_raw = _load_json(local_path, {}) or {}
+        universal = remote_raw.get("_universal_backup") or {}
+        is_universal = universal.get("kind") == UNIVERSAL_BACKUP_KIND
+        remote_created = (
+            universal.get("created_at")
+            or (remote_raw.get("_backup_meta") or {}).get("created_at")
+            or ""
+        )
+        local_saved = ((data or {}).get("_state_meta") or {}).get("last_saved_at") or ""
+
+        # Непустую локальную базу старым/частичным legacy-файлом не перезаписываем.
+        if not local_empty and not is_universal:
+            log_info("[MEGA] autorestore skipped: local state exists and remote is legacy")
+            return False
+        if not local_empty and _parse_iso_timestamp(remote_created) <= _parse_iso_timestamp(local_saved):
+            log_info("[MEGA] autorestore skipped: local state is not older than universal backup")
+            return False
+
         restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
         restore_from_json(restore_chat_id, local_path)
-        log_info("[MEGA] autorestore completed")
+        log_info(f"[MEGA] autorestore completed: universal={is_universal} local_empty={local_empty}")
         return True
     except Exception as e:
         log_error(f"[MEGA AUTORESTORE ERROR] {e}")
@@ -4613,7 +4701,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True},
+        "_global_settings": {"bot_journal_enabled": True, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -4685,6 +4773,8 @@ def _compact_button_label(text) -> str:
         return "🔣/🔤"
     if label.startswith("🪷 Маска:"):
         return "🪷" + ("✅" if "ВКЛ" in label else "❌")
+    if label in {"☁️ Сразу в MEGA", "🕓 MEGA как обычно"}:
+        return "☁️⚡" if "Сразу" in label else "☁️🕓"
     if re.fullmatch(r"[✅❌] Секрет", label):
         return ("✅" if label.startswith("✅") else "❌") + "🔐"
     if label.startswith("🏦 Остаток:"):
@@ -4749,6 +4839,8 @@ def save_data(d, chat_ids=None, full: bool = False, root_only: bool = False):
     бэкапе. Это убирает квадратичную нагрузку при 100 активных чатах.
     """
     with data_lock:
+        d.setdefault("_state_meta", {})["last_saved_at"] = now_local().isoformat(timespec="seconds")
+        d["_state_meta"]["bot_version"] = VERSION
         fac = {str(cid): True for cid in list(finance_active_chats)}
         d["finance_active_chats"] = fac
         d["backup_flags"] = {
@@ -5402,39 +5494,108 @@ def save_chat_json(chat_id: int):
     except Exception as e:
         log_error(f"save_chat_json({get_chat_display_name(chat_id)}): {e}")
         return None
-def restore_from_json(chat_id: int, path: str):
-    """
-    Восстановление из JSON.
-    Поддержка:
-      1) data.json (глобальный) — если внутри есть ключ "chats"
-      2) data_<chat_id>.json (пер-чат) — если внутри есть ключи "records"/"daily_records"
-    """
-    global data
-    payload = _load_json(path, None)
+def _extract_universal_state(payload: dict) -> dict:
+    """Поддерживает текущий плоский формат и будущий envelope со state/bot_state."""
     if not isinstance(payload, dict):
+        return {}
+    for key in ("state", "bot_state", "data"):
+        candidate = payload.get(key)
+        if isinstance(candidate, dict) and isinstance(candidate.get("chats"), dict):
+            state = json.loads(json.dumps(candidate, ensure_ascii=False, default=str))
+            # Runtime-слой envelope может дополнять старое состояние.
+            runtime = payload.get("runtime") or payload.get("_runtime_snapshot") or {}
+            if isinstance(runtime, dict):
+                state.setdefault("forward_index", runtime.get("forward_index", {}))
+                state.setdefault("finance_active_chats", runtime.get("finance_active_chats", {}))
+                state.setdefault("backup_flags", runtime.get("backup_flags", {}))
+                state.setdefault("_global_settings", runtime.get("global_settings", {}))
+            return state
+    return json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _migrate_full_state(restored: dict) -> dict:
+    """Мягкая миграция старых JSON: неизвестные поля сохраняются, отсутствующие добавляются."""
+    base = default_data()
+    for key, value in base.items():
+        if key not in restored:
+            restored[key] = json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    restored.setdefault("chats", {})
+    restored.setdefault("forward_rules", {})
+    restored.setdefault("forward_finance", {})
+    restored.setdefault("forward_index", {})
+
+    default_globals = default_data().get("_global_settings", {})
+    globals_state = restored.setdefault("_global_settings", {})
+    if not isinstance(globals_state, dict):
+        globals_state = {}
+        restored["_global_settings"] = globals_state
+    for key, value in default_globals.items():
+        globals_state.setdefault(key, value)
+
+    runtime = restored.get("_runtime_snapshot") or {}
+    if isinstance(runtime, dict):
+        if not restored.get("forward_index") and isinstance(runtime.get("forward_index"), dict):
+            restored["forward_index"] = runtime.get("forward_index") or {}
+        if not restored.get("finance_active_chats") and runtime.get("finance_active_chats"):
+            restored["finance_active_chats"] = runtime.get("finance_active_chats")
+        if not restored.get("backup_flags") and runtime.get("backup_flags"):
+            restored["backup_flags"] = runtime.get("backup_flags")
+        for key, value in (runtime.get("global_settings") or {}).items():
+            globals_state.setdefault(key, value)
+    return restored
+
+
+def _restore_runtime_state_from_data(restored: dict):
+    """Загружает логическое состояние в оперативные структуры ДО первого save_data()."""
+    finance_active_chats.clear()
+    fac = restored.get("finance_active_chats") or {}
+    if isinstance(fac, dict):
+        items = fac.items()
+    elif isinstance(fac, (list, tuple, set)):
+        items = ((x, True) for x in fac)
+    else:
+        items = ()
+    for cid, enabled in items:
+        if enabled:
+            try:
+                finance_active_chats.add(int(cid))
+            except Exception:
+                pass
+    if OWNER_ID:
+        try:
+            finance_active_chats.add(int(OWNER_ID))
+        except Exception:
+            pass
+
+    flags = restored.get("backup_flags") or {}
+    backup_flags["drive"] = bool(flags.get("drive", True))
+    backup_flags["channel"] = bool(flags.get("channel", True))
+
+    # Критически важно: сначала восстановить forward_map. Иначе save_data() запишет
+    # пустой индекс поверх загруженного JSON, и правки старых сообщений не найдут копии.
+    _load_forward_index_from_data(restored)
+
+
+def restore_from_json(chat_id: int, path: str):
+    """Восстановление глобального универсального или старого per-chat JSON."""
+    global data
+    raw_payload = _load_json(path, None)
+    if not isinstance(raw_payload, dict):
         raise RuntimeError("JSON повреждён или пустой")
 
+    payload = _extract_universal_state(raw_payload)
     if "chats" in payload and isinstance(payload.get("chats"), dict):
-        data = payload
-        base = default_data()
-        for k, v in base.items():
-            if k not in data:
-                data[k] = v
-
-        finance_active_chats.clear()
-        fac = data.get("finance_active_chats") or {}
-        if isinstance(fac, dict):
-            for cid, enabled in fac.items():
-                if enabled:
-                    try:
-                        finance_active_chats.add(int(cid))
-                    except Exception:
-                        pass
+        data = _migrate_full_state(payload)
+        _restore_runtime_state_from_data(data)
 
         rebuild_global_records()
         save_data(data, full=True)
         schedule_all_finance_backups(delay=0.5)
-        log_info("restore_from_json: global data restored")
+        log_info(
+            "restore_from_json: universal global state restored "
+            f"schema={(raw_payload.get('_universal_backup') or {}).get('schema_version', 'legacy')} "
+            f"forward_index={len(data.get('forward_index', {}) or {})}"
+        )
         return
 
     if "records" in payload or "daily_records" in payload:
@@ -5445,6 +5606,8 @@ def restore_from_json(chat_id: int, path: str):
         store["next_id"] = int(payload.get("next_id", 1) or 1)
         store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
         store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
+        if isinstance(payload.get("settings"), dict):
+            store["settings"].update(payload.get("settings") or {})
 
         if not store["records"] and store["daily_records"]:
             all_recs = []
@@ -5456,13 +5619,14 @@ def restore_from_json(chat_id: int, path: str):
         recalc_balance(chat_id)
         rebuild_global_records()
 
-        save_data(data)
+        save_data(data, chat_ids=[chat_id])
         finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day", today_key()), reason="restore_json_core", delay=0.1)
 
         log_info(f"restore_from_json: chat {chat_id} restored from per-chat JSON")
         return
 
     raise RuntimeError("Неизвестный формат JSON (нет 'chats' и нет 'records/daily_records').")
+
 def restore_from_csv(chat_id: int, path: str):
     """
     Восстановление из CSV (пер-чат).
@@ -9358,7 +9522,7 @@ def _forward_key(src_chat_id: int, src_msg_id: int) -> str:
     return f"{int(src_chat_id)}:{int(src_msg_id)}"
 
 
-def _schedule_persist_forward_state(delay: float = 1.2):
+def _schedule_persist_forward_state(delay: float = 0.25):
     global _forward_state_timer
 
     def _job():
@@ -11933,7 +12097,7 @@ def _one_button_keyboard(label: str, callback_data: str):
 # • редактирование одного сообщения ограничено частотой;
 # • частые клики собираются в одно последнее обновление;
 # • 429 не держит обработчик кнопки, а просто пропускает лишнее обновление.
-UI_EDIT_MIN_INTERVAL_SECONDS = float(os.getenv("UI_EDIT_MIN_INTERVAL_SECONDS", "1.15") or "1.15")
+UI_EDIT_MIN_INTERVAL_SECONDS = float(os.getenv("UI_EDIT_MIN_INTERVAL_SECONDS", "0.35") or "0.35")
 _ui_edit_lock = threading.RLock()
 _ui_edit_last_ts = {}
 _ui_edit_pending = {}
@@ -12307,6 +12471,9 @@ def build_info_keyboard(chat_id: int):
         kb.row(
             IB(total_secret_mask_label(), callback_data="total_secret_mask_toggle"),
             IB(f"🕔 {finance_day_start_label()}", callback_data="finance_day5_toggle"),
+        )
+        kb.row(
+            IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
         )
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
@@ -13137,13 +13304,30 @@ def schedule_secret_edit_refresh_window(viewer_chat_id: int, message_id: int, ta
         _secret_edit_refresh_timers[key] = generation
         DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
 
+def _answer_callback_query_quiet(callback_id: str):
+    try:
+        bot.answer_callback_query(callback_id)
+    except Exception:
+        pass
+
+
+def answer_callback_query_background(callback_id: str):
+    """Снимает Telegram «Загрузка…» параллельно, не задерживая обработку самой кнопки."""
+    key = f"callback-ack:{callback_id}"
+    if not GENERAL_TASK_POOL.submit(key, _answer_callback_query_quiet, callback_id):
+        # При переполнении не блокируем кнопку сетевым вызовом; последующая UI-операция всё равно выполнится.
+        try:
+            bot_journal("callback_ack_queue_full", None, str(callback_id), "WARN")
+        except Exception:
+            pass
+
+
 @bot.callback_query_handler(func=lambda c: True)
 
 def on_callback(call):
-    try:
-        bot.answer_callback_query(call.id)
-    except Exception:
-        pass
+    # Раньше этот сетевой вызов выполнялся синхронно и давал 0.3–1.0 с задержки
+    # до начала обработки кнопки. Теперь подтверждение и действие идут параллельно.
+    answer_callback_query_background(call.id)
 
     try:
         raw_data_str = call.data or ""
@@ -14067,6 +14251,14 @@ def on_callback(call):
             new_state = toggle_finance_day_start_5am()
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nФинансовые сутки: с {'05:00' if new_state else '00:00'}", reply_markup=build_info_keyboard(chat_id))
             return
+        if data_str == "mega_priority_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            new_state = toggle_mega_backup_priority()
+            mode_text = "сначала и сразу в MEGA" if new_state else "как обычно"
+            bot_journal("mega_priority_toggle", chat_id, f"enabled={new_state}")
+            safe_edit(bot, call, build_info_text(chat_id) + f"\n\nБэкап MEGA: {mode_text}", reply_markup=build_info_keyboard(chat_id))
+            return
         if data_str == "info_instruction":
             if not is_owner_chat(chat_id):
                 try:
@@ -14591,25 +14783,13 @@ def on_callback(call):
             schedule_owner_total_window_delete(chat_id, final_id)
             return
         if cmd == "info":
-            try:
-                bot.answer_callback_query(call.id)
-            except Exception:
-                pass
             if chat_buttons_current_window_enabled(chat_id):
-                kb_info = types.InlineKeyboardMarkup()
-                kb_info.row(
-                    IB("📓 Журнал", callback_data="journal_open"),
-                    IB(journal_toggle_label(), callback_data="journal_toggle"),
+                safe_edit(
+                    bot,
+                    call,
+                    wm_common(build_info_text(chat_id), 9),
+                    reply_markup=build_info_keyboard(chat_id),
                 )
-                kb_info.row(
-                    IB(buttons_current_window_label(), callback_data="buttons_current_toggle"),
-            IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
-                )
-                kb_info.row(
-                    IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
-                    IB("❌ Закрыть", callback_data="info_close"),
-                )
-                safe_edit(bot, call, wm_common(build_info_text(chat_id), 9), reply_markup=kb_info)
             else:
                 open_info_window(chat_id)
             return
@@ -16673,7 +16853,12 @@ def _run_quick_chat_backup(chat_id: int):
             save_chat_json_only(chat_id)
             if is_backup_to_mega_enabled(chat_id):
                 mega_upload_chat_latest_json_only(chat_id)
-                _schedule_global_mega_snapshot(30.0)
+                if mega_backup_priority_enabled():
+                    # Приоритетный режим: универсальный снимок фиксируется сразу,
+                    # до ожидания полного Telegram/Excel/месячного пакета.
+                    mega_upload_latest_global_backup()
+                else:
+                    _schedule_global_mega_snapshot(30.0)
         finally:
             with timer_lock:
                 _quick_backup_dirty_chats.discard(chat_id)
@@ -16695,11 +16880,19 @@ def _run_full_chat_backup(chat_id: int):
             save_data(data, chat_ids=[chat_id])
             trace.step("создаёт JSON/CSV" + ("/Excel" if backup_excel_all_enabled() else ""))
             save_chat_json(chat_id)
+
+            mega_done = False
+            if mega_backup_priority_enabled() and is_backup_to_mega_enabled(chat_id):
+                trace.step("сначала загружает полный снимок в MEGA")
+                mega_upload_chat_backup_bundle(chat_id, current_month_key())
+                mega_upload_latest_global_backup()
+                mega_done = True
+
             if is_backup_to_chat_enabled(chat_id) and can_receive_direct_json_backup(chat_id) and not is_finance_output_suppressed(chat_id):
                 send_backup_to_chat(chat_id, ensure_files=False)
             if is_backup_to_channel_enabled(chat_id):
                 send_backup_to_channel(chat_id, ensure_files=False)
-            if is_backup_to_mega_enabled(chat_id):
+            if is_backup_to_mega_enabled(chat_id) and not mega_done:
                 mega_upload_chat_backup_bundle(chat_id, current_month_key())
                 _schedule_global_mega_snapshot(20.0)
             trace.finish("бэкап завершён")
@@ -16734,7 +16927,8 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
         delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
     except Exception:
         delay = BACKUP_MIN_DELAY_SECONDS
-    schedule_quick_backup(chat_id, 15.0)
+    quick_delay = 1.0 if mega_backup_priority_enabled() else 15.0
+    schedule_quick_backup(chat_id, quick_delay)
     due = time.time() + delay
     with timer_lock:
         _backup_dirty_chats.add(chat_id)
@@ -17293,6 +17487,10 @@ def propagate_edited_to_copies(msg):
 )
 def on_edited_message(msg):
     chat_id = msg.chat.id
+    try:
+        bot_journal("edited_message_received", chat_id, f"msg={getattr(msg, 'message_id', 0)}")
+    except Exception:
+        pass
 
     try:
         update_chat_info_from_message(msg)
@@ -17646,6 +17844,9 @@ def main():
             _ensure_secret_media_numbers(int(cid))
         except Exception:
             pass
+    # После MEGA restore повторно поднимаем индекс пересылки в память.
+    # Это позволяет редактировать старые сообщения сразу после деплоя.
+    _restore_runtime_state_from_data(data)
     save_data(data)
     data["forward_rules"] = load_forward_rules()
     schedule_all_finance_backups(delay=20.0)
@@ -17667,8 +17868,9 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ @ Бот запущен (версия {VERSION}).\n"
-                    f"Восстановление: {'OK' if restored else 'пропущено'}"
+                    f"✅ 82🐷Бот запущен (версия {VERSION}).\n"
+                    f"Восстановление: {'OK — полный универсальный снимок' if restored else 'пропущено'}\n"
+                    f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
