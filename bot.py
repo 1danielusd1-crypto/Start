@@ -355,7 +355,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v84_persistent_windows"
+VERSION = "bot_v85_json_open_fix"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 KEEP_ALIVE_INTERVAL_SECONDS = 30
 DB_FILE = os.getenv("DB_FILE", "bot_state.sqlite3").strip() or "bot_state.sqlite3"
@@ -3890,19 +3890,38 @@ def _save_json(path: str, obj):
 
 
 def _save_json_compact(path: str, obj) -> str | None:
-    """Атомарная запись компактного JSON без пробелов и отступов."""
+    """Атомарная запись компактного, но многострочного JSON.
+
+    Полностью минифицированный JSON превращался в одну очень длинную строку.
+    Некоторые версии Telegram не открывают/не показывают такой документ во
+    встроенном просмотрщике. Отступ в один пробел почти не увеличивает размер,
+    но разделяет структуру на строки и делает файл нормально открываемым.
+    """
     tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
     try:
         parent = os.path.dirname(os.path.abspath(path))
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(
+                obj,
+                f,
+                ensure_ascii=False,
+                indent=1,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            f.write("\n")
             f.flush()
             try:
                 os.fsync(f.fileno())
             except Exception:
                 pass
+
+        # До замены проверяем, что файл действительно является корректным JSON.
+        with open(tmp_path, "r", encoding="utf-8") as check_file:
+            json.load(check_file)
+
         os.replace(tmp_path, path)
         return path
     except Exception as e:
@@ -4368,7 +4387,7 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
 
 
 def make_global_backup_payload() -> dict:
-    """Compact global JSON v84 with persistent Telegram message references.
+    """Compact global JSON v85 with persistent Telegram message references.
 
     В файле нет дубликатов records/daily_records. Каждая финансовая запись хранится
     один раз внутри соответствующего дня.
@@ -5483,7 +5502,7 @@ _COMPACT_RECORD_KNOWN_KEYS = {
     "description",
 }
 
-# v84: Telegram message_id/window_id are NOT ephemeral. They are deliberately
+# v85: Telegram message_id/window_id are NOT ephemeral. They are deliberately
 # preserved so, after a deploy or MEGA restore, the bot can edit the exact same
 # messages that it created before the restart. Only duplicate financial arrays
 # and unfinished input/timer states are omitted from the compact backup.
@@ -5556,7 +5575,7 @@ def _json_clone(value, default=None):
 def _compact_chat_state(store: dict) -> dict:
     """Permanent chat state, including Telegram message/window IDs.
 
-    v84 intentionally keeps *_msg_id, *_message_id and *_window_id. Pending
+    v85 intentionally keeps *_msg_id, *_message_id and *_window_id. Pending
     input selections and timer waits are omitted because their in-memory timers
     cannot safely continue after a process restart.
     """
@@ -5657,7 +5676,7 @@ def _build_compact_chat_core(
 
 
 def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
-    """Основной компактный JSON v84: records once, settings and Telegram IDs preserved."""
+    """Основной компактный JSON v85: records once, settings and Telegram IDs preserved."""
     store = store or snapshot_chat_store(chat_id)
     payload = {
         "kind": "chat_compact_backup",
@@ -5750,7 +5769,7 @@ def save_chat_json(chat_id: int):
             save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
-            "json_format": "compact_v84_persistent_windows",
+            "json_format": "compact_v85_multiline_openable",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
             "excel_enabled": backup_excel_all_enabled(),
         }
@@ -9599,6 +9618,41 @@ def file_bytesio_named(path: str, file_name: str) -> io.BytesIO | None:
         log_error(f"file_bytesio_named({path}): {e}")
         return None
 
+
+def json_file_bytesio_for_telegram(path: str, file_name: str) -> io.BytesIO | None:
+    """Проверяет JSON и возвращает Telegram-документ с явным именем .json.
+
+    Это одинаково используется командой /json и backup-каналом, чтобы туда не
+    попадал пустой, недописанный или отправленный без правильного расширения файл.
+    """
+    try:
+        if not path or not os.path.exists(path) or os.path.getsize(path) <= 0:
+            log_error(f"json_file_bytesio_for_telegram: empty or missing file: {path}")
+            return None
+
+        with open(path, "r", encoding="utf-8") as src:
+            json.load(src)
+
+        safe_name = os.path.basename(str(file_name or "backup.json").strip())
+        if not safe_name.lower().endswith(".json"):
+            safe_name += ".json"
+        return file_bytesio_named(path, safe_name)
+    except Exception as e:
+        log_error(f"json_file_bytesio_for_telegram({path}): {e}")
+        return None
+
+
+def compact_json_telegram_filename(chat_id: int) -> str:
+    """Понятное и безопасное имя лёгкого JSON для Telegram."""
+    try:
+        name = _safe_export_name_part(
+            get_chat_name_for_filename(chat_id) or get_chat_display_name(chat_id),
+            f"chat_{int(chat_id)}",
+        )
+    except Exception:
+        name = f"chat_{chat_id}"
+    return f"{name}_compact.json"
+
 def _get_chat_title_for_backup(chat_id: int) -> str:
     """Always derive the Telegram filename from the chat's current stored name."""
     try:
@@ -9643,6 +9697,8 @@ def send_backup_to_channel_for_file(base_path: str, meta_key_prefix: str, chat_t
         def _open_for_telegram() -> io.BytesIO | None:
             if not os.path.exists(base_path):
                 return None
+            if str(ext or "").lower() == "json":
+                return json_file_bytesio_for_telegram(base_path, file_name)
             with open(base_path, "rb") as src:
                 data_bytes = src.read()
             if not data_bytes:
@@ -16508,8 +16564,17 @@ def cmd_json(msg):
         return
     p = save_chat_json_only(chat_id)
     if p and os.path.exists(p):
-        with open(p, "rb") as f:
-            bot.send_document(chat_id, f, caption="🧾 Компактный JSON этого чата")
+        fobj = json_file_bytesio_for_telegram(p, compact_json_telegram_filename(chat_id))
+        if fobj:
+            _tg_call_retry(
+                bot.send_document,
+                chat_id,
+                fobj,
+                caption="🧾 Компактный JSON этого чата",
+                purpose="json_command_send_document",
+            )
+        else:
+            send_info(chat_id, "JSON создан с ошибкой и не был отправлен. Посмотрите /errors.")
     else:
         send_info(chat_id, "Файл JSON ещё не создан.")
 
@@ -18414,7 +18479,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 👾Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🐷Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK' if restored else 'пропущено'}"
                 )
             except Exception as e:
