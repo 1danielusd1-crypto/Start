@@ -357,7 +357,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v83_flexible_awake"
+VERSION = "bot_v84_true_versions_fin_buttons"
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 try:
     KEEP_ALIVE_INTERVAL_SECONDS = max(20, int(os.getenv("KEEP_ALIVE_INTERVAL_SECONDS", "45") or "45"))
@@ -375,7 +375,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 2
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 3
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -683,26 +683,56 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v84_current": {
+        "title": "v84 Фин-кнопки",
+        "ui_edit_interval": 0.20,
+        "fast_tg_gap": 0.05,
+        "info_layout": "v84",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "description": "Текущая версия: финансовые записи-кнопки, индивидуальные журналы, полный MEGA-бэкап и keep-alive.",
+    },
     "v83_flexible": {
         "title": "v83 Гибкая",
         "ui_edit_interval": 0.20,
         "fast_tg_gap": 0.05,
-        "description": "Быстрые кнопки, индивидуальные журналы, статьи-кнопки и универсальный бэкап.",
+        "info_layout": "v83",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": True,
+        "financial_value_buttons": False,
+        "description": "Поведение прежней v83: индивидуальные журналы, keep-alive и исторический режим статей-кнопок.",
     },
     "v82_stable": {
         "title": "v82 Стабильная",
         "ui_edit_interval": 0.35,
         "fast_tg_gap": 0.08,
-        "description": "Умеренный debounce интерфейса и поведение, близкое к v82.",
+        "info_layout": "v82",
+        "per_chat_journal": False,
+        "mega_priority": True,
+        "keepalive_menu": False,
+        "article_buttons": False,
+        "financial_value_buttons": False,
+        "description": "Интерфейс и набор кнопок v82: универсальный MEGA-бэкап без функций v83/v84.",
     },
     "v81_compatible": {
         "title": "v81 Совместимость",
         "ui_edit_interval": 1.15,
         "fast_tg_gap": 0.20,
-        "description": "Медленнее, но максимально осторожно для сравнения со старой логикой кнопок.",
+        "info_layout": "v81",
+        "per_chat_journal": False,
+        "mega_priority": False,
+        "keepalive_menu": False,
+        "article_buttons": False,
+        "financial_value_buttons": False,
+        "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v83_flexible"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v84_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -717,16 +747,102 @@ def active_bot_behavior_profile_info() -> dict:
     return BOT_BEHAVIOR_PROFILES.get(active_bot_behavior_profile(), BOT_BEHAVIOR_PROFILES[DEFAULT_BOT_BEHAVIOR_PROFILE])
 
 
+def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    # Только настройки интерфейса/поведения. Финансовые записи, остатки, пересылки,
+    # владельцы и backup-данные при выборе версии никогда не откатываются.
+    global_fields = (
+        "buttons_current_window", "forward_menu_new_style", "icon_button_mode",
+        "total_secret_mask_enabled", "finance_day_start_5am", "mega_backup_priority",
+    )
+    chat_fields = (
+        "buttons_current_window", "journal_enabled", "main_article_buttons_enabled",
+        "main_financial_value_buttons_enabled", "quick_balance_enabled",
+        "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
+        "process_trace_enabled",
+    )
+    return global_fields, chat_fields
+
+
+def save_version_mode_snapshot(profile_key: str | None = None):
+    try:
+        key = str(profile_key or active_bot_behavior_profile())
+        if key not in BOT_BEHAVIOR_PROFILES:
+            return
+        gs = data.setdefault("_global_settings", {})
+        snapshots = gs.setdefault("version_mode_snapshots", {})
+        global_fields, chat_fields = _version_mode_snapshot_fields()
+        snap = {
+            "global": {name: gs.get(name) for name in global_fields if name in gs},
+            "chats": {},
+            "saved_at": now_local().isoformat(timespec="seconds"),
+        }
+        for cid, store in (data.get("chats", {}) or {}).items():
+            if not isinstance(store, dict):
+                continue
+            settings = store.setdefault("settings", {})
+            snap["chats"][str(cid)] = {name: settings.get(name) for name in chat_fields if name in settings}
+        snapshots[key] = snap
+    except Exception as e:
+        log_error(f"save_version_mode_snapshot: {e}")
+
+
+def restore_version_mode_snapshot(profile_key: str):
+    try:
+        gs = data.setdefault("_global_settings", {})
+        snap = (gs.setdefault("version_mode_snapshots", {}) or {}).get(str(profile_key)) or {}
+        global_fields, chat_fields = _version_mode_snapshot_fields()
+        global_values = snap.get("global") if isinstance(snap, dict) else {}
+        if isinstance(global_values, dict):
+            for name in global_fields:
+                if name in global_values:
+                    gs[name] = global_values[name]
+        chat_values = snap.get("chats") if isinstance(snap, dict) else {}
+        if isinstance(chat_values, dict):
+            for cid, values in chat_values.items():
+                if not isinstance(values, dict):
+                    continue
+                store = get_chat_store(int(cid))
+                settings = store.setdefault("settings", {})
+                for name in chat_fields:
+                    if name in values:
+                        settings[name] = values[name]
+    except Exception as e:
+        log_error(f"restore_version_mode_snapshot({profile_key}): {e}")
+
+
+def version_mode_feature(name: str) -> bool:
+    try:
+        return bool(active_bot_behavior_profile_info().get(str(name), False))
+    except Exception:
+        return False
+
+
+def version_mode_layout() -> str:
+    try:
+        return str(active_bot_behavior_profile_info().get("info_layout") or "v84")
+    except Exception:
+        return "v84"
+
+
 def set_bot_behavior_profile(profile_key: str) -> str:
     profile_key = str(profile_key or "").strip()
     if profile_key not in BOT_BEHAVIOR_PROFILES:
         profile_key = DEFAULT_BOT_BEHAVIOR_PROFILE
+    previous = active_bot_behavior_profile()
+    if previous != profile_key:
+        save_version_mode_snapshot(previous)
     data.setdefault("_global_settings", {})["bot_behavior_profile"] = profile_key
-    save_data(data, root_only=True)
+    if previous != profile_key:
+        restore_version_mode_snapshot(profile_key)
+    save_data(data, full=True)
     try:
         with _ui_edit_lock:
             _ui_edit_last_ts.clear()
             _ui_edit_pending.clear()
+    except Exception:
+        pass
+    try:
+        schedule_config_backup_for_chats(delay=1.0)
     except Exception:
         pass
     return profile_key
@@ -772,6 +888,65 @@ def toggle_main_article_buttons(chat_id: int) -> bool:
 
 def main_article_buttons_label(chat_id: int) -> str:
     return "✅ Статьи-кнопки ВКЛ" if main_article_buttons_enabled(int(chat_id)) else "❌ Статьи-кнопки ВЫКЛ"
+
+
+def main_financial_value_buttons_enabled(chat_id: int) -> bool:
+    try:
+        return bool(get_chat_store(int(chat_id)).setdefault("settings", {}).get("main_financial_value_buttons_enabled", False))
+    except Exception:
+        return False
+
+
+def effective_main_article_buttons_enabled(chat_id: int) -> bool:
+    return bool(version_mode_feature("article_buttons") and main_article_buttons_enabled(int(chat_id)))
+
+
+def effective_main_financial_value_buttons_enabled(chat_id: int) -> bool:
+    return bool(version_mode_feature("financial_value_buttons") and main_financial_value_buttons_enabled(int(chat_id)))
+
+
+def set_main_financial_value_buttons_enabled(chat_id: int, enabled: bool):
+    store = get_chat_store(int(chat_id))
+    store.setdefault("settings", {})["main_financial_value_buttons_enabled"] = bool(enabled)
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+
+
+def toggle_main_financial_value_buttons(chat_id: int) -> bool:
+    new_value = not main_financial_value_buttons_enabled(int(chat_id))
+    set_main_financial_value_buttons_enabled(int(chat_id), new_value)
+    return new_value
+
+
+def main_financial_value_buttons_label(chat_id: int) -> str:
+    return "✅ Финансы-кнопки ВКЛ" if main_financial_value_buttons_enabled(int(chat_id)) else "❌ Финансы-кнопки ВЫКЛ"
+
+
+def financial_record_button_label(rec: dict) -> str:
+    try:
+        amount = float((rec or {}).get("amount", 0) or 0)
+    except Exception:
+        amount = 0.0
+    sign = "➕" if amount >= 0 else "➖"
+    sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}")
+    note = re.sub(r"\s+", " ", str((rec or {}).get("note") or "").strip())
+    if len(note) > 28:
+        note = note[:27] + "…"
+    amount_text = str(fmt_num(abs(amount))).strip()
+    if amount_text.startswith("+"):
+        amount_text = amount_text[1:].strip()
+    body = f"{sign} {amount_text}"
+    if note:
+        body += f" · {note}"
+    return f"{body} · {sid}"
+
+
+def financial_value_records_for_day(chat_id: int, day_key: str) -> list[dict]:
+    try:
+        recs = get_chat_store(int(chat_id)).get("daily_records", {}).get(str(day_key), []) or []
+        return sorted((r for r in recs if isinstance(r, dict)), key=record_sort_key)
+    except Exception:
+        return []
 
 
 def buttons_current_window_enabled() -> bool:
@@ -1796,6 +1971,7 @@ WINDOW_MARKER_CONSTANTS = {
     'version_menu': 'Ф132',
     'version_select:*': 'Ф133',
     'version_back': 'Ф134',
+    'main_financial_values_toggle': 'Ф135',
     'keepalive_status': 'Ф135',
 }
 
@@ -3229,7 +3405,7 @@ def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
     if is_finance_mode(chat_id):
         return False
 
-    if data_str in {"info_close", "main_articles_toggle"}:
+    if data_str in {"info_close", "main_articles_toggle", "main_financial_values_toggle"}:
         return False
     if data_str.startswith("d:") and data_str.endswith(":info"):
         return False
@@ -3286,15 +3462,22 @@ def build_help_text(chat_id: int) -> str:
 
 def build_info_text(chat_id: int) -> str:
     state = "ВКЛ" if chat_buttons_current_window_enabled(chat_id) else "ВЫКЛ"
+    layout = version_mode_layout()
     text = build_help_text(chat_id) + f"\n/windows — открывать действия в текущем окне: {state}"
-    text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
-    text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
+    if layout == "v84":
+        text += f"\nФинансовые значения-кнопки: {'ВКЛ' if main_financial_value_buttons_enabled(chat_id) else 'ВЫКЛ'}"
+        text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
+    elif layout == "v83":
+        text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
+        text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
     if is_owner_chat(chat_id):
         text += f"\n/buttons — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
         text += f"\n/mask — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
-        text += f"\n/MEGA — режим: {'сначала MEGA' if mega_backup_priority_enabled() else 'как обычно'}"
-        text += f"\nПрофиль поведения: {active_bot_behavior_profile_info().get('title')}"
-        text += f"\nKeep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}, каждые {KEEP_ALIVE_INTERVAL_SECONDS} сек."
+        if version_mode_feature("mega_priority"):
+            text += f"\n/MEGA — режим: {'сначала MEGA' if mega_backup_priority_enabled() else 'как обычно'}"
+        text += f"\nАктивная версия: {active_bot_behavior_profile_info().get('title')}"
+        if version_mode_feature("keepalive_menu"):
+            text += f"\nKeep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}, каждые {KEEP_ALIVE_INTERVAL_SECONDS} сек."
     return text
 
 
@@ -4854,7 +5037,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False, "bot_behavior_profile": "v83_flexible", "journal_default_off_v83_applied": True},
+        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False, "bot_behavior_profile": "v84_current", "journal_default_off_v83_applied": True},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -5079,7 +5262,8 @@ def get_chat_store(chat_id: int) -> dict:
                     "auto_backup_to_channel_enabled": True,
                     "auto_backup_to_mega_enabled": True,
                     "journal_enabled": False,
-                    "main_article_buttons_enabled": False
+                    "main_article_buttons_enabled": False,
+                    "main_financial_value_buttons_enabled": False
                 },
             }
         )
@@ -5096,6 +5280,7 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("auto_backup_to_mega_enabled", legacy_backup_enabled)
         store.setdefault("settings", {}).setdefault("journal_enabled", False)
         store.setdefault("settings", {}).setdefault("main_article_buttons_enabled", False)
+        store.setdefault("settings", {}).setdefault("main_financial_value_buttons_enabled", False)
         store.setdefault("finance_mode", False)
 
         if is_owner_chat(chat_id):
@@ -10255,6 +10440,10 @@ def render_day_window(chat_id: int, day_key: str):
     if not all_record_lines:
         return wm_common("\n".join(header + ["Нет записей за этот день."] + footer), 1, html_mode=True), total
 
+    if effective_main_financial_value_buttons_enabled(chat_id):
+        hint = [f"💳 Записей за день: {len(recs_sorted)}", "Нажмите сумму-кнопку ниже, чтобы изменить запись."]
+        return wm_common("\n".join(header + hint + footer), 1, html_mode=True), total
+
     hidden = 0
     visible = list(all_record_lines)
 
@@ -10402,9 +10591,22 @@ def build_main_keyboard(day_key: str, chat_id=None):
         IB("📊 Статьи", callback_data=cat_callback("cat_today")),
     )
 
-    # По настройке чата показываем все статьи прямо в основном финансовом окне.
-    # Нажатие на статью сразу открывает её редактирование.
-    if chat_id is not None and main_article_buttons_enabled(int(chat_id)):
+    # v84: каждая финансовая запись дня становится кнопкой. Нажатие сразу
+    # открывает штатный 40-секундный режим редактирования этой записи.
+    if chat_id is not None and effective_main_financial_value_buttons_enabled(int(chat_id)):
+        value_buttons = []
+        for rec in financial_value_records_for_day(int(chat_id), day_key):
+            try:
+                rid = int(rec.get("id"))
+            except Exception:
+                continue
+            value_buttons.append(IB(financial_record_button_label(rec), callback_data=f"d:{day_key}:value_rec_{rid}"))
+        add_buttons_in_rows(kb, value_buttons[:84], 2)
+        if len(value_buttons) > 84:
+            kb.row(IB(f"Ещё записей: {len(value_buttons) - 84}", callback_data=f"d:{day_key}:edit_list"))
+
+    # Исторический режим v83 сохранён для точного сравнения поведения версии.
+    if chat_id is not None and effective_main_article_buttons_enabled(int(chat_id)):
         article_buttons = []
         for item in category_edit_items_for_chat(int(chat_id)):
             slug = str(item.get("slug") or "").strip()
@@ -10431,6 +10633,45 @@ def build_main_keyboard(day_key: str, chat_id=None):
         )
 
     return kb
+
+
+def start_record_edit_prompt(chat_id: int, day_key: str, rid: int) -> bool:
+    try:
+        chat_id = int(chat_id)
+        rid = int(rid)
+        store = get_chat_store(chat_id)
+        rec = next((r for r in store.get("records", []) if int(r.get("id", 0) or 0) == rid), None)
+        if not rec:
+            send_and_auto_delete(chat_id, "❌ Запись не найдена.")
+            return False
+        text = (
+            f"✏️ Редактирование записи R{rid}\n\n"
+            f"Текущие данные:\n"
+            f"{fmt_num(rec.get('amount', 0))} {rec.get('note','')}\n\n"
+            f"✍️ Напишите новые данные.\n\n"
+            f"⏳ Это сообщение и режим редактирования будут автоматически отменены через 40 секунд."
+        )
+        insert_value = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+        text = wm_common(text, 10)
+        kb = build_cancel_edit_keyboard(day_key, insert_text=insert_value)
+        prompt_id = send_or_edit_edit_prompt(chat_id, "edit_wait", text, reply_markup=kb)
+        store["edit_wait"] = {
+            "type": "edit",
+            "rid": rid,
+            "day_key": day_key,
+            "prompt_msg_id": prompt_id,
+            "insert_text": insert_value,
+            "countdown_base_text": text,
+            "expires_at": time.time() + 40,
+        }
+        save_data(data, chat_ids=[chat_id])
+        schedule_cancel_edit(chat_id, prompt_id, delay=40)
+        return True
+    except Exception as e:
+        log_error(f"start_record_edit_prompt({chat_id},{day_key},{rid}): {e}")
+        return False
+
+
 def build_report_keyboard(month_key: str):
     """
     month_key: YYYY-MM. В о3 навигация по месяцам — первый ряд, назад/закрыть — второй ряд.
@@ -12679,15 +12920,17 @@ def build_chat_journal_menu_keyboard(page: int = 0):
 def build_version_menu_text() -> str:
     active = active_bot_behavior_profile()
     lines = [
-        "🧩 Режимы версий бота",
+        "🧩 Полное переключение версий",
         "",
-        "Это один код v83, но с переключаемыми профилями поведения. Данные и бэкапы остаются общими, поэтому можно сравнивать скорость и стабильность без нового деплоя.",
+        "Выбор меняет структуру меню, доступные кнопки, интервалы интерфейса и совместимое поведение выбранной версии. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
+        "",
+        "Кнопка выбора версии всегда остаётся в ИНФО, даже в режиме v81.",
         "",
     ]
     for key, cfg in BOT_BEHAVIOR_PROFILES.items():
         mark = "✅" if key == active else "▫️"
         lines.append(f"{mark} {cfg['title']} — {cfg['description']}")
-        lines.append(f"   Интервал UI: {cfg['ui_edit_interval']:.2f} сек.")
+        lines.append(f"   Интервал UI: {cfg['ui_edit_interval']:.2f} сек.; меню: {cfg.get('info_layout', key)}")
     return wm_owner("\n".join(lines), 9)
 
 
@@ -12720,15 +12963,17 @@ def keep_alive_status_text() -> str:
 
 def build_info_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
+    layout = version_mode_layout()
     if is_owner_chat(chat_id):
         kb.row(
             IB("📓 Журнал", callback_data="journal_open"),
             IB(journal_toggle_label(), callback_data="journal_toggle"),
         )
-        kb.row(
-            IB("🗂 Журналы чатов", callback_data="journal_chats_open"),
-            IB(chat_journal_toggle_label(chat_id), callback_data=f"journal_chat_toggle:{chat_id}:0"),
-        )
+        if version_mode_feature("per_chat_journal"):
+            kb.row(
+                IB("🗂 Журналы чатов", callback_data="journal_chats_open"),
+                IB(chat_journal_toggle_label(chat_id), callback_data=f"journal_chat_toggle:{chat_id}:0"),
+            )
         kb.row(
             IB(buttons_current_window_label(), callback_data="buttons_current_toggle"),
             IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
@@ -12741,14 +12986,23 @@ def build_info_keyboard(chat_id: int):
             IB(total_secret_mask_label(), callback_data="total_secret_mask_toggle"),
             IB(f"🕔 {finance_day_start_label()}", callback_data="finance_day5_toggle"),
         )
-        kb.row(
-            IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
-            IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"),
-        )
-        kb.row(
-            IB(bot_behavior_profile_label(), callback_data="version_menu"),
-            IB("💓 Не спать", callback_data="keepalive_status"),
-        )
+        if version_mode_feature("mega_priority") and layout in {"v82", "v83"}:
+            kb.row(IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"))
+        elif version_mode_feature("mega_priority") and layout == "v84":
+            kb.row(
+                IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
+                IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"),
+            )
+        if layout == "v83":
+            kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
+        # Кнопка выбора версии присутствует при любом режиме, включая полный откат v81/v82.
+        if version_mode_feature("keepalive_menu"):
+            kb.row(
+                IB(bot_behavior_profile_label(), callback_data="version_menu"),
+                IB("💓 Не спать", callback_data="keepalive_status"),
+            )
+        else:
+            kb.row(IB(bot_behavior_profile_label(), callback_data="version_menu"))
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
@@ -12757,7 +13011,10 @@ def build_info_keyboard(chat_id: int):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
-        kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
+        if layout == "v84":
+            kb.row(IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"))
+        elif layout == "v83":
+            kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
     kb.row(
         IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
         IB("❌ Закрыть", callback_data="info_close"),
@@ -14536,9 +14793,21 @@ def on_callback(call):
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "main_articles_toggle":
+            if not version_mode_feature("article_buttons"):
+                return
             new_state = toggle_main_article_buttons(chat_id)
             try:
                 bot.answer_callback_query(call.id, "Статьи-кнопки включены" if new_state else "Статьи-кнопки выключены", show_alert=False)
+            except Exception:
+                pass
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "main_financial_values_toggle":
+            if not version_mode_feature("financial_value_buttons"):
+                return
+            new_state = toggle_main_financial_value_buttons(chat_id)
+            try:
+                bot.answer_callback_query(call.id, "Финансовые значения теперь кнопками" if new_state else "Финансовые кнопки выключены", show_alert=False)
             except Exception:
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
@@ -15292,42 +15561,17 @@ def on_callback(call):
             )
             return
 
+        if cmd.startswith("value_rec_"):
+            if not effective_main_financial_value_buttons_enabled(chat_id):
+                send_and_auto_delete(chat_id, "Этот режим финансовых кнопок сейчас выключен.", 8)
+                return
+            rid = int(cmd.split("_")[-1])
+            start_record_edit_prompt(chat_id, day_key, rid)
+            return
+
         if cmd.startswith("edit_rec_"):
             rid = int(cmd.split("_")[-1])
-
-            store = get_chat_store(chat_id)
-            rec = next((r for r in store.get("records", []) if r["id"] == rid), None)
-            if not rec:
-                send_and_auto_delete(chat_id, "❌ Запись не найдена.")
-                return
-
-            text = (
-                f"✏️ Редактирование записи R{rid}\n\n"
-                f"Текущие данные:\n"
-                f"{fmt_num(rec['amount'])} {rec.get('note','')}\n\n"
-                f"✍️ Напишите новые данные.\n\n"
-                f"⏳ Это сообщение и режим редактирования будут автоматически отменены через 40 секунд."
-            )
-
-            insert_value = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
-            text = wm_common(text, 10)
-            kb = build_cancel_edit_keyboard(day_key, insert_text=insert_value)
-
-            prompt_id = send_or_edit_edit_prompt(chat_id, "edit_wait", text, reply_markup=kb)
-
-            store["edit_wait"] = {
-                "type": "edit",
-                "rid": rid,
-                "day_key": day_key,
-                "prompt_msg_id": prompt_id,
-                "insert_text": insert_value,
-                "countdown_base_text": text,
-                "expires_at": time.time() + 40,
-            }
-            save_data(data)
-
-            schedule_cancel_edit(chat_id, prompt_id, delay=40)
-
+            start_record_edit_prompt(chat_id, day_key, rid)
             return
         if cmd.startswith("del_toggle_"):
             rid = int(cmd.split("_")[-1])
@@ -18250,8 +18494,14 @@ def main():
                     _store.setdefault("settings", {})["journal_enabled"] = False
             gs["journal_default_off_v83_applied"] = True
         gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
+        # v83 была предыдущей базой. При первом запуске v84 переводим только старый
+        # профиль по умолчанию на новую текущую версию; выбранные v81/v82 не трогаем.
+        if not bool(gs.get("version_mode_v84_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v83_flexible":
+                gs["bot_behavior_profile"] = "v84_current"
+            gs["version_mode_v84_migrated"] = True
     except Exception as e:
-        log_error(f"v83 defaults migration: {e}")
+        log_error(f"v84 defaults migration: {e}")
     try:
         marker_report = audit_window_marker_registry()
         log_info(f"Маркеры окон проверены: {marker_report}")
@@ -18269,6 +18519,7 @@ def main():
             settings.setdefault("auto_backup_to_mega_enabled", True)
             settings.setdefault("journal_enabled", False)
             settings.setdefault("main_article_buttons_enabled", False)
+            settings.setdefault("main_financial_value_buttons_enabled", False)
             settings.setdefault("total_secret_mode", False)
             store.setdefault("secret_messages", [])
             _ensure_secret_media_numbers(int(cid))
@@ -18298,10 +18549,10 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 83 🙊Бот запущен (версия {VERSION}).\n"
+                    f"✅ 🐲84 Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK — полный универсальный снимок' if restored else 'пропущено'}\n"
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
-                    f"Профиль: {active_bot_behavior_profile_info().get('title')}\n"
+                    f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}"
                 )
             except Exception as e:
