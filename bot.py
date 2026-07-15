@@ -362,7 +362,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v85_fast_gomonki_usd_monitor"
+VERSION = "bot_v86_left_usd_gomonki"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -390,7 +390,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 4
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 5
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -698,6 +698,23 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v86_current": {
+        "title": "v86 Левые фин-кнопки / USD",
+        "ui_edit_interval": 0.05,
+        "fast_tg_gap": 0.015,
+        "info_layout": "v86",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "description": "Текущая версия: фин-кнопки по одной строке со сдвигом влево, гомонки и USD в окне дня.",
+    },
     "v85_current": {
         "title": "v85 Гомонки / USD",
         "ui_edit_interval": 0.05,
@@ -712,7 +729,8 @@ BOT_BEHAVIOR_PROFILES = {
         "gomonk_wallets": True,
         "remaining_window": True,
         "usd_categories": True,
-        "description": "Текущая версия: быстрые кнопки, финансы по одной в ряд, гомонки, остатки после расходов и USD.",
+        "daily_usd": False,
+        "description": "Прежняя v85: быстрые кнопки, финансы по одной в ряд, гомонки, остатки после расходов и USD.",
     },
     "v84_current": {
         "title": "v84 Фин-кнопки",
@@ -728,6 +746,7 @@ BOT_BEHAVIOR_PROFILES = {
         "gomonk_wallets": False,
         "remaining_window": False,
         "usd_categories": False,
+        "daily_usd": False,
         "description": "Прежняя v84: финансовые записи-кнопки по две в ряд.",
     },
     "v83_flexible": {
@@ -744,6 +763,7 @@ BOT_BEHAVIOR_PROFILES = {
         "gomonk_wallets": False,
         "remaining_window": False,
         "usd_categories": False,
+        "daily_usd": False,
         "description": "Поведение прежней v83: индивидуальные журналы, keep-alive и исторический режим статей-кнопок.",
     },
     "v82_stable": {
@@ -760,6 +780,7 @@ BOT_BEHAVIOR_PROFILES = {
         "gomonk_wallets": False,
         "remaining_window": False,
         "usd_categories": False,
+        "daily_usd": False,
         "description": "Интерфейс и набор кнопок v82: универсальный MEGA-бэкап без функций v83/v84.",
     },
     "v81_compatible": {
@@ -776,10 +797,11 @@ BOT_BEHAVIOR_PROFILES = {
         "gomonk_wallets": False,
         "remaining_window": False,
         "usd_categories": False,
+        "daily_usd": False,
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v85_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v86_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -804,7 +826,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
     chat_fields = (
         "buttons_current_window", "journal_enabled", "main_article_buttons_enabled",
         "main_financial_value_buttons_enabled", "gomonk_enabled", "gomonk_entries",
-        "remaining_with_gomonk", "quick_balance_enabled",
+        "remaining_with_gomonk", "usd_display_enabled", "quick_balance_enabled",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
         "process_trace_enabled",
     )
@@ -867,9 +889,9 @@ def version_mode_feature(name: str) -> bool:
 
 def version_mode_layout() -> str:
     try:
-        return str(active_bot_behavior_profile_info().get("info_layout") or "v85")
+        return str(active_bot_behavior_profile_info().get("info_layout") or "v86")
     except Exception:
-        return "v85"
+        return "v86"
 
 
 def set_bot_behavior_profile(profile_key: str) -> str:
@@ -970,7 +992,11 @@ def main_financial_value_buttons_label(chat_id: int) -> str:
     return "✅ Финансы-кнопки ВКЛ" if main_financial_value_buttons_enabled(int(chat_id)) else "❌ Финансы-кнопки ВЫКЛ"
 
 
-def financial_record_button_label(rec: dict) -> str:
+FIN_BUTTON_RIGHT_PAD = max(0, min(18, int(os.getenv("FIN_BUTTON_RIGHT_PAD", "10") or "10")))
+FIN_BUTTON_PAD_CHAR = "⠀"  # U+2800: Telegram сохраняет символ, визуально сдвигая подпись влево.
+
+
+def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     try:
         amount = float((rec or {}).get("amount", 0) or 0)
     except Exception:
@@ -978,15 +1004,23 @@ def financial_record_button_label(rec: dict) -> str:
     sign = "➕" if amount >= 0 else "➖"
     sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}")
     note = re.sub(r"\s+", " ", str((rec or {}).get("note") or "").strip())
-    if len(note) > 28:
-        note = note[:27] + "…"
+    if len(note) > 24:
+        note = note[:23] + "…"
     amount_text = str(fmt_num(abs(amount))).strip()
     if amount_text.startswith("+"):
         amount_text = amount_text[1:].strip()
     body = f"{sign} {amount_text}"
+    if chat_id is not None and version_mode_feature("daily_usd") and usd_display_enabled(int(chat_id)):
+        rate_info = usd_rate_cached(force=False)
+        body += f" ({fmt_usd_from_ars(amount, rate_info)})"
     if note:
         body += f" · {note}"
-    return f"{body} · {sid}"
+    label = f"{body} · {sid}"
+    # Telegram центрирует inline-кнопки и не поддерживает настоящее left-align.
+    # Сохраняемые пробельные символы справа визуально приближают текст к левому краю.
+    if active_bot_behavior_profile() == "v86_current" and FIN_BUTTON_RIGHT_PAD:
+        label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
+    return label
 
 
 def financial_value_records_for_day(chat_id: int, day_key: str) -> list[dict]:
@@ -2038,6 +2072,7 @@ WINDOW_MARKER_CONSTANTS = {
     'remaining_toggle:*': 'Ф141',
     'cat_pick_today_start': 'Ф142',
     'cat_usd_toggle_records:*': 'Ф143',
+    'usd_display_toggle': 'Ф144',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -3529,9 +3564,11 @@ def build_info_text(chat_id: int) -> str:
     state = "ВКЛ" if chat_buttons_current_window_enabled(chat_id) else "ВЫКЛ"
     layout = version_mode_layout()
     text = build_help_text(chat_id) + f"\n/windows — открывать действия в текущем окне: {state}"
-    if layout == "v84":
+    if layout in {"v84", "v85", "v86"}:
         text += f"\nФинансовые значения-кнопки: {'ВКЛ' if main_financial_value_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
+        if layout == "v86":
+            text += f"\nДоллар в окне дня: {'ВКЛ' if usd_display_enabled(chat_id) else 'ВЫКЛ'}"
     elif layout == "v83":
         text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
@@ -5115,7 +5152,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False, "bot_behavior_profile": "v84_current", "journal_default_off_v83_applied": True},
+        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False, "bot_behavior_profile": "v86_current", "journal_default_off_v83_applied": True},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -5344,7 +5381,8 @@ def get_chat_store(chat_id: int) -> dict:
                     "main_financial_value_buttons_enabled": False,
                     "gomonk_enabled": False,
                     "gomonk_entries": [],
-                    "remaining_with_gomonk": True
+                    "remaining_with_gomonk": True,
+                    "usd_display_enabled": False
                 },
             }
         )
@@ -5365,6 +5403,7 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("gomonk_enabled", False)
         store.setdefault("settings", {}).setdefault("gomonk_entries", [])
         store.setdefault("settings", {}).setdefault("remaining_with_gomonk", True)
+        store.setdefault("settings", {}).setdefault("usd_display_enabled", False)
         store.setdefault("settings", {}).setdefault("category_usd_enabled", False)
         store.setdefault("finance_mode", False)
 
@@ -10500,7 +10539,7 @@ def forward_any_message(source_chat_id: int, msg):
     
 
 # ─────────────────────────────────────────────────────────────
-# v85: гомонковые резервы, остаток после расходов и USD
+# v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
 GOMONKI_INSERT_TOKEN = "GOMONKI"
 USD_RATE_URL = os.getenv("USD_RATE_URL", "https://dolarapi.com/v1/dolares/blue").strip()
@@ -10508,7 +10547,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() == "v85_current" and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -10585,17 +10624,46 @@ def gomonk_toggle_label(chat_id: int) -> str:
     return "✅ Гомонковые ВКЛ" if gomonk_enabled(chat_id) else "❌ Гомонковые ВЫКЛ"
 
 
+def gomonk_info_label(chat_id: int) -> str:
+    return "🧳 Гомонковые ВКЛ" if gomonk_enabled(chat_id) else "🧳 Гомонковые ВЫКЛ"
+
+
+def usd_display_enabled(chat_id: int) -> bool:
+    try:
+        return bool(get_chat_store(int(chat_id)).setdefault("settings", {}).get("usd_display_enabled", False))
+    except Exception:
+        return False
+
+
+def set_usd_display_enabled(chat_id: int, enabled: bool):
+    store = get_chat_store(int(chat_id))
+    store.setdefault("settings", {})["usd_display_enabled"] = bool(enabled)
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+    if enabled:
+        GENERAL_TASK_POOL.submit("usd-rate-refresh", usd_rate_cached, False)
+
+
+def toggle_usd_display(chat_id: int) -> bool:
+    new_value = not usd_display_enabled(int(chat_id))
+    set_usd_display_enabled(int(chat_id), new_value)
+    return new_value
+
+
+def usd_display_label(chat_id: int) -> str:
+    return "💵 Доллар ВКЛ" if usd_display_enabled(chat_id) else "💵 Доллар ВЫКЛ"
+
+
 def gomonk_summary_lines(chat_id: int) -> list[str]:
     if not (_v85_enabled("gomonk_wallets") and gomonk_enabled(chat_id)):
         return []
     entries = gomonk_entries(chat_id)
     if not entries:
-        return ["🧳 Гомонковые: суммы не заданы"]
-    parts = [f"{html.escape(x['name'])} {fmt_num(x['amount'])}" for x in entries]
+        return ["", "🧮 Сумма гомонковых: 0"]
     balance = float(get_chat_store(chat_id).get("balance", 0) or 0)
     total = gomonk_total(chat_id)
     return [
-        "🧳 Гомонковые: " + " · ".join(parts),
+        "",
         f"🧮 Сумма гомонковых: {fmt_num(total)}",
         f"🏦 Остаток без гомонковых: {fmt_num(balance - total)}",
     ]
@@ -10690,6 +10758,8 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
         f"Режим: {'с гомонковыми' if reserve else 'без гомонковых'}",
         "",
     ]
+    usd_on = bool(version_mode_feature("daily_usd") and usd_display_enabled(chat_id))
+    rate_info = usd_rate_cached(force=False) if usd_on else None
     shown = 0
     for rec in sorted((store.get("daily_records", {}) or {}).get(day_key, []) or [], key=record_sort_key):
         try:
@@ -10703,10 +10773,13 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
         rid = rec.get("short_id") or f"R{rec.get('id', '')}"
         note = html.escape(str(rec.get("note") or "").strip())
         after = running - reserve
-        lines.append(f"{rid} {fmt_num(amount)} {note}\n└ остаток: {fmt_num(after)}".rstrip())
+        usd_before = f" ({fmt_usd_from_ars(amount, rate_info)})" if usd_on else ""
+        lines.append(f"{rid}{usd_before} {fmt_num(amount)} {note} (остаток: {fmt_num(after)})".rstrip())
     if not shown:
         lines.append("За этот день расходов нет.")
-    lines.extend(["", f"🏦 Текущий остаток по чату: {fmt_num(float(store.get('balance', 0) or 0) - reserve)}"])
+    current_remaining = float(store.get("balance", 0) or 0) - reserve
+    current_tail = f" ({fmt_usd_from_ars(current_remaining, rate_info)})" if usd_on else ""
+    lines.extend(["", f"🏦 Текущий остаток по чату: {fmt_num(current_remaining)}{current_tail}"])
     if reserve:
         lines.append(f"🧳 Вычтено гомонковых: {fmt_num(reserve)}")
     return wm_common("\n".join(lines), 9, html_mode=True)
@@ -10802,6 +10875,8 @@ def render_day_window(chat_id: int, day_key: str):
     label = f"{dk} ({tag}, {wd})" if tag else f"{dk} ({wd})"
 
     header = [f"📅 {label}", ""]
+    usd_on = bool(version_mode_feature("daily_usd") and usd_display_enabled(chat_id))
+    rate_info = usd_rate_cached(force=False) if usd_on else None
     total_income = 0.0
     total_expense = 0.0
 
@@ -10817,17 +10892,25 @@ def render_day_window(chat_id: int, day_key: str):
 
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
-        all_record_lines.append(f"{sid} {fmt_num(amt)} {note}")
+        usd_before = f" ({fmt_usd_from_ars(amt, rate_info)})" if usd_on else ""
+        all_record_lines.append(f"{sid}{usd_before} {fmt_num(amt)} {note}")
 
     day_balance = calc_day_balance(store, day_key)
     bal_chat = store.get("balance", 0)
 
+    def _usd_tail(value: float) -> str:
+        return f" ({fmt_usd_from_ars(value, rate_info)})" if usd_on else ""
+
     footer = [""]
     if recs_sorted:
-        footer.append(f"📉 Расход за день: {fmt_num(-total_expense) if total_expense else fmt_num(0)}")
-        footer.append(f"📈 Приход за день: {fmt_num(total_income) if total_income else fmt_num(0)}")
-    footer.append(f"📆 Остаток на конец дня: {fmt_num(day_balance)}")
-    footer.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}")
+        expense_value = -total_expense if total_expense else 0.0
+        income_value = total_income if total_income else 0.0
+        footer.append(f"📉 Расход за день: {fmt_num(expense_value)}{_usd_tail(expense_value)}")
+        footer.append(f"📈 Приход за день: {fmt_num(income_value)}{_usd_tail(income_value)}")
+    footer.append(f"📆 Остаток на конец дня: {fmt_num(day_balance)}{_usd_tail(day_balance)}")
+    footer.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}{_usd_tail(bal_chat)}")
+    if usd_on and rate_info:
+        footer.append(f"💵 Курс: 1 USD = {fmt_num(rate_info.get('rate'))} ARS")
     footer.extend(gomonk_summary_lines(chat_id))
 
     total = total_income - total_expense
@@ -10995,7 +11078,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
                 rid = int(rec.get("id"))
             except Exception:
                 continue
-            value_buttons.append(IB(financial_record_button_label(rec), callback_data=f"d:{day_key}:value_rec_{rid}"))
+            value_buttons.append(IB(financial_record_button_label(rec, int(chat_id)), callback_data=f"d:{day_key}:value_rec_{rid}"))
         per_row = max(1, int(active_bot_behavior_profile_info().get("financial_buttons_per_row", 2) or 2))
         add_buttons_in_rows(kb, value_buttons[:84], per_row)
         if len(value_buttons) > 84:
@@ -13388,13 +13471,19 @@ def build_info_keyboard(chat_id: int):
         )
         if version_mode_feature("mega_priority") and layout in {"v82", "v83"}:
             kb.row(IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"))
-        elif version_mode_feature("mega_priority") and layout in {"v84", "v85"}:
+        elif version_mode_feature("mega_priority") and layout in {"v84", "v85", "v86"}:
             kb.row(
                 IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
                 IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"),
             )
-        if layout == "v85":
-            kb.row(IB("🧳 Гомонковые", callback_data="gomonk_open"))
+        if layout in {"v85", "v86"}:
+            if layout == "v86":
+                kb.row(
+                    IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
+                    IB(usd_display_label(chat_id), callback_data="usd_display_toggle"),
+                )
+            else:
+                kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
         if layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
         # Кнопка выбора версии присутствует при любом режиме, включая полный откат v81/v82.
@@ -13413,10 +13502,16 @@ def build_info_keyboard(chat_id: int):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
-        if layout in {"v84", "v85"}:
+        if layout in {"v84", "v85", "v86"}:
             kb.row(IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"))
-        if layout == "v85":
-            kb.row(IB("🧳 Гомонковые", callback_data="gomonk_open"))
+        if layout in {"v85", "v86"}:
+            if layout == "v86":
+                kb.row(
+                    IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
+                    IB(usd_display_label(chat_id), callback_data="usd_display_toggle"),
+                )
+            else:
+                kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
         elif layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
     kb.row(
@@ -15233,6 +15328,22 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "usd_display_toggle":
+            if not version_mode_feature("daily_usd"):
+                return
+            new_state = toggle_usd_display(chat_id)
+            bot_journal("usd_display_toggle", chat_id, f"enabled={new_state}")
+            try:
+                bot.answer_callback_query(call.id, "Доллар включён" if new_state else "Доллар выключен", show_alert=False)
+            except Exception:
+                pass
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            try:
+                day_key = get_chat_store(chat_id).get("current_view_day") or today_key()
+                finance_changed(chat_id, day_key, reason="usd_display_toggle", delay=0.05)
+            except Exception:
+                pass
             return
         if data_str == "gomonk_open":
             if not _v85_enabled("gomonk_wallets"):
@@ -18989,14 +19100,14 @@ def main():
                     _store.setdefault("settings", {})["journal_enabled"] = False
             gs["journal_default_off_v83_applied"] = True
         gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
-        # Новая база v85: автоматически переводим только прежний текущий профиль v84.
-        # Явно выбранные v81/v82/v83 сохраняются без изменений.
-        if not bool(gs.get("version_mode_v85_migrated", False)):
-            if str(gs.get("bot_behavior_profile") or "") == "v84_current":
-                gs["bot_behavior_profile"] = "v85_current"
-            gs["version_mode_v85_migrated"] = True
+        # Новая база v86: автоматически переводим только прежний текущий профиль v85.
+        # Явно выбранные v81/v82/v83/v84 сохраняются без изменений.
+        if not bool(gs.get("version_mode_v86_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v85_current":
+                gs["bot_behavior_profile"] = "v86_current"
+            gs["version_mode_v86_migrated"] = True
     except Exception as e:
-        log_error(f"v85 defaults migration: {e}")
+        log_error(f"v86 defaults migration: {e}")
     try:
         marker_report = audit_window_marker_registry()
         log_info(f"Маркеры окон проверены: {marker_report}")
