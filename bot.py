@@ -362,7 +362,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v86_left_usd_gomonki"
+VERSION = "bot_v87_currency_modes_fast_back"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -390,7 +390,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 5
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 6
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -698,6 +698,23 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v87_current": {
+        "title": "v87 Валюты / быстрый возврат",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "description": "Текущая версия: ARS / ARS-USD / USD, быстрый возврат в основное окно и навигация Ф91.",
+    },
     "v86_current": {
         "title": "v86 Левые фин-кнопки / USD",
         "ui_edit_interval": 0.05,
@@ -801,7 +818,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v86_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v87_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -826,7 +843,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
     chat_fields = (
         "buttons_current_window", "journal_enabled", "main_article_buttons_enabled",
         "main_financial_value_buttons_enabled", "gomonk_enabled", "gomonk_entries",
-        "remaining_with_gomonk", "usd_display_enabled", "quick_balance_enabled",
+        "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
         "process_trace_enabled",
     )
@@ -889,9 +906,9 @@ def version_mode_feature(name: str) -> bool:
 
 def version_mode_layout() -> str:
     try:
-        return str(active_bot_behavior_profile_info().get("info_layout") or "v86")
+        return str(active_bot_behavior_profile_info().get("info_layout") or "v87")
     except Exception:
-        return "v86"
+        return "v87"
 
 
 def set_bot_behavior_profile(profile_key: str) -> str:
@@ -1001,27 +1018,20 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
         amount = float((rec or {}).get("amount", 0) or 0)
     except Exception:
         amount = 0.0
-    sign = "➕" if amount >= 0 else "➖"
     sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}")
     note = re.sub(r"\s+", " ", str((rec or {}).get("note") or "").strip())
-    if len(note) > 24:
-        note = note[:23] + "…"
-    amount_text = str(fmt_num(abs(amount))).strip()
-    if amount_text.startswith("+"):
-        amount_text = amount_text[1:].strip()
-    body = f"{sign} {amount_text}"
-    if chat_id is not None and version_mode_feature("daily_usd") and usd_display_enabled(int(chat_id)):
-        rate_info = usd_rate_cached(force=False)
-        body += f" ({fmt_usd_from_ars(amount, rate_info)})"
+    if len(note) > 31:
+        note = note[:30] + "…"
+    if chat_id is not None and version_mode_feature("daily_usd"):
+        amount_text = format_chat_amount(int(chat_id), amount, mixed_space=False)
+    else:
+        amount_text = fmt_num(amount)
+    label = f"{sid} {amount_text}"
     if note:
-        body += f" · {note}"
-    label = f"{body} · {sid}"
-    # Telegram центрирует inline-кнопки и не поддерживает настоящее left-align.
-    # Сохраняемые пробельные символы справа визуально приближают текст к левому краю.
-    if active_bot_behavior_profile() == "v86_current" and FIN_BUTTON_RIGHT_PAD:
+        label += f" {note}"
+    if active_bot_behavior_profile() in {"v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
         label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
     return label
-
 
 def financial_value_records_for_day(chat_id: int, day_key: str) -> list[dict]:
     try:
@@ -2073,6 +2083,9 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_pick_today_start': 'Ф142',
     'cat_usd_toggle_records:*': 'Ф143',
     'usd_display_toggle': 'Ф144',
+    'currency_menu': 'Ф145',
+    'currency_select:*': 'Ф146',
+    'currency_back': 'Ф147',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -3539,6 +3552,7 @@ def build_help_text(chat_id: int) -> str:
         "/ping — проверка, жив ли бот",
         "/restore / /restore_off — режим восстановления JSON/CSV",
         "/dozvon — окно дозвона по связанным чатам",
+        "/ost — слово «ост:» в Ф91 ВКЛ/ВЫКЛ",
     ]
     if is_owner_chat(chat_id):
         lines.extend([
@@ -3564,11 +3578,12 @@ def build_info_text(chat_id: int) -> str:
     state = "ВКЛ" if chat_buttons_current_window_enabled(chat_id) else "ВЫКЛ"
     layout = version_mode_layout()
     text = build_help_text(chat_id) + f"\n/windows — открывать действия в текущем окне: {state}"
-    if layout in {"v84", "v85", "v86"}:
+    if layout in {"v84", "v85", "v86", "v87"}:
         text += f"\nФинансовые значения-кнопки: {'ВКЛ' if main_financial_value_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
-        if layout == "v86":
-            text += f"\nДоллар в окне дня: {'ВКЛ' if usd_display_enabled(chat_id) else 'ВЫКЛ'}"
+        if layout in {"v86", "v87"}:
+            text += f"\nВалюта финансовых окон: {currency_mode(chat_id).upper().replace('_', '-')}"
+            text += f"\n/ost — слово «ост:»: {'ВКЛ' if remaining_ost_label_enabled(chat_id) else 'ВЫКЛ'}"
     elif layout == "v83":
         text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
@@ -4030,7 +4045,7 @@ def build_balance_panel_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     bal = get_chat_store(chat_id).get("balance", 0)
     kb.row(IB(
-        f"🏦 Остаток: {fmt_num(bal)}",
+        f"🏦 Остаток: {format_chat_amount(chat_id, bal, True)}",
         callback_data="bp:open"
     ))
     return kb
@@ -4225,48 +4240,41 @@ def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | 
         log_error(f"open_balance_panel_in_message({chat_id},{message_id}): {e}")
 
 def build_day_report_lines(chat_id: int) -> list[str]:
-    """
-    Красивый отчёт по дням:
-    Дата    | Приход| Расход|Остаток
-    Числовые колонки фиксированной ширины 7 символов.
-    """
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {}) or {}
+    mode = currency_mode(chat_id)
+    if mode != "ars":
+        lines = ["Отчёт:"]
+        running_balance = 0.0
+        for dk in sorted(daily.keys()):
+            recs = daily.get(dk, []) or []
+            expense = sum(abs(float(r.get("amount", 0) or 0)) for r in recs if float(r.get("amount", 0) or 0) < 0)
+            income = sum(float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) >= 0)
+            running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
+            lines.append(
+                f"{fmt_date_ddmmyy(dk)} | приход {format_chat_amount(chat_id, income, True)} | "
+                f"расход {format_chat_amount(chat_id, -expense, True)} | ост {format_chat_amount(chat_id, running_balance, True)}"
+            )
+        return lines
 
-    lines = []
-    lines.append("Отчёт:")
+    lines = ["Отчёт:"]
     lines.append(
         f"{'Дата':<8}|"
         f"{report_header_cell('Приход', 7)}|"
         f"{report_header_cell('Расход', 7)}|"
         f"{report_header_cell('Остаток', 7)}"
     )
-
     running_balance = 0.0
-
     for dk in sorted(daily.keys()):
         recs = daily.get(dk, []) or []
-
-        expense = 0.0
-        income = 0.0
-
-        for r in recs:
-            amt = float(r.get("amount", 0) or 0)
-            if amt < 0:
-                expense += abs(amt)
-            else:
-                income += amt
-
+        expense = sum(abs(float(r.get("amount", 0) or 0)) for r in recs if float(r.get("amount", 0) or 0) < 0)
+        income = sum(float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) >= 0)
         running_balance += sum(float(r.get("amount", 0) or 0) for r in recs)
-
-        date_txt = fmt_date_ddmmyy(dk)
-        inc_txt = report_cell(income, 7)
-        exp_txt = report_cell(expense, 7)
-        bal_txt = report_cell(running_balance, 7)
-
-        lines.append(f"{date_txt:<8}|{inc_txt}|{exp_txt}|{bal_txt}")
-
+        lines.append(
+            f"{fmt_date_ddmmyy(dk):<8}|{report_cell(income, 7)}|{report_cell(expense, 7)}|{report_cell(running_balance, 7)}"
+        )
     return lines
+
 def week_start_monday(day_key: str) -> str:
     """Возвращает YYYY-MM-DD (понедельник недели) для day_key"""
     try:
@@ -5152,7 +5160,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False, "bot_behavior_profile": "v86_current", "journal_default_off_v83_applied": True},
+        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False, "bot_behavior_profile": "v87_current", "journal_default_off_v83_applied": True},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -5382,7 +5390,9 @@ def get_chat_store(chat_id: int) -> dict:
                     "gomonk_enabled": False,
                     "gomonk_entries": [],
                     "remaining_with_gomonk": True,
-                    "usd_display_enabled": False
+                    "usd_display_enabled": False,
+                    "currency_mode": "ars",
+                    "remaining_show_ost_label": True
                 },
             }
         )
@@ -5404,6 +5414,8 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("gomonk_entries", [])
         store.setdefault("settings", {}).setdefault("remaining_with_gomonk", True)
         store.setdefault("settings", {}).setdefault("usd_display_enabled", False)
+        store.setdefault("settings", {}).setdefault("currency_mode", "ars_usd" if store.setdefault("settings", {}).get("usd_display_enabled", False) else "ars")
+        store.setdefault("settings", {}).setdefault("remaining_show_ost_label", True)
         store.setdefault("settings", {}).setdefault("category_usd_enabled", False)
         store.setdefault("finance_mode", False)
 
@@ -6526,7 +6538,8 @@ def expense_anchor_records_for_day(store: dict, day_key: str) -> list:
 def expense_anchor_button_label(rec: dict, store: dict | None = None) -> str:
     """Короткая, но понятная подпись кнопки точного расхода."""
     try:
-        amount = fmt_num(float(rec.get("amount", 0) or 0))
+        raw_amount = float(rec.get("amount", 0) or 0)
+        amount = format_store_amount(store or {}, raw_amount, mixed_space=False, ars_plain=False)
     except Exception:
         amount = str(rec.get("amount", ""))
     note = _clean_category_display_name(re.sub(r"\s+", " ", str(rec.get("note", "") or "")).strip())
@@ -6632,17 +6645,19 @@ def collect_items_for_category_record_range(store: dict, start_day: str, start_r
 
 def summarize_categories_record_range(store: dict, start_day: str, start_rid: int, end_day: str, end_rid: int):
     cats = calc_categories_for_record_range(store, start_day, start_rid, end_day, end_rid)
-    usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False) and _v85_enabled("usd_categories"))
-    rate_info = usd_rate_cached() if usd_on else None
+    mode = currency_mode_from_store(store)
+    category_mixed = bool(store.setdefault("settings", {}).get("category_usd_enabled", False) and _v85_enabled("usd_categories"))
+    show_rate = mode != "ars" or category_mixed
+    rate_info = usd_rate_cached() if show_rate else None
     lines = [
         "📦 Расходы по статьям — точный период",
         f"▶️ {exact_boundary_text(store, start_day, start_rid, True)}",
         f"⏹ {exact_boundary_text(store, end_day, end_rid, False)}",
         "",
     ]
-    if usd_on:
+    if show_rate:
         if rate_info:
-            lines.append(f"💵 Курс: 1 USD = {fmt_num(rate_info['rate'])} ARS ({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})")
+            lines.append(f"💵 Курс: 1 USD = {fmt_num(rate_info['rate']).lstrip('+')} ARS ({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})")
         else:
             lines.append("💵 Курс USD временно недоступен")
         lines.append("")
@@ -6652,10 +6667,8 @@ def summarize_categories_record_range(store: dict, start_day: str, start_rid: in
         for category in get_ordered_category_names(cats=cats, store=store):
             clean_name = _clean_category_display_name(category).upper()
             amount = cats.get(category, 0)
-            usd_tail = f" ({fmt_usd_from_ars(amount, rate_info)})" if usd_on else ""
-            lines.append(f"{clean_name}: {fmt_num_plain(amount)}{usd_tail}")
+            lines.append(f"{clean_name}: {format_category_amount(store, amount, category_mixed)}")
     return wm_common("\n".join(lines), 7), cats
-
 
 def collect_items_for_category(store: dict, start: str, end: str, category: str):
     """Возвращает список (day, amount, note) для указанной статьи и периода."""
@@ -9097,11 +9110,26 @@ def cmd_toggle_finance_day5(msg):
         pass
 
 
+@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/(?:ost|остаток)(?:@\w+)?", m.text.strip(), re.I)))
+def cmd_toggle_remaining_ost_label(msg):
+    schedule_command_delete(msg)
+    new_state = toggle_remaining_ost_label(msg.chat.id)
+    send_and_auto_delete(
+        msg.chat.id,
+        f"{'✅' if new_state else '❌'} Слово «ост:» в окне остатка: {'ВКЛ' if new_state else 'ВЫКЛ'}",
+        10,
+    )
+    try:
+        open_info_window(msg.chat.id)
+    except Exception:
+        pass
+
+
 @bot.message_handler(func=lambda m: bool(
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
-    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/off_on_backup_excel", "/queues", "/queue_status"}
+    and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/ost", "/остаток", "/off_on_backup_excel", "/queues", "/queue_status"}
 ))
 def cmd_total_secret_capture(msg):
     forward_secret_message_now(msg)
@@ -10547,7 +10575,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v86_current", "v85_current"} and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -10628,30 +10656,159 @@ def gomonk_info_label(chat_id: int) -> str:
     return "🧳 Гомонковые ВКЛ" if gomonk_enabled(chat_id) else "🧳 Гомонковые ВЫКЛ"
 
 
-def usd_display_enabled(chat_id: int) -> bool:
+def currency_mode(chat_id: int) -> str:
+    """Режим отображения сумм одного чата: ars, ars_usd или usd."""
     try:
-        return bool(get_chat_store(int(chat_id)).setdefault("settings", {}).get("usd_display_enabled", False))
+        settings = get_chat_store(int(chat_id)).setdefault("settings", {})
+        mode = str(settings.get("currency_mode") or "").strip().lower()
+        if mode not in {"ars", "ars_usd", "usd"}:
+            mode = "ars_usd" if bool(settings.get("usd_display_enabled", False)) else "ars"
+            settings["currency_mode"] = mode
+        return mode
     except Exception:
-        return False
+        return "ars"
 
 
-def set_usd_display_enabled(chat_id: int, enabled: bool):
+def currency_mode_from_store(store: dict | None) -> str:
+    try:
+        settings = (store or {}).setdefault("settings", {})
+        mode = str(settings.get("currency_mode") or "").strip().lower()
+        if mode not in {"ars", "ars_usd", "usd"}:
+            mode = "ars_usd" if bool(settings.get("usd_display_enabled", False)) else "ars"
+        return mode
+    except Exception:
+        return "ars"
+
+
+def set_currency_mode(chat_id: int, mode: str):
+    mode = str(mode or "ars").strip().lower()
+    if mode not in {"ars", "ars_usd", "usd"}:
+        mode = "ars"
     store = get_chat_store(int(chat_id))
-    store.setdefault("settings", {})["usd_display_enabled"] = bool(enabled)
+    settings = store.setdefault("settings", {})
+    settings["currency_mode"] = mode
+    # Совместимость со снимками v86 и старым переключателем.
+    settings["usd_display_enabled"] = mode != "ars"
     save_data(data, chat_ids=[int(chat_id)])
     schedule_config_backup_for_chats(int(chat_id))
-    if enabled:
+    if mode != "ars":
         GENERAL_TASK_POOL.submit("usd-rate-refresh", usd_rate_cached, False)
 
 
+def currency_mode_label(chat_id: int) -> str:
+    labels = {"ars": "ARS", "ars_usd": "ARS-USD", "usd": "USD"}
+    return f"💵 Доллар: {labels.get(currency_mode(chat_id), 'ARS')}"
+
+
+def currency_menu_text(chat_id: int) -> str:
+    mode = currency_mode(chat_id)
+    labels = {"ars": "ARS — только песо", "ars_usd": "ARS-USD — песо и доллар в скобках", "usd": "USD — все суммы только в долларах"}
+    rate_info = usd_rate_cached(force=False) if mode != "ars" else None
+    lines = [
+        "💱 Валюта финансовых окон",
+        "",
+        f"Текущий режим: {labels.get(mode, labels['ars'])}",
+        "",
+        "ARS — все значения в аргентинских песо.",
+        "ARS-USD — основная сумма в песо, рядом эквивалент в долларах.",
+        "USD — финансовые значения выводятся только в долларах.",
+    ]
+    if rate_info and rate_info.get("rate"):
+        lines.extend(["", f"Курс: 1 USD = {fmt_num(rate_info.get('rate')).lstrip('+')} ARS"] )
+    return wm_common("\n".join(lines), 9)
+
+
+def build_currency_menu_keyboard(chat_id: int):
+    current = currency_mode(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for mode, label in (("ars", "ARS"), ("ars_usd", "ARS-USD"), ("usd", "USD")):
+        mark = "✅" if current == mode else "▫️"
+        kb.row(IB(f"{mark} {label}", callback_data=f"currency_select:{mode}"))
+    kb.row(IB("⏪", callback_data="currency_back"))
+    return kb
+
+
+def usd_display_enabled(chat_id: int) -> bool:
+    """Совместимость со старым v86: True для ARS-USD и USD."""
+    return currency_mode(int(chat_id)) != "ars"
+
+
+def set_usd_display_enabled(chat_id: int, enabled: bool):
+    set_currency_mode(int(chat_id), "ars_usd" if enabled else "ars")
+
+
 def toggle_usd_display(chat_id: int) -> bool:
-    new_value = not usd_display_enabled(int(chat_id))
-    set_usd_display_enabled(int(chat_id), new_value)
-    return new_value
+    new_mode = "ars" if currency_mode(int(chat_id)) != "ars" else "ars_usd"
+    set_currency_mode(int(chat_id), new_mode)
+    return new_mode != "ars"
 
 
 def usd_display_label(chat_id: int) -> str:
-    return "💵 Доллар ВКЛ" if usd_display_enabled(chat_id) else "💵 Доллар ВЫКЛ"
+    return currency_mode_label(chat_id)
+
+
+def remaining_ost_label_enabled(chat_id: int) -> bool:
+    try:
+        return bool(get_chat_store(int(chat_id)).setdefault("settings", {}).get("remaining_show_ost_label", True))
+    except Exception:
+        return True
+
+
+def toggle_remaining_ost_label(chat_id: int) -> bool:
+    store = get_chat_store(int(chat_id))
+    settings = store.setdefault("settings", {})
+    new_value = not bool(settings.get("remaining_show_ost_label", True))
+    settings["remaining_show_ost_label"] = new_value
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+    return new_value
+
+
+def fmt_usd_compact(amount: float, rate_info: dict | None, signed: bool = True, absolute: bool = False) -> str:
+    if not rate_info or not rate_info.get("rate"):
+        return "$—"
+    amount = float(amount or 0)
+    value = abs(amount) / float(rate_info["rate"])
+    if absolute or not signed:
+        sign = ""
+    else:
+        sign = "+" if amount >= 0 else "-"
+    return f"{sign}${value:,.2f}".replace(",", " ")
+
+
+def format_chat_amount(chat_id: int, amount: float, mixed_space: bool = False) -> str:
+    """Единый формат ARS / ARS-USD / USD для финансовых окон."""
+    mode = currency_mode(int(chat_id))
+    if mode == "ars":
+        return fmt_num(amount)
+    rate_info = usd_rate_cached(force=False)
+    if mode == "usd":
+        return fmt_usd_compact(amount, rate_info, signed=True)
+    spacer = " " if mixed_space else ""
+    return f"{fmt_num(amount)}{spacer}({fmt_usd_compact(amount, rate_info, signed=False, absolute=True)})"
+
+
+def format_store_amount(store: dict, amount: float, mixed_space: bool = False, ars_plain: bool = False) -> str:
+    """Вариант без chat_id для окон статей, где передаётся store."""
+    mode = currency_mode_from_store(store)
+    if mode == "ars":
+        return fmt_num_plain(amount) if ars_plain else fmt_num(amount)
+    rate_info = usd_rate_cached(force=False)
+    if mode == "usd":
+        return fmt_usd_compact(amount, rate_info, signed=not ars_plain, absolute=ars_plain)
+    ars = fmt_num_plain(amount) if ars_plain else fmt_num(amount)
+    spacer = " " if mixed_space else ""
+    return f"{ars}{spacer}({fmt_usd_compact(amount, rate_info, signed=False, absolute=True)})"
+
+def format_category_amount(store: dict, amount: float, category_mixed: bool = False) -> str:
+    mode = currency_mode_from_store(store)
+    rate_info = usd_rate_cached(force=False) if (mode != "ars" or category_mixed) else None
+    if mode == "usd":
+        return fmt_usd_compact(amount, rate_info, signed=False, absolute=True)
+    ars = fmt_num_plain(amount)
+    if mode == "ars_usd" or category_mixed:
+        return f"{ars} ({fmt_usd_compact(amount, rate_info, signed=False, absolute=True)})"
+    return ars
 
 
 def gomonk_summary_lines(chat_id: int) -> list[str]:
@@ -10659,13 +10816,13 @@ def gomonk_summary_lines(chat_id: int) -> list[str]:
         return []
     entries = gomonk_entries(chat_id)
     if not entries:
-        return ["", "🧮 Сумма гомонковых: 0"]
+        return ["", f"🧮 Сумма гомонковых: {format_chat_amount(chat_id, 0, mixed_space=True)}"]
     balance = float(get_chat_store(chat_id).get("balance", 0) or 0)
     total = gomonk_total(chat_id)
     return [
         "",
-        f"🧮 Сумма гомонковых: {fmt_num(total)}",
-        f"🏦 Остаток без гомонковых: {fmt_num(balance - total)}",
+        f"🧮 Сумма гомонковых: {format_chat_amount(chat_id, total, mixed_space=True)}",
+        f"🏦 Остаток без гомонковых: {format_chat_amount(chat_id, balance - total, mixed_space=True)}",
     ]
 
 
@@ -10758,8 +10915,8 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
         f"Режим: {'с гомонковыми' if reserve else 'без гомонковых'}",
         "",
     ]
-    usd_on = bool(version_mode_feature("daily_usd") and usd_display_enabled(chat_id))
-    rate_info = usd_rate_cached(force=False) if usd_on else None
+    mode = currency_mode(chat_id)
+    show_ost = remaining_ost_label_enabled(chat_id)
     shown = 0
     for rec in sorted((store.get("daily_records", {}) or {}).get(day_key, []) or [], key=record_sort_key):
         try:
@@ -10773,26 +10930,38 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
         rid = rec.get("short_id") or f"R{rec.get('id', '')}"
         note = html.escape(str(rec.get("note") or "").strip())
         after = running - reserve
-        usd_before = f" ({fmt_usd_from_ars(amount, rate_info)})" if usd_on else ""
-        lines.append(f"{rid}{usd_before} {fmt_num(amount)} {note} (остаток: {fmt_num(after)})".rstrip())
+        amount_text = format_chat_amount(chat_id, amount, mixed_space=False)
+        after_text = format_chat_amount(chat_id, after, mixed_space=False) if mode == "usd" else fmt_num(after)
+        label = "ост:" if show_ost else ""
+        lines.append(f"{rid} {amount_text} {note} ({label}{after_text})".rstrip())
     if not shown:
         lines.append("За этот день расходов нет.")
     current_remaining = float(store.get("balance", 0) or 0) - reserve
-    current_tail = f" ({fmt_usd_from_ars(current_remaining, rate_info)})" if usd_on else ""
-    lines.extend(["", f"🏦 Текущий остаток по чату: {fmt_num(current_remaining)}{current_tail}"])
+    lines.extend(["", f"🏦 Текущий остаток по чату: {format_chat_amount(chat_id, current_remaining, mixed_space=True)}"])
     if reserve:
-        lines.append(f"🧳 Вычтено гомонковых: {fmt_num(reserve)}")
+        lines.append(f"🧳 Вычтено гомонковых: {format_chat_amount(chat_id, reserve, mixed_space=True)}")
     return wm_common("\n".join(lines), 9, html_mode=True)
 
 
 def build_remaining_keyboard(chat_id: int, day_key: str):
     settings = _gomonk_settings(chat_id)
     with_g = bool(settings.get("remaining_with_gomonk", True))
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    try:
+        dt = datetime.strptime(day_key, "%Y-%m-%d")
+    except Exception:
+        dt = now_local()
+        day_key = dt.strftime("%Y-%m-%d")
+    prev_key = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    next_key = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    nav = [IB("⬅️ День", callback_data=f"remaining_open:{prev_key}")]
+    if day_key != today_key():
+        nav.append(IB("📅 Сегодня", callback_data=f"remaining_open:{today_key()}"))
+    nav.append(IB("День ➡️", callback_data=f"remaining_open:{next_key}"))
+    kb.row(*nav)
     kb.row(IB("Без гомонковых" if with_g else "С гомонковыми", callback_data=f"remaining_toggle:{day_key}"))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"), IB("❌ Закрыть", callback_data="aux_close"))
     return kb
-
 
 def open_remaining_window(chat_id: int, day_key: str, message_id: int | None = None):
     text = build_remaining_text(chat_id, day_key)
@@ -10852,10 +11021,8 @@ def _usd_rate_refresh_loop():
 
 
 def fmt_usd_from_ars(amount: float, rate_info: dict | None) -> str:
-    if not rate_info or not rate_info.get("rate"):
-        return "US$ —"
-    value = float(amount or 0) / float(rate_info["rate"])
-    return "US$ " + (f"{value:,.2f}".replace(",", " "))
+    """Совместимый короткий USD-формат для старых окон."""
+    return fmt_usd_compact(amount, rate_info, signed=False, absolute=True)
 
 
 def render_day_window(chat_id: int, day_key: str):
@@ -10875,8 +11042,8 @@ def render_day_window(chat_id: int, day_key: str):
     label = f"{dk} ({tag}, {wd})" if tag else f"{dk} ({wd})"
 
     header = [f"📅 {label}", ""]
-    usd_on = bool(version_mode_feature("daily_usd") and usd_display_enabled(chat_id))
-    rate_info = usd_rate_cached(force=False) if usd_on else None
+    mode = currency_mode(chat_id) if version_mode_feature("daily_usd") else "ars"
+    rate_info = usd_rate_cached(force=False) if mode != "ars" else None
     total_income = 0.0
     total_expense = 0.0
 
@@ -10892,25 +11059,21 @@ def render_day_window(chat_id: int, day_key: str):
 
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
-        usd_before = f" ({fmt_usd_from_ars(amt, rate_info)})" if usd_on else ""
-        all_record_lines.append(f"{sid}{usd_before} {fmt_num(amt)} {note}")
+        all_record_lines.append(f"{sid} {format_chat_amount(chat_id, amt, mixed_space=False)} {note}".rstrip())
 
     day_balance = calc_day_balance(store, day_key)
     bal_chat = store.get("balance", 0)
-
-    def _usd_tail(value: float) -> str:
-        return f" ({fmt_usd_from_ars(value, rate_info)})" if usd_on else ""
 
     footer = [""]
     if recs_sorted:
         expense_value = -total_expense if total_expense else 0.0
         income_value = total_income if total_income else 0.0
-        footer.append(f"📉 Расход за день: {fmt_num(expense_value)}{_usd_tail(expense_value)}")
-        footer.append(f"📈 Приход за день: {fmt_num(income_value)}{_usd_tail(income_value)}")
-    footer.append(f"📆 Остаток на конец дня: {fmt_num(day_balance)}{_usd_tail(day_balance)}")
-    footer.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}{_usd_tail(bal_chat)}")
-    if usd_on and rate_info:
-        footer.append(f"💵 Курс: 1 USD = {fmt_num(rate_info.get('rate'))} ARS")
+        footer.append(f"📉 Расход за день: {format_chat_amount(chat_id, expense_value, mixed_space=True)}")
+        footer.append(f"📈 Приход за день: {format_chat_amount(chat_id, income_value, mixed_space=True)}")
+    footer.append(f"📆 Остаток на конец дня: {format_chat_amount(chat_id, day_balance, mixed_space=True)}")
+    footer.append(f"🏦 Остаток по чату: {format_chat_amount(chat_id, bal_chat, mixed_space=True)}")
+    if mode != "ars" and rate_info:
+        footer.append(f"💵 Курс: 1 USD = {fmt_num(rate_info.get('rate')).lstrip('+')} ARS")
     footer.extend(gomonk_summary_lines(chat_id))
 
     total = total_income - total_expense
@@ -10944,7 +11107,6 @@ def render_day_window(chat_id: int, day_key: str):
 
         hidden += 1
         visible = visible[1:]
-
 
 def _collect_process_menu_items():
     """Чаты для меню PROCESS: известные чаты + владелец, без дублей."""
@@ -11183,74 +11345,43 @@ def build_report_keyboard(month_key: str):
     return kb
 
 def build_month_report_text(chat_id: int, month_key: str = None):
-    """
-    Отчёт за месяц в виде:
-    Дата    | Приход| Расход|Остаток
-    """
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {})
-
     if not month_key:
         month_key = now_local().strftime("%Y-%m")
-
     try:
         month_dt = datetime.strptime(month_key + "-01", "%Y-%m-%d")
     except Exception:
         month_dt = now_local().replace(day=1)
         month_key = month_dt.strftime("%Y-%m")
-
-    year = month_dt.year
-    month = month_dt.month
-
-    if month == 12:
-        next_month = datetime(year + 1, 1, 1)
-    else:
-        next_month = datetime(year, month + 1, 1)
-
+    year, month = month_dt.year, month_dt.month
+    next_month = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
     days_in_month = (next_month - timedelta(days=1)).day
-
-    lines = []
-    lines.append(f"ОТЧЁТ ЗА {month_dt.strftime('%m.%Y')}")
-    lines.append("")
-    lines.append(
-        f"{'Дата':<8}|"
-        f"{report_header_cell('Приход', 7)}|"
-        f"{report_header_cell('Расход', 7)}|"
-        f"{report_header_cell('Остаток', 7)}"
-    )
-    lines.append("")
-
+    mode = currency_mode(chat_id)
+    lines = [f"ОТЧЁТ ЗА {month_dt.strftime('%m.%Y')}", ""]
+    if mode == "ars":
+        lines.extend([
+            f"{'Дата':<8}|{report_header_cell('Приход', 7)}|{report_header_cell('Расход', 7)}|{report_header_cell('Остаток', 7)}",
+            "",
+        ])
     has_any = False
-
     for day in range(1, days_in_month + 1):
         day_key = f"{year}-{month:02d}-{day:02d}"
         recs = daily.get(day_key, [])
-
-        total_expense = 0
-        total_income = 0
-
-        for r in recs:
-            amt = r.get("amount", 0)
-            if amt < 0:
-                total_expense += -amt
-            else:
-                total_income += amt
-
+        total_expense = sum(-float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) < 0)
+        total_income = sum(float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) >= 0)
         day_balance = calc_day_balance(store, day_key)
-        if recs:
-            has_any = True
-
+        has_any = has_any or bool(recs)
         date_str = datetime.strptime(day_key, "%Y-%m-%d").strftime("%d.%m.%y")
-        lines.append(
-            f"{date_str:<8}|"
-            f"{report_cell(int(total_income), 7)}|"
-            f"{report_cell(int(total_expense), 7)}|"
-            f"{report_cell(int(day_balance), 7)}"
-        )
-
+        if mode == "ars":
+            lines.append(f"{date_str:<8}|{report_cell(int(total_income), 7)}|{report_cell(int(total_expense), 7)}|{report_cell(int(day_balance), 7)}")
+        else:
+            lines.append(
+                f"{date_str} | приход {format_chat_amount(chat_id, total_income, True)} | "
+                f"расход {format_chat_amount(chat_id, -total_expense, True)} | ост {format_chat_amount(chat_id, day_balance, True)}"
+            )
     if not has_any:
         lines.append("Нет данных за этот месяц.")
-
     return wm_common("<pre>" + html.escape("\n".join(lines)) + "</pre>", 3, html_mode=True), month_key
 
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
@@ -13471,13 +13602,18 @@ def build_info_keyboard(chat_id: int):
         )
         if version_mode_feature("mega_priority") and layout in {"v82", "v83"}:
             kb.row(IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"))
-        elif version_mode_feature("mega_priority") and layout in {"v84", "v85", "v86"}:
+        elif version_mode_feature("mega_priority") and layout in {"v84", "v85", "v86", "v87"}:
             kb.row(
                 IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
                 IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"),
             )
-        if layout in {"v85", "v86"}:
-            if layout == "v86":
+        if layout in {"v85", "v86", "v87"}:
+            if layout == "v87":
+                kb.row(
+                    IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
+                    IB(currency_mode_label(chat_id), callback_data="currency_menu"),
+                )
+            elif layout == "v86":
                 kb.row(
                     IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
                     IB(usd_display_label(chat_id), callback_data="usd_display_toggle"),
@@ -13502,10 +13638,15 @@ def build_info_keyboard(chat_id: int):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
-        if layout in {"v84", "v85", "v86"}:
+        if layout in {"v84", "v85", "v86", "v87"}:
             kb.row(IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"))
-        if layout in {"v85", "v86"}:
-            if layout == "v86":
+        if layout in {"v85", "v86", "v87"}:
+            if layout == "v87":
+                kb.row(
+                    IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
+                    IB(currency_mode_label(chat_id), callback_data="currency_menu"),
+                )
+            elif layout == "v86":
                 kb.row(
                     IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
                     IB(usd_display_label(chat_id), callback_data="usd_display_toggle"),
@@ -13661,7 +13802,7 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
         if slug:
             buttons.append(IB(_clean_category_display_name(category), callback_data=cat_callback(f"cat_show_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{slug}")))
     add_buttons_in_rows(kb, buttons, 3)
-    if _v85_enabled("usd_categories"):
+    if _v85_enabled("usd_categories") and currency_mode_from_store(store) == "ars":
         usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False))
         kb.row(IB("💵 Скрыть USD" if usd_on else "💵 Показать USD", callback_data=cat_callback(f"cat_usd_toggle_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
@@ -13679,29 +13820,28 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
 
 def build_category_record_detail_text(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int, category: str):
     items = collect_items_for_category_record_range(store, start_key, start_rid, end_key, end_rid, category)
-    usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False) and _v85_enabled("usd_categories"))
-    rate_info = usd_rate_cached() if usd_on else None
+    mode = currency_mode_from_store(store)
+    category_mixed = bool(store.setdefault("settings", {}).get("category_usd_enabled", False) and _v85_enabled("usd_categories"))
+    show_rate = mode != "ars" or category_mixed
+    rate_info = usd_rate_cached() if show_rate else None
     total = sum(amount for _, amount, _ in items)
     clean_category = _clean_category_display_name(category).upper()
-    total_tail = f" ({fmt_usd_from_ars(total, rate_info)})" if usd_on else ""
     lines = [
         f"📦 {clean_category}",
         f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}",
         f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}",
         "",
-        f"Итого: {fmt_num_plain(total)}{total_tail}",
+        f"Итого: {format_category_amount(store, total, category_mixed)}",
     ]
-    if usd_on and rate_info:
-        lines.append(f"Курс: 1 USD = {fmt_num(rate_info['rate'])} ARS ({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})")
+    if show_rate and rate_info:
+        lines.append(f"Курс: 1 USD = {fmt_num(rate_info['rate']).lstrip('+')} ARS ({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})")
     lines.append("")
     if not items:
         lines.append("Нет операций по этой статье.")
     else:
         for day_key, amount, note in items:
-            tail = f" ({fmt_usd_from_ars(amount, rate_info)})" if usd_on else ""
-            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {fmt_num_plain(amount)}{tail} {str(note or '').strip()}".rstrip())
+            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {format_category_amount(store, amount, category_mixed)} {str(note or '').strip()}".rstrip())
     return wm_common("\n".join(lines), 8)
-
 
 def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int):
     kb = types.InlineKeyboardMarkup()
@@ -14869,7 +15009,7 @@ def on_callback(call):
         if data_str == "bp:open":
             open_balance_panel_in_message(chat_id, call.message.message_id)
             try:
-                bot.answer_callback_query(call.id, f"Остаток: {fmt_num(get_chat_store(chat_id).get('balance', 0))}")
+                bot.answer_callback_query(call.id, f"Остаток: {format_chat_amount(chat_id, get_chat_store(chat_id).get('balance', 0), True)}")
             except Exception:
                 pass
             return
@@ -15329,6 +15469,39 @@ def on_callback(call):
                 return
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
+        if data_str == "currency_menu":
+            if version_mode_layout() != "v87":
+                return
+            fast_ui_edit_message_text(
+                chat_id, call.message.message_id, currency_menu_text(chat_id),
+                reply_markup=build_currency_menu_keyboard(chat_id),
+                purpose="currency_menu",
+            )
+            return
+        if data_str.startswith("currency_select:"):
+            if version_mode_layout() != "v87":
+                return
+            mode = data_str.split(":", 1)[1]
+            set_currency_mode(chat_id, mode)
+            bot_journal("currency_mode_changed", chat_id, f"mode={mode}")
+            fast_ui_edit_message_text(
+                chat_id, call.message.message_id, currency_menu_text(chat_id),
+                reply_markup=build_currency_menu_keyboard(chat_id),
+                purpose="currency_select",
+            )
+            try:
+                day_key = get_chat_store(chat_id).get("current_view_day") or today_key()
+                finance_changed(chat_id, day_key, reason="currency_mode_changed", delay=0.03)
+            except Exception:
+                pass
+            return
+        if data_str == "currency_back":
+            fast_ui_edit_message_text(
+                chat_id, call.message.message_id, build_info_text(chat_id),
+                reply_markup=build_info_keyboard(chat_id),
+                purpose="currency_back",
+            )
+            return
         if data_str == "usd_display_toggle":
             if not version_mode_feature("daily_usd"):
                 return
@@ -15577,7 +15750,7 @@ def on_callback(call):
                 )
                 return
             if action == "total":
-                text = f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n\n💰 Общий итог по чату: {fmt_num(target_store.get('balance', 0))}"
+                text = f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n\n💰 Общий итог по чату: {format_chat_amount(target_chat_id, target_store.get('balance', 0), True)}"
                 safe_edit(bot, call, text, reply_markup=build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key), parse_mode="HTML")
                 return
             if action == "info":
@@ -15926,7 +16099,7 @@ def on_callback(call):
             chat_bal = store.get("balance", 0)
 
             if not is_owner_chat(chat_id):
-                text = wm_common(f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}", 4)
+                text = wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
                 if chat_buttons_current_window_enabled(chat_id):
                     safe_edit(bot, call, text, parse_mode="HTML")
                     return
@@ -15946,7 +16119,7 @@ def on_callback(call):
             title = get_chat_display_name(chat_id)
             lines.append("💰 Общий итог (для владельца)")
             lines.append("")
-            lines.append(f"• Этот чат ({title}): {fmt_num(chat_bal)}")
+            lines.append(f"• Этот чат ({title}): {format_chat_amount(chat_id, chat_bal, True)}")
 
             all_chats = data.get("chats", {})
             total_all = 0
@@ -15962,13 +16135,13 @@ def on_callback(call):
                     continue
                 info2 = st.get("info", {})
                 title2 = get_chat_display_name(cid_int)
-                other_lines.append(f"   • {title2}: {fmt_num(bal)}")
+                other_lines.append(f"   • {title2}: {format_chat_amount(chat_id, bal, True)}")
             if other_lines:
                 lines.append("")
                 lines.append("• Другие чаты:")
                 lines.extend(other_lines)
             lines.append("")
-            lines.append(f"• Всего по всем чатам: {fmt_num(total_all)}")
+            lines.append(f"• Всего по всем чатам: {format_chat_amount(chat_id, total_all, True)}")
 
             text = "\n".join(lines)
             if chat_buttons_current_window_enabled(chat_id):
@@ -16087,10 +16260,27 @@ def on_callback(call):
             set_active_window_id(chat_id, day_key, call.message.message_id)
             return
         if cmd == "back_main":
-            cancel_pending_window_commands(chat_id, delete_prompt=False)
-            clear_edit_delete_selection(chat_id, day_key)
+            # Сначала мгновенно возвращаем интерфейс. Очистку старых режимов и SQLite
+            # выполняем после показа основного окна, чтобы кнопка не висела несколько секунд.
             store["current_view_day"] = day_key
             return_to_main_window_closing_previous(chat_id, day_key, call.message.message_id)
+
+            def _cleanup_after_fast_back():
+                try:
+                    cancel_pending_window_commands(chat_id, delete_prompt=False)
+                except Exception:
+                    pass
+                try:
+                    clear_edit_delete_selection(chat_id, day_key)
+                except Exception:
+                    pass
+                try:
+                    save_data(data, chat_ids=[chat_id])
+                except Exception:
+                    pass
+
+            if not GENERAL_TASK_POOL.submit(f"back-cleanup:{chat_id}", _cleanup_after_fast_back):
+                _cleanup_after_fast_back()
             return
         if cmd == "csv_all":
             kb = build_csv_menu(day_key, chat_id)
@@ -16741,14 +16931,14 @@ def refresh_total_message_if_any(chat_id: int):
     try:
         chat_bal = store.get("balance", 0)
         if not is_owner_chat(chat_id):
-            text = wm_common(f"💰 Общий итог по этому чату: {fmt_num(chat_bal)}", 4)
+            text = wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
         else:
             lines = []
             info = store.get("info", {})
             title = get_chat_display_name(chat_id)
             lines.append("💰 Общий итог (для владельца)")
             lines.append("")
-            lines.append(f"• Этот чат ({title}): {fmt_num(chat_bal)}")
+            lines.append(f"• Этот чат ({title}): {format_chat_amount(chat_id, chat_bal, True)}")
             all_chats = data.get("chats", {})
             total_all = 0
             other_lines = []
@@ -16763,13 +16953,13 @@ def refresh_total_message_if_any(chat_id: int):
                     continue
                 info2 = st.get("info", {})
                 title2 = get_chat_display_name(cid_int)
-                other_lines.append(f"   • {title2}: {fmt_num(bal)}")
+                other_lines.append(f"   • {title2}: {format_chat_amount(chat_id, bal, True)}")
             if other_lines:
                 lines.append("")
                 lines.append("• Другие чаты:")
                 lines.extend(other_lines)
             lines.append("")
-            lines.append(f"• Всего по всем чатам: {fmt_num(total_all)}")
+            lines.append(f"• Всего по всем чатам: {format_chat_amount(chat_id, total_all, True)}")
             text = "\n".join(lines)
         bot.edit_message_text(
             text,
@@ -18336,13 +18526,17 @@ def force_new_day_window(chat_id: int, day_key: str):
 
 
 def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
-    """Назад в основное окно.
-    • если нажали из самого О1 — просто обновляем/перетекаем в О1 без удаления текущего сообщения;
-    • если нажали из переходного окна — старое сохранённое О1 удаляем, а текущее окно превращаем в новое О1.
-    """
+    """Мгновенный возврат в О1 без синхронного удаления и тяжёлого backup_window_for_owner."""
+    chat_id = int(chat_id)
+    try:
+        current_message_id = int(current_message_id) if current_message_id is not None else None
+    except Exception:
+        current_message_id = None
+
     try:
         if current_message_id is not None:
-            _cancel_v98_auto_close(int(chat_id), int(current_message_id))
+            _cancel_v98_auto_close(chat_id, current_message_id)
+            cancel_fast_ui_edit(chat_id, current_message_id)
     except Exception:
         pass
 
@@ -18351,32 +18545,34 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
     except Exception:
         old_mid = None
 
-    # Если текущее окно не является сохранённым О1 — удаляем прежний О1, чтобы не было дублей.
-    try:
-        if old_mid and current_message_id is not None and int(old_mid) != int(current_message_id):
-            try:
-                bot.delete_message(int(chat_id), int(old_mid))
-            except Exception:
-                pass
-            clear_active_window_id(chat_id, day_key)
-    except Exception as e:
-        log_error(f"return_to_main delete old O1({chat_id},{day_key}): {e}")
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
 
-    # Текущее окно становится О1: без удаления, обычным edit_message_text.
     if current_message_id is not None:
+        set_active_window_id(chat_id, day_key, current_message_id)
+        result = fast_ui_edit_message_text(
+            chat_id, current_message_id, txt,
+            reply_markup=kb, parse_mode="HTML", purpose="back_main_instant",
+        )
+        bot_journal("back_main_fast", chat_id, f"day={day_key} result={result} old={old_mid} current={current_message_id}")
+
+        if old_mid and int(old_mid) != current_message_id:
+            def _delete_old():
+                try:
+                    _tg_call_retry(bot.delete_message, chat_id, int(old_mid), attempts=1, purpose="back_main_delete_old")
+                except Exception:
+                    pass
+            GENERAL_TASK_POOL.submit(f"back-delete:{chat_id}:{old_mid}", _delete_old)
+        schedule_balance_panel_refresh(chat_id, 0.05)
+        return
+
+    def _send_fallback():
         try:
-            set_active_window_id(chat_id, day_key, int(current_message_id))
-            if is_owner_chat(chat_id):
-                backup_window_for_owner(chat_id, day_key, message_id_override=int(current_message_id))
-            else:
-                update_or_send_day_window(chat_id, day_key)
-            return
+            update_or_send_day_window(chat_id, day_key)
         except Exception as e:
-            log_error(f"return_to_main edit current to O1({chat_id},{day_key}): {e}")
-
-    # Запасной вариант, если нет текущего сообщения.
-    update_or_send_day_window(chat_id, day_key)
-
+            log_error(f"return_to_main fallback({chat_id},{day_key}): {e}")
+    if not GENERAL_TASK_POOL.submit(f"back-send:{chat_id}", _send_fallback):
+        _send_fallback()
 
 def reset_chat_data(chat_id: int):
     """v27: обнуление данных чата без ручного дублирования окон/бэкапов."""
@@ -19100,14 +19296,14 @@ def main():
                     _store.setdefault("settings", {})["journal_enabled"] = False
             gs["journal_default_off_v83_applied"] = True
         gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
-        # Новая база v86: автоматически переводим только прежний текущий профиль v85.
-        # Явно выбранные v81/v82/v83/v84 сохраняются без изменений.
-        if not bool(gs.get("version_mode_v86_migrated", False)):
-            if str(gs.get("bot_behavior_profile") or "") == "v85_current":
-                gs["bot_behavior_profile"] = "v86_current"
-            gs["version_mode_v86_migrated"] = True
+        # Новая база v87: автоматически переводим только прежний текущий профиль v86.
+        # Явно выбранные v81/v82/v83/v84/v85 сохраняются без изменений.
+        if not bool(gs.get("version_mode_v87_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v86_current":
+                gs["bot_behavior_profile"] = "v87_current"
+            gs["version_mode_v87_migrated"] = True
     except Exception as e:
-        log_error(f"v86 defaults migration: {e}")
+        log_error(f"v87 defaults migration: {e}")
     try:
         marker_report = audit_window_marker_registry()
         log_info(f"Маркеры окон проверены: {marker_report}")
@@ -19130,6 +19326,8 @@ def main():
             settings.setdefault("journal_enabled", False)
             settings.setdefault("main_article_buttons_enabled", False)
             settings.setdefault("main_financial_value_buttons_enabled", False)
+            settings.setdefault("currency_mode", "ars_usd" if settings.get("usd_display_enabled", False) else "ars")
+            settings.setdefault("remaining_show_ost_label", True)
             settings.setdefault("total_secret_mode", False)
             store.setdefault("secret_messages", [])
             _ensure_secret_media_numbers(int(cid))
