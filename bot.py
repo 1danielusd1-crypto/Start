@@ -262,6 +262,11 @@ GENERAL_TASK_POOL = KeyedTaskPool(
     _env_int("GENERAL_WORKERS", 4, 1, 12),
     _env_int("GENERAL_MAX_PENDING", 1000, 50, 5000),
 )
+JOURNAL_TASK_POOL = KeyedTaskPool(
+    "journal",
+    _env_int("JOURNAL_WORKERS", 1, 1, 2),
+    _env_int("JOURNAL_MAX_PENDING", 12000, 500, 30000),
+)
 DELAYED_TASK_POOL = KeyedTaskPool(
     "delayed",
     _env_int("DELAYED_WORKERS", 4, 1, 12),
@@ -357,7 +362,17 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v84_true_versions_fin_buttons"
+VERSION = "bot_v85_fast_gomonki_usd_monitor"
+
+
+def version_animal_badge(version: str | None = None) -> str:
+    """Для каждой новой версии — свой зверь и номер."""
+    raw = str(version or VERSION)
+    m = re.search(r"(?:^|_)v(\d+)", raw, re.I)
+    number = int(m.group(1)) if m else 0
+    animals = ["🐺", "🦊", "🐯", "🐲", "🦅", "🐘", "🦉", "🐆", "🦈", "🦄", "🐻", "🦁", "🐼", "🐸", "🐙", "🦚", "🐬", "🦬", "🦏", "🐊"]
+    animal = animals[(number - 81) % len(animals)] if number else "🤖"
+    return f"{animal}{number}" if number else animal
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
 try:
     KEEP_ALIVE_INTERVAL_SECONDS = max(20, int(os.getenv("KEEP_ALIVE_INTERVAL_SECONDS", "45") or "45"))
@@ -375,7 +390,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 3
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 4
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -683,6 +698,22 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v85_current": {
+        "title": "v85 Гомонки / USD",
+        "ui_edit_interval": 0.05,
+        "fast_tg_gap": 0.015,
+        "info_layout": "v85",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "description": "Текущая версия: быстрые кнопки, финансы по одной в ряд, гомонки, остатки после расходов и USD.",
+    },
     "v84_current": {
         "title": "v84 Фин-кнопки",
         "ui_edit_interval": 0.20,
@@ -693,7 +724,11 @@ BOT_BEHAVIOR_PROFILES = {
         "keepalive_menu": True,
         "article_buttons": False,
         "financial_value_buttons": True,
-        "description": "Текущая версия: финансовые записи-кнопки, индивидуальные журналы, полный MEGA-бэкап и keep-alive.",
+        "financial_buttons_per_row": 2,
+        "gomonk_wallets": False,
+        "remaining_window": False,
+        "usd_categories": False,
+        "description": "Прежняя v84: финансовые записи-кнопки по две в ряд.",
     },
     "v83_flexible": {
         "title": "v83 Гибкая",
@@ -705,6 +740,10 @@ BOT_BEHAVIOR_PROFILES = {
         "keepalive_menu": True,
         "article_buttons": True,
         "financial_value_buttons": False,
+        "financial_buttons_per_row": 0,
+        "gomonk_wallets": False,
+        "remaining_window": False,
+        "usd_categories": False,
         "description": "Поведение прежней v83: индивидуальные журналы, keep-alive и исторический режим статей-кнопок.",
     },
     "v82_stable": {
@@ -717,6 +756,10 @@ BOT_BEHAVIOR_PROFILES = {
         "keepalive_menu": False,
         "article_buttons": False,
         "financial_value_buttons": False,
+        "financial_buttons_per_row": 0,
+        "gomonk_wallets": False,
+        "remaining_window": False,
+        "usd_categories": False,
         "description": "Интерфейс и набор кнопок v82: универсальный MEGA-бэкап без функций v83/v84.",
     },
     "v81_compatible": {
@@ -729,10 +772,14 @@ BOT_BEHAVIOR_PROFILES = {
         "keepalive_menu": False,
         "article_buttons": False,
         "financial_value_buttons": False,
+        "financial_buttons_per_row": 0,
+        "gomonk_wallets": False,
+        "remaining_window": False,
+        "usd_categories": False,
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v84_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v85_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -756,7 +803,8 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
     )
     chat_fields = (
         "buttons_current_window", "journal_enabled", "main_article_buttons_enabled",
-        "main_financial_value_buttons_enabled", "quick_balance_enabled",
+        "main_financial_value_buttons_enabled", "gomonk_enabled", "gomonk_entries",
+        "remaining_with_gomonk", "quick_balance_enabled",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
         "process_trace_enabled",
     )
@@ -819,9 +867,9 @@ def version_mode_feature(name: str) -> bool:
 
 def version_mode_layout() -> str:
     try:
-        return str(active_bot_behavior_profile_info().get("info_layout") or "v84")
+        return str(active_bot_behavior_profile_info().get("info_layout") or "v85")
     except Exception:
-        return "v84"
+        return "v85"
 
 
 def set_bot_behavior_profile(profile_key: str) -> str:
@@ -1104,6 +1152,14 @@ def verbose_telegram_journal_enabled() -> bool:
         return False
 
 
+def _journal_write_row(row: dict):
+    try:
+        with open(BOT_JOURNAL_FILE, "a", encoding="utf-8") as jf:
+            jf.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
     """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
     try:
@@ -1117,7 +1173,12 @@ def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"
             "action": str(action or "")[:160],
             "chat_id": str(chat_id) if chat_id is not None else "",
             "chat_name": "",
-            "detail": str(detail or "")[:1800],
+            "detail": str(detail or "")[:3000],
+            "thread": threading.current_thread().name,
+            "profile": active_bot_behavior_profile() if "data" in globals() and isinstance(data, dict) else "startup",
+            "webhook_pending": WEBHOOK_TASK_POOL.stats().get("pending", 0),
+            "general_pending": GENERAL_TASK_POOL.stats().get("pending", 0),
+            "backup_pending": BACKUP_TASK_POOL.stats().get("pending", 0),
         }
         try:
             if chat_id is not None:
@@ -1126,11 +1187,8 @@ def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"
             pass
         with bot_journal_lock:
             BOT_ACTION_LOG.append(row)
-            try:
-                with open(BOT_JOURNAL_FILE, "a", encoding="utf-8") as jf:
-                    jf.write(json.dumps(row, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
+        if not JOURNAL_TASK_POOL.submit("journal-file", _journal_write_row, dict(row)):
+            _journal_write_row(row)
         return row
     except Exception:
         return None
@@ -1972,7 +2030,14 @@ WINDOW_MARKER_CONSTANTS = {
     'version_select:*': 'Ф133',
     'version_back': 'Ф134',
     'main_financial_values_toggle': 'Ф135',
-    'keepalive_status': 'Ф135',
+    'keepalive_status': 'Ф136',
+    'gomonk_open': 'Ф137',
+    'gomonk_toggle': 'Ф138',
+    'gomonk_back': 'Ф139',
+    'remaining_open:*': 'Ф140',
+    'remaining_toggle:*': 'Ф141',
+    'cat_pick_today_start': 'Ф142',
+    'cat_usd_toggle_records:*': 'Ф143',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -4219,10 +4284,23 @@ def _load_json(path: str, default):
         return default
 
 def _save_json(path: str, obj):
+    """Атомарная запись: читатель никогда не видит половину JSON."""
+    tmp_path = str(path) + f".tmp.{threading.get_ident()}.{time.time_ns()}"
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp_path, path)
     except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
         log_error(f"JSON save error {path}: {e}")
 
 
@@ -5263,7 +5341,10 @@ def get_chat_store(chat_id: int) -> dict:
                     "auto_backup_to_mega_enabled": True,
                     "journal_enabled": False,
                     "main_article_buttons_enabled": False,
-                    "main_financial_value_buttons_enabled": False
+                    "main_financial_value_buttons_enabled": False,
+                    "gomonk_enabled": False,
+                    "gomonk_entries": [],
+                    "remaining_with_gomonk": True
                 },
             }
         )
@@ -5281,6 +5362,10 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("journal_enabled", False)
         store.setdefault("settings", {}).setdefault("main_article_buttons_enabled", False)
         store.setdefault("settings", {}).setdefault("main_financial_value_buttons_enabled", False)
+        store.setdefault("settings", {}).setdefault("gomonk_enabled", False)
+        store.setdefault("settings", {}).setdefault("gomonk_entries", [])
+        store.setdefault("settings", {}).setdefault("remaining_with_gomonk", True)
+        store.setdefault("settings", {}).setdefault("category_usd_enabled", False)
         store.setdefault("finance_mode", False)
 
         if is_owner_chat(chat_id):
@@ -5773,18 +5858,28 @@ def snapshot_chat_store(chat_id: int) -> dict:
 
 
 def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
+    """JSON для чтения: последние операции и даты находятся сверху."""
     store = store or snapshot_chat_store(chat_id)
+    records_desc = sorted((store.get("records", []) or []), key=record_sort_key, reverse=True)
+    daily_src = store.get("daily_records", {}) or {}
+    daily_desc = {}
+    daily_by_date_desc = {}
+    for day_key in sorted(daily_src.keys(), reverse=True):
+        day_records = sorted((daily_src.get(day_key, []) or []), key=record_sort_key, reverse=True)
+        daily_desc[str(day_key)] = backup_records_list(day_records)
+        daily_by_date_desc[fmt_date_backup(day_key)] = backup_records_list(day_records)
     return {
         "kind": "chat_full_backup",
         "version": VERSION,
         "created_at": now_local().isoformat(timespec="seconds"),
         "date_format": "DD:MM:YY",
+        "sort_order": "newest_first",
         "chat_id": chat_id,
         "chat_name": get_chat_display_name(chat_id),
         "balance": store.get("balance", 0),
-        "records": backup_records_list(store.get("records", [])),
-        "daily_records": backup_daily_records(store.get("daily_records", {})),
-        "daily_records_by_date": {fmt_date_backup(k): backup_records_list(v) for k, v in (store.get("daily_records", {}) or {}).items()},
+        "records": backup_records_list(records_desc),
+        "daily_records": daily_desc,
+        "daily_records_by_date": daily_by_date_desc,
         "next_id": store.get("next_id", 1),
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
@@ -6281,7 +6376,7 @@ def get_category_by_slug(slug: str, store: dict | None = None) -> str | None:
 
 
 def parse_category_definition(text: str):
-    raw = str(text or "").strip()
+    raw = _clean_category_display_name(str(text or "").strip())
     if not raw:
         raise ValueError("empty")
     if raw.lower() in {"отмена", "cancel", "/cancel"}:
@@ -6395,8 +6490,8 @@ def expense_anchor_button_label(rec: dict, store: dict | None = None) -> str:
         amount = fmt_num(float(rec.get("amount", 0) or 0))
     except Exception:
         amount = str(rec.get("amount", ""))
-    note = re.sub(r"\s+", " ", str(rec.get("note", "") or "")).strip()
-    category = resolve_expense_category(note, store) or ""
+    note = _clean_category_display_name(re.sub(r"\s+", " ", str(rec.get("note", "") or "")).strip())
+    category = _clean_category_display_name(resolve_expense_category(note, store) or "")
     rec_code = str(rec.get("short_id") or f"R{_record_int_id(rec)}")
     parts = [rec_code, amount]
     if note:
@@ -6498,17 +6593,28 @@ def collect_items_for_category_record_range(store: dict, start_day: str, start_r
 
 def summarize_categories_record_range(store: dict, start_day: str, start_rid: int, end_day: str, end_rid: int):
     cats = calc_categories_for_record_range(store, start_day, start_rid, end_day, end_rid)
+    usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False) and _v85_enabled("usd_categories"))
+    rate_info = usd_rate_cached() if usd_on else None
     lines = [
         "📦 Расходы по статьям — точный период",
         f"▶️ {exact_boundary_text(store, start_day, start_rid, True)}",
         f"⏹ {exact_boundary_text(store, end_day, end_rid, False)}",
         "",
     ]
+    if usd_on:
+        if rate_info:
+            lines.append(f"💵 Курс: 1 USD = {fmt_num(rate_info['rate'])} ARS ({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})")
+        else:
+            lines.append("💵 Курс USD временно недоступен")
+        lines.append("")
     if not cats:
         lines.append("Нет данных по статьям в выбранных границах.")
     else:
         for category in get_ordered_category_names(cats=cats, store=store):
-            lines.append(f"{category}: {fmt_num_plain(cats.get(category, 0))}")
+            clean_name = _clean_category_display_name(category).upper()
+            amount = cats.get(category, 0)
+            usd_tail = f" ({fmt_usd_from_ars(amount, rate_info)})" if usd_on else ""
+            lines.append(f"{clean_name}: {fmt_num_plain(amount)}{usd_tail}")
     return wm_common("\n".join(lines), 7), cats
 
 
@@ -9011,6 +9117,8 @@ def on_any_message(msg):
                 return
             if handle_direct_edit_insert_message(msg):
                 return
+            if handle_gomonk_insert_message(msg):
+                return
             if handle_category_edit_message(msg):
                 return
             if handle_category_add_message(msg):
@@ -10391,6 +10499,292 @@ def forward_any_message(source_chat_id: int, msg):
 
     
 
+# ─────────────────────────────────────────────────────────────
+# v85: гомонковые резервы, остаток после расходов и USD
+# ─────────────────────────────────────────────────────────────
+GOMONKI_INSERT_TOKEN = "GOMONKI"
+USD_RATE_URL = os.getenv("USD_RATE_URL", "https://dolarapi.com/v1/dolares/blue").strip()
+USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800") or "1800"))
+
+
+def _v85_enabled(feature: str) -> bool:
+    return bool(active_bot_behavior_profile() == "v85_current" and version_mode_feature(feature))
+
+
+def _gomonk_settings(chat_id: int) -> dict:
+    settings = get_chat_store(int(chat_id)).setdefault("settings", {})
+    settings.setdefault("gomonk_enabled", False)
+    settings.setdefault("gomonk_entries", [])
+    settings.setdefault("remaining_with_gomonk", True)
+    return settings
+
+
+def gomonk_enabled(chat_id: int) -> bool:
+    return bool(_gomonk_settings(chat_id).get("gomonk_enabled", False))
+
+
+def gomonk_entries(chat_id: int) -> list[dict]:
+    out = []
+    for item in (_gomonk_settings(chat_id).get("gomonk_entries") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            amount = abs(float(item.get("amount", 0) or 0))
+        except Exception:
+            continue
+        name = str(item.get("name") or "Сумма").strip() or "Сумма"
+        if amount:
+            out.append({"name": name[:80], "amount": amount})
+    return out
+
+
+def gomonk_total(chat_id: int) -> float:
+    return sum(float(x.get("amount", 0) or 0) for x in gomonk_entries(chat_id))
+
+
+def toggle_gomonk_enabled(chat_id: int) -> bool:
+    settings = _gomonk_settings(chat_id)
+    settings["gomonk_enabled"] = not bool(settings.get("gomonk_enabled", False))
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+    return bool(settings["gomonk_enabled"])
+
+
+def parse_gomonk_entries(text: str) -> list[dict]:
+    raw = sanitize_telegram_inserted_text(str(text or ""))
+    raw = re.sub(r"(?is)^\s*\(?\s*GOMONKI\s*\)?\s*[:|\-]*\s*", "", raw).strip()
+    parts = [p.strip() for p in raw.split(":") if p.strip()]
+    result = []
+    for idx, part in enumerate(parts, start=1):
+        number_pattern = r"(?<![A-Za-zА-Яа-яЁё0-9_])[-+]?(?:\d{1,3}(?:[ .]\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)"
+        matches = list(re.finditer(number_pattern, part))
+        if not matches:
+            continue
+        match = matches[-1]
+        num_text = match.group(0).replace(" ", "").replace(".", "").replace(",", ".")
+        try:
+            amount = abs(float(num_text))
+        except Exception:
+            continue
+        name = (part[:match.start()] + " " + part[match.end():]).strip(" -–—,.;")
+        if not name:
+            name = f"Сумма {idx}"
+        if amount:
+            result.append({"name": name[:80], "amount": amount})
+    return result
+
+
+def set_gomonk_entries(chat_id: int, entries: list[dict]):
+    settings = _gomonk_settings(chat_id)
+    settings["gomonk_entries"] = list(entries or [])[:30]
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id), delay=1.0)
+
+
+def gomonk_toggle_label(chat_id: int) -> str:
+    return "✅ Гомонковые ВКЛ" if gomonk_enabled(chat_id) else "❌ Гомонковые ВЫКЛ"
+
+
+def gomonk_summary_lines(chat_id: int) -> list[str]:
+    if not (_v85_enabled("gomonk_wallets") and gomonk_enabled(chat_id)):
+        return []
+    entries = gomonk_entries(chat_id)
+    if not entries:
+        return ["🧳 Гомонковые: суммы не заданы"]
+    parts = [f"{html.escape(x['name'])} {fmt_num(x['amount'])}" for x in entries]
+    balance = float(get_chat_store(chat_id).get("balance", 0) or 0)
+    total = gomonk_total(chat_id)
+    return [
+        "🧳 Гомонковые: " + " · ".join(parts),
+        f"🧮 Сумма гомонковых: {fmt_num(total)}",
+        f"🏦 Остаток без гомонковых: {fmt_num(balance - total)}",
+    ]
+
+
+def build_gomonk_menu_text(chat_id: int) -> str:
+    entries = gomonk_entries(chat_id)
+    lines = [
+        "🧳 Гомонковые",
+        "",
+        "Это суммы, которые резервируются отдельно и вычитаются из остатка по чату.",
+        "Формат нескольких сумм через двоеточие:",
+        "Имя1 1000 : Имя2 5777 : 3000",
+        "",
+        f"Режим: {'ВКЛ' if gomonk_enabled(chat_id) else 'ВЫКЛ'}",
+    ]
+    if entries:
+        lines.append("Сохранено:")
+        for item in entries:
+            lines.append(f"• {item['name']}: {fmt_num(item['amount'])}")
+        lines.append(f"Итого: {fmt_num(gomonk_total(chat_id))}")
+    else:
+        lines.append("Сохранённых сумм пока нет.")
+    return wm_common("\n".join(lines), 9)
+
+
+def build_gomonk_menu_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB(gomonk_toggle_label(chat_id), callback_data="gomonk_toggle"))
+    template = f"({GOMONKI_INSERT_TOKEN})\nИмя1 1000 : Имя2 5777"
+    kb.row(make_copy_or_inline_button("💰 Сумма", template))
+    kb.row(IB("🔙 Назад в Инфо", callback_data="gomonk_back"))
+    return kb
+
+
+def handle_gomonk_insert_message(msg) -> bool:
+    if getattr(msg, "content_type", None) != "text" or not _v85_enabled("gomonk_wallets"):
+        return False
+    cleaned = sanitize_telegram_inserted_text(getattr(msg, "text", "") or "")
+    if GOMONKI_INSERT_TOKEN not in cleaned.upper():
+        return False
+    chat_id = int(msg.chat.id)
+    entries = parse_gomonk_entries(cleaned)
+    try:
+        bot.delete_message(chat_id, msg.message_id)
+    except Exception:
+        pass
+    if not entries:
+        send_and_auto_delete(chat_id, "❌ Не нашёл сумм. Пример: Имя1 1000 : Имя2 5777", 12)
+        return True
+    set_gomonk_entries(chat_id, entries)
+    _gomonk_settings(chat_id)["gomonk_enabled"] = True
+    save_data(data, chat_ids=[chat_id])
+    bot_journal("gomonk_values_saved", chat_id, f"count={len(entries)} total={gomonk_total(chat_id)}")
+    send_and_auto_delete(chat_id, f"✅ Гомонковые сохранены: {len(entries)}, сумма {fmt_num(gomonk_total(chat_id))}", 10)
+    try:
+        open_gomonk_window(chat_id)
+        finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day") or today_key(), reason="gomonk_update", delay=0.05)
+    except Exception:
+        pass
+    return True
+
+
+def open_gomonk_window(chat_id: int, message_id: int | None = None):
+    if message_id:
+        fast_ui_edit_message_text(chat_id, message_id, build_gomonk_menu_text(chat_id), reply_markup=build_gomonk_menu_keyboard(chat_id), purpose="gomonk_window")
+    else:
+        send_or_edit_stored_window(chat_id, "info_msg_id", build_gomonk_menu_text(chat_id), reply_markup=build_gomonk_menu_keyboard(chat_id), delay=AUX_WINDOW_DELETE_DELAY)
+
+
+def _opening_balance_before_day(store: dict, day_key: str) -> float:
+    total = 0.0
+    for rec in (store.get("records", []) or []):
+        try:
+            if _record_day_key(rec) < day_key:
+                total += float(rec.get("amount", 0) or 0)
+        except Exception:
+            pass
+    return total
+
+
+def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = None) -> str:
+    store = get_chat_store(chat_id)
+    settings = _gomonk_settings(chat_id)
+    if with_gomonk is None:
+        with_gomonk = bool(settings.get("remaining_with_gomonk", True))
+    reserve = gomonk_total(chat_id) if (with_gomonk and gomonk_enabled(chat_id)) else 0.0
+    running = _opening_balance_before_day(store, day_key)
+    lines = [
+        "🧮 Остаток после каждого расхода",
+        f"📅 {fmt_date_ddmmyy(day_key)}",
+        f"Режим: {'с гомонковыми' if reserve else 'без гомонковых'}",
+        "",
+    ]
+    shown = 0
+    for rec in sorted((store.get("daily_records", {}) or {}).get(day_key, []) or [], key=record_sort_key):
+        try:
+            amount = float(rec.get("amount", 0) or 0)
+        except Exception:
+            continue
+        running += amount
+        if amount >= 0:
+            continue
+        shown += 1
+        rid = rec.get("short_id") or f"R{rec.get('id', '')}"
+        note = html.escape(str(rec.get("note") or "").strip())
+        after = running - reserve
+        lines.append(f"{rid} {fmt_num(amount)} {note}\n└ остаток: {fmt_num(after)}".rstrip())
+    if not shown:
+        lines.append("За этот день расходов нет.")
+    lines.extend(["", f"🏦 Текущий остаток по чату: {fmt_num(float(store.get('balance', 0) or 0) - reserve)}"])
+    if reserve:
+        lines.append(f"🧳 Вычтено гомонковых: {fmt_num(reserve)}")
+    return wm_common("\n".join(lines), 9, html_mode=True)
+
+
+def build_remaining_keyboard(chat_id: int, day_key: str):
+    settings = _gomonk_settings(chat_id)
+    with_g = bool(settings.get("remaining_with_gomonk", True))
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(IB("Без гомонковых" if with_g else "С гомонковыми", callback_data=f"remaining_toggle:{day_key}"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"), IB("❌ Закрыть", callback_data="aux_close"))
+    return kb
+
+
+def open_remaining_window(chat_id: int, day_key: str, message_id: int | None = None):
+    text = build_remaining_text(chat_id, day_key)
+    kb = build_remaining_keyboard(chat_id, day_key)
+    if message_id:
+        fast_ui_edit_message_text(chat_id, message_id, text, reply_markup=kb, parse_mode="HTML", purpose="remaining_window")
+    else:
+        send_or_edit_stored_window(chat_id, "remaining_msg_id", text, reply_markup=kb, parse_mode="HTML", delay=AUX_WINDOW_DELETE_DELAY)
+
+
+def _clean_category_display_name(value: str) -> str:
+    s = str(value or "").strip()
+    s = re.sub(r"(?i)@[A-Za-z0-9_]{3,}\s*", "", s)
+    return re.sub(r"\s+", " ", s).strip(" :,-")
+
+
+def usd_rate_cached(force: bool = False) -> dict | None:
+    gs = data.setdefault("_global_settings", {})
+    cache = gs.get("usd_rate_cache") if isinstance(gs.get("usd_rate_cache"), dict) else {}
+    age = time.time() - float(cache.get("fetched_ts", 0) or 0)
+    if not force and cache.get("rate") and age < USD_RATE_CACHE_SECONDS:
+        return cache
+    # Никогда не ждём внешний сайт внутри callback/webhook: отдаём старый курс и обновляем фоном.
+    if threading.current_thread().name.startswith("webhook"):
+        GENERAL_TASK_POOL.submit("usd-rate-refresh", usd_rate_cached, True)
+        return cache if cache.get("rate") else None
+    try:
+        resp = requests.get(USD_RATE_URL, timeout=8)
+        resp.raise_for_status()
+        payload = resp.json()
+        rate = float(payload.get("venta") or payload.get("promedio") or payload.get("compra") or 0)
+        if rate <= 0:
+            raise ValueError("курс venta отсутствует")
+        cache = {
+            "rate": rate,
+            "source": str(payload.get("nombre") or payload.get("casa") or "DolarAPI dólar blue"),
+            "fetched_at": str(payload.get("fechaActualizacion") or now_local().isoformat(timespec="seconds")),
+            "fetched_ts": time.time(),
+            "url": USD_RATE_URL,
+        }
+        gs["usd_rate_cache"] = cache
+        save_data(data, root_only=True)
+        bot_journal("usd_rate_updated", None, f"rate={rate} source={cache['source']}")
+        return cache
+    except Exception as e:
+        bot_journal("usd_rate_error", None, str(e), "WARN")
+        return cache if cache.get("rate") else None
+
+
+def _usd_rate_refresh_loop():
+    while True:
+        try:
+            usd_rate_cached(force=True)
+        except Exception:
+            pass
+        time.sleep(USD_RATE_CACHE_SECONDS)
+
+
+def fmt_usd_from_ars(amount: float, rate_info: dict | None) -> str:
+    if not rate_info or not rate_info.get("rate"):
+        return "US$ —"
+    value = float(amount or 0) / float(rate_info["rate"])
+    return "US$ " + (f"{value:,.2f}".replace(",", " "))
+
+
 def render_day_window(chat_id: int, day_key: str):
     store = get_chat_store(chat_id)
     recs = store.get("daily_records", {}).get(day_key, [])
@@ -10434,6 +10828,7 @@ def render_day_window(chat_id: int, day_key: str):
         footer.append(f"📈 Приход за день: {fmt_num(total_income) if total_income else fmt_num(0)}")
     footer.append(f"📆 Остаток на конец дня: {fmt_num(day_balance)}")
     footer.append(f"🏦 Остаток по чату: {fmt_num(bal_chat)}")
+    footer.extend(gomonk_summary_lines(chat_id))
 
     total = total_income - total_expense
 
@@ -10601,7 +10996,8 @@ def build_main_keyboard(day_key: str, chat_id=None):
             except Exception:
                 continue
             value_buttons.append(IB(financial_record_button_label(rec), callback_data=f"d:{day_key}:value_rec_{rid}"))
-        add_buttons_in_rows(kb, value_buttons[:84], 2)
+        per_row = max(1, int(active_bot_behavior_profile_info().get("financial_buttons_per_row", 2) or 2))
+        add_buttons_in_rows(kb, value_buttons[:84], per_row)
         if len(value_buttons) > 84:
             kb.row(IB(f"Ещё записей: {len(value_buttons) - 84}", callback_data=f"d:{day_key}:edit_list"))
 
@@ -10617,9 +11013,13 @@ def build_main_keyboard(day_key: str, chat_id=None):
         add_buttons_in_rows(kb, article_buttons[:84], 2)
 
     # Обнуление убрано из основного окна о1 по ТЗ. Оставлена команда /reset в окне ℹ️ Инфо.
-    kb.row(
-        IB("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
-    )
+    if chat_id is not None and _v85_enabled("remaining_window"):
+        kb.row(
+            IB("ℹ️ Инфо", callback_data=f"d:{day_key}:info"),
+            IB("с ост", callback_data=f"remaining_open:{day_key}"),
+        )
+    else:
+        kb.row(IB("ℹ️ Инфо", callback_data=f"d:{day_key}:info"))
 
     if is_owner_chat(chat_id):
         kb.row(
@@ -12842,7 +13242,7 @@ def all_task_pool_stats() -> list[dict]:
     return [
         WEBHOOK_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
         BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
-        DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
+        JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
     ]
 
 
@@ -12988,11 +13388,13 @@ def build_info_keyboard(chat_id: int):
         )
         if version_mode_feature("mega_priority") and layout in {"v82", "v83"}:
             kb.row(IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"))
-        elif version_mode_feature("mega_priority") and layout == "v84":
+        elif version_mode_feature("mega_priority") and layout in {"v84", "v85"}:
             kb.row(
                 IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
                 IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"),
             )
+        if layout == "v85":
+            kb.row(IB("🧳 Гомонковые", callback_data="gomonk_open"))
         if layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
         # Кнопка выбора версии присутствует при любом режиме, включая полный откат v81/v82.
@@ -13011,8 +13413,10 @@ def build_info_keyboard(chat_id: int):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
-        if layout == "v84":
+        if layout in {"v84", "v85"}:
             kb.row(IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"))
+        if layout == "v85":
+            kb.row(IB("🧳 Гомонковые", callback_data="gomonk_open"))
         elif layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
     kb.row(
@@ -13101,6 +13505,7 @@ def _send_category_pick_end_precise(chat_id: int, message_id: int, start_key: st
     nav.append(IB(f"{russian_month_name(view_month)} {view_year}", callback_data="none"))
     nav.append(IB("Месяц ➡️", callback_data=cat_callback(f"cat_pick_end3:{start_key}:{int(start_rid)}:{next_y}:{next_m}")))
     kb.row(*nav)
+    kb.row(IB("▶️ С сегодняшнего дня", callback_data=cat_callback("cat_pick_today_start")))
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
     kb.row(IB("🔙 Изменить начало", callback_data=cat_callback(f"cat_pick_set_start:{start_dt.year}:{start_dt.month}:{start_dt.day}")))
     text = (
@@ -13159,8 +13564,11 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
     for category in get_ordered_category_names(cats=cats, store=store):
         slug = get_expense_category_slug(category, store)
         if slug:
-            buttons.append(IB(category, callback_data=cat_callback(f"cat_show_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{slug}")))
+            buttons.append(IB(_clean_category_display_name(category), callback_data=cat_callback(f"cat_show_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{slug}")))
     add_buttons_in_rows(kb, buttons, 3)
+    if _v85_enabled("usd_categories"):
+        usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False))
+        kb.row(IB("💵 Скрыть USD" if usd_on else "💵 Показать USD", callback_data=cat_callback(f"cat_usd_toggle_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
     end_dt = datetime.strptime(end_key, "%Y-%m-%d")
     kb.row(
@@ -13176,19 +13584,27 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
 
 def build_category_record_detail_text(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int, category: str):
     items = collect_items_for_category_record_range(store, start_key, start_rid, end_key, end_rid, category)
+    usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False) and _v85_enabled("usd_categories"))
+    rate_info = usd_rate_cached() if usd_on else None
+    total = sum(amount for _, amount, _ in items)
+    clean_category = _clean_category_display_name(category).upper()
+    total_tail = f" ({fmt_usd_from_ars(total, rate_info)})" if usd_on else ""
     lines = [
-        f"📦 {category}",
+        f"📦 {clean_category}",
         f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}",
         f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}",
         "",
-        f"Итого: {fmt_num_plain(sum(amount for _, amount, _ in items))}",
-        "",
+        f"Итого: {fmt_num_plain(total)}{total_tail}",
     ]
+    if usd_on and rate_info:
+        lines.append(f"Курс: 1 USD = {fmt_num(rate_info['rate'])} ARS ({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})")
+    lines.append("")
     if not items:
         lines.append("Нет операций по этой статье.")
     else:
         for day_key, amount, note in items:
-            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {fmt_num_plain(amount)} {str(note or '').strip()}".rstrip())
+            tail = f" ({fmt_usd_from_ars(amount, rate_info)})" if usd_on else ""
+            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {fmt_num_plain(amount)}{tail} {str(note or '').strip()}".rstrip())
     return wm_common("\n".join(lines), 8)
 
 
@@ -13450,8 +13866,10 @@ def handle_categories_callback(call, data_str: str) -> bool:
             year = now_local().year
         kb = types.InlineKeyboardMarkup(row_width=2)
         month_buttons = []
+        current_ym = now_local().strftime("%Y-%m")
         for m in range(1, 13):
-            label = f"{russian_month_name(m)} ({m})"
+            ym = f"{year:04d}-{m:02d}"
+            label = f"📍 {russian_month_name(m)} ({m}) — текущий" if ym == current_ym else f"{russian_month_name(m)} ({m})"
             month_buttons.append(IB(label, callback_data=cat_callback(f"cat_m:{year}:{m}")))
         for i in range(0, len(month_buttons), 2):
             kb.row(*month_buttons[i:i + 2])
@@ -13533,6 +13951,15 @@ def handle_categories_callback(call, data_str: str) -> bool:
             log_error(f"cat_pick_start_record: {e}")
         return True
 
+    if data_str == "cat_pick_today_start":
+        try:
+            start_key = today_key()
+            now_dt = now_local()
+            _send_category_pick_end_precise(chat_id, call.message.message_id, start_key, 0, now_dt.year, now_dt.month)
+        except Exception as e:
+            log_error(f"cat_pick_today_start: {e}")
+        return True
+
     if data_str.startswith("cat_pick_end3:"):
         try:
             _, start_key, start_rid, y, m = data_str.split(":")
@@ -13564,6 +13991,21 @@ def handle_categories_callback(call, data_str: str) -> bool:
             )
         except Exception as e:
             log_error(f"cat_pick_end_record: {e}")
+        return True
+
+    if data_str.startswith("cat_usd_toggle_records:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            settings = store.setdefault("settings", {})
+            settings["category_usd_enabled"] = not bool(settings.get("category_usd_enabled", False))
+            save_data(data, chat_ids=[chat_id])
+            if settings["category_usd_enabled"]:
+                usd_rate_cached(force=False)
+            text, _ = summarize_categories_record_range(store, start_key, int(start_rid), end_key, int(end_rid))
+            kb = build_categories_record_summary_keyboard(start_key, int(start_rid), end_key, int(end_rid), store)
+            send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id, marker_action="cat_range_records:*")
+        except Exception as e:
+            log_error(f"cat_usd_toggle_records: {e}")
         return True
 
     if data_str.startswith("cat_range_records:"):
@@ -13779,7 +14221,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
 _callback_debounce_state = {}
 
 
-def _callback_should_debounce(call, data_str: str, min_interval: float = 0.45) -> bool:
+def _callback_should_debounce(call, data_str: str, min_interval: float = 0.12) -> bool:
     """Защита от частых кликов: Telegram уже получил answer_callback_query, поэтому «Загрузка» не висит."""
     try:
         chat_id = int(call.message.chat.id)
@@ -14791,6 +15233,36 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "gomonk_open":
+            if not _v85_enabled("gomonk_wallets"):
+                return
+            open_gomonk_window(chat_id, call.message.message_id)
+            return
+        if data_str == "gomonk_toggle":
+            if not _v85_enabled("gomonk_wallets"):
+                return
+            new_state = toggle_gomonk_enabled(chat_id)
+            bot_journal("gomonk_toggle", chat_id, f"enabled={new_state}")
+            open_gomonk_window(chat_id, call.message.message_id)
+            return
+        if data_str == "gomonk_back":
+            fast_ui_edit_message_text(chat_id, call.message.message_id, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id), purpose="gomonk_back")
+            return
+        if data_str.startswith("remaining_open:"):
+            if not _v85_enabled("remaining_window"):
+                return
+            day_key = data_str.split(":", 1)[1] or today_key()
+            open_remaining_window(chat_id, day_key, call.message.message_id)
+            return
+        if data_str.startswith("remaining_toggle:"):
+            if not _v85_enabled("remaining_window"):
+                return
+            day_key = data_str.split(":", 1)[1] or today_key()
+            settings = _gomonk_settings(chat_id)
+            settings["remaining_with_gomonk"] = not bool(settings.get("remaining_with_gomonk", True))
+            save_data(data, chat_ids=[chat_id])
+            open_remaining_window(chat_id, day_key, call.message.message_id)
             return
         if data_str == "main_articles_toggle":
             if not version_mode_feature("article_buttons"):
@@ -16618,15 +17090,31 @@ def cmd_csv(msg):
         meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
         _save_csv_meta(meta)
     send_backup_to_channel(chat_id)
+def _send_json_snapshot_job(chat_id: int):
+    started = time.time()
+    try:
+        bot_journal("json_export_start", chat_id, "создание атомарного снимка")
+        store = snapshot_chat_store(chat_id)
+        payload = build_chat_backup_payload(chat_id, store)
+        raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        buf = io.BytesIO(raw)
+        buf.name = f"{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{now_local().strftime('%Y%m%d_%H%M%S')}.json"
+        sent = _tg_call_retry(bot.send_document, chat_id, buf, caption="🧾 JSON этого чата — последние операции сверху", purpose="manual_json_export")
+        elapsed = time.time() - started
+        bot_journal("json_export_sent", chat_id, f"bytes={len(raw)} message_id={getattr(sent, 'message_id', '')} elapsed={elapsed:.3f}s")
+    except Exception as e:
+        bot_journal("json_export_error", chat_id, f"elapsed={time.time()-started:.3f}s error={e}", "ERROR")
+        send_and_auto_delete(chat_id, "❌ Не удалось создать JSON. Ошибка записана в журнал.", 15)
+
+
 @bot.message_handler(commands=["json"])
 def cmd_json(msg):
     try:
         update_chat_info_from_message(msg)
     except Exception:
         pass
-
     schedule_command_delete(msg)
-    chat_id = msg.chat.id
+    chat_id = int(msg.chat.id)
     if is_finance_output_suppressed(chat_id):
         return
     stop_dozvon_for_target(chat_id)
@@ -16634,13 +17122,10 @@ def cmd_json(msg):
         return
     if not require_finance(chat_id):
         return
-    save_chat_json(chat_id)
-    p = chat_json_file(chat_id)
-    if os.path.exists(p):
-        with open(p, "rb") as f:
-            bot.send_document(chat_id, f, caption="🧾 JSON этого чата")
-    else:
-        send_info(chat_id, "Файл JSON ещё не создан.")
+    bot_journal("json_command", chat_id, f"message_id={getattr(msg, 'message_id', '')}")
+    if not EXPORT_TASK_POOL.submit(f"json:{chat_id}", _send_json_snapshot_job, chat_id):
+        send_and_auto_delete(chat_id, "⛔ Очередь JSON занята. Повторите команду.", 10)
+
 @bot.message_handler(commands=["reset"])
 def cmd_reset(msg):
     try:
@@ -18434,13 +18919,23 @@ def telegram_webhook():
         update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
         update_key = update_chat_id if update_chat_id is not None else getattr(update, "update_id", time.time_ns())
 
+        update_enqueued_at = time.time()
+        update_id = getattr(update, "update_id", None)
+        update_type = "edited_message" if isinstance(payload, dict) and "edited_message" in payload else "callback_query" if isinstance(payload, dict) and "callback_query" in payload else "message" if isinstance(payload, dict) and "message" in payload else "other"
+
         def _process_update():
-            with state_chat_context(update_chat_id):
-                if update_chat_id is None:
-                    bot.process_new_updates([update])
-                else:
-                    with locked_chat(update_chat_id):
+            started = time.time()
+            wait = started - update_enqueued_at
+            bot_journal("update_process_start", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s")
+            try:
+                with state_chat_context(update_chat_id):
+                    if update_chat_id is None:
                         bot.process_new_updates([update])
+                    else:
+                        with locked_chat(update_chat_id):
+                            bot.process_new_updates([update])
+            finally:
+                bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s")
 
         if not WEBHOOK_TASK_POOL.submit(update_key, _process_update):
             log_error(f"WEBHOOK QUEUE FULL: chat={update_chat_id}")
@@ -18494,19 +18989,23 @@ def main():
                     _store.setdefault("settings", {})["journal_enabled"] = False
             gs["journal_default_off_v83_applied"] = True
         gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
-        # v83 была предыдущей базой. При первом запуске v84 переводим только старый
-        # профиль по умолчанию на новую текущую версию; выбранные v81/v82 не трогаем.
-        if not bool(gs.get("version_mode_v84_migrated", False)):
-            if str(gs.get("bot_behavior_profile") or "") == "v83_flexible":
-                gs["bot_behavior_profile"] = "v84_current"
-            gs["version_mode_v84_migrated"] = True
+        # Новая база v85: автоматически переводим только прежний текущий профиль v84.
+        # Явно выбранные v81/v82/v83 сохраняются без изменений.
+        if not bool(gs.get("version_mode_v85_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v84_current":
+                gs["bot_behavior_profile"] = "v85_current"
+            gs["version_mode_v85_migrated"] = True
     except Exception as e:
-        log_error(f"v84 defaults migration: {e}")
+        log_error(f"v85 defaults migration: {e}")
     try:
         marker_report = audit_window_marker_registry()
         log_info(f"Маркеры окон проверены: {marker_report}")
     except Exception as e:
         log_error(f"audit_window_marker_registry: {e}")
+    try:
+        threading.Thread(target=_usd_rate_refresh_loop, name="usd-rate-refresh", daemon=True).start()
+    except Exception as e:
+        log_error(f"usd rate refresh start: {e}")
     for cid in list((data.get("chats", {}) or {}).keys()):
         try:
             store = get_chat_store(int(cid))
@@ -18549,7 +19048,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ 🐲84 Бот запущен (версия {VERSION}).\n"
+                    f"✅ {version_animal_badge()} Бот запущен (версия {VERSION}).\n"
                     f"Восстановление: {'OK — полный универсальный снимок' if restored else 'пропущено'}\n"
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
