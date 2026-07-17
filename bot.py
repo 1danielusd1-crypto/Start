@@ -370,7 +370,7 @@ def version_animal_badge(version: str | None = None) -> str:
     raw = str(version or VERSION)
     m = re.search(r"(?:^|_)v(\d+)", raw, re.I)
     number = int(m.group(1)) if m else 0
-    animals = ["🐺", "🦊", "🐯", "🐲", "🦅", "🐘", "🦉", "🐆", "🦈", "🦄", "🐻", "🦁", "🐼", "🐸", "🐙", "🦚", "🐬", "🦬", "🦏", "🐊"]
+    animals = ["🔥", "🐺", "🦊", "🐯", "🐲", "🦅", "🐘", "🦉", "🐆", "🦈", "🦄", "🐻", "🦁", "🐼", "🐸", "🐙", "🦚", "🐬", "🦬", "🦏", "🐊"]
     animal = animals[(number - 81) % len(animals)] if number else "🤖"
     return f"{animal}{number}" if number else animal
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
