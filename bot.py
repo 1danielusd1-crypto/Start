@@ -234,47 +234,53 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 128) -> i
 
 WEBHOOK_TASK_POOL = KeyedTaskPool(
     "webhook",
-    _env_int("WEBHOOK_WORKERS", 12, 2, 32),
-    _env_int("WEBHOOK_MAX_PENDING", 5000, 100, 20000),
+    _env_int("WEBHOOK_WORKERS", 6, 2, 16),
+    _env_int("WEBHOOK_MAX_PENDING", 2000, 100, 10000),
 )
 FINANCE_TASK_POOL = KeyedTaskPool(
     "finance",
-    _env_int("FINANCE_WORKERS", 8, 2, 24),
-    _env_int("FINANCE_MAX_PENDING", 2000, 100, 10000),
+    _env_int("FINANCE_WORKERS", 4, 2, 12),
+    _env_int("FINANCE_MAX_PENDING", 1000, 100, 5000),
 )
 FORWARD_TASK_POOL = KeyedTaskPool(
     "forward",
-    _env_int("FORWARD_WORKERS", 8, 2, 24),
-    _env_int("FORWARD_MAX_PENDING", 3000, 100, 10000),
+    _env_int("FORWARD_WORKERS", 4, 2, 12),
+    _env_int("FORWARD_MAX_PENDING", 1500, 100, 5000),
 )
 BACKUP_TASK_POOL = KeyedTaskPool(
     "backup",
-    _env_int("BACKUP_WORKERS", 2, 1, 6),
-    _env_int("BACKUP_MAX_PENDING", 1000, 50, 5000),
+    _env_int("BACKUP_WORKERS", 1, 1, 2),
+    _env_int("BACKUP_MAX_PENDING", 300, 50, 1500),
+)
+# v90: маленькие аварийные delta не ждут Excel/канал/полный файл чата в backup queue.
+DELTA_TASK_POOL = KeyedTaskPool(
+    "delta",
+    _env_int("DELTA_WORKERS", 1, 1, 2),
+    _env_int("DELTA_MAX_PENDING", 500, 50, 2000),
 )
 EXPORT_TASK_POOL = KeyedTaskPool(
     "export",
-    _env_int("EXPORT_WORKERS", 2, 1, 6),
+    _env_int("EXPORT_WORKERS", 1, 1, 2),
     _env_int("EXPORT_MAX_PENDING", 300, 20, 2000),
 )
 GENERAL_TASK_POOL = KeyedTaskPool(
     "general",
-    _env_int("GENERAL_WORKERS", 4, 1, 12),
-    _env_int("GENERAL_MAX_PENDING", 1000, 50, 5000),
+    _env_int("GENERAL_WORKERS", 2, 1, 6),
+    _env_int("GENERAL_MAX_PENDING", 500, 50, 2000),
 )
 JOURNAL_TASK_POOL = KeyedTaskPool(
     "journal",
     _env_int("JOURNAL_WORKERS", 1, 1, 2),
-    _env_int("JOURNAL_MAX_PENDING", 12000, 500, 30000),
+    _env_int("JOURNAL_MAX_PENDING", 3000, 500, 10000),
 )
 DELAYED_TASK_POOL = KeyedTaskPool(
     "delayed",
-    _env_int("DELAYED_WORKERS", 4, 1, 12),
-    _env_int("DELAYED_MAX_PENDING", 2000, 100, 10000),
+    _env_int("DELAYED_WORKERS", 2, 1, 6),
+    _env_int("DELAYED_MAX_PENDING", 1000, 100, 5000),
 )
 DOZVON_TASK_POOL = KeyedTaskPool(
     "dozvon",
-    _env_int("DOZVON_WORKERS", 2, 1, 4),
+    _env_int("DOZVON_WORKERS", 1, 1, 2),
     _env_int("DOZVON_MAX_PENDING", 100, 10, 500),
 )
 DELAYED_SCHEDULER = DelayedTaskScheduler(DELAYED_TASK_POOL)
@@ -362,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v87_currency_modes_fast_back"
+VERSION = "bot_v90_delta_snapshots"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -390,7 +396,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 6
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 9
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -411,6 +417,54 @@ MEGA_LATEST_GLOBAL_NAME = os.getenv("MEGA_LATEST_GLOBAL_NAME", "latest_global.js
 MEGA_LOCAL_TMP_DIR = os.getenv("MEGA_LOCAL_TMP_DIR", "/tmp").strip() or "/tmp"
 MEGA_CHAT_BACKUP_DIR = os.getenv("MEGA_CHAT_BACKUP_DIR", "chats").strip().strip("/") or "chats"
 MEGA_MONTHLY_BACKUP_DIR = os.getenv("MEGA_MONTHLY_BACKUP_DIR", "monthly").strip().strip("/") or "monthly"
+MEGA_HISTORY_BACKUP_DIR = os.getenv("MEGA_HISTORY_BACKUP_DIR", "history").strip().strip("/") or "history"
+# v90: небольшие неизменяемые delta-файлы вместо полного global после каждой операции.
+MEGA_DELTA_BACKUP_DIR = os.getenv("MEGA_DELTA_BACKUP_DIR", "deltas").strip().strip("/") or "deltas"
+try:
+    MEGA_DELTA_DELAY_SECONDS = max(1.0, float(os.getenv("MEGA_DELTA_DELAY_SECONDS", "8") or "8"))
+except Exception:
+    MEGA_DELTA_DELAY_SECONDS = 8.0
+try:
+    MEGA_DELTA_PRIORITY_DELAY_SECONDS = max(0.5, float(os.getenv("MEGA_DELTA_PRIORITY_DELAY_SECONDS", "1") or "1"))
+except Exception:
+    MEGA_DELTA_PRIORITY_DELAY_SECONDS = 1.0
+try:
+    MEGA_GLOBAL_QUIET_SECONDS = max(60.0, float(os.getenv("MEGA_GLOBAL_QUIET_SECONDS", "180") or "180"))
+except Exception:
+    MEGA_GLOBAL_QUIET_SECONDS = 180.0
+try:
+    MEGA_GLOBAL_MAX_INTERVAL_SECONDS = max(300.0, float(os.getenv("MEGA_GLOBAL_MAX_INTERVAL_SECONDS", "900") or "900"))
+except Exception:
+    MEGA_GLOBAL_MAX_INTERVAL_SECONDS = 900.0
+try:
+    MEGA_GLOBAL_HISTORY_KEEP = max(3, int(os.getenv("MEGA_GLOBAL_HISTORY_KEEP", "20") or "20"))
+except Exception:
+    MEGA_GLOBAL_HISTORY_KEEP = 20
+try:
+    MEGA_FILE_HISTORY_KEEP = max(1, int(os.getenv("MEGA_FILE_HISTORY_KEEP", "5") or "5"))
+except Exception:
+    MEGA_FILE_HISTORY_KEEP = 5
+try:
+    MEGA_DELTA_KEEP_FILES = max(50, int(os.getenv("MEGA_DELTA_KEEP_FILES", "500") or "500"))
+except Exception:
+    MEGA_DELTA_KEEP_FILES = 500
+try:
+    MEGA_DELTA_RESTORE_LIMIT = max(50, int(os.getenv("MEGA_DELTA_RESTORE_LIMIT", "1000") or "1000"))
+except Exception:
+    MEGA_DELTA_RESTORE_LIMIT = 1000
+try:
+    MEGA_GLOBAL_MIN_SAFE_BYTES = max(2048, int(os.getenv("MEGA_GLOBAL_MIN_SAFE_BYTES", "8192") or "8192"))
+except Exception:
+    MEGA_GLOBAL_MIN_SAFE_BYTES = 8192
+try:
+    MEGA_GLOBAL_MAX_RECORD_DROP = min(0.95, max(0.05, float(os.getenv("MEGA_GLOBAL_MAX_RECORD_DROP", "0.30") or "0.30")))
+except Exception:
+    MEGA_GLOBAL_MAX_RECORD_DROP = 0.30
+ALLOW_EMPTY_MEGA_RESTORE = _env_bool("ALLOW_EMPTY_MEGA_RESTORE", "0")
+RESTORE_GUARD_ACTIVE = False
+RESTORE_GUARD_REASON = ""
+MEGA_GLOBAL_BACKUP_LOCK = threading.RLock()
+MEGA_COMMAND_LOCK = threading.RLock()
 forward_map = {}
 backup_flags = {
     "channel": True,
@@ -615,7 +669,7 @@ def get_recent_errors(limit: int = 20):
 # ─────────────────────────────────────────────────────────────
 # 📓 Журнал действий всего бота
 # ─────────────────────────────────────────────────────────────
-BOT_JOURNAL_MAX = int(os.getenv("BOT_JOURNAL_MAX", "5000") or "5000")
+BOT_JOURNAL_MAX = int(os.getenv("BOT_JOURNAL_MAX", "1200") or "1200")
 BOT_JOURNAL_FILE = os.getenv("BOT_JOURNAL_FILE", "bot_journal.jsonl").strip() or "bot_journal.jsonl"
 BOT_ACTION_LOG = deque(maxlen=BOT_JOURNAL_MAX)
 bot_journal_lock = threading.RLock()
@@ -698,6 +752,40 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v90_current": {
+        "title": "v90 Delta / snapshots",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "description": "Текущая версия: быстрые immutable delta, редкие full snapshots, безопасные файлы чатов и восстановление global + delta.",
+    },
+    "v88_current": {
+        "title": "v88 Чистые статьи / полная валюта",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "description": "Текущая версия: статьи без @имени бота и полноценные ARS / ARS-USD / USD во всех окнах статей.",
+    },
     "v87_current": {
         "title": "v87 Валюты / быстрый возврат",
         "ui_edit_interval": 0.03,
@@ -818,7 +906,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v87_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v90_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -1029,7 +1117,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
-    if active_bot_behavior_profile() in {"v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
+    if active_bot_behavior_profile() in {"v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
         label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
     return label
 
@@ -2086,6 +2174,7 @@ WINDOW_MARKER_CONSTANTS = {
     'currency_menu': 'Ф145',
     'currency_select:*': 'Ф146',
     'currency_back': 'Ф147',
+    'info_delta_status': 'Ф148',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -3563,7 +3652,8 @@ def build_help_text(chat_id: int) -> str:
             "/journal — скачать журнал действий бота",
             "/articles — описание статей: статья = ключевые слова",
             "/mega_status — статус MEGA/MEGAcmd",
-            "/mega_backup_now — сразу загрузить latest_global.json в MEGA",
+            "/mega_backup_now — безопасно загрузить latest_global.json в MEGA",
+            "/restore_guard — статус аварийной защиты восстановления",
             "/buttons — переключить кнопки: text/icons",
             "/mask — переключить маскировку тотального секрета",
             "/day5 — финсутки: 00:00 / 05:00",
@@ -4363,7 +4453,7 @@ def mega_remote_file_path(filename: str = None) -> str:
 
 
 def _mega_required_commands():
-    return ["mega-login", "mega-whoami", "mega-mkdir", "mega-put", "mega-get", "mega-rm"]
+    return ["mega-login", "mega-whoami", "mega-mkdir", "mega-put", "mega-get", "mega-rm", "mega-mv", "mega-find"]
 
 
 def mega_missing_commands():
@@ -4371,19 +4461,21 @@ def mega_missing_commands():
 
 
 def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = True):
+    """Один MEGAcmd вызов за раз: на Render 512MB параллельные mega-* давали пики памяти."""
     args = list(args or [])
     exe = shutil.which(cmd)
     if not exe:
         raise RuntimeError(f"MEGAcmd command not found: {cmd}")
-    try:
-        res = subprocess.run(
-            [exe] + args,
-            capture_output=True,
-            text=True,
-            timeout=timeout or MEGA_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
+    with MEGA_COMMAND_LOCK:
+        try:
+            res = subprocess.run(
+                [exe] + args,
+                capture_output=True,
+                text=True,
+                timeout=timeout or MEGA_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
     if check and res.returncode != 0:
         out = (res.stdout or "").strip()
         err = (res.stderr or "").strip()
@@ -4488,28 +4580,101 @@ def _copy_file_for_mega(src_path: str, dst_name: str) -> str | None:
         return None
 
 
+def _mega_remote_missing_error(raw: str) -> bool:
+    txt = str(raw or "").casefold()
+    return any(x in txt for x in ("couldn't find", "not found", "no such file", "does not exist"))
+
+
+def _mega_find_remote_files(remote_dir: str, pattern: str, limit: int | None = None) -> list[str]:
+    """Список удалённых файлов MEGA. Имена v90 содержат sortable timestamp."""
+    if not mega_is_configured() or shutil.which("mega-find") is None:
+        return []
+    try:
+        res = _mega_run(
+            "mega-find",
+            [str(remote_dir), f"--pattern={pattern}", "--type=f"],
+            check=False,
+            timeout=60,
+        )
+        rows = sorted({x.strip() for x in (res.stdout or "").splitlines() if x.strip()}, reverse=True)
+        return rows[: int(limit)] if limit else rows
+    except Exception as e:
+        log_error(f"_mega_find_remote_files({remote_dir},{pattern}): {e}")
+        return []
+
+
+def _mega_prune_remote_history(remote_dir: str, pattern: str, keep: int) -> int:
+    """Удаляет только лишние СТАРЫЕ исторические копии. Активный файл не затрагивается."""
+    rows = _mega_find_remote_files(remote_dir, pattern)
+    removed = 0
+    for remote_path in rows[max(1, int(keep)):]:
+        try:
+            res = _mega_run("mega-rm", [remote_path], check=False, timeout=30)
+            if res.returncode == 0:
+                removed += 1
+        except Exception:
+            pass
+    return removed
+
+
 def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None = None) -> bool:
-    """Загрузить файл в MEGA с заменой файла того же имени."""
-    if not mega_is_configured():
+    """Безопасно обновляет файл в MEGA без схемы rm->put.
+
+    1) новый файл целиком загружается как уникальный candidate;
+    2) прежний активный файл переносится в history;
+    3) candidate одним move становится активным;
+    4) хранится ограниченное число предыдущих версий.
+
+    Если процесс упадёт на шаге 1, старый файл не тронут. Если на шаге 2/3 —
+    старый уже находится в history, а candidate остаётся в MEGA.
+    """
+    if not mega_is_configured() or not local_path or not os.path.exists(local_path):
         return False
-    if not local_path or not os.path.exists(local_path):
-        return False
+    candidate_local = None
     try:
         mega_ensure_remote_path(remote_dir)
-        upload_path = local_path
-        if remote_name and os.path.basename(local_path) != remote_name:
-            copied = _copy_file_for_mega(local_path, remote_name)
-            if copied:
-                upload_path = copied
-        final_name = remote_name or os.path.basename(upload_path)
+        final_name = str(remote_name or os.path.basename(local_path))
+        stem, ext = os.path.splitext(final_name)
+        stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
+        candidate_name = f"candidate_{mega_safe_name(stem, 'file')}_{stamp}{ext or '.json'}"
+        candidate_local = _copy_file_for_mega(local_path, candidate_name)
+        if not candidate_local:
+            return False
+
+        # Сначала candidate. Активный remote_file пока существует без изменений.
+        _mega_run("mega-put", [candidate_local, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+        remote_candidate = remote_dir.rstrip("/") + "/" + candidate_name
         remote_file = remote_dir.rstrip("/") + "/" + final_name
-        _mega_run("mega-rm", [remote_file], check=False, timeout=30)
-        _mega_run("mega-put", [upload_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+
+        history_dir = remote_dir.rstrip("/") + "/history"
+        mega_ensure_remote_path(history_dir)
+        archive_name = f"{mega_safe_name(stem, 'file')}__{stamp}{ext or '.json'}"
+        remote_archive = history_dir.rstrip("/") + "/" + archive_name
+
+        # Отсутствие старого файла нормально. Любая другая ошибка оставляет старый файл на месте
+        # и не пытается насильно его удалить.
+        mv_old = _mega_run("mega-mv", [remote_file, remote_archive], check=False, timeout=60)
+        if mv_old.returncode != 0:
+            err = (mv_old.stderr or mv_old.stdout or "")[:500]
+            if not _mega_remote_missing_error(err):
+                log_error(f"[MEGA SAFE REPLACE] archive blocked for {remote_file}: {err}")
+                return False
+
+        _mega_run("mega-mv", [remote_candidate, remote_file], check=True, timeout=60)
+        try:
+            _mega_prune_remote_history(history_dir, f"{mega_safe_name(stem, 'file')}__*{ext or '.json'}", MEGA_FILE_HISTORY_KEEP)
+        except Exception:
+            pass
         return True
     except Exception as e:
-        log_error(f"[MEGA PUT ERROR] {local_path} -> {remote_dir}: {e}")
+        log_error(f"[MEGA SAFE REPLACE ERROR] {local_path} -> {remote_dir}: {e}")
         return False
-
+    finally:
+        try:
+            if candidate_local and os.path.exists(candidate_local):
+                os.remove(candidate_local)
+        except Exception:
+            pass
 
 def current_month_key() -> str:
     return now_local().strftime("%Y-%m")
@@ -4761,6 +4926,531 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
             pass
 
 
+
+# ─────────────────────────────────────────────────────────────
+# v90: append-only delta journal + редкие full snapshots
+# ─────────────────────────────────────────────────────────────
+_delta_state_lock = threading.RLock()
+_delta_record_baseline: dict[int, dict[str, str]] = {}
+_delta_meta_baseline: dict[int, dict[str, str]] = {}
+_delta_root_baseline: dict[str, str] = {}
+_delta_pending_chats: set[int] = set()
+_delta_chat_generation: dict[int, int] = defaultdict(int)
+_delta_generation = 0
+_delta_batch_timer = None
+_delta_last_success_at = ""
+_delta_last_file = ""
+_delta_last_event_count = 0
+_delta_last_error = ""
+_global_snapshot_pending = False
+_global_snapshot_last_success_monotonic = time.monotonic()
+_global_snapshot_last_success_at = ""
+_global_snapshot_last_change_monotonic = 0.0
+_global_snapshot_capture_generation = 0
+
+_DELTA_VOLATILE_CHAT_KEYS = {
+    "active_windows", "edit_wait", "edit_target", "categories_msg_id", "report_window_id",
+    "info_msg_id", "command_window_id", "total_msg_id", "balance_panel_id", "secret_wait",
+    "main_window_msg_count", "balance_panel_msg_count", "current_view_day",
+}
+_DELTA_VOLATILE_ROOT_KEYS = {"chats", "records", "active_messages", "bot_errors", "_state_meta"}
+_DELTA_ROOT_MAP_KEYS = {"forward_index", "forward_rules", "forward_finance", "finance_active_chats", "_global_settings", "csv_meta", "chat_backup_meta", "backup_flags"}
+
+
+def mega_delta_remote_root() -> str:
+    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_DELTA_BACKUP_DIR}"
+
+
+def mega_delta_remote_day_dir(day_key: str | None = None) -> str:
+    return mega_delta_remote_root().rstrip("/") + "/" + str(day_key or today_key())
+
+
+def _delta_json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _delta_hash(value) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _delta_record_key(rec: dict) -> str:
+    if not isinstance(rec, dict):
+        return "invalid:" + _delta_hash(rec)[:16]
+    for key in ("id", "record_id"):
+        value = rec.get(key)
+        if value not in (None, ""):
+            return f"id:{value}"
+    return "src:%s:%s:%s" % (
+        rec.get("source_chat_id") or rec.get("chat_id") or "",
+        rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or "",
+        rec.get("timestamp") or rec.get("day_key") or "",
+    )
+
+
+def _delta_chat_meta(store: dict) -> dict:
+    return {
+        str(k): _delta_json_clone(v)
+        for k, v in (store or {}).items()
+        if k not in _DELTA_VOLATILE_CHAT_KEYS and k not in {"records", "daily_records", "daily_records_by_date"}
+    }
+
+
+def _delta_root_patch(payload: dict) -> dict:
+    return {
+        str(k): _delta_json_clone(v)
+        for k, v in (payload or {}).items()
+        if k not in _DELTA_VOLATILE_ROOT_KEYS
+        and k not in {"_universal_backup", "_backup_meta", "_runtime_snapshot", "_delta_restore_meta"}
+    }
+
+
+def _delta_root_signature_state(root: dict) -> dict:
+    out = {}
+    for key, value in (root or {}).items():
+        if key in _DELTA_ROOT_MAP_KEYS and isinstance(value, dict):
+            out[str(key)] = {
+                "kind": "map",
+                "entries": {str(entry): _delta_hash(entry_value) for entry, entry_value in value.items()},
+            }
+        else:
+            out[str(key)] = {"kind": "value", "hash": _delta_hash(value)}
+    return out
+
+
+def _delta_baseline_from_payload(payload: dict) -> tuple[dict[int, dict[str, str]], dict[int, dict[str, str]], dict[str, str]]:
+    rec_baseline: dict[int, dict[str, str]] = {}
+    meta_baseline: dict[int, dict[str, str]] = {}
+    for cid_s, store in ((payload or {}).get("chats", {}) or {}).items():
+        try:
+            cid = int(cid_s)
+        except Exception:
+            continue
+        if not isinstance(store, dict):
+            continue
+        rec_baseline[cid] = {
+            _delta_record_key(rec): _delta_hash(rec)
+            for rec in (store.get("records", []) or [])
+            if isinstance(rec, dict)
+        }
+        meta = _delta_chat_meta(store)
+        meta_baseline[cid] = {str(key): _delta_hash(value) for key, value in meta.items()}
+    root = _delta_root_patch(payload or {})
+    root_baseline = _delta_root_signature_state(root)
+    return rec_baseline, meta_baseline, root_baseline
+
+def initialize_delta_baseline(payload: dict | None = None):
+    """Начальная точка delta. Ничего не загружает и не создаёт бэкап."""
+    global _delta_record_baseline, _delta_meta_baseline, _delta_root_baseline
+    snapshot = payload
+    if snapshot is None:
+        with data_lock:
+            _persist_forward_index_in_data(data)
+            snapshot = _delta_json_clone(data or {})
+    recs, metas, root_sig = _delta_baseline_from_payload(snapshot or {})
+    with _delta_state_lock:
+        _delta_record_baseline = recs
+        _delta_meta_baseline = metas
+        _delta_root_baseline = dict(root_sig or {})
+
+
+def _build_delta_payload(chat_ids: list[int], generation_map: dict[int, int]) -> tuple[dict | None, dict]:
+    """Строит только изменившиеся записи и поля настроек относительно подтверждённого delta/full."""
+    requested_ids = sorted({int(x) for x in chat_ids})
+    with data_lock:
+        _persist_forward_index_in_data(data)
+        # Не копируем все чаты для маленького delta: только root и реально изменившиеся чаты.
+        state = {
+            str(key): _delta_json_clone(value)
+            for key, value in (data or {}).items()
+            if key != "chats"
+        }
+        all_chats = (data or {}).get("chats", {}) or {}
+        state["chats"] = {
+            str(cid): _delta_json_clone(all_chats.get(str(cid), {}) or {})
+            for cid in requested_ids
+        }
+
+    with _delta_state_lock:
+        old_records = {int(cid): dict(sigs or {}) for cid, sigs in _delta_record_baseline.items()}
+        old_meta = {int(cid): dict(sigs or {}) for cid, sigs in _delta_meta_baseline.items()}
+        old_root = dict(_delta_root_baseline or {})
+
+    chat_changes = {}
+    next_record_sigs = {}
+    next_meta_sigs = {}
+    event_count = 0
+    chats = state.get("chats", {}) or {}
+    for cid in requested_ids:
+        store = chats.get(str(cid)) or {}
+        if not isinstance(store, dict):
+            continue
+        current_records = {
+            _delta_record_key(rec): rec
+            for rec in (store.get("records", []) or [])
+            if isinstance(rec, dict)
+        }
+        current_sigs = {key: _delta_hash(rec) for key, rec in current_records.items()}
+        previous_sigs = old_records.get(cid, {}) or {}
+        upsert_keys = [key for key, sig in current_sigs.items() if previous_sigs.get(key) != sig]
+        delete_keys = [key for key in previous_sigs if key not in current_sigs]
+
+        meta = _delta_chat_meta(store)
+        current_meta_sigs = {str(key): _delta_hash(value) for key, value in meta.items()}
+        previous_meta_sigs = old_meta.get(cid, {}) or {}
+        changed_meta_keys = [key for key, sig in current_meta_sigs.items() if previous_meta_sigs.get(key) != sig]
+        deleted_meta_keys = [key for key in previous_meta_sigs if key not in current_meta_sigs]
+
+        if upsert_keys or delete_keys or changed_meta_keys or deleted_meta_keys:
+            row = {
+                "chat_id": cid,
+                "upserts": [{"key": key, "record": current_records[key]} for key in upsert_keys],
+                "deletes": delete_keys,
+                "chat_meta_patch": {key: meta[key] for key in changed_meta_keys},
+                "chat_meta_deletes": deleted_meta_keys,
+            }
+            chat_changes[str(cid)] = row
+            event_count += len(upsert_keys) + len(delete_keys) + len(changed_meta_keys) + len(deleted_meta_keys)
+        next_record_sigs[cid] = current_sigs
+        next_meta_sigs[cid] = current_meta_sigs
+
+    root = _delta_root_patch(state)
+    current_root_sigs = _delta_root_signature_state(root)
+    root_patch = {}
+    root_deletes = []
+    root_map_patches = {}
+    root_map_deletes = {}
+    for key, sig_state in current_root_sigs.items():
+        old_state = old_root.get(key) or {}
+        if sig_state.get("kind") == "map":
+            current_entries = sig_state.get("entries") or {}
+            old_entries = old_state.get("entries") or {} if old_state.get("kind") == "map" else {}
+            changed_entries = [entry for entry, sig in current_entries.items() if old_entries.get(entry) != sig]
+            deleted_entries = [entry for entry in old_entries if entry not in current_entries]
+            if changed_entries:
+                root_map_patches[key] = {entry: root[key][entry] for entry in changed_entries}
+            if deleted_entries:
+                root_map_deletes[key] = deleted_entries
+            event_count += len(changed_entries) + len(deleted_entries)
+        elif old_state != sig_state:
+            root_patch[key] = root[key]
+            event_count += 1
+    for key in old_root:
+        if key not in current_root_sigs:
+            root_deletes.append(key)
+            event_count += 1
+
+    baseline = {
+        "record_sigs": next_record_sigs,
+        "meta_sigs": next_meta_sigs,
+        "root_sigs": current_root_sigs,
+        "generation_map": generation_map,
+    }
+    if event_count <= 0:
+        return None, baseline
+
+    created_at = now_local().isoformat(timespec="microseconds")
+    seq = time.time_ns()
+    payload = {
+        "kind": "telegram_finance_bot_delta",
+        "schema_version": 1,
+        "bot_version": VERSION,
+        "created_at": created_at,
+        "delta_id": f"{now_local().strftime('%Y%m%d_%H%M%S_%f')}_{seq}",
+        "chat_changes": chat_changes,
+        "root_patch": root_patch,
+        "root_deletes": root_deletes,
+        "root_map_patches": root_map_patches,
+        "root_map_deletes": root_map_deletes,
+        "event_count": event_count,
+        "chat_count": len(chat_changes),
+    }
+    return payload, baseline
+
+def _commit_delta_baseline(baseline: dict):
+    global _delta_root_baseline
+    with _delta_state_lock:
+        for cid, sigs in (baseline.get("record_sigs") or {}).items():
+            _delta_record_baseline[int(cid)] = dict(sigs or {})
+        for cid, sigs in (baseline.get("meta_sigs") or {}).items():
+            _delta_meta_baseline[int(cid)] = dict(sigs or {})
+        if "root_sigs" in baseline:
+            _delta_root_baseline = dict(baseline.get("root_sigs") or {})
+
+def _delta_upload_payload(payload: dict) -> tuple[bool, str]:
+    if not payload or not mega_is_configured():
+        return False, ""
+    day_dir = mega_delta_remote_day_dir(str(payload.get("created_at") or today_key())[:10])
+    os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+    name = f"delta_{payload.get('delta_id')}.json"
+    local_path = os.path.join(MEGA_LOCAL_TMP_DIR, name)
+    try:
+        _save_json(local_path, payload)
+        mega_ensure_remote_path(day_dir)
+        # Delta immutable: уникальное имя, старые файлы не удаляем и не заменяем.
+        _mega_run("mega-put", [local_path, day_dir], check=True, timeout=MEGA_TIMEOUT)
+        return True, day_dir.rstrip("/") + "/" + name
+    except Exception as e:
+        log_error(f"[MEGA DELTA ERROR] {e}")
+        return False, ""
+    finally:
+        try:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        except Exception:
+            pass
+
+
+def _mark_global_snapshot_pending():
+    """Full global: после 3 минут тишины, но максимум через 15 минут непрерывной работы."""
+    global _global_snapshot_pending, _global_snapshot_last_change_monotonic
+    if RESTORE_GUARD_ACTIVE or not mega_is_configured():
+        return
+    now_mono = time.monotonic()
+    with _delta_state_lock:
+        _global_snapshot_pending = True
+        _global_snapshot_last_change_monotonic = now_mono
+        elapsed = max(0.0, now_mono - _global_snapshot_last_success_monotonic)
+        max_wait = max(5.0, MEGA_GLOBAL_MAX_INTERVAL_SECONDS - elapsed)
+
+    def _quiet_fire():
+        with _delta_state_lock:
+            quiet_for = time.monotonic() - _global_snapshot_last_change_monotonic
+            pending = _global_snapshot_pending
+        if not pending:
+            return
+        if quiet_for + 0.5 < MEGA_GLOBAL_QUIET_SECONDS:
+            DELAYED_SCHEDULER.schedule("mega-global-quiet-v90", MEGA_GLOBAL_QUIET_SECONDS - quiet_for, _quiet_fire)
+            return
+        _submit_global_snapshot_v90("quiet")
+
+    def _max_fire():
+        with _delta_state_lock:
+            pending = _global_snapshot_pending
+        if pending:
+            _submit_global_snapshot_v90("max_interval")
+
+    DELAYED_SCHEDULER.cancel("mega-global-quiet-v90")
+    DELAYED_SCHEDULER.schedule("mega-global-quiet-v90", MEGA_GLOBAL_QUIET_SECONDS, _quiet_fire)
+    if DELAYED_SCHEDULER.deadline("mega-global-max-v90") is None:
+        DELAYED_SCHEDULER.schedule("mega-global-max-v90", max_wait, _max_fire)
+
+
+def _submit_global_snapshot_v90(reason: str):
+    if RESTORE_GUARD_ACTIVE:
+        return
+    def _job():
+        ok = mega_upload_latest_global_backup()
+        if not ok:
+            DELAYED_SCHEDULER.schedule("mega-global-retry-v90", BACKUP_BUSY_RETRY_SECONDS, _submit_global_snapshot_v90, "retry")
+    if not BACKUP_TASK_POOL.submit("mega-global-v90", _job):
+        log_error(f"GLOBAL v90 QUEUE FULL ({reason}), RETRY")
+        DELAYED_SCHEDULER.schedule("mega-global-retry-v90", BACKUP_BUSY_RETRY_SECONDS, _submit_global_snapshot_v90, "queue_retry")
+
+
+def _run_delta_batch():
+    global _delta_last_success_at, _delta_last_file, _delta_last_event_count, _delta_last_error
+    with _delta_state_lock:
+        chat_ids = sorted(_delta_pending_chats)
+        generation_map = {cid: int(_delta_chat_generation.get(cid, 0)) for cid in chat_ids}
+    if not chat_ids:
+        return True
+    payload, baseline = _build_delta_payload(chat_ids, generation_map)
+
+    if payload is not None:
+        ok, remote_path = _delta_upload_payload(payload)
+        if not ok:
+            _delta_last_error = "delta upload failed"
+            return False
+        _delta_last_success_at = str(payload.get("created_at") or "")
+        _delta_last_file = remote_path
+        _delta_last_event_count = int(payload.get("event_count", 0) or 0)
+        _delta_last_error = ""
+        log_info(f"[MEGA DELTA] uploaded {remote_path}; events={_delta_last_event_count}; chats={payload.get('chat_count')}")
+        _mark_global_snapshot_pending()
+
+    _commit_delta_baseline(baseline)
+    with _delta_state_lock:
+        for cid, gen in generation_map.items():
+            if int(_delta_chat_generation.get(cid, 0)) == int(gen):
+                _delta_pending_chats.discard(cid)
+        more_pending = bool(_delta_pending_chats)
+    with timer_lock:
+        for cid in generation_map:
+            _quick_backup_timers.pop(int(cid), None)
+            _quick_backup_dirty_chats.discard(int(cid))
+    if more_pending:
+        schedule_delta_backup(None, delay=1.0, reason="changes_during_upload")
+    return True
+
+def schedule_delta_backup(chat_id: int | None, delay: float | None = None, reason: str = "change"):
+    """Общий debounce разных чатов: несколько изменений попадают в один маленький delta."""
+    global _delta_generation, _delta_batch_timer
+    if RESTORE_GUARD_ACTIVE or not mega_is_configured():
+        return False
+    with _delta_state_lock:
+        _delta_generation += 1
+        if chat_id is not None:
+            cid = int(chat_id)
+            _delta_pending_chats.add(cid)
+            _delta_chat_generation[cid] = _delta_generation
+        elif not _delta_pending_chats:
+            return False
+    if delay is None:
+        delay = MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS
+    delay = max(0.5, float(delay))
+
+    def _fire():
+        def _job():
+            if not _run_delta_batch():
+                schedule_delta_backup(None, delay=BACKUP_BUSY_RETRY_SECONDS, reason="upload_retry")
+        if not DELTA_TASK_POOL.submit("mega-delta-v90", _job):
+            log_error("DELTA QUEUE FULL, RETRY")
+            schedule_delta_backup(None, delay=BACKUP_BUSY_RETRY_SECONDS, reason="queue_retry")
+
+    DELAYED_SCHEDULER.cancel("mega-delta-batch-v90")
+    _delta_batch_timer = DELAYED_SCHEDULER.schedule("mega-delta-batch-v90", delay, _fire)
+    return True
+
+
+def _apply_delta_payload_to_state(state: dict, delta: dict) -> dict:
+    if not isinstance(state, dict) or not isinstance(delta, dict):
+        return state
+    root_patch = delta.get("root_patch") or {}
+    for key in (delta.get("root_deletes") or []):
+        if key not in _DELTA_VOLATILE_ROOT_KEYS:
+            state.pop(str(key), None)
+    for key, value in root_patch.items():
+        if key not in _DELTA_VOLATILE_ROOT_KEYS:
+            state[key] = _delta_json_clone(value)
+    for key, entries in (delta.get("root_map_patches") or {}).items():
+        target = state.setdefault(str(key), {})
+        if not isinstance(target, dict):
+            target = {}
+            state[str(key)] = target
+        for entry, value in (entries or {}).items():
+            target[str(entry)] = _delta_json_clone(value)
+    for key, entries in (delta.get("root_map_deletes") or {}).items():
+        target = state.get(str(key))
+        if isinstance(target, dict):
+            for entry in entries or []:
+                target.pop(str(entry), None)
+    chats = state.setdefault("chats", {})
+    for cid_s, change in (delta.get("chat_changes") or {}).items():
+        if not isinstance(change, dict):
+            continue
+        store = chats.setdefault(str(cid_s), {})
+        # Поддержка первых тестовых delta с chat_meta и основной field-patch формат v90.
+        meta = change.get("chat_meta")
+        if isinstance(meta, dict):
+            for key, value in meta.items():
+                store[key] = _delta_json_clone(value)
+        for key in (change.get("chat_meta_deletes") or []):
+            store.pop(str(key), None)
+        for key, value in (change.get("chat_meta_patch") or {}).items():
+            store[str(key)] = _delta_json_clone(value)
+        current = {
+            _delta_record_key(rec): rec
+            for rec in (store.get("records", []) or [])
+            if isinstance(rec, dict)
+        }
+        for key in (change.get("deletes") or []):
+            current.pop(str(key), None)
+        for item in (change.get("upserts") or []):
+            if not isinstance(item, dict) or not isinstance(item.get("record"), dict):
+                continue
+            current[str(item.get("key") or _delta_record_key(item["record"]))] = _delta_json_clone(item["record"])
+        records = sorted(current.values(), key=record_sort_key)
+        daily = defaultdict(list)
+        for rec in records:
+            dk = _record_day_key(rec)
+            rec["day_key"] = dk
+            daily[dk].append(rec)
+        store["records"] = records
+        store["daily_records"] = {dk: sorted(rows, key=record_sort_key) for dk, rows in sorted(daily.items())}
+        store["balance"] = sum(float(rec.get("amount", 0) or 0) for rec in records)
+    state["overall_balance"] = sum(float((s or {}).get("balance", 0) or 0) for s in chats.values() if isinstance(s, dict))
+    state["records"] = []
+    state["_delta_restore_meta"] = {
+        "last_delta_id": delta.get("delta_id"),
+        "last_delta_created_at": delta.get("created_at"),
+        "last_delta_event_count": delta.get("event_count"),
+    }
+    return state
+
+
+def _delta_remote_candidates_after(created_at: str, limit: int | None = None) -> list[str]:
+    rows = _mega_find_remote_files(mega_delta_remote_root(), "delta_*.json")
+    base_ts = _parse_iso_timestamp(created_at)
+    selected = []
+    for path in sorted(rows):
+        name = os.path.basename(path)
+        match = re.search(r"delta_(\d{8})_(\d{6})_(\d{6})_", name)
+        if match:
+            try:
+                dt = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S%f").replace(tzinfo=get_tz())
+                if dt.timestamp() <= base_ts:
+                    continue
+            except Exception:
+                pass
+        selected.append(path)
+    return selected[: int(limit or MEGA_DELTA_RESTORE_LIMIT)]
+
+
+def merge_global_snapshot_with_mega_deltas(local_global_path: str) -> tuple[str, int]:
+    """Скачивает и применяет immutable delta, созданные после full snapshot."""
+    base = _load_json(local_global_path, {}) or {}
+    if not _global_payload_is_structurally_valid(base):
+        return local_global_path, 0
+    created_at = str((base.get("_universal_backup") or {}).get("created_at") or (base.get("_backup_meta") or {}).get("created_at") or "")
+    remote_rows = _delta_remote_candidates_after(created_at)
+    applied = 0
+    for remote_path in remote_rows:
+        local_delta = _mega_download_remote_path(remote_path)
+        if not local_delta:
+            continue
+        delta = _load_json(local_delta, {}) or {}
+        if delta.get("kind") != "telegram_finance_bot_delta":
+            continue
+        if _parse_iso_timestamp(delta.get("created_at")) <= _parse_iso_timestamp(created_at):
+            continue
+        _apply_delta_payload_to_state(base, delta)
+        applied += 1
+    if not applied:
+        return local_global_path, 0
+    merged = os.path.join(MEGA_LOCAL_TMP_DIR, f"merged_global_with_{applied}_deltas.json")
+    _save_json(merged, base)
+    log_info(f"[MEGA RESTORE] merged full snapshot + {applied} delta files")
+    return merged, applied
+
+
+def _prune_delta_files_after_full_snapshot():
+    try:
+        rows = _mega_find_remote_files(mega_delta_remote_root(), "delta_*.json")
+        for remote_path in rows[MEGA_DELTA_KEEP_FILES:]:
+            _mega_run("mega-rm", [remote_path], check=False, timeout=30)
+    except Exception as e:
+        log_error(f"_prune_delta_files_after_full_snapshot: {e}")
+
+
+def delta_status_text() -> str:
+    with _delta_state_lock:
+        pending = len(_delta_pending_chats)
+        global_pending = _global_snapshot_pending
+        since_full = max(0, int(time.monotonic() - _global_snapshot_last_success_monotonic))
+    return (
+        "🧩 Delta backup v90\n"
+        f"Ожидают чаты: {pending}\n"
+        f"Последний delta: {_delta_last_success_at or '-'}\n"
+        f"Событий в нём: {_delta_last_event_count}\n"
+        f"Файл: {_delta_last_file or '-'}\n"
+        f"Ошибка: {_delta_last_error or '-'}\n"
+        f"Full global ожидается: {'да' if global_pending else 'нет'}\n"
+        f"После последнего full: {since_full} сек.\n"
+        f"Тишина для full: {int(MEGA_GLOBAL_QUIET_SECONDS)} сек.; максимум: {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)} сек."
+    )
+
+
 def _snapshot_runtime_state_for_backup(payload: dict) -> dict:
     """Минимальный стабильный runtime-слой, необходимый для восстановления между версиями."""
     return {
@@ -4820,58 +5510,240 @@ def make_global_backup_payload() -> dict:
 
 
 def save_global_backup_snapshot(path: str) -> str:
+    """Атомарно создаёт локальный universal snapshot."""
     payload = make_global_backup_payload()
-    with open(path, "w", encoding="utf-8") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except Exception:
+            pass
+    os.replace(tmp, path)
     return path
 
 
-def mega_upload_latest_global_backup() -> bool:
-    """Загружает latest_global.json в MEGA. Не ломает основной бот при ошибке."""
-    if not mega_is_configured():
-        return False
+def _global_payload_stats(payload: dict, path: str | None = None) -> dict:
+    chats = payload.get("chats", {}) if isinstance(payload, dict) else {}
+    if not isinstance(chats, dict):
+        chats = {}
+    record_count = 0
+    nonempty_chats = 0
+    for store in chats.values():
+        if not isinstance(store, dict):
+            continue
+        recs = store.get("records") or []
+        if isinstance(recs, list):
+            record_count += len(recs)
+            if recs:
+                nonempty_chats += 1
     try:
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        local_path = os.path.join(MEGA_LOCAL_TMP_DIR, MEGA_LATEST_GLOBAL_NAME)
-        save_global_backup_snapshot(local_path)
-        mega_ensure_remote_dir()
-        remote_file = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
-        # Удаляем старый файл, чтобы в MEGA не плодились дубли latest_global.json.
-        _mega_run("mega-rm", [remote_file], check=False, timeout=30)
-        _mega_run("mega-put", [local_path, MEGA_BACKUP_DIR], check=True, timeout=MEGA_TIMEOUT)
-        log_info(f"[MEGA] latest backup uploaded: {remote_file}")
-        return True
-    except Exception as e:
-        log_error(f"[MEGA BACKUP ERROR] {e}")
+        size_bytes = os.path.getsize(path) if path and os.path.exists(path) else len(json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        size_bytes = 0
+    universal = payload.get("_universal_backup") or {}
+    return {
+        "size_bytes": int(size_bytes),
+        "chat_count": len(chats),
+        "nonempty_chats": nonempty_chats,
+        "record_count": int(record_count),
+        "schema_version": int(universal.get("schema_version") or 0),
+        "created_at": str(universal.get("created_at") or (payload.get("_backup_meta") or {}).get("created_at") or ""),
+        "is_universal": universal.get("kind") == UNIVERSAL_BACKUP_KIND,
+    }
+
+
+def _global_payload_is_structurally_valid(payload: dict) -> bool:
+    if not isinstance(payload, dict):
         return False
+    if not isinstance(payload.get("chats"), dict):
+        return False
+    universal = payload.get("_universal_backup") or {}
+    return universal.get("kind") == UNIVERSAL_BACKUP_KIND or "_backup_meta" in payload
 
 
-def mega_download_latest_global_backup() -> str | None:
+def _global_candidate_rejection(candidate: dict, current: dict | None = None) -> str:
+    """Возвращает причину отказа, если кандидат похож на обнулённую/обрезанную базу."""
+    if not candidate.get("is_universal"):
+        return "candidate is not universal"
+    if candidate.get("size_bytes", 0) < MEGA_GLOBAL_MIN_SAFE_BYTES and candidate.get("record_count", 0) == 0:
+        return f"candidate too small/empty: {candidate.get('size_bytes')} bytes"
+    if current:
+        old_records = int(current.get("record_count", 0) or 0)
+        new_records = int(candidate.get("record_count", 0) or 0)
+        old_size = int(current.get("size_bytes", 0) or 0)
+        new_size = int(candidate.get("size_bytes", 0) or 0)
+        old_chats = int(current.get("chat_count", 0) or 0)
+        new_chats = int(candidate.get("chat_count", 0) or 0)
+        if old_records >= 10 and new_records < old_records * (1.0 - MEGA_GLOBAL_MAX_RECORD_DROP):
+            return f"record drop blocked: {old_records} -> {new_records}"
+        if old_size >= 100_000 and new_size < old_size * 0.50:
+            return f"size drop blocked: {old_size} -> {new_size}"
+        if old_chats >= 2 and new_chats < max(1, int(old_chats * 0.50)):
+            return f"chat drop blocked: {old_chats} -> {new_chats}"
+    return ""
+
+
+def _set_restore_guard(reason: str):
+    global RESTORE_GUARD_ACTIVE, RESTORE_GUARD_REASON
+    RESTORE_GUARD_ACTIVE = True
+    RESTORE_GUARD_REASON = str(reason or "restore not confirmed")[:1000]
+    log_error(f"[RESTORE GUARD ON] {RESTORE_GUARD_REASON}")
+
+
+def _clear_restore_guard():
+    global RESTORE_GUARD_ACTIVE, RESTORE_GUARD_REASON
+    RESTORE_GUARD_ACTIVE = False
+    RESTORE_GUARD_REASON = ""
+
+
+def mega_history_remote_dir() -> str:
+    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_HISTORY_BACKUP_DIR}"
+
+
+def mega_download_global_named(remote_name: str) -> str | None:
     if not mega_is_configured():
         return None
     try:
         mega_login_if_needed()
         restore_dir = tempfile.mkdtemp(prefix="mega_restore_")
-        remote_file = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
+        remote_file = mega_remote_file_path(remote_name)
         _mega_run("mega-get", [remote_file, restore_dir], check=True, timeout=MEGA_TIMEOUT)
-        local_path = os.path.join(restore_dir, MEGA_LATEST_GLOBAL_NAME)
+        local_path = os.path.join(restore_dir, os.path.basename(remote_name))
         if not os.path.exists(local_path):
-            # На случай если MEGAcmd сохранил с другим именем — ищем первый JSON.
             for name in os.listdir(restore_dir):
                 if name.lower().endswith(".json"):
                     local_path = os.path.join(restore_dir, name)
                     break
-        if not os.path.exists(local_path):
-            raise RuntimeError("download finished, but latest_global.json not found locally")
-        log_info(f"[MEGA] latest backup downloaded: {local_path}")
-        return local_path
+        return local_path if os.path.exists(local_path) else None
     except Exception as e:
-        log_error(f"[MEGA RESTORE DOWNLOAD ERROR] {e}")
+        log_error(f"[MEGA RESTORE DOWNLOAD ERROR] {remote_name}: {e}")
         return None
 
 
+def mega_download_latest_global_backup() -> str | None:
+    return mega_download_global_named(MEGA_LATEST_GLOBAL_NAME)
+
+
+def _mega_history_candidates(limit: int = 20) -> list[str]:
+    """Возвращает последние immutable global snapshots из MEGA history."""
+    exe = shutil.which("mega-find")
+    if not exe or not mega_is_configured():
+        return []
+    try:
+        mega_ensure_remote_path(mega_history_remote_dir())
+        res = _mega_run(
+            "mega-find",
+            [mega_history_remote_dir(), "--pattern=global_*.json", "--type=f"],
+            check=False,
+            timeout=60,
+        )
+        rows = [x.strip() for x in (res.stdout or "").splitlines() if x.strip().lower().endswith(".json")]
+        return sorted(set(rows), reverse=True)[:max(1, int(limit))]
+    except Exception as e:
+        log_error(f"_mega_history_candidates: {e}")
+        return []
+
+
+def _mega_download_remote_path(remote_path: str) -> str | None:
+    try:
+        restore_dir = tempfile.mkdtemp(prefix="mega_history_restore_")
+        _mega_run("mega-get", [remote_path, restore_dir], check=True, timeout=MEGA_TIMEOUT)
+        base = os.path.basename(remote_path.rstrip("/"))
+        local = os.path.join(restore_dir, base)
+        if os.path.exists(local):
+            return local
+        for name in os.listdir(restore_dir):
+            if name.lower().endswith(".json"):
+                return os.path.join(restore_dir, name)
+    except Exception as e:
+        log_error(f"_mega_download_remote_path({remote_path}): {e}")
+    return None
+
+
+def mega_upload_latest_global_backup(force: bool = False) -> bool:
+    """Безопасный latest_global: проверка усечения, история и замена без предварительного удаления."""
+    if not mega_is_configured():
+        return False
+    if RESTORE_GUARD_ACTIVE and not force:
+        log_error(f"[MEGA BACKUP BLOCKED BY RESTORE GUARD] {RESTORE_GUARD_REASON}")
+        return False
+    with MEGA_GLOBAL_BACKUP_LOCK:
+        candidate_path = None
+        try:
+            with _delta_state_lock:
+                snapshot_capture_generation = int(_delta_generation)
+            os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+            stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
+            candidate_name = f"candidate_global_{stamp}.json"
+            candidate_path = os.path.join(MEGA_LOCAL_TMP_DIR, candidate_name)
+            save_global_backup_snapshot(candidate_path)
+            candidate_payload = _load_json(candidate_path, {}) or {}
+            candidate_stats = _global_payload_stats(candidate_payload, candidate_path)
+
+            current_path = mega_download_latest_global_backup()
+            current_payload = _load_json(current_path, {}) if current_path else {}
+            current_stats = _global_payload_stats(current_payload, current_path) if _global_payload_is_structurally_valid(current_payload) else None
+
+            rejection = "" if force else _global_candidate_rejection(candidate_stats, current_stats)
+            if rejection:
+                _set_restore_guard("dangerous MEGA overwrite prevented: " + rejection)
+                log_error(f"[MEGA GLOBAL REJECTED] candidate={candidate_stats} current={current_stats}")
+                return False
+
+            mega_ensure_remote_path(MEGA_BACKUP_DIR)
+            mega_ensure_remote_path(mega_history_remote_dir())
+
+            # Сначала загружаем кандидат под уникальным временным именем.
+            _mega_run("mega-put", [candidate_path, MEGA_BACKUP_DIR], check=True, timeout=MEGA_TIMEOUT)
+            remote_candidate = MEGA_BACKUP_DIR.rstrip("/") + "/" + candidate_name
+            remote_latest = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
+
+            # Старый latest не удаляем: переносим в историю. Даже если следующий шаг упадёт,
+            # предыдущий полный файл останется доступен для autorestore.
+            if current_path and current_stats:
+                old_stamp = re.sub(r"[^0-9]", "", current_stats.get("created_at", ""))[:14] or stamp
+                archived = mega_history_remote_dir().rstrip("/") + f"/global_{old_stamp}_{current_stats.get('record_count',0)}r_{stamp}.json"
+                mv = _mega_run("mega-mv", [remote_latest, archived], check=False, timeout=60)
+                if mv.returncode != 0:
+                    log_error(f"[MEGA] could not archive previous latest: {(mv.stderr or mv.stdout or '')[:300]}")
+
+            # Активируем новый latest одним move, без окна delete->put.
+            _mega_run("mega-mv", [remote_candidate, remote_latest], check=True, timeout=60)
+            # Полный снимок успешно активирован: фиксируем baseline именно из candidate,
+            # а не из более нового live-state, который мог измениться во время загрузки.
+            initialize_delta_baseline(candidate_payload)
+            global _global_snapshot_pending, _global_snapshot_last_success_monotonic, _global_snapshot_last_success_at
+            with _delta_state_lock:
+                newer_changes_exist = int(_delta_generation) > int(snapshot_capture_generation)
+                _global_snapshot_pending = bool(newer_changes_exist)
+                _global_snapshot_last_success_monotonic = time.monotonic()
+                _global_snapshot_last_success_at = now_local().isoformat(timespec="seconds")
+            DELAYED_SCHEDULER.cancel("mega-global-max-v90")
+            DELAYED_SCHEDULER.cancel("mega-global-quiet-v90")
+            if newer_changes_exist:
+                _mark_global_snapshot_pending()
+            try:
+                _mega_prune_remote_history(mega_history_remote_dir(), "global_*.json", MEGA_GLOBAL_HISTORY_KEEP)
+                _prune_delta_files_after_full_snapshot()
+            except Exception:
+                pass
+            log_info(f"[MEGA] guarded latest uploaded: {remote_latest}; stats={candidate_stats}")
+            return True
+        except Exception as e:
+            log_error(f"[MEGA BACKUP ERROR] {e}")
+            return False
+        finally:
+            try:
+                import gc
+                gc.collect()
+            except Exception:
+                pass
+
+
 def is_data_effectively_empty_for_restore(d: dict) -> bool:
-    """True, если база похожа на пустую после нового deploy Render."""
+    """True, если база похожа на пустую после нового deploy/restart Render."""
     if not isinstance(d, dict):
         return True
     if d.get("forward_rules") or d.get("forward_finance"):
@@ -4887,6 +5759,8 @@ def is_data_effectively_empty_for_restore(d: dict) -> bool:
         daily = store.get("daily_records") or {}
         if any((daily.get(day) or []) for day in daily):
             return False
+        if store.get("secret_messages"):
+            return False
     return True
 
 
@@ -4898,48 +5772,67 @@ def _parse_iso_timestamp(value: str | None) -> float:
 
 
 def mega_autorestore_if_needed() -> bool:
-    """Восстанавливает universal latest при пустой базе или когда снимок MEGA новее локального."""
+    """При пустом локальном диске ищет последний содержательный global snapshot; иначе включает аварийную блокировку."""
     global data
     if not MEGA_AUTORESTORE or not mega_is_configured():
+        if is_data_effectively_empty_for_restore(data):
+            _set_restore_guard("local database is empty and MEGA autorestore is unavailable")
         return False
 
     local_empty = is_data_effectively_empty_for_restore(data)
-    local_path = mega_download_latest_global_backup()
-    if not local_path:
-        return False
+    candidates: list[tuple[str, str | None]] = [("latest", mega_download_latest_global_backup())]
+    if local_empty:
+        for remote_path in _mega_history_candidates(limit=20):
+            candidates.append((remote_path, None))
 
-    try:
-        remote_raw = _load_json(local_path, {}) or {}
-        universal = remote_raw.get("_universal_backup") or {}
-        is_universal = universal.get("kind") == UNIVERSAL_BACKUP_KIND
-        remote_created = (
-            universal.get("created_at")
-            or (remote_raw.get("_backup_meta") or {}).get("created_at")
-            or ""
-        )
-        local_saved = ((data or {}).get("_state_meta") or {}).get("last_saved_at") or ""
+    for label, local_path in candidates:
+        try:
+            if local_path is None and label != "latest":
+                local_path = _mega_download_remote_path(label)
+            if not local_path:
+                continue
+            remote_raw = _load_json(local_path, {}) or {}
+            if not _global_payload_is_structurally_valid(remote_raw):
+                log_error(f"[MEGA] restore candidate invalid: {label}")
+                continue
+            # v90: full snapshot + все маленькие delta, появившиеся после него.
+            local_path, applied_delta_count = merge_global_snapshot_with_mega_deltas(local_path)
+            remote_raw = _load_json(local_path, {}) or {}
+            stats = _global_payload_stats(remote_raw, local_path)
+            stats["applied_deltas"] = applied_delta_count
+            if local_empty and stats.get("record_count", 0) == 0 and not ALLOW_EMPTY_MEGA_RESTORE:
+                log_error(f"[MEGA] empty restore candidate rejected: {label}, stats={stats}")
+                continue
 
-        # Непустую локальную базу старым/частичным legacy-файлом не перезаписываем.
-        if not local_empty and not is_universal:
-            log_info("[MEGA] autorestore skipped: local state exists and remote is legacy")
-            return False
-        if not local_empty and _parse_iso_timestamp(remote_created) <= _parse_iso_timestamp(local_saved):
-            log_info("[MEGA] autorestore skipped: local state is not older than universal backup")
-            return False
+            universal = remote_raw.get("_universal_backup") or {}
+            remote_created = universal.get("created_at") or (remote_raw.get("_backup_meta") or {}).get("created_at") or ""
+            local_saved = ((data or {}).get("_state_meta") or {}).get("last_saved_at") or ""
+            if not local_empty and _parse_iso_timestamp(remote_created) <= _parse_iso_timestamp(local_saved):
+                log_info("[MEGA] autorestore skipped: local state is not older than universal backup")
+                _clear_restore_guard()
+                return False
 
-        restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
-        restore_from_json(restore_chat_id, local_path)
-        log_info(f"[MEGA] autorestore completed: universal={is_universal} local_empty={local_empty}")
-        return True
-    except Exception as e:
-        log_error(f"[MEGA AUTORESTORE ERROR] {e}")
-        return False
+            restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
+            restore_from_json(restore_chat_id, local_path)
+            _clear_restore_guard()
+            log_info(f"[MEGA] autorestore completed from {label}: stats={stats}")
+            return True
+        except Exception as e:
+            log_error(f"[MEGA AUTORESTORE CANDIDATE ERROR] {label}: {e}")
 
+    if local_empty:
+        _set_restore_guard("local database is empty; no non-empty valid MEGA snapshot found. Automatic backups are blocked.")
+    return False
 
 def mega_status_text() -> str:
     lines = ["☁️ MEGA.nz / MEGAcmd"]
     lines.append(f"MEGA_ENABLED: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'}")
     lines.append(f"MEGA_AUTORESTORE: {'ВКЛ' if MEGA_AUTORESTORE else 'ВЫКЛ'}")
+    lines.append(f"RESTORE_GUARD: {'ВКЛ — ' + RESTORE_GUARD_REASON if RESTORE_GUARD_ACTIVE else 'ВЫКЛ'}")
+    lines.append(f"MEGA_HISTORY_DIR: {mega_history_remote_dir()}")
+    lines.append(f"MEGA_DELTA_DIR: {mega_delta_remote_root()}")
+    lines.append(f"Delta delay: {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g} сек")
+    lines.append(f"Global full: после {int(MEGA_GLOBAL_QUIET_SECONDS)} сек. тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)} сек.")
     lines.append(f"MEGA_EMAIL: {'есть' if MEGA_EMAIL else 'нет'}")
     lines.append(f"MEGA_BACKUP_DIR: {MEGA_BACKUP_DIR}")
     lines.append(f"MEGA_CHAT_BACKUP_DIR: {MEGA_CHAT_BACKUP_DIR}")
@@ -6080,7 +6973,9 @@ def restore_from_json(chat_id: int, path: str):
 
         rebuild_global_records()
         save_data(data, full=True)
-        schedule_all_finance_backups(delay=0.5)
+        if not is_data_effectively_empty_for_restore(data):
+            _clear_restore_guard()
+        # v90: после restore не запускаем overwrite; baseline+delta начнутся только после нового изменения.
         log_info(
             "restore_from_json: universal global state restored "
             f"schema={(raw_payload.get('_universal_backup') or {}).get('schema_version', 'legacy')} "
@@ -6110,6 +7005,8 @@ def restore_from_json(chat_id: int, path: str):
         rebuild_global_records()
 
         save_data(data, chat_ids=[chat_id])
+        if store.get("records") or any(store.get("daily_records", {}).values()):
+            _clear_restore_guard()
         finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day", today_key()), reason="restore_json_core", delay=0.1)
 
         log_info(f"restore_from_json: chat {chat_id} restored from per-chat JSON")
@@ -6334,7 +7231,10 @@ def _custom_category_list(store: dict | None) -> list:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").strip().upper()
+        raw_name = str(item.get("name") or "").strip()
+        name = _clean_category_display_name(raw_name).upper()
+        if name and raw_name != name:
+            item["name"] = name
         keywords = [str(x).strip().lower() for x in (item.get("keywords") or []) if str(x).strip()]
         slug = str(item.get("slug") or "").strip()
         if not name or not keywords:
@@ -6367,7 +7267,10 @@ def _base_category_items(store: dict | None = None) -> list[dict]:
         ov = overrides.get(slug) if isinstance(overrides, dict) else None
         if not isinstance(ov, dict):
             ov = {}
-        name = str(ov.get("name") or default_name).strip().upper()
+        raw_name = str(ov.get("name") or default_name).strip()
+        name = _clean_category_display_name(raw_name).upper()
+        if ov and name and raw_name != name:
+            ov["name"] = name
         keywords = ov.get("keywords") if isinstance(ov.get("keywords"), list) else EXPENSE_CATEGORIES.get(default_name, [])
         keywords = [str(x).strip().lower() for x in (keywords or []) if str(x).strip()]
         items.append({"name": name, "slug": slug, "keywords": keywords, "base": True, "default_name": default_name})
@@ -6405,7 +7308,7 @@ def get_expense_category_order(store: dict | None = None) -> list[str]:
 
 
 def get_expense_category_slug(category: str, store: dict | None = None) -> str | None:
-    category = str(category or "").strip().upper()
+    category = _clean_category_display_name(str(category or "")).upper()
     for item in _base_category_items(store):
         if category in {str(item.get("name") or "").upper(), str(item.get("default_name") or "").upper()}:
             return item.get("slug")
@@ -6717,30 +7620,51 @@ def build_articles_description_text(chat_id: int | None = None) -> str:
     lines = ["📚 Описание статей расходов", ""]
     for item in _base_category_items(store):
         keys = item.get("keywords", []) or []
-        lines.append(f"{item.get('name')}: {', '.join(keys) if keys else '—'}")
+        clean_name = _clean_category_display_name(item.get("name") or "")
+        lines.append(f"{clean_name}: {', '.join(keys) if keys else '—'}")
     custom = _custom_category_list(store)
     if custom:
         lines.append("")
         lines.append("Пользовательские статьи:")
         for item in custom:
-            lines.append(f"{item.get('name')}: {', '.join(item.get('keywords') or [])}")
+            clean_name = _clean_category_display_name(item.get("name") or "")
+            lines.append(f"{clean_name}: {', '.join(item.get('keywords') or [])}")
     lines.append("")
     lines.append("Добавить новую статью можно в окне 📊 Статьи → ➕ Добавить статью.")
     return wm_common("\n".join(lines), 7)
 
 
 def summarize_categories(store: dict, start: str, end: str, label: str):
+    """Сводка статей с тем же режимом валюты, что и основное финансовое окно."""
     cats = calc_categories_for_period(store, start, end)
+    mode = currency_mode_from_store(store)
+    category_mixed = bool(
+        mode == "ars"
+        and store.setdefault("settings", {}).get("category_usd_enabled", False)
+        and _v85_enabled("usd_categories")
+    )
+    show_rate = mode != "ars" or category_mixed
+    rate_info = usd_rate_cached(force=False) if show_rate else None
     lines = [
         "📦 Расходы по статьям",
         f"🗓 {label}",
         ""
     ]
+    if show_rate:
+        if rate_info and rate_info.get("rate"):
+            lines.append(
+                f"💵 Курс: 1 USD = {fmt_num(rate_info['rate']).lstrip('+')} ARS "
+                f"({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})"
+            )
+        else:
+            lines.append("💵 Курс USD временно недоступен")
+        lines.append("")
     if not cats:
         lines.append("Нет данных по статьям за этот период.")
     else:
         for cat in get_ordered_category_names(cats=cats, store=store):
-            lines.append(f"{cat}: {fmt_num_plain(cats.get(cat, 0))}")
+            clean_name = _clean_category_display_name(cat).upper()
+            lines.append(f"{clean_name}: {format_category_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
 
@@ -6840,7 +7764,7 @@ def build_categories_buttons(start: str, end: str, store: dict | None = None):
             continue
         buttons.append(
             IB(
-                cat,
+                _clean_category_display_name(cat),
                 callback_data=cat_callback(f"cat_show:{start}:{end}:{slug}")
             )
         )
@@ -6902,23 +7826,39 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
 
 
 def build_category_detail_text(store: dict, start: str, end: str, category: str, label: str):
+    """Детализация статьи в режимах ARS / ARS-USD / USD."""
     items = collect_items_for_category(store, start, end, category)
+    mode = currency_mode_from_store(store)
+    category_mixed = bool(
+        mode == "ars"
+        and store.setdefault("settings", {}).get("category_usd_enabled", False)
+        and _v85_enabled("usd_categories")
+    )
+    show_rate = mode != "ars" or category_mixed
+    rate_info = usd_rate_cached(force=False) if show_rate else None
+    clean_category = _clean_category_display_name(category).upper()
     lines = [
-        f"📦 {category}",
+        f"📦 {clean_category}",
         f"🗓 {label}",
         ""
     ]
 
     total = sum(amt for _, amt, _ in items)
-    lines.append(f"Итого: {fmt_num_plain(total)}")
+    lines.append(f"Итого: {format_category_amount(store, total, category_mixed)}")
+    if show_rate and rate_info and rate_info.get("rate"):
+        lines.append(
+            f"Курс: 1 USD = {fmt_num(rate_info['rate']).lstrip('+')} ARS "
+            f"({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})"
+        )
     lines.append("")
 
     if not items:
         lines.append("Нет операций по этой статье.")
     else:
         for day_i, amt_i, note_i in items:
-            note_i = (note_i or "").strip()
-            lines.append(f"• {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {note_i}".rstrip())
+            clean_note = _clean_category_display_name((note_i or "").strip())
+            amount_text = format_category_amount(store, amt_i, category_mixed)
+            lines.append(f"• {fmt_date_ddmmyy(day_i)}: {amount_text} {clean_note}".rstrip())
 
     return wm_common("\n".join(lines), 8)
 
@@ -10575,7 +11515,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -11251,7 +12191,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
         article_buttons = []
         for item in category_edit_items_for_chat(int(chat_id)):
             slug = str(item.get("slug") or "").strip()
-            name = str(item.get("name") or slug or "Статья").strip()
+            name = _clean_category_display_name(str(item.get("name") or slug or "Статья").strip())
             if not slug:
                 continue
             article_buttons.append(IB(f"✏️ {name}", callback_data=cat_callback(f"cat_main_edit:{slug}:{day_key}")))
@@ -13436,9 +14376,9 @@ def build_owner_instruction_text() -> str:
         "3. Пересылка: порядок сохраняется внутри исходного чата. Несколько разных чатов пересылаются параллельно.\n"
         "4. Секрет: сообщение сначала пересылается, если включена пересылка, затем сохраняется и удаляется из исходного чата.\n"
         "5. SQLite сохраняется сразу. В обычной операции точечно обновляется только изменившийся чат.\n"
-        "6. Быстрый JSON: примерно через 15 секунд после последнего изменения конкретного чата. При включённой MEGA обновляется latest JSON этого чата.\n"
-        "7. Полный бэкап: примерно через 120 секунд тишины именно в этом чате. JSON/CSV создаются всегда; Excel зависит от /off_on_backup_excel; канал получает JSON и при включении Excel; MEGA получает JSON.\n"
-        "8. У каждого чата собственный таймер бэкапа: активность одного чата не переносит бэкап остальных.\n"
+        "6. Быстрый MEGA: через 1 сек. в приоритетном режиме или примерно через 8 сек. обычно загружается маленький immutable delta нескольких чатов. Старые delta не заменяются.\n"
+        "7. Полный файл чата: примерно через 120 секунд тишины именно в этом чате. MEGA обновляется безопасно: candidate → history → active, без предварительного удаления.\n"
+        "8. Полный global: после 3 минут общей тишины, но не реже одного раза за 15 минут непрерывных изменений. Между full snapshot восстановление выполняется как global + delta.\n"
         "9. Очереди ограничены. При перегрузке webhook вернёт 503, и Telegram повторит доставку вместо потери update.\n"
         "10. /queues показывает размер очередей, работников, отказы и ожидание. /diag показывает общее состояние."
     )
@@ -13455,7 +14395,7 @@ def build_owner_instruction_keyboard(chat_id: int):
 def all_task_pool_stats() -> list[dict]:
     return [
         WEBHOOK_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
-        BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
+        DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
         JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
     ]
 
@@ -13471,8 +14411,11 @@ def build_queue_status_text() -> str:
     with timer_lock:
         lines.append("")
         lines.append(f"Таймеров полного бэкапа: {len(_backup_timers)}")
-        lines.append(f"Таймеров быстрого JSON: {len(_quick_backup_timers)}")
+        lines.append(f"Таймеров delta: {len(_quick_backup_timers)}")
         lines.append(f"Dirty чатов: {len(_backup_dirty_chats)}")
+    with _delta_state_lock:
+        lines.append(f"Delta pending chats: {len(_delta_pending_chats)}")
+        lines.append(f"Global full pending: {'да' if _global_snapshot_pending else 'нет'}")
     ds = DELAYED_SCHEDULER.stats()
     lines.append(f"Планировщик: задач {ds['scheduled']}, отменено {ds['cancelled']}, выполнено {ds['executed']}")
     lines.append(f"Excel-бэкап всех чатов: {backup_excel_all_label()}")
@@ -13634,6 +14577,8 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
+        if active_bot_behavior_profile() == "v90_current":
+            kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
@@ -13840,7 +14785,8 @@ def build_category_record_detail_text(store: dict, start_key: str, start_rid: in
         lines.append("Нет операций по этой статье.")
     else:
         for day_key, amount, note in items:
-            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {format_category_amount(store, amount, category_mixed)} {str(note or '').strip()}".rstrip())
+            clean_note = _clean_category_display_name(str(note or "").strip())
+            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {format_category_amount(store, amount, category_mixed)} {clean_note}".rstrip())
     return wm_common("\n".join(lines), 8)
 
 def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int):
@@ -15643,6 +16589,14 @@ def on_callback(call):
                     pass
                 return
             safe_edit(bot, call, build_owner_instruction_text(), reply_markup=build_owner_instruction_keyboard(chat_id))
+            return
+        if data_str == "info_delta_status":
+            if not is_owner_chat(chat_id):
+                return
+            kbd = types.InlineKeyboardMarkup()
+            kbd.row(IB("🔄 Обновить", callback_data="info_delta_status"))
+            kbd.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
+            safe_edit(bot, call, delta_status_text(), reply_markup=kbd)
             return
         if data_str == "info_queues":
             if not is_owner_chat(chat_id):
@@ -18213,33 +19167,29 @@ def schedule_all_finance_backups(delay: float = 10.0):
 
 
 def _schedule_global_mega_snapshot(delay: float = 30.0):
-    global _global_mega_timer
-    if not mega_is_configured():
-        return
-    _global_mega_timer = time.time() + max(5.0, float(delay))
-    def _fire():
-        global _global_mega_timer
-        _global_mega_timer = None
-        if not BACKUP_TASK_POOL.submit("mega-global", mega_upload_latest_global_backup):
-            log_error("GLOBAL MEGA QUEUE FULL, RETRY")
-            _schedule_global_mega_snapshot(BACKUP_BUSY_RETRY_SECONDS)
-    DELAYED_SCHEDULER.schedule("mega-global-snapshot", max(5.0, float(delay)), _fire)
+    """Совместимость старых вызовов: v90 лишь отмечает pending full snapshot.
+
+    Полный global больше не создаётся через 20–30 секунд после каждого чата.
+    Его запускает общий quiet/max scheduler.
+    """
+    _mark_global_snapshot_pending()
 
 
 def _run_quick_chat_backup(chat_id: int):
+    """v90 quick backup = маленький immutable delta, а не полная копия чата/global."""
     chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"QUICK DELTA BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
     with state_chat_context(chat_id):
         try:
             save_data(data, chat_ids=[chat_id])
-            save_chat_json_only(chat_id)
-            if is_backup_to_mega_enabled(chat_id):
-                mega_upload_chat_latest_json_only(chat_id)
-                if mega_backup_priority_enabled():
-                    # Приоритетный режим: универсальный снимок фиксируется сразу,
-                    # до ожидания полного Telegram/Excel/месячного пакета.
-                    mega_upload_latest_global_backup()
-                else:
-                    _schedule_global_mega_snapshot(30.0)
+            with _delta_state_lock:
+                _delta_pending_chats.add(chat_id)
+                if not _delta_chat_generation.get(chat_id):
+                    _delta_chat_generation[chat_id] = int(time.time_ns())
+            if not _run_delta_batch():
+                schedule_delta_backup(chat_id, BACKUP_BUSY_RETRY_SECONDS, reason="delta_retry")
         finally:
             with timer_lock:
                 _quick_backup_dirty_chats.discard(chat_id)
@@ -18247,6 +19197,9 @@ def _run_quick_chat_backup(chat_id: int):
 
 def _run_full_chat_backup(chat_id: int):
     chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"FULL BACKUP BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
     trace = ProcessTrace(chat_id, f"Бэкап: {get_chat_display_name(chat_id)}").start()
     with state_chat_context(chat_id):
         try:
@@ -18262,20 +19215,16 @@ def _run_full_chat_backup(chat_id: int):
             trace.step("создаёт JSON/CSV" + ("/Excel" if backup_excel_all_enabled() else ""))
             save_chat_json(chat_id)
 
-            mega_done = False
-            if mega_backup_priority_enabled() and is_backup_to_mega_enabled(chat_id):
-                trace.step("сначала загружает полный снимок в MEGA")
-                mega_upload_chat_backup_bundle(chat_id, current_month_key())
-                mega_upload_latest_global_backup()
-                mega_done = True
-
+            # Канал/личный чат работают как раньше, но MEGA-файлы теперь заменяются
+            # через candidate -> history -> move, без предварительного удаления.
             if is_backup_to_chat_enabled(chat_id) and can_receive_direct_json_backup(chat_id) and not is_finance_output_suppressed(chat_id):
                 send_backup_to_chat(chat_id, ensure_files=False)
             if is_backup_to_channel_enabled(chat_id):
                 send_backup_to_channel(chat_id, ensure_files=False)
-            if is_backup_to_mega_enabled(chat_id) and not mega_done:
+            if is_backup_to_mega_enabled(chat_id):
+                trace.step("безопасно обновляет JSON чата и месячный JSON в MEGA")
                 mega_upload_chat_backup_bundle(chat_id, current_month_key())
-                _schedule_global_mega_snapshot(20.0)
+                _mark_global_snapshot_pending()
             trace.finish("бэкап завершён")
         except Exception as exc:
             trace.fail(exc)
@@ -18286,30 +19235,45 @@ def _run_full_chat_backup(chat_id: int):
                 _backup_timers.pop(chat_id, None)
 
 
-def schedule_quick_backup(chat_id: int, delay: float = 15.0):
+def schedule_quick_backup(chat_id: int, delay: float | None = None):
+    """Debounce delta для конкретного чата; разные чаты объединяются общим delta batch."""
     chat_id = int(chat_id)
-    due = time.time() + max(1.0, float(delay))
+    if RESTORE_GUARD_ACTIVE:
+        return
+    if delay is None:
+        delay = MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS
+    due = time.time() + max(0.5, float(delay))
     with timer_lock:
         _quick_backup_dirty_chats.add(chat_id)
         _quick_backup_timers[chat_id] = due
+    with _delta_state_lock:
+        global _delta_generation
+        _delta_generation += 1
+        _delta_pending_chats.add(chat_id)
+        _delta_chat_generation[chat_id] = _delta_generation
+
     def _fire():
-        with timer_lock:
-            _quick_backup_timers.pop(chat_id, None)
-        if not BACKUP_TASK_POOL.submit(f"quick:{chat_id}", _run_quick_chat_backup, chat_id):
-            log_error(f"QUICK BACKUP QUEUE FULL, RETRY: {chat_id}")
+        # Одна общая задача заберёт изменения всех чатов, накопившиеся к этому моменту.
+        def _job():
+            if not _run_delta_batch():
+                schedule_delta_backup(None, delay=BACKUP_BUSY_RETRY_SECONDS, reason="quick_upload_retry")
+        if not DELTA_TASK_POOL.submit("mega-delta-v90", _job):
+            log_error(f"QUICK DELTA QUEUE FULL, RETRY: {chat_id}")
             schedule_quick_backup(chat_id, BACKUP_BUSY_RETRY_SECONDS)
-    DELAYED_SCHEDULER.schedule(f"quick-backup:{chat_id}", max(1.0, float(delay)), _fire)
+    DELAYED_SCHEDULER.cancel("mega-delta-batch-v90")
+    DELAYED_SCHEDULER.schedule("mega-delta-batch-v90", max(0.5, float(delay)), _fire)
 
 
-def schedule_backup_flush(chat_id: int, delay: float = 3.0):
-    """Отдельный логический debounce каждого чата без отдельного OS-потока."""
+def schedule_full_backup_only(chat_id: int, delay: float = 3.0):
+    """Тяжёлый JSON/канал/MEGA-файл чата — отдельно от быстрого delta."""
     chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"FULL BACKUP SCHEDULE BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
     try:
         delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
     except Exception:
         delay = BACKUP_MIN_DELAY_SECONDS
-    quick_delay = 1.0 if mega_backup_priority_enabled() else 15.0
-    schedule_quick_backup(chat_id, quick_delay)
     due = time.time() + delay
     with timer_lock:
         _backup_dirty_chats.add(chat_id)
@@ -18319,8 +19283,19 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
             _backup_timers.pop(chat_id, None)
         if not BACKUP_TASK_POOL.submit(f"full:{chat_id}", _run_full_chat_backup, chat_id):
             log_error(f"FULL BACKUP QUEUE FULL, RETRY: {chat_id}")
-            schedule_backup_flush(chat_id, BACKUP_BUSY_RETRY_SECONDS)
+            schedule_full_backup_only(chat_id, BACKUP_BUSY_RETRY_SECONDS)
     DELAYED_SCHEDULER.schedule(f"full-backup:{chat_id}", delay, _fire)
+
+
+def schedule_backup_flush(chat_id: int, delay: float = 3.0):
+    """SQLite уже сохранена; delta быстро; полный файл чата после 120 сек. тишины."""
+    chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"BACKUP SCHEDULE BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
+    quick_delay = MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS
+    schedule_quick_backup(chat_id, quick_delay)
+    schedule_full_backup_only(chat_id, delay)
 
 def _safe_stabilize(action_name, func):
     try:
@@ -18381,6 +19356,17 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             trace.step("проверяет скрытый финрежим")
             hidden = is_finance_output_suppressed(chat_id)
 
+        # v90: сразу после подтверждённой SQLite ставим маленький delta, ДО Telegram-окон.
+        # Поэтому медленное редактирование интерфейса не откладывает аварийную копию.
+        trace.step("ставит быстрый delta до обновления окон")
+        _safe_stabilize(
+            "delta_queue_early",
+            lambda: schedule_quick_backup(
+                chat_id,
+                MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
+            ),
+        )
+
         # Ниже тяжёлые Telegram-вызовы уже вне chat_lock.
         if not hidden:
             if is_owner_chat(chat_id):
@@ -18398,7 +19384,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         trace.step("ставит бэкап в отдельную очередь")
-        _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, BACKUP_MIN_DELAY_SECONDS))
+        _safe_stabilize("full_backup_queue", lambda: schedule_full_backup_only(chat_id, BACKUP_MIN_DELAY_SECONDS))
 
         # Важно: действия в других чатах не должны менять личное окно владельца.
         # Поэтому здесь не вызываем backup_window_for_owner/refresh_owner_after_chat_change.
@@ -18958,6 +19944,37 @@ def on_edited_message(msg):
         log_error(f"[EDIT-FWD] schedule failed: {e}")
                                             
 
+@bot.message_handler(commands=["restore_guard"])
+def cmd_restore_guard(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        return
+    state = "ВКЛ" if RESTORE_GUARD_ACTIVE else "ВЫКЛ"
+    send_and_auto_delete(
+        chat_id,
+        f"🛡 Restore guard: {state}\nПричина: {RESTORE_GUARD_REASON or '-'}\n"
+        f"Автобэкапы: {'заблокированы' if RESTORE_GUARD_ACTIVE else 'разрешены'}",
+        120,
+    )
+
+
+@bot.message_handler(commands=["delta_status"])
+def cmd_delta_status(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    if not is_owner_chat(msg.chat.id):
+        return
+    send_and_auto_delete(msg.chat.id, delta_status_text(), 120)
+
+
 @bot.message_handler(commands=["mega_status"])
 def cmd_mega_status(msg):
     try:
@@ -18984,6 +20001,9 @@ def cmd_mega_backup_now(msg):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     try:
+        if RESTORE_GUARD_ACTIVE:
+            send_and_auto_delete(chat_id, "🚨 Бэкап заблокирован: " + RESTORE_GUARD_REASON, 120)
+            return
         with data_lock:
             export_global_csv(data)
             save_data(data)
@@ -19050,11 +20070,15 @@ def build_diag_text() -> str:
         f"Очередь webhook: {WEBHOOK_TASK_POOL.stats()['pending']}",
         f"Очередь пересылки: {FORWARD_TASK_POOL.stats()['pending']}",
         f"Очередь финансов: {FINANCE_TASK_POOL.stats()['pending']}",
+        f"Очередь delta: {DELTA_TASK_POOL.stats()['pending']}",
         f"Очередь backup: {BACKUP_TASK_POOL.stats()['pending']}",
         f"BACKUP_CHAT_ID: {'есть' if BACKUP_CHAT_ID else 'нет'}",
         f"Бэкап в канал: {'ВКЛ' if backup_flags.get('channel', True) else 'ВЫКЛ'}",
         f"MEGA: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'} / {'настроено' if mega_is_configured() else 'не настроено'}",
         f"MEGA dir: {MEGA_BACKUP_DIR}",
+        f"MEGA delta dir: {mega_delta_remote_root()}",
+        f"Delta pending: {len(_delta_pending_chats)} / last events: {_delta_last_event_count}",
+        f"Global full pending: {'да' if _global_snapshot_pending else 'нет'}",
         f"Ошибок в журнале: {len(get_recent_errors(80))}",
     ]
     if errors:
@@ -19286,7 +20310,8 @@ def main():
     except Exception as e:
         log_error(f"main mega_autorestore_if_needed: {e}")
         restored = False
-    migrate_legacy_owner_secrets()
+    if not RESTORE_GUARD_ACTIVE:
+        migrate_legacy_owner_secrets()
     try:
         gs = data.setdefault("_global_settings", {})
         if not bool(gs.get("journal_default_off_v83_applied", False)):
@@ -19296,14 +20321,26 @@ def main():
                     _store.setdefault("settings", {})["journal_enabled"] = False
             gs["journal_default_off_v83_applied"] = True
         gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
-        # Новая база v87: автоматически переводим только прежний текущий профиль v86.
-        # Явно выбранные v81/v82/v83/v84/v85 сохраняются без изменений.
-        if not bool(gs.get("version_mode_v87_migrated", False)):
-            if str(gs.get("bot_behavior_profile") or "") == "v86_current":
-                gs["bot_behavior_profile"] = "v87_current"
-            gs["version_mode_v87_migrated"] = True
+        # Новая база v90: интерфейсный профиль сохраняется; ядро хранения = delta + редкие snapshots.
+        # Явно выбранные старые версии сохраняются без изменений.
+        if not bool(gs.get("version_mode_v88_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v87_current":
+                gs["bot_behavior_profile"] = "v88_current"
+            gs["version_mode_v88_migrated"] = True
+        if not bool(gs.get("version_mode_v90_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v88_current":
+                gs["bot_behavior_profile"] = "v90_current"
+            gs["version_mode_v90_migrated"] = True
+        # Одноразово очищаем сохранённые имена статей от @username бота.
+        if not bool(gs.get("category_names_clean_v88_applied", False)):
+            for _cid, _store in (data.get("chats", {}) or {}).items():
+                if not isinstance(_store, dict):
+                    continue
+                _custom_category_list(_store)
+                _base_category_items(_store)
+            gs["category_names_clean_v88_applied"] = True
     except Exception as e:
-        log_error(f"v87 defaults migration: {e}")
+        log_error(f"v88 defaults migration: {e}")
     try:
         marker_report = audit_window_marker_registry()
         log_info(f"Маркеры окон проверены: {marker_report}")
@@ -19336,9 +20373,19 @@ def main():
     # После MEGA restore повторно поднимаем индекс пересылки в память.
     # Это позволяет редактировать старые сообщения сразу после деплоя.
     _restore_runtime_state_from_data(data)
-    save_data(data)
-    data["forward_rules"] = load_forward_rules()
-    schedule_all_finance_backups(delay=20.0)
+    if not RESTORE_GUARD_ACTIVE:
+        save_data(data)
+        data["forward_rules"] = load_forward_rules()
+    else:
+        # Аварийный режим: не создаём/не сохраняем новую пустую SQLite и не запускаем startup-backup.
+        data.setdefault("forward_rules", {})
+        log_error("v90 emergency mode: local writes and all automatic backups remain blocked")
+    # v90: запуск/деплой не планирует бэкап; baseline delta создаётся без загрузки в MEGA.
+    # Бэкап ставится только после реального изменения данных.
+    try:
+        initialize_delta_baseline(data)
+    except Exception as e:
+        log_error(f"initialize_delta_baseline: {e}")
     if OWNER_ID:
         try:
             finance_active_chats.add(int(OWNER_ID))
@@ -19357,15 +20404,18 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"✅ {version_animal_badge()} Бот запущен (версия {VERSION}).\n"
-                    f"Восстановление: {'OK — полный универсальный снимок' if restored else 'пропущено'}\n"
+                    f"{'🚨' if RESTORE_GUARD_ACTIVE else '✅'} {version_animal_badge()} Бот запущен (версия {VERSION}).\n"
+                    f"Восстановление: {'OK — полный универсальный снимок' if restored else ('ОШИБКА — защитный режим' if RESTORE_GUARD_ACTIVE else 'локальная база сохранена')}\n"
+                    f"Защита бэкапа: {'ВКЛ — ' + RESTORE_GUARD_REASON if RESTORE_GUARD_ACTIVE else 'норма'}\n"
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
-                    f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}"
+                    f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
+                    f"Бэкап v90: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
-    schedule_startup_main_windows(delay=3.0)
+    if not RESTORE_GUARD_ACTIVE:
+        schedule_startup_main_windows(delay=3.0)
     app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 if __name__ == "__main__":
     main()
