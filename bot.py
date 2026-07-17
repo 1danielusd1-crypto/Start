@@ -362,7 +362,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v88_clean_articles_full_currency"
+VERSION = "bot_v87_currency_modes_fast_back"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -370,7 +370,7 @@ def version_animal_badge(version: str | None = None) -> str:
     raw = str(version or VERSION)
     m = re.search(r"(?:^|_)v(\d+)", raw, re.I)
     number = int(m.group(1)) if m else 0
-    animals = ["🔥", "🐺", "🦊", "🐯", "🐲", "🦅", "🐘", "🦉", "🐆", "🦈", "🦄", "🐻", "🦁", "🐼", "🐸", "🐙", "🦚", "🐬", "🦬", "🦏", "🐊"]
+    animals = ["🐺", "🦊", "🐯", "🐲", "🦅", "🐘", "🦉", "🐆", "🦈", "🦄", "🐻", "🦁", "🐼", "🐸", "🐙", "🦚", "🐬", "🦬", "🦏", "🐊"]
     animal = animals[(number - 81) % len(animals)] if number else "🤖"
     return f"{animal}{number}" if number else animal
 DEFAULT_TZ = "America/Argentina/Buenos_Aires"
@@ -390,7 +390,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 7
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 6
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -698,23 +698,6 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
-    "v88_current": {
-        "title": "v88 Чистые статьи / полная валюта",
-        "ui_edit_interval": 0.03,
-        "fast_tg_gap": 0.01,
-        "info_layout": "v87",
-        "per_chat_journal": True,
-        "mega_priority": True,
-        "keepalive_menu": True,
-        "article_buttons": False,
-        "financial_value_buttons": True,
-        "financial_buttons_per_row": 1,
-        "gomonk_wallets": True,
-        "remaining_window": True,
-        "usd_categories": True,
-        "daily_usd": True,
-        "description": "Текущая версия: статьи без @имени бота и полноценные ARS / ARS-USD / USD во всех окнах статей.",
-    },
     "v87_current": {
         "title": "v87 Валюты / быстрый возврат",
         "ui_edit_interval": 0.03,
@@ -835,7 +818,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v88_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v87_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -1046,7 +1029,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
-    if active_bot_behavior_profile() in {"v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
+    if active_bot_behavior_profile() in {"v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
         label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
     return label
 
@@ -6351,10 +6334,7 @@ def _custom_category_list(store: dict | None) -> list:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        raw_name = str(item.get("name") or "").strip()
-        name = _clean_category_display_name(raw_name).upper()
-        if name and raw_name != name:
-            item["name"] = name
+        name = str(item.get("name") or "").strip().upper()
         keywords = [str(x).strip().lower() for x in (item.get("keywords") or []) if str(x).strip()]
         slug = str(item.get("slug") or "").strip()
         if not name or not keywords:
@@ -6387,10 +6367,7 @@ def _base_category_items(store: dict | None = None) -> list[dict]:
         ov = overrides.get(slug) if isinstance(overrides, dict) else None
         if not isinstance(ov, dict):
             ov = {}
-        raw_name = str(ov.get("name") or default_name).strip()
-        name = _clean_category_display_name(raw_name).upper()
-        if ov and name and raw_name != name:
-            ov["name"] = name
+        name = str(ov.get("name") or default_name).strip().upper()
         keywords = ov.get("keywords") if isinstance(ov.get("keywords"), list) else EXPENSE_CATEGORIES.get(default_name, [])
         keywords = [str(x).strip().lower() for x in (keywords or []) if str(x).strip()]
         items.append({"name": name, "slug": slug, "keywords": keywords, "base": True, "default_name": default_name})
@@ -6428,7 +6405,7 @@ def get_expense_category_order(store: dict | None = None) -> list[str]:
 
 
 def get_expense_category_slug(category: str, store: dict | None = None) -> str | None:
-    category = _clean_category_display_name(str(category or "")).upper()
+    category = str(category or "").strip().upper()
     for item in _base_category_items(store):
         if category in {str(item.get("name") or "").upper(), str(item.get("default_name") or "").upper()}:
             return item.get("slug")
@@ -6740,51 +6717,30 @@ def build_articles_description_text(chat_id: int | None = None) -> str:
     lines = ["📚 Описание статей расходов", ""]
     for item in _base_category_items(store):
         keys = item.get("keywords", []) or []
-        clean_name = _clean_category_display_name(item.get("name") or "")
-        lines.append(f"{clean_name}: {', '.join(keys) if keys else '—'}")
+        lines.append(f"{item.get('name')}: {', '.join(keys) if keys else '—'}")
     custom = _custom_category_list(store)
     if custom:
         lines.append("")
         lines.append("Пользовательские статьи:")
         for item in custom:
-            clean_name = _clean_category_display_name(item.get("name") or "")
-            lines.append(f"{clean_name}: {', '.join(item.get('keywords') or [])}")
+            lines.append(f"{item.get('name')}: {', '.join(item.get('keywords') or [])}")
     lines.append("")
     lines.append("Добавить новую статью можно в окне 📊 Статьи → ➕ Добавить статью.")
     return wm_common("\n".join(lines), 7)
 
 
 def summarize_categories(store: dict, start: str, end: str, label: str):
-    """Сводка статей с тем же режимом валюты, что и основное финансовое окно."""
     cats = calc_categories_for_period(store, start, end)
-    mode = currency_mode_from_store(store)
-    category_mixed = bool(
-        mode == "ars"
-        and store.setdefault("settings", {}).get("category_usd_enabled", False)
-        and _v85_enabled("usd_categories")
-    )
-    show_rate = mode != "ars" or category_mixed
-    rate_info = usd_rate_cached(force=False) if show_rate else None
     lines = [
         "📦 Расходы по статьям",
         f"🗓 {label}",
         ""
     ]
-    if show_rate:
-        if rate_info and rate_info.get("rate"):
-            lines.append(
-                f"💵 Курс: 1 USD = {fmt_num(rate_info['rate']).lstrip('+')} ARS "
-                f"({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})"
-            )
-        else:
-            lines.append("💵 Курс USD временно недоступен")
-        lines.append("")
     if not cats:
         lines.append("Нет данных по статьям за этот период.")
     else:
         for cat in get_ordered_category_names(cats=cats, store=store):
-            clean_name = _clean_category_display_name(cat).upper()
-            lines.append(f"{clean_name}: {format_category_amount(store, cats.get(cat, 0), category_mixed)}")
+            lines.append(f"{cat}: {fmt_num_plain(cats.get(cat, 0))}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
 
@@ -6884,7 +6840,7 @@ def build_categories_buttons(start: str, end: str, store: dict | None = None):
             continue
         buttons.append(
             IB(
-                _clean_category_display_name(cat),
+                cat,
                 callback_data=cat_callback(f"cat_show:{start}:{end}:{slug}")
             )
         )
@@ -6946,39 +6902,23 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
 
 
 def build_category_detail_text(store: dict, start: str, end: str, category: str, label: str):
-    """Детализация статьи в режимах ARS / ARS-USD / USD."""
     items = collect_items_for_category(store, start, end, category)
-    mode = currency_mode_from_store(store)
-    category_mixed = bool(
-        mode == "ars"
-        and store.setdefault("settings", {}).get("category_usd_enabled", False)
-        and _v85_enabled("usd_categories")
-    )
-    show_rate = mode != "ars" or category_mixed
-    rate_info = usd_rate_cached(force=False) if show_rate else None
-    clean_category = _clean_category_display_name(category).upper()
     lines = [
-        f"📦 {clean_category}",
+        f"📦 {category}",
         f"🗓 {label}",
         ""
     ]
 
     total = sum(amt for _, amt, _ in items)
-    lines.append(f"Итого: {format_category_amount(store, total, category_mixed)}")
-    if show_rate and rate_info and rate_info.get("rate"):
-        lines.append(
-            f"Курс: 1 USD = {fmt_num(rate_info['rate']).lstrip('+')} ARS "
-            f"({_clean_category_display_name(rate_info.get('source') or 'DolarAPI')})"
-        )
+    lines.append(f"Итого: {fmt_num_plain(total)}")
     lines.append("")
 
     if not items:
         lines.append("Нет операций по этой статье.")
     else:
         for day_i, amt_i, note_i in items:
-            clean_note = _clean_category_display_name((note_i or "").strip())
-            amount_text = format_category_amount(store, amt_i, category_mixed)
-            lines.append(f"• {fmt_date_ddmmyy(day_i)}: {amount_text} {clean_note}".rstrip())
+            note_i = (note_i or "").strip()
+            lines.append(f"• {fmt_date_ddmmyy(day_i)}: {fmt_num_plain(amt_i)} {note_i}".rstrip())
 
     return wm_common("\n".join(lines), 8)
 
@@ -10635,7 +10575,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -11311,7 +11251,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
         article_buttons = []
         for item in category_edit_items_for_chat(int(chat_id)):
             slug = str(item.get("slug") or "").strip()
-            name = _clean_category_display_name(str(item.get("name") or slug or "Статья").strip())
+            name = str(item.get("name") or slug or "Статья").strip()
             if not slug:
                 continue
             article_buttons.append(IB(f"✏️ {name}", callback_data=cat_callback(f"cat_main_edit:{slug}:{day_key}")))
@@ -13900,8 +13840,7 @@ def build_category_record_detail_text(store: dict, start_key: str, start_rid: in
         lines.append("Нет операций по этой статье.")
     else:
         for day_key, amount, note in items:
-            clean_note = _clean_category_display_name(str(note or "").strip())
-            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {format_category_amount(store, amount, category_mixed)} {clean_note}".rstrip())
+            lines.append(f"• {fmt_date_ddmmyy(day_key)}: {format_category_amount(store, amount, category_mixed)} {str(note or '').strip()}".rstrip())
     return wm_common("\n".join(lines), 8)
 
 def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int):
@@ -19357,22 +19296,14 @@ def main():
                     _store.setdefault("settings", {})["journal_enabled"] = False
             gs["journal_default_off_v83_applied"] = True
         gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
-        # Новая база v88: автоматически переводим только прежний текущий профиль v87.
-        # Явно выбранные старые версии сохраняются без изменений.
-        if not bool(gs.get("version_mode_v88_migrated", False)):
-            if str(gs.get("bot_behavior_profile") or "") == "v87_current":
-                gs["bot_behavior_profile"] = "v88_current"
-            gs["version_mode_v88_migrated"] = True
-        # Одноразово очищаем сохранённые имена статей от @username бота.
-        if not bool(gs.get("category_names_clean_v88_applied", False)):
-            for _cid, _store in (data.get("chats", {}) or {}).items():
-                if not isinstance(_store, dict):
-                    continue
-                _custom_category_list(_store)
-                _base_category_items(_store)
-            gs["category_names_clean_v88_applied"] = True
+        # Новая база v87: автоматически переводим только прежний текущий профиль v86.
+        # Явно выбранные v81/v82/v83/v84/v85 сохраняются без изменений.
+        if not bool(gs.get("version_mode_v87_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v86_current":
+                gs["bot_behavior_profile"] = "v87_current"
+            gs["version_mode_v87_migrated"] = True
     except Exception as e:
-        log_error(f"v88 defaults migration: {e}")
+        log_error(f"v87 defaults migration: {e}")
     try:
         marker_report = audit_window_marker_registry()
         log_info(f"Маркеры окон проверены: {marker_report}")
