@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v90_delta_snapshots"
+VERSION = "bot_v90_delta_snapshots 👍"
 
 
 def version_animal_badge(version: str | None = None) -> str:
