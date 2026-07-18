@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v91_articles_layout_excelstat"
+VERSION = "bot_v91_articles_excel_history"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -396,7 +396,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 9
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 10
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -437,11 +437,11 @@ try:
 except Exception:
     MEGA_GLOBAL_MAX_INTERVAL_SECONDS = 900.0
 try:
-    MEGA_GLOBAL_HISTORY_KEEP = max(1, int(os.getenv("MEGA_GLOBAL_HISTORY_KEEP", "2") or "2"))
+    MEGA_GLOBAL_HISTORY_KEEP = min(2, max(1, int(os.getenv("MEGA_GLOBAL_HISTORY_KEEP", "2") or "2")))
 except Exception:
     MEGA_GLOBAL_HISTORY_KEEP = 2
 try:
-    MEGA_FILE_HISTORY_KEEP = max(1, int(os.getenv("MEGA_FILE_HISTORY_KEEP", "2") or "2"))
+    MEGA_FILE_HISTORY_KEEP = min(2, max(1, int(os.getenv("MEGA_FILE_HISTORY_KEEP", "2") or "2")))
 except Exception:
     MEGA_FILE_HISTORY_KEEP = 2
 try:
@@ -752,6 +752,23 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v91_current": {
+        "title": "v91 Статьи / Excel стат",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "description": "Текущая версия: v90 delta/snapshots + порядок статей, сортировка ПРОЧЕЕ, Excel стат и компактная история MEGA.",
+    },
     "v90_current": {
         "title": "v90 Delta / snapshots",
         "ui_edit_interval": 0.03,
@@ -906,7 +923,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v90_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v91_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -932,6 +949,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
         "buttons_current_window", "journal_enabled", "main_article_buttons_enabled",
         "main_financial_value_buttons_enabled", "gomonk_enabled", "gomonk_entries",
         "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
+        "category_usd_enabled", "expense_category_order_slugs",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
         "process_trace_enabled",
     )
@@ -1117,7 +1135,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
-    if active_bot_behavior_profile() in {"v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
+    if active_bot_behavior_profile() in {"v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
         label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
     return label
 
@@ -2134,9 +2152,9 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_pick_end3:*': 'Ф105',
     'cat_pick_set_end3:*': 'Ф106',
     'cat_pick_end_record:*': 'Ф107',
-    'cat_range_records:*': 'Ф108',
+    'cat_range_records:*': 'Ф110',
     'cat_show_records:*': 'Ф109',
-    'cat_back_records:*': 'Ф110',
+    'cat_back_records:*': 'Ф149',
     'exp_pick_start:*': 'Ф111',
     'exp_pick_set_start:*': 'Ф112',
     'exp_pick_start_record:*': 'Ф113',
@@ -2170,20 +2188,22 @@ WINDOW_MARKER_CONSTANTS = {
     'remaining_toggle:*': 'Ф141',
     'cat_pick_today_start': 'Ф142',
     'cat_usd_toggle_records:*': 'Ф143',
-    'cat_usd_toggle_summary:*': 'Ф153',
-    'cat_layout_menu:*': 'Ф154',
-    'cat_layout_move:*': 'Ф155',
-    'cat_other_sort:*': 'Ф156',
-    'cat_other_sort_toggle:*': 'Ф157',
-    'cat_other_sort_choose:*': 'Ф158',
-    'cat_other_sort_move:*': 'Ф159',
-    'cat_pick_today_end:*': 'Ф160',
-    'exp_send:*:xlsxstat:*': 'Ф161',
     'usd_display_toggle': 'Ф144',
     'currency_menu': 'Ф145',
     'currency_select:*': 'Ф146',
     'currency_back': 'Ф147',
     'info_delta_status': 'Ф148',
+    'cat_usd_toggle_period:*': 'Ф150',
+    'cat_order_open_sum:*': 'Ф151',
+    'cat_order_open_exact:*': 'Ф152',
+    'cat_order_move_sum:*': 'Ф153',
+    'cat_order_move_exact:*': 'Ф154',
+    'cat_other_sort:*': 'Ф155',
+    'cat_other_sort_toggle:*': 'Ф156',
+    'cat_other_sort_choose:*': 'Ф157',
+    'cat_other_sort_target:*': 'Ф158',
+    'cat_pick_today_end:*': 'Ф159',
+    'exp_send:*:xlsxstat:*': 'Ф160',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -2521,14 +2541,32 @@ def fmt_date_backup(day_key: str) -> str:
     except Exception:
         return str(day_key)
 
-
-def fmt_date_export(day_key: str) -> str:
-    """Формат даты для CSV/Excel: DD.MM.YY."""
+def fmt_date_table(day_key: str) -> str:
+    """Формат дат в пользовательских CSV/Excel: DD.MM.YY."""
     try:
         d = datetime.strptime(str(day_key)[:10], "%Y-%m-%d")
         return d.strftime("%d.%m.%y")
     except Exception:
-        return str(day_key).replace(":", ".")
+        raw = str(day_key or "")
+        return raw.replace(":", ".")
+
+
+def insert_blank_rows_between_days(rows: list[list], header_rows: int = 1, date_col: int = 0) -> list[list]:
+    """Добавляет пустую строку между разными днями в Excel-таблицах."""
+    rows = list(rows or [])
+    head = rows[:max(0, int(header_rows))]
+    body = rows[max(0, int(header_rows)):]
+    out = list(head)
+    prev_day = None
+    for row in body:
+        row = list(row or [])
+        day = str(row[date_col]).strip() if len(row) > date_col else ""
+        if day and prev_day is not None and day != prev_day:
+            out.append([])
+        out.append(row)
+        if day:
+            prev_day = day
+    return out
 
 
 def backup_record_copy(rec: dict) -> dict:
@@ -4829,9 +4867,13 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         w.writerow(["closing_balance", payload.get("closing_balance")])
         w.writerow([])
         w.writerow(["date", "amount", "note", "id", "short_id", "timestamp", "owner"])
+        prev_day = None
         for r in payload.get("records", []):
+            day_key = str(r.get("day_key") or "")[:10]
+            if prev_day is not None and day_key and day_key != prev_day:
+                w.writerow([])
             w.writerow([
-                fmt_date_export(r.get("day_key")),
+                fmt_date_table(day_key),
                 r.get("amount"),
                 r.get("note", ""),
                 r.get("id", ""),
@@ -4839,6 +4881,8 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
                 r.get("timestamp", ""),
                 r.get("owner", ""),
             ])
+            if day_key:
+                prev_day = day_key
 
     rows = [
         ["month", month_key],
@@ -4850,14 +4894,20 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         [],
         ["Дата", "Описание", "Приход", "Расход", "ID", "Номер", "Время", "Автор"],
     ]
+    prev_day = None
     for r in payload.get("records", []):
-        base_row = _xlsx_record_row(fmt_date_export(r.get("day_key")), r.get("amount"), r.get("note", ""))
+        day_key = str(r.get("day_key") or "")[:10]
+        if prev_day is not None and day_key and day_key != prev_day:
+            rows.append([])
+        base_row = _xlsx_record_row(fmt_date_table(day_key), r.get("amount"), r.get("note", ""))
         rows.append(base_row + [
             r.get("id", ""),
             r.get("short_id", ""),
             r.get("timestamp", ""),
             r.get("owner", ""),
         ])
+        if day_key:
+            prev_day = day_key
     _write_simple_xlsx(xlsx_path, rows, sheet_name="Месяц")
 
     return {"json": json_path, "csv": csv_path, "xlsx": xlsx_path}
@@ -5457,7 +5507,7 @@ def delta_status_text() -> str:
         global_pending = _global_snapshot_pending
         since_full = max(0, int(time.monotonic() - _global_snapshot_last_success_monotonic))
     return (
-        "🧩 Delta backup v90\n"
+        "🧩 Delta / snapshots v91\n"
         f"Ожидают чаты: {pending}\n"
         f"Последний delta: {_delta_last_success_at or '-'}\n"
         f"Событий в нём: {_delta_last_event_count}\n"
@@ -6801,15 +6851,11 @@ def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = N
         path = path or chat_xlsx_file(chat_id)
         rows = [["Дата", "Описание", "Приход", "Расход"]]
         daily = store.get("daily_records", {}) or {}
-        first_day = True
         for dk in sorted(daily.keys()):
-            if not first_day:
-                rows.append([])
-            first_day = False
             recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
             for r in recs_sorted:
-                rows.append(_xlsx_record_row(fmt_date_export(dk), r.get("amount", 0), r.get("note", "")))
-        _write_simple_xlsx(path, rows, sheet_name="Данные")
+                rows.append(_xlsx_record_row(fmt_date_table(dk), r.get("amount", 0), r.get("note", "")))
+        _write_simple_xlsx(path, insert_blank_rows_between_days(rows, header_rows=1), sheet_name="Данные")
         return path
     except Exception as e:
         log_error(f"save_chat_xlsx({get_chat_display_name(chat_id)}): {e}")
@@ -6883,7 +6929,7 @@ def save_chat_json(chat_id: int):
             rows = []
             for dk in sorted(daily.keys()):
                 for r in sorted(daily.get(dk, []) or [], key=record_sort_key):
-                    rows.append((fmt_date_export(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                    rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             write_csv_rows_with_day_gaps(w, rows, 3)
         if backup_excel_all_enabled():
             save_chat_xlsx(chat_id, chat_path_xlsx, store)
@@ -7321,44 +7367,41 @@ def make_custom_category_slug(name: str, existing=None) -> str:
     return f"{slug}_{i}"
 
 
-def get_expense_category_order(store: dict | None = None) -> list[str]:
-    names = [item["name"] for item in _base_category_items(store)]
-    for item in _custom_category_list(store):
-        if item["name"] not in names:
-            names.append(item["name"])
+def get_expense_category_order_slugs(store: dict | None = None) -> list[str]:
+    """Стабильный порядок статей сверху вниз; пользователь может менять его в v91."""
+    items = list(_base_category_items(store)) + list(_custom_category_list(store))
+    available = [str(item.get("slug") or "") for item in items if str(item.get("slug") or "")]
     try:
-        custom_order = list((store or {}).setdefault("settings", {}).get("category_layout_order") or [])
-        ordered = [x for x in custom_order if x in names]
-        ordered.extend(x for x in names if x not in ordered)
-        return ordered
+        settings = (store or {}).setdefault("settings", {})
+        saved = [str(x) for x in (settings.get("expense_category_order_slugs") or []) if str(x)]
     except Exception:
-        return names
+        saved = []
+    result = [slug for slug in saved if slug in available]
+    result.extend(slug for slug in available if slug not in result)
+    return result
 
-def move_category_order(store: dict, category: str, direction: int) -> list[str]:
-    order = get_expense_category_order(store)
-    if category not in order:
-        return order
-    idx = order.index(category)
-    new_idx = max(0, min(len(order)-1, idx + int(direction)))
-    if idx != new_idx:
-        order[idx], order[new_idx] = order[new_idx], order[idx]
-    store.setdefault("settings", {})["category_layout_order"] = order
-    return order
 
-def build_category_layout_keyboard(store: dict, back_callback: str):
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    order = get_expense_category_order(store)
-    for cat in order:
-        slug = get_expense_category_slug(cat, store)
-        if not slug:
-            continue
-        kb.row(
-            IB("⬆️", callback_data=cat_callback(f"cat_layout_move:{slug}:-1:{back_callback}")),
-            IB(_clean_category_display_name(cat), callback_data="none"),
-            IB("⬇️", callback_data=cat_callback(f"cat_layout_move:{slug}:1:{back_callback}")),
-        )
-    kb.row(IB("↩️ Назад", callback_data=cat_callback(back_callback)))
-    return kb
+def get_expense_category_order(store: dict | None = None) -> list[str]:
+    by_slug = {}
+    for item in list(_base_category_items(store)) + list(_custom_category_list(store)):
+        slug = str(item.get("slug") or "")
+        if slug:
+            by_slug[slug] = item.get("name")
+    return [by_slug[slug] for slug in get_expense_category_order_slugs(store) if slug in by_slug]
+
+
+def move_expense_category_order(store: dict, slug: str, direction: str) -> bool:
+    order = get_expense_category_order_slugs(store)
+    slug = str(slug or "")
+    if slug not in order:
+        return False
+    idx = order.index(slug)
+    new_idx = idx - 1 if str(direction).lower() == "up" else idx + 1
+    if new_idx < 0 or new_idx >= len(order):
+        return False
+    order[idx], order[new_idx] = order[new_idx], order[idx]
+    store.setdefault("settings", {})["expense_category_order_slugs"] = order
+    return True
 
 
 def get_expense_category_slug(category: str, store: dict | None = None) -> str | None:
@@ -7450,6 +7493,18 @@ def resolve_expense_category(note: str, store: dict | None = None):
     other = _base_category_item_by_slug(store, "other")
     return (other or {}).get("name") or "ПРОЧЕЕ"
 
+def resolve_expense_category_for_record(rec: dict, store: dict | None = None):
+    """Учитывает ручной перенос записи из ПРОЧЕЕ в выбранную статью."""
+    try:
+        override_slug = str((rec or {}).get("category_override_slug") or "").strip()
+        if override_slug:
+            category = get_category_by_slug(override_slug, store)
+            if category:
+                return category
+    except Exception:
+        pass
+    return resolve_expense_category((rec or {}).get("note", ""), store)
+
 def calc_categories_for_period(store: dict, start: str, end: str) -> dict:
     """Считает суммы расходов по статьям (только отрицательные amount) в диапазоне дат включительно."""
     out = {}
@@ -7461,7 +7516,7 @@ def calc_categories_for_period(store: dict, start: str, end: str) -> dict:
             amt = float(r.get("amount", 0) or 0)
             if amt >= 0:
                 continue
-            cat = resolve_expense_category(r.get("note", ""), store)
+            cat = resolve_expense_category_for_record(r, store)
             if not cat:
                 continue
             out[cat] = out.get(cat, 0) + (-amt)
@@ -7500,7 +7555,7 @@ def expense_anchor_button_label(rec: dict, store: dict | None = None) -> str:
     except Exception:
         amount = str(rec.get("amount", ""))
     note = _clean_category_display_name(re.sub(r"\s+", " ", str(rec.get("note", "") or "")).strip())
-    category = _clean_category_display_name(resolve_expense_category(note, store) or "")
+    category = _clean_category_display_name(resolve_expense_category_for_record(rec, store) or "")
     rec_code = str(rec.get("short_id") or f"R{_record_int_id(rec)}")
     parts = [rec_code, amount]
     if note:
@@ -7578,7 +7633,7 @@ def calc_categories_for_record_range(store: dict, start_day: str, start_rid: int
             continue
         if amt >= 0:
             continue
-        category = resolve_expense_category(rec.get("note", ""), store)
+        category = resolve_expense_category_for_record(rec, store)
         if not category:
             continue
         out[category] = out.get(category, 0) + (-amt)
@@ -7595,7 +7650,7 @@ def collect_items_for_category_record_range(store: dict, start_day: str, start_r
         if amt >= 0:
             continue
         note = rec.get("note", "")
-        if resolve_expense_category(note, store) == category:
+        if resolve_expense_category_for_record(rec, store) == category:
             items.append((day_key, -amt, note))
     return items
 
@@ -7639,7 +7694,7 @@ def collect_items_for_category(store: dict, start: str, end: str, category: str)
             if amt >= 0:
                 continue
             note = r.get("note", "")
-            if resolve_expense_category(note, store) == category:
+            if resolve_expense_category_for_record(r, store) == category:
                 items.append((day, -amt, note))
     return items
 
@@ -7831,10 +7886,6 @@ def build_categories_buttons(start: str, end: str, store: dict | None = None):
 
 def build_categories_summary_keyboard(mode: str, start: str, end: str, store: dict | None = None):
     kb = build_categories_buttons(start, end, store=store)
-    if store is not None and _v85_enabled("usd_categories") and currency_mode_from_store(store) == "ars":
-        usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False))
-        kb.row(IB("💵 USD ВЫКЛ" if usd_on else "💵 USD ВКЛ", callback_data=cat_callback(f"cat_usd_toggle_summary:{mode}:{start}:{end}")))
-    kb.row(IB("📍 Расположение", callback_data=cat_callback(f"cat_layout_menu:{mode}:{start}:{end}")))
 
     if mode == "wthu":
         prev_key = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -7870,6 +7921,11 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
             IB("📆 Выбор недели", callback_data=cat_callback("cat_months"))
         )
 
+    if _v85_enabled("usd_categories") and currency_mode_from_store(store or {}) == "ars":
+        usd_on = bool((store or {}).setdefault("settings", {}).get("category_usd_enabled", False))
+        kb.row(IB("💵 USD ВЫКЛ" if usd_on else "💵 USD ВКЛ", callback_data=cat_callback(f"cat_usd_toggle_period:{mode}:{start}:{end}")))
+    if mode == "wthu":
+        kb.row(IB("↕️ Расположение", callback_data=cat_callback(f"cat_order_open_sum:{mode}:{start}:{end}")))
     kb.row(IB("📚 Описание статей", callback_data=cat_callback("cat_desc")))
     kb.row(
         IB("➕ Добавить", callback_data=cat_callback("cat_add")),
@@ -7880,6 +7936,46 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
         IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
         IB("❌ Закрыть", callback_data=cat_callback("cat_close")),
     )
+    return kb
+
+
+def build_category_layout_text(store: dict) -> str:
+    lines = ["↕️ Расположение статей", "", "Меняйте порядок стрелками. Этот порядок используется сверху вниз в окнах статей.", ""]
+    for idx, name in enumerate(get_expense_category_order(store), 1):
+        lines.append(f"{idx}. {_clean_category_display_name(name)}")
+    return wm_common("\n".join(lines), 7)
+
+
+def build_category_layout_keyboard(store: dict, context: str, params: tuple) -> object:
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    slugs = get_expense_category_order_slugs(store)
+    for idx, slug in enumerate(slugs):
+        name = _clean_category_display_name(get_category_by_slug(slug, store) or slug)
+        if context == "sum":
+            mode, start, end = params
+            up_cb = cat_callback(f"cat_order_move_sum:{slug}:up:{mode}:{start}:{end}")
+            down_cb = cat_callback(f"cat_order_move_sum:{slug}:down:{mode}:{start}:{end}")
+        else:
+            start_key, start_rid, end_key, end_rid = params
+            up_cb = cat_callback(f"cat_order_move_exact:{slug}:up:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+            down_cb = cat_callback(f"cat_order_move_exact:{slug}:down:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+        kb.row(
+            IB("⬆️" if idx > 0 else "·", callback_data=up_cb if idx > 0 else "none"),
+            IB(name[:36], callback_data="none"),
+            IB("⬇️" if idx < len(slugs) - 1 else "·", callback_data=down_cb if idx < len(slugs) - 1 else "none"),
+        )
+    if context == "sum":
+        mode, start, end = params
+        if mode == "wthu":
+            back_cb = cat_callback(f"cat_wthu:{start}")
+        elif mode == "wk":
+            back_cb = cat_callback(f"cat_wk:{start}")
+        else:
+            back_cb = cat_callback(f"cat_range_custom2:{start}:{end}")
+    else:
+        start_key, start_rid, end_key, end_rid = params
+        back_cb = cat_callback(f"cat_range_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+    kb.row(IB("⬅️ Назад", callback_data=back_cb), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
     return kb
 
 
@@ -10585,7 +10681,7 @@ def export_global_csv(d: dict):
             for cid, cdata in d.get("chats", {}).items():
                 for dk, records in (cdata.get("daily_records", {}) or {}).items():
                     for r in records or []:
-                        rows.append((fmt_date_export(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                        rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             # Сортируем по исходной дате, если можем восстановить из DD:MM:YY.
             rows.sort(key=lambda row: str(row[0]))
             write_csv_rows_with_day_gaps(w, rows, 3)
@@ -11573,7 +11669,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -11763,15 +11859,16 @@ def toggle_remaining_ost_label(chat_id: int) -> bool:
 
 
 def fmt_usd_compact(amount: float, rate_info: dict | None, signed: bool = True, absolute: bool = False) -> str:
+    """USD во всех финансовых окнах v91 округляется до целых долларов."""
     if not rate_info or not rate_info.get("rate"):
         return "$—"
     amount = float(amount or 0)
-    value = abs(amount) / float(rate_info["rate"])
+    value = int(round(abs(amount) / float(rate_info["rate"])))
     if absolute or not signed:
         sign = ""
     else:
         sign = "+" if amount >= 0 else "-"
-    return f"{sign}${value:,.2f}".replace(",", " ")
+    return f"{sign}${value:,}".replace(",", " ")
 
 
 def format_chat_amount(chat_id: int, amount: float, mixed_space: bool = False) -> str:
@@ -11952,13 +12049,14 @@ def build_remaining_keyboard(chat_id: int, day_key: str):
     prev_key = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
     next_key = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
     kb = types.InlineKeyboardMarkup(row_width=3)
-    if effective_main_financial_value_buttons_enabled(int(chat_id)):
-        for rec in financial_value_records_for_day(int(chat_id), day_key)[:84]:
+    # v91: если включён режим «Финансы-кнопки», записи идут первыми, сверху окна Ф91.
+    if effective_main_financial_value_buttons_enabled(chat_id):
+        for rec in financial_value_records_for_day(chat_id, day_key)[:84]:
             try:
                 rid = int(rec.get("id"))
             except Exception:
                 continue
-            kb.row(IB(financial_record_button_label(rec, int(chat_id)), callback_data=f"d:{day_key}:value_rec_{rid}"))
+            kb.row(IB(financial_record_button_label(rec, chat_id), callback_data=f"d:{day_key}:value_rec_{rid}"))
     nav = [IB("⬅️ День", callback_data=f"remaining_open:{prev_key}")]
     if day_key != today_key():
         nav.append(IB("📅 Сегодня", callback_data=f"remaining_open:{today_key()}"))
@@ -12610,83 +12708,82 @@ def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: st
     store = get_chat_store(chat_id)
     rows = []
     for day_key, rec in exact_record_range(store, start_key, start_rid, end_key, end_rid):
-        rows.append((fmt_date_export(day_key), fmt_csv_amount(rec.get("amount")), rec.get("note", "")))
+        rows.append((fmt_date_table(day_key), fmt_csv_amount(rec.get("amount")), rec.get("note", "")))
     return rows
 
 
-def _exact_export_xlsx_stat_rows(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
-    store = get_chat_store(chat_id)
-    items = list(exact_record_range(store, start_key, start_rid, end_key, end_rid))
-    cats = get_expense_category_order(store)
-    header = ["Дата", "Описание", "Приход"] + [_clean_category_display_name(c) for c in cats]
-    rows = [header]
-    last_day = None
-    cat_totals = {c: 0.0 for c in cats}
+def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
+    """Excel стат: Дата | Описание | Приход | статьи расходов."""
+    store = get_chat_store(target_chat_id)
+    records = exact_record_range(store, start_key, start_rid, end_key, end_rid)
+    cats_map = calc_categories_for_record_range(store, start_key, start_rid, end_key, end_rid)
+    categories = get_ordered_category_names(cats=cats_map, store=store)
+    clean_categories = [_clean_category_display_name(x) for x in categories]
+    headers = ["Дата", "Описание", "Приход"] + clean_categories
+    rows = [headers]
     income_total = 0.0
     expense_total = 0.0
-    net_total = 0.0
-    for day_key, rec in items:
-        if last_day is not None and day_key != last_day:
+    cat_totals = {cat: 0.0 for cat in categories}
+    prev_day = None
+    for day_key, rec in records:
+        try:
+            amount = float(rec.get("amount", 0) or 0)
+        except Exception:
+            amount = 0.0
+        if prev_day is not None and day_key != prev_day:
             rows.append([])
-        last_day = day_key
-        amt = float(rec.get("amount", 0) or 0)
-        note = _clean_category_display_name(rec.get("note", ""))
-        row = [fmt_date_export(day_key), note, ""] + [""] * len(cats)
-        if amt >= 0:
-            row[2] = abs(amt)
-            income_total += amt
+        prev_day = day_key
+        row = [fmt_date_table(day_key), str(rec.get("note") or ""), ""] + [""] * len(categories)
+        if amount >= 0:
+            income_total += amount
+            row[2] = int(round(amount))
         else:
-            expense_total += -amt
-            cat = resolve_expense_category(note, store)
-            if cat in cat_totals:
-                idx = cats.index(cat)
-                row[3 + idx] = abs(amt)
-                cat_totals[cat] += abs(amt)
-        net_total += amt
+            value = abs(amount)
+            expense_total += value
+            category = resolve_expense_category_for_record(rec, store)
+            if category in cat_totals:
+                cat_totals[category] += value
+                row[3 + categories.index(category)] = int(round(value))
         rows.append(row)
     rows.append([])
-    totals = ["", "Сумма", income_total] + [cat_totals.get(c, 0) or "" for c in cats]
-    rows.append(totals)
+    rows.append(["", "Сумма", int(round(income_total))] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in categories])
     rows.append([])
-    rows.append(["", "Расход", expense_total])
-    rows.append(["", "Приход", income_total])
-    rows.append(["", "Остаток", net_total])
+    rows.append(["", "Расход", int(round(expense_total))] + [""] * len(categories))
+    rows.append(["", "Приход", int(round(income_total))] + [""] * len(categories))
+    rows.append(["", "Остаток", int(round(income_total - expense_total))] + [""] * len(categories))
     return rows
+
 
 def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str):
     """Фоновый экспорт между двумя точными границами включительно."""
     trace = ProcessTrace(recipient_chat_id, f"Точный экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
     tmp_name = None
     try:
-        file_type = str(file_type).lower()
-        if file_type not in {"xlsx", "xlsxstat", "csv"}:
+        file_type = str(file_type or "csv").lower()
+        if file_type not in {"csv", "xlsx", "xlsxstat"}:
             file_type = "csv"
         rows = _exact_export_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
         if not rows:
             send_and_auto_delete(recipient_chat_id, "Нет записей в выбранном точном диапазоне.", 10)
             trace.finish("экспорт завершён без данных")
             return
-        ext = "xlsx" if file_type == "xlsxstat" else file_type
+        ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         tmp_name = os.path.join(
             MEGA_LOCAL_TMP_DIR,
             f"exact_export_{target_chat_id}_{int(time.time() * 1000)}.{ext}",
         )
         if file_type == "xlsxstat":
-            xlsx_rows = _exact_export_xlsx_stat_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
-            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Статьи")
+            xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
+            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Excel стат")
         elif ext == "xlsx":
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
-            prev_date = None
             for date_v, amount_v, note_v in rows:
-                if prev_date is not None and date_v != prev_date:
-                    xlsx_rows.append([])
-                prev_date = date_v
                 try:
                     parsed_amount = parse_csv_amount(amount_v)
                 except Exception:
                     parsed_amount = 0.0
                 xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Точный период")
+            _write_simple_xlsx(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), sheet_name="Точный период")
         else:
             with open(tmp_name, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
@@ -12699,7 +12796,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         )
         start_label = fmt_date_backup(start_key).replace(":", ".")
         end_label = fmt_date_backup(end_key).replace(":", ".")
-        display_name = f"{chat_name}_({start_label}-{end_label})_точный.{ext}"
+        display_name = f"{chat_name}_({start_label}-{end_label})_{'excel_стат' if file_type == 'xlsxstat' else 'точный'}.{ext}"
         store = get_chat_store(target_chat_id)
         caption = (
             f"🎯 {'Excel стат' if file_type == 'xlsxstat' else ('Excel' if ext == 'xlsx' else 'CSV')} — точный период\n"
@@ -12878,7 +12975,8 @@ def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None):
     kb = types.InlineKeyboardMarkup()
     # Кнопка открывает поле ввода через inline current chat; возможное @имя_бота очищается обработчиком перед сохранением.
     if insert_text:
-        kb.row(make_copy_or_inline_button("✍️ Вставить текст", str(insert_text)))
+        # v91: Telegram показывает @имя_бота, а сам текст начинается с новой строки, не сплошняком.
+        kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(insert_text))[:256]))
     kb.row(
         IB("❌ Закрыть", callback_data=f"d:{day_key}:cancel_edit"),
         IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"),
@@ -13692,15 +13790,15 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
                 return
         elif mode == "day":
             for r in store.get("daily_records", {}).get(day_key, []) or []:
-                rows.append((fmt_date_backup(day_key), fmt_csv_amount(r.get("amount")), r.get("note", "")))
-            caption = f"📅 CSV за день {fmt_date_backup(day_key)}: {get_chat_display_name(target_chat_id)}"
+                rows.append((fmt_date_table(day_key), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            caption = f"📅 CSV за день {fmt_date_table(day_key)}: {get_chat_display_name(target_chat_id)}"
         elif mode == "week":
             base = datetime.strptime(day_key, "%Y-%m-%d")
             start = base - timedelta(days=6)
             for i in range(7):
                 dk = (start + timedelta(days=i)).strftime("%Y-%m-%d")
                 for r in store.get("daily_records", {}).get(dk, []) or []:
-                    rows.append((fmt_date_export(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                    rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             caption = f"🗓 CSV за неделю: {get_chat_display_name(target_chat_id)}"
         elif mode == "month":
             base = datetime.strptime(day_key, "%Y-%m-%d")
@@ -13712,7 +13810,7 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
                     continue
                 if start <= dt <= base:
                     for r in recs or []:
-                        rows.append((fmt_date_export(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                        rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             caption = f"📆 CSV за месяц: {get_chat_display_name(target_chat_id)}"
         elif mode == "wedthu":
             base = datetime.strptime(day_key, "%Y-%m-%d")
@@ -13721,7 +13819,7 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
             for i in range(2):
                 dk = (base + timedelta(days=i)).strftime("%Y-%m-%d")
                 for r in store.get("daily_records", {}).get(dk, []) or []:
-                    rows.append((fmt_date_export(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                    rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             caption = f"📊 CSV Ср–Чт: {get_chat_display_name(target_chat_id)}"
 
         if not rows:
@@ -13755,11 +13853,11 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
 
     def _append_day(dk: str):
         for r in sorted(store.get("daily_records", {}).get(dk, []) or [], key=record_sort_key):
-            rows.append((fmt_date_export(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
 
     if mode == "day":
         _append_day(day_key)
-        label = f"за день {fmt_date_backup(day_key)}"
+        label = f"за день {fmt_date_table(day_key)}"
     elif mode == "week":
         base = datetime.strptime(day_key, "%Y-%m-%d")
         start = base - timedelta(days=6)
@@ -13843,7 +13941,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                     log_error(f"xlsx export amount parse skip: chat={get_chat_display_name(target_chat_id)} amount={amount_v!r} note={note_v!r}: {e_amount}")
                     parsed_amount = 0.0
                 xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Экспорт")
+            _write_simple_xlsx(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), sheet_name="Экспорт")
         else:
             trace.step("создаёт временный CSV файл")
             with open(tmp_name, "w", newline="", encoding="utf-8") as f:
@@ -14693,7 +14791,7 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
-        if active_bot_behavior_profile() == "v90_current":
+        if active_bot_behavior_profile() in {"v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
@@ -14802,7 +14900,7 @@ def _send_category_pick_end_precise(chat_id: int, message_id: int, start_key: st
     nav.append(IB(f"{russian_month_name(view_month)} {view_year}", callback_data="none"))
     nav.append(IB("Месяц ➡️", callback_data=cat_callback(f"cat_pick_end3:{start_key}:{int(start_rid)}:{next_y}:{next_m}")))
     kb.row(*nav)
-    kb.row(IB("⏹ По сегодняшний день", callback_data=cat_callback(f"cat_pick_today_end:{start_key}:{int(start_rid)}")))
+    kb.row(IB(f"⏹ По сегодняшний день · {fmt_date_ddmmyy(today_key())}", callback_data=cat_callback(f"cat_pick_today_end:{start_key}:{int(start_rid)}")))
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
     kb.row(IB("🔙 Изменить начало", callback_data=cat_callback(f"cat_pick_set_start:{start_dt.year}:{start_dt.month}:{start_dt.day}")))
     text = (
@@ -14836,7 +14934,7 @@ def _send_category_pick_end_record(chat_id: int, message_id: int, start_key: str
         kb.row(IB(expense_anchor_button_label(rec, store), callback_data=cat_callback(f"cat_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:{rid}")))
     if not displayed:
         kb.row(IB("Нет подходящих расходов в этот день", callback_data="none"))
-    kb.row(IB("✅ До конца сегодняшнего дня" if end_key == today_key() else "✅ Продолжить до конца дня", callback_data=cat_callback(f"cat_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:0")))
+    kb.row(IB("✅ Продолжить до конца дня", callback_data=cat_callback(f"cat_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:0")))
     end_dt = datetime.strptime(end_key, "%Y-%m-%d")
     kb.row(IB("🔙 Назад к календарю", callback_data=cat_callback(f"cat_pick_end3:{start_key}:{int(start_rid)}:{end_dt.year}:{end_dt.month}")))
     text = (
@@ -14866,7 +14964,7 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
     if _v85_enabled("usd_categories") and currency_mode_from_store(store) == "ars":
         usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False))
         kb.row(IB("💵 USD ВЫКЛ" if usd_on else "💵 USD ВКЛ", callback_data=cat_callback(f"cat_usd_toggle_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
-    kb.row(IB("📍 Расположение", callback_data=cat_callback(f"cat_layout_menu:records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    kb.row(IB("↕️ Расположение", callback_data=cat_callback(f"cat_order_open_exact:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
     end_dt = datetime.strptime(end_key, "%Y-%m-%d")
     kb.row(
@@ -14906,42 +15004,96 @@ def build_category_record_detail_text(store: dict, start_key: str, start_rid: in
             lines.append(f"• {fmt_date_ddmmyy(day_key)}: {format_category_amount(store, amount, category_mixed)} {clean_note}".rstrip())
     return wm_common("\n".join(lines), 8)
 
-def _other_sort_records(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int):
-    other = get_category_by_slug("other", store) or "ПРОЧЕЕ"
+_category_other_sort_state = {}
+
+
+def _other_sort_key(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
+    return (int(chat_id), str(start_key), int(start_rid), str(end_key), int(end_rid))
+
+
+def other_sort_records(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[dict]:
     out = []
-    for day_key, rec in exact_record_range(store, start_key, start_rid, end_key, end_rid):
-        if float(rec.get("amount", 0) or 0) < 0 and resolve_expense_category(rec.get("note", ""), store) == other:
-            out.append((day_key, rec))
+    for _day, rec in exact_record_range(store, start_key, start_rid, end_key, end_rid):
+        try:
+            if float(rec.get("amount", 0) or 0) >= 0:
+                continue
+        except Exception:
+            continue
+        category = resolve_expense_category_for_record(rec, store)
+        if get_expense_category_slug(category, store) == "other":
+            out.append(rec)
     return out
 
-def build_other_sort_keyboard(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
-    store = get_chat_store(chat_id)
-    selected = set(store.get("category_sort_selection") or [])
+
+def build_other_sort_text(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int) -> str:
+    count = len(other_sort_records(store, start_key, start_rid, end_key, end_rid))
+    return wm_common(
+        "🔀 Сортировка статьи ПРОЧЕЕ\n\n"
+        "Выберите финансовые значения, которые нужно перенести в другую статью. "
+        "После выбора нажмите «Выбрать их».\n\n"
+        f"Доступно записей: {count}", 8
+    )
+
+
+def build_other_sort_keyboard(chat_id: int, store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
-    pad = " " * 12
-    for day_key, rec in _other_sort_records(store, start_key, start_rid, end_key, end_rid):
-        rid = int(rec.get("id", 0) or 0)
-        mark = "✅ " if rid in selected else ""
-        label = f"{mark}{rec.get('short_id') or 'R'+str(rid)} {fmt_num(float(rec.get('amount',0) or 0))} {_clean_category_display_name(rec.get('note',''))}{pad}"
-        kb.row(IB(label[:60], callback_data=cat_callback(f"cat_other_sort_toggle:{start_key}:{start_rid}:{end_key}:{end_rid}:{rid}")))
-    kb.row(IB("✅ Выбрать их", callback_data=cat_callback(f"cat_other_sort_choose:{start_key}:{start_rid}:{end_key}:{end_rid}")))
-    kb.row(IB("↩️ Назад", callback_data=cat_callback(f"cat_show_records:{start_key}:{start_rid}:{end_key}:{end_rid}:other")))
+    key = _other_sort_key(chat_id, start_key, start_rid, end_key, end_rid)
+    selected = _category_other_sort_state.setdefault(key, set())
+    valid_ids = set()
+    for rec in other_sort_records(store, start_key, start_rid, end_key, end_rid):
+        rid = _record_int_id(rec)
+        valid_ids.add(rid)
+        mark = "✅" if rid in selected else "▫️"
+        label = f"{mark} {financial_record_button_label(rec, chat_id)}"
+        kb.row(IB(label, callback_data=cat_callback(f"cat_other_sort_toggle:{rid}:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    selected.intersection_update(valid_ids)
+    if selected:
+        kb.row(IB(f"✅ Выбрать их ({len(selected)})", callback_data=cat_callback(f"cat_other_sort_choose:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    else:
+        kb.row(IB("Выберите значения выше", callback_data="none"))
+    kb.row(IB("⬅️ Назад", callback_data=cat_callback(f"cat_show_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:other")))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
     return kb
 
-def build_other_sort_destination_keyboard(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int):
+
+def build_other_sort_target_text(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> str:
+    key = _other_sort_key(chat_id, start_key, start_rid, end_key, end_rid)
+    selected = _category_other_sort_state.get(key, set())
+    return wm_common(f"📦 Куда перенести выбранные записи?\n\nВыбрано: {len(selected)}", 8)
+
+
+def build_other_sort_target_keyboard(chat_id: int, store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int):
     kb = types.InlineKeyboardMarkup(row_width=2)
-    buttons=[]
-    for cat in get_expense_category_order(store):
-        slug=get_expense_category_slug(cat, store)
-        if slug and slug != "other":
-            buttons.append(IB(_clean_category_display_name(cat), callback_data=cat_callback(f"cat_other_sort_move:{start_key}:{start_rid}:{end_key}:{end_rid}:{slug}")))
+    buttons = []
+    for slug in get_expense_category_order_slugs(store):
+        if slug == "other":
+            continue
+        name = _clean_category_display_name(get_category_by_slug(slug, store) or slug)
+        buttons.append(IB(name, callback_data=cat_callback(f"cat_other_sort_target:{slug}:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     add_buttons_in_rows(kb, buttons, 2)
-    kb.row(IB("↩️ Назад", callback_data=cat_callback(f"cat_other_sort:{start_key}:{start_rid}:{end_key}:{end_rid}")))
+    kb.row(IB("⬅️ Назад к выбору", callback_data=cat_callback(f"cat_other_sort:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
     return kb
 
-def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, category_slug: str | None = None):
+
+def apply_other_sort_target(store: dict, selected_ids: set[int], target_slug: str) -> int:
+    changed = 0
+    ids = {int(x) for x in selected_ids}
+    for rec in store.get("records", []) or []:
+        if _record_int_id(rec) in ids:
+            rec["category_override_slug"] = str(target_slug)
+            changed += 1
+    # daily_records обычно содержит те же dict, но обновляем и отдельные копии после restore.
+    for arr in (store.get("daily_records", {}) or {}).values():
+        for rec in arr or []:
+            if _record_int_id(rec) in ids:
+                rec["category_override_slug"] = str(target_slug)
+    return changed
+
+
+def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, category: str | None = None, store: dict | None = None):
     kb = types.InlineKeyboardMarkup()
-    if category_slug == "other":
+    if category and get_expense_category_slug(category, store) == "other":
         kb.row(IB("🔀 Сортировка", callback_data=cat_callback(f"cat_other_sort:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     kb.row(IB("⬅️ Назад", callback_data=cat_callback(f"cat_back_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     kb.row(
@@ -15155,53 +15307,6 @@ def handle_categories_callback(call, data_str: str) -> bool:
     if data_str == "cat_today":
         return handle_categories_callback(call, f"cat_wthu:{today_key()}")
 
-    if data_str.startswith("cat_usd_toggle_summary:"):
-        try:
-            _, mode, start, end = data_str.split(":", 3)
-            settings = store.setdefault("settings", {})
-            settings["category_usd_enabled"] = not bool(settings.get("category_usd_enabled", False))
-            save_data(data, chat_ids=[chat_id])
-            label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
-            text, _ = summarize_categories(store, start, end, label)
-            kb = build_categories_summary_keyboard(mode, start, end, store=store)
-            send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id)
-        except Exception as e:
-            log_error(f"cat_usd_toggle_summary: {e}")
-        return True
-
-    if data_str.startswith("cat_layout_menu:"):
-        try:
-            payload = data_str.split(":", 1)[1]
-            back_cb = "cat_" + payload if payload.startswith("wthu:") or payload.startswith("wk:") else ("cat_range_records:" + payload.split("records:",1)[1] if payload.startswith("records:") else "cat_today")
-            text = wm_common("📍 Расположение статей\n\n⬆️/⬇️ меняют порядок сверху вниз.", 36)
-            send_or_edit_categories_window(chat_id, text, reply_markup=build_category_layout_keyboard(store, back_cb), preferred_message_id=call.message.message_id)
-        except Exception as e:
-            log_error(f"cat_layout_menu: {e}")
-        return True
-
-    if data_str.startswith("cat_layout_move:"):
-        try:
-            _, slug, direction, back_cb = data_str.split(":", 3)
-            cat = get_category_by_slug(slug, store)
-            if cat:
-                move_category_order(store, cat, int(direction))
-                save_data(data, chat_ids=[chat_id])
-            send_or_edit_categories_window(chat_id, wm_common("📍 Расположение статей\n\n⬆️/⬇️ меняют порядок сверху вниз.", 36), reply_markup=build_category_layout_keyboard(store, back_cb), preferred_message_id=call.message.message_id)
-        except Exception as e:
-            log_error(f"cat_layout_move: {e}")
-        return True
-
-    if data_str.startswith("cat_pick_today_end:"):
-        try:
-            _, start_key, start_rid = data_str.split(":")
-            end_key = today_key()
-            if end_key < start_key:
-                end_key = start_key
-            _send_category_pick_end_record(chat_id, call.message.message_id, start_key, int(start_rid), end_key)
-        except Exception as e:
-            log_error(f"cat_pick_today_end: {e}")
-        return True
-
     if data_str == "cat_add":
         start_category_add_wait(chat_id, chat_id)
         try:
@@ -15331,6 +15436,17 @@ def handle_categories_callback(call, data_str: str) -> bool:
             log_error(f"cat_pick_start_record: {e}")
         return True
 
+    if data_str.startswith("cat_pick_today_end:"):
+        try:
+            _, start_key, start_rid = data_str.split(":")
+            end_key = today_key()
+            if end_key < start_key:
+                end_key = start_key
+            _send_category_pick_end_record(chat_id, call.message.message_id, start_key, int(start_rid), end_key)
+        except Exception as e:
+            log_error(f"cat_pick_today_end: {e}")
+        return True
+
     if data_str == "cat_pick_today_start":
         try:
             start_key = today_key()
@@ -15338,6 +15454,78 @@ def handle_categories_callback(call, data_str: str) -> bool:
             _send_category_pick_end_precise(chat_id, call.message.message_id, start_key, 0, now_dt.year, now_dt.month)
         except Exception as e:
             log_error(f"cat_pick_today_start: {e}")
+        return True
+
+    if data_str.startswith("cat_usd_toggle_period:"):
+        try:
+            _, mode, start, end = data_str.split(":", 3)
+            settings = store.setdefault("settings", {})
+            settings["category_usd_enabled"] = not bool(settings.get("category_usd_enabled", False))
+            save_data(data, chat_ids=[chat_id])
+            schedule_config_backup_for_chats(chat_id)
+            if settings["category_usd_enabled"]:
+                usd_rate_cached(force=False)
+            label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
+            text, _ = summarize_categories(store, start, end, label)
+            kb = build_categories_summary_keyboard(mode, start, end, store=store)
+            marker = "cat_wthu:*" if mode == "wthu" else ("cat_wk:*" if mode == "wk" else "cat_range_custom2:*")
+            send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id, marker_action=marker)
+        except Exception as e:
+            log_error(f"cat_usd_toggle_period: {e}")
+        return True
+
+    if data_str.startswith("cat_order_open_sum:"):
+        try:
+            _, mode, start, end = data_str.split(":", 3)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end)),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_open_sum: {e}")
+        return True
+
+    if data_str.startswith("cat_order_move_sum:"):
+        try:
+            _, slug, direction, mode, start, end = data_str.split(":", 5)
+            if move_expense_category_order(store, slug, direction):
+                save_data(data, chat_ids=[chat_id])
+                schedule_config_backup_for_chats(chat_id)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end)),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_move_sum:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_move_sum: {e}")
+        return True
+
+    if data_str.startswith("cat_order_open_exact:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store),
+                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid))),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_exact:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_open_exact: {e}")
+        return True
+
+    if data_str.startswith("cat_order_move_exact:"):
+        try:
+            _, slug, direction, start_key, start_rid, end_key, end_rid = data_str.split(":", 6)
+            if move_expense_category_order(store, slug, direction):
+                save_data(data, chat_ids=[chat_id])
+                schedule_config_backup_for_chats(chat_id)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store),
+                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid))),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_move_exact:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_move_exact: {e}")
         return True
 
     if data_str.startswith("cat_pick_end3:"):
@@ -15423,53 +15611,72 @@ def handle_categories_callback(call, data_str: str) -> bool:
     if data_str.startswith("cat_other_sort:"):
         try:
             _, start_key, start_rid, end_key, end_rid = data_str.split(":")
-            store["category_sort_selection"] = []
-            save_data(data, chat_ids=[chat_id])
-            send_or_edit_categories_window(chat_id, wm_common("🔀 Сортировка ПРОЧЕЕ\n\nВыберите расходы галочками.", 37), reply_markup=build_other_sort_keyboard(chat_id,start_key,int(start_rid),end_key,int(end_rid)), preferred_message_id=call.message.message_id)
-        except Exception as e: log_error(f"cat_other_sort: {e}")
+            send_or_edit_categories_window(
+                chat_id, build_other_sort_text(store, start_key, int(start_rid), end_key, int(end_rid)),
+                reply_markup=build_other_sort_keyboard(chat_id, store, start_key, int(start_rid), end_key, int(end_rid)),
+                preferred_message_id=call.message.message_id, marker_action="cat_other_sort:*",
+            )
+        except Exception as e:
+            log_error(f"cat_other_sort: {e}")
         return True
 
     if data_str.startswith("cat_other_sort_toggle:"):
         try:
-            _, start_key, start_rid, end_key, end_rid, rid = data_str.split(":")
-            sel=set(store.get("category_sort_selection") or [])
-            rid=int(rid)
-            sel.remove(rid) if rid in sel else sel.add(rid)
-            store["category_sort_selection"]=sorted(sel)
-            save_data(data, chat_ids=[chat_id])
-            send_or_edit_categories_window(chat_id, wm_common("🔀 Сортировка ПРОЧЕЕ\n\nВыберите расходы галочками.", 37), reply_markup=build_other_sort_keyboard(chat_id,start_key,int(start_rid),end_key,int(end_rid)), preferred_message_id=call.message.message_id)
-        except Exception as e: log_error(f"cat_other_sort_toggle: {e}")
+            _, rid, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            key = _other_sort_key(chat_id, start_key, int(start_rid), end_key, int(end_rid))
+            selected = _category_other_sort_state.setdefault(key, set())
+            rid_i = int(rid)
+            if rid_i in selected:
+                selected.remove(rid_i)
+            else:
+                selected.add(rid_i)
+            send_or_edit_categories_window(
+                chat_id, build_other_sort_text(store, start_key, int(start_rid), end_key, int(end_rid)),
+                reply_markup=build_other_sort_keyboard(chat_id, store, start_key, int(start_rid), end_key, int(end_rid)),
+                preferred_message_id=call.message.message_id, marker_action="cat_other_sort_toggle:*",
+            )
+        except Exception as e:
+            log_error(f"cat_other_sort_toggle: {e}")
         return True
 
     if data_str.startswith("cat_other_sort_choose:"):
         try:
             _, start_key, start_rid, end_key, end_rid = data_str.split(":")
-            if not store.get("category_sort_selection"):
-                bot.answer_callback_query(call.id,"Ничего не выбрано",show_alert=False)
+            key = _other_sort_key(chat_id, start_key, int(start_rid), end_key, int(end_rid))
+            if not _category_other_sort_state.get(key):
+                bot.answer_callback_query(call.id, "Сначала выберите записи", show_alert=False)
                 return True
-            send_or_edit_categories_window(chat_id, wm_common("🔀 Куда перенести выбранные расходы?", 38), reply_markup=build_other_sort_destination_keyboard(store,start_key,int(start_rid),end_key,int(end_rid)), preferred_message_id=call.message.message_id)
-        except Exception as e: log_error(f"cat_other_sort_choose: {e}")
+            send_or_edit_categories_window(
+                chat_id, build_other_sort_target_text(chat_id, start_key, int(start_rid), end_key, int(end_rid)),
+                reply_markup=build_other_sort_target_keyboard(chat_id, store, start_key, int(start_rid), end_key, int(end_rid)),
+                preferred_message_id=call.message.message_id, marker_action="cat_other_sort_choose:*",
+            )
+        except Exception as e:
+            log_error(f"cat_other_sort_choose: {e}")
         return True
 
-    if data_str.startswith("cat_other_sort_move:"):
+    if data_str.startswith("cat_other_sort_target:"):
         try:
-            _, start_key, start_rid, end_key, end_rid, slug = data_str.split(":")
-            cat=get_category_by_slug(slug, store)
-            selected=set(store.get("category_sort_selection") or [])
-            if cat and selected:
-                for rec in store.get("records",[]) or []:
-                    if int(rec.get("id",0) or 0) in selected:
-                        note=_clean_category_display_name(rec.get("note",""))
-                        rec["note"]=(note+" "+cat).strip()
-                        for arr in (store.get("daily_records",{}) or {}).values():
-                            for item in arr or []:
-                                if int(item.get("id",0) or 0)==int(rec.get("id",0) or 0): item["note"]=rec["note"]
-                store["category_sort_selection"]=[]
+            _, target_slug, start_key, start_rid, end_key, end_rid = data_str.split(":", 5)
+            key = _other_sort_key(chat_id, start_key, int(start_rid), end_key, int(end_rid))
+            selected = set(_category_other_sort_state.get(key, set()))
+            changed = apply_other_sort_target(store, selected, target_slug)
+            _category_other_sort_state.pop(key, None)
+            if changed:
                 save_data(data, chat_ids=[chat_id])
-                finance_changed(chat_id, end_key, reason="category_sort_move", delay=0.1)
-            text,_=summarize_categories_record_range(store,start_key,int(start_rid),end_key,int(end_rid))
-            send_or_edit_categories_window(chat_id,text,reply_markup=build_categories_record_summary_keyboard(start_key,int(start_rid),end_key,int(end_rid),store),preferred_message_id=call.message.message_id,marker_action="cat_range_records:*")
-        except Exception as e: log_error(f"cat_other_sort_move: {e}")
+                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="category_manual_sort", delay=0.05)
+                schedule_config_backup_for_chats(chat_id)
+            text, _ = summarize_categories_record_range(store, start_key, int(start_rid), end_key, int(end_rid))
+            kb = build_categories_record_summary_keyboard(start_key, int(start_rid), end_key, int(end_rid), store)
+            send_or_edit_categories_window(
+                chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id, marker_action="cat_range_records:*",
+            )
+            try:
+                bot.answer_callback_query(call.id, f"Перенесено записей: {changed}", show_alert=False)
+            except Exception:
+                pass
+        except Exception as e:
+            log_error(f"cat_other_sort_target: {e}")
         return True
 
     if data_str.startswith("cat_show_records:"):
@@ -15483,7 +15690,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
                     pass
                 return True
             text = build_category_record_detail_text(store, start_key, int(start_rid), end_key, int(end_rid), category)
-            kb = build_category_record_detail_keyboard(start_key, int(start_rid), end_key, int(end_rid), slug)
+            kb = build_category_record_detail_keyboard(start_key, int(start_rid), end_key, int(end_rid), category=category, store=store)
             send_or_edit_categories_window(
                 chat_id,
                 text,
@@ -17820,7 +18027,7 @@ def send_csv_week(chat_id: int, day_key: str):
         for i in range(7):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             for r in store.get("daily_records", {}).get(d, []):
-                rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+                rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных за неделю")
@@ -17854,7 +18061,7 @@ def send_csv_month(chat_id: int, day_key: str):
             dt = datetime.strptime(d, "%Y-%m-%d")
             if dt >= start and dt <= base:
                 for r in recs:
-                    rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+                    rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных за месяц")
@@ -17891,7 +18098,7 @@ def send_csv_wedthu(chat_id: int, day_key: str):
         for i in range(2):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             for r in store.get("daily_records", {}).get(d, []):
-                rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+                rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных Ср–Чт")
@@ -18501,7 +18708,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
             rows = []
             for r in day_recs:
                 rows.append((
-                    fmt_date_backup(day_key),
+                    fmt_date_table(day_key),
                     get_chat_display_name(chat_id),
                     r.get("id"),
                     r.get("short_id"),
@@ -18513,7 +18720,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
                 ))
             write_csv_rows_with_day_gaps(w, rows, 9)
         with open(tmp_name, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"📅 CSV за день {fmt_date_backup(day_key)}: {get_chat_display_name(chat_id)}")
+            bot.send_document(chat_id, f, caption=f"📅 CSV за день {fmt_date_table(day_key)}: {get_chat_display_name(chat_id)}")
     except Exception as e:
         log_error(f"cmd_csv_day: {e}")
     finally:
@@ -20582,6 +20789,10 @@ def main():
             if str(gs.get("bot_behavior_profile") or "") == "v88_current":
                 gs["bot_behavior_profile"] = "v90_current"
             gs["version_mode_v90_migrated"] = True
+        if not bool(gs.get("version_mode_v91_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v90_current":
+                gs["bot_behavior_profile"] = "v91_current"
+            gs["version_mode_v91_migrated"] = True
         # Одноразово очищаем сохранённые имена статей от @username бота.
         if not bool(gs.get("category_names_clean_v88_applied", False)):
             for _cid, _store in (data.get("chats", {}) or {}).items():
@@ -20630,7 +20841,7 @@ def main():
     else:
         # Аварийный режим: не создаём/не сохраняем новую пустую SQLite и не запускаем startup-backup.
         data.setdefault("forward_rules", {})
-        log_error("v90 emergency mode: local writes and all automatic backups remain blocked")
+        log_error("v91 emergency mode: local writes and all automatic backups remain blocked")
     # v90: запуск/деплой не планирует бэкап; baseline delta создаётся без загрузки в MEGA.
     # Бэкап ставится только после реального изменения данных.
     try:
@@ -20661,7 +20872,7 @@ def main():
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
-                    f"Бэкап v90: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
+                    f"Бэкап v91: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
