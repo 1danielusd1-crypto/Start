@@ -252,6 +252,12 @@ BACKUP_TASK_POOL = KeyedTaskPool(
     _env_int("BACKUP_WORKERS", 1, 1, 2),
     _env_int("BACKUP_MAX_PENDING", 300, 50, 1500),
 )
+# v90: маленькие аварийные delta не ждут Excel/канал/полный файл чата в backup queue.
+DELTA_TASK_POOL = KeyedTaskPool(
+    "delta",
+    _env_int("DELTA_WORKERS", 1, 1, 2),
+    _env_int("DELTA_MAX_PENDING", 500, 50, 2000),
+)
 EXPORT_TASK_POOL = KeyedTaskPool(
     "export",
     _env_int("EXPORT_WORKERS", 1, 1, 2),
@@ -362,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v89_safe_restore_oom_guard"
+VERSION = "bot_v92_usd_transactions_forward_edit"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -390,7 +396,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 8
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 11
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -412,6 +418,40 @@ MEGA_LOCAL_TMP_DIR = os.getenv("MEGA_LOCAL_TMP_DIR", "/tmp").strip() or "/tmp"
 MEGA_CHAT_BACKUP_DIR = os.getenv("MEGA_CHAT_BACKUP_DIR", "chats").strip().strip("/") or "chats"
 MEGA_MONTHLY_BACKUP_DIR = os.getenv("MEGA_MONTHLY_BACKUP_DIR", "monthly").strip().strip("/") or "monthly"
 MEGA_HISTORY_BACKUP_DIR = os.getenv("MEGA_HISTORY_BACKUP_DIR", "history").strip().strip("/") or "history"
+# v90: небольшие неизменяемые delta-файлы вместо полного global после каждой операции.
+MEGA_DELTA_BACKUP_DIR = os.getenv("MEGA_DELTA_BACKUP_DIR", "deltas").strip().strip("/") or "deltas"
+try:
+    MEGA_DELTA_DELAY_SECONDS = max(1.0, float(os.getenv("MEGA_DELTA_DELAY_SECONDS", "8") or "8"))
+except Exception:
+    MEGA_DELTA_DELAY_SECONDS = 8.0
+try:
+    MEGA_DELTA_PRIORITY_DELAY_SECONDS = max(0.5, float(os.getenv("MEGA_DELTA_PRIORITY_DELAY_SECONDS", "1") or "1"))
+except Exception:
+    MEGA_DELTA_PRIORITY_DELAY_SECONDS = 1.0
+try:
+    MEGA_GLOBAL_QUIET_SECONDS = max(60.0, float(os.getenv("MEGA_GLOBAL_QUIET_SECONDS", "180") or "180"))
+except Exception:
+    MEGA_GLOBAL_QUIET_SECONDS = 180.0
+try:
+    MEGA_GLOBAL_MAX_INTERVAL_SECONDS = max(300.0, float(os.getenv("MEGA_GLOBAL_MAX_INTERVAL_SECONDS", "900") or "900"))
+except Exception:
+    MEGA_GLOBAL_MAX_INTERVAL_SECONDS = 900.0
+try:
+    MEGA_GLOBAL_HISTORY_KEEP = min(2, max(1, int(os.getenv("MEGA_GLOBAL_HISTORY_KEEP", "2") or "2")))
+except Exception:
+    MEGA_GLOBAL_HISTORY_KEEP = 2
+try:
+    MEGA_FILE_HISTORY_KEEP = min(2, max(1, int(os.getenv("MEGA_FILE_HISTORY_KEEP", "2") or "2")))
+except Exception:
+    MEGA_FILE_HISTORY_KEEP = 2
+try:
+    MEGA_DELTA_KEEP_FILES = max(50, int(os.getenv("MEGA_DELTA_KEEP_FILES", "500") or "500"))
+except Exception:
+    MEGA_DELTA_KEEP_FILES = 500
+try:
+    MEGA_DELTA_RESTORE_LIMIT = max(50, int(os.getenv("MEGA_DELTA_RESTORE_LIMIT", "1000") or "1000"))
+except Exception:
+    MEGA_DELTA_RESTORE_LIMIT = 1000
 try:
     MEGA_GLOBAL_MIN_SAFE_BYTES = max(2048, int(os.getenv("MEGA_GLOBAL_MIN_SAFE_BYTES", "8192") or "8192"))
 except Exception:
@@ -712,6 +752,59 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v92_current": {
+        "title": "v92 USD-транзакции / Перес",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "usd_transactions": True,
+        "forwarded_fin_edit": True,
+        "description": "Текущая версия: отдельный учёт USD-транзакций, безопасное редактирование пересланных финансов и все функции v91.",
+    },
+    "v91_current": {
+        "title": "v91 Статьи / Excel стат",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "description": "Текущая версия: v90 delta/snapshots + порядок статей, сортировка ПРОЧЕЕ, Excel стат и компактная история MEGA.",
+    },
+    "v90_current": {
+        "title": "v90 Delta / snapshots",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "description": "Текущая версия: быстрые immutable delta, редкие full snapshots, безопасные файлы чатов и восстановление global + delta.",
+    },
     "v88_current": {
         "title": "v88 Чистые статьи / полная валюта",
         "ui_edit_interval": 0.03,
@@ -849,7 +942,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v88_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v92_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -875,6 +968,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
         "buttons_current_window", "journal_enabled", "main_article_buttons_enabled",
         "main_financial_value_buttons_enabled", "gomonk_enabled", "gomonk_entries",
         "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
+        "category_usd_enabled", "expense_category_order_slugs", "remaining_view_mode", "forwarded_fin_edit_mode",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
         "process_trace_enabled",
     )
@@ -1060,7 +1154,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
-    if active_bot_behavior_profile() in {"v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
+    if active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
         label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
     return label
 
@@ -1144,6 +1238,122 @@ def toggle_forward_menu_new_style() -> bool:
 
 def forward_menu_style_label() -> str:
     return "🧩 Пересылка: по-новому" if forward_menu_new_style_enabled() else "🔁 Пересылка: обычно"
+
+# v92: способ быстрого редактирования финансовых сообщений, которые бот переслал в этот чат.
+FORWARDED_FIN_EDIT_MODES = ("normal", "button", "slash")
+
+
+def forwarded_fin_edit_mode(chat_id: int) -> str:
+    try:
+        mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("forwarded_fin_edit_mode", "normal") or "normal")
+    except Exception:
+        mode = "normal"
+    return mode if mode in FORWARDED_FIN_EDIT_MODES else "normal"
+
+
+def forwarded_fin_edit_mode_label(chat_id: int) -> str:
+    labels = {"normal": "обычно", "button": "кнопка", "slash": "слеш"}
+    return f"💰Перес: {labels.get(forwarded_fin_edit_mode(chat_id), 'обычно')}"
+
+
+def cycle_forwarded_fin_edit_mode(chat_id: int) -> str:
+    store = get_chat_store(int(chat_id))
+    settings = store.setdefault("settings", {})
+    current = forwarded_fin_edit_mode(chat_id)
+    idx = FORWARDED_FIN_EDIT_MODES.index(current)
+    new_mode = FORWARDED_FIN_EDIT_MODES[(idx + 1) % len(FORWARDED_FIN_EDIT_MODES)]
+    settings["forwarded_fin_edit_mode"] = new_mode
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+    return new_mode
+
+
+def _forward_destination_message_ids_for_chat(chat_id: int) -> set[int]:
+    out = set()
+    with forward_map_lock:
+        for _src, pairs in forward_map.items():
+            for dst_chat_id, dst_msg_id in pairs or []:
+                try:
+                    if int(dst_chat_id) == int(chat_id):
+                        out.add(int(dst_msg_id))
+                except Exception:
+                    pass
+    return out
+
+
+def _forwarded_finance_target_for_message(chat_id: int, message_id: int):
+    store = get_chat_store(int(chat_id))
+    mid = int(message_id)
+    for rec in store.get("records", []) or []:
+        if int(rec.get("source_msg_id") or 0) == mid and str(rec.get("note") or "") != "удалено":
+            return "ars", int(rec.get("id") or 0), rec
+    for rec in store.get("usd_records", []) or []:
+        if int(rec.get("source_msg_id") or 0) == mid:
+            return "usd", int(rec.get("id") or 0), rec
+    return None
+
+def _forwarded_finance_targets_for_message(chat_id: int, message_id: int):
+    store = get_chat_store(int(chat_id))
+    mid = int(message_id)
+    out = []
+    for rec in store.get("records", []) or []:
+        if int(rec.get("source_msg_id") or 0) == mid and str(rec.get("note") or "") != "удалено":
+            out.append(("ars", int(rec.get("id") or 0), rec))
+    for rec in store.get("usd_records", []) or []:
+        if int(rec.get("source_msg_id") or 0) == mid:
+            out.append(("usd", int(rec.get("id") or 0), rec))
+    return out
+
+
+def apply_forwarded_finance_edit_ui_for_message(chat_id: int, message_id: int):
+    """Накладывает/снимает inline-редактирование на пересланное финсообщение.
+    Сам текст не переписываем, поэтому старые сообщения остаются исходными.
+    """
+    targets = _forwarded_finance_targets_for_message(chat_id, message_id)
+    mode = forwarded_fin_edit_mode(chat_id)
+    if mode == "normal" or not targets:
+        try:
+            bot.edit_message_reply_markup(chat_id=int(chat_id), message_id=int(message_id), reply_markup=None)
+        except Exception:
+            pass
+        return
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    multi = len(targets) > 1
+    for kind, rid, _rec in targets[:4]:
+        if mode == "button":
+            label = ("✏️ ARS" if kind == "ars" else "✏️ USD") if multi else "✏️ Изменить"
+        else:
+            # Слеш-режим выглядит как исполняемая команда и остаётся однозначным
+            # даже у старых сообщений: /izmenit_R127 или /izmenit_U3.
+            label = f"/izmenit_{'U' if kind == 'usd' else 'R'}{rid}"
+        buttons.append(IB(label, callback_data=f"fwd_fin_edit:{kind}:{rid}"))
+    if buttons:
+        kb.row(*buttons[:2])
+        if len(buttons) > 2:
+            kb.row(*buttons[2:4])
+    try:
+        bot.edit_message_reply_markup(chat_id=int(chat_id), message_id=int(message_id), reply_markup=kb)
+    except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" not in err:
+            log_error(f"forwarded_fin_edit_ui {chat_id}:{message_id}: {e}")
+
+
+def apply_forwarded_finance_edit_mode_to_existing(chat_id: int):
+    """Применяет режим и к старым пересланным финсообщениям, не блокируя callback."""
+    mids = _forward_destination_message_ids_for_chat(chat_id)
+    store = get_chat_store(int(chat_id))
+    for rec in (store.get("records", []) or []) + (store.get("usd_records", []) or []):
+        if rec.get("forwarded_finance") and rec.get("source_msg_id"):
+            try:
+                mids.add(int(rec.get("source_msg_id")))
+            except Exception:
+                pass
+    for mid in sorted(mids):
+        if _forwarded_finance_target_for_message(chat_id, mid):
+            apply_forwarded_finance_edit_ui_for_message(chat_id, mid)
+            time.sleep(0.02)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2077,9 +2287,9 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_pick_end3:*': 'Ф105',
     'cat_pick_set_end3:*': 'Ф106',
     'cat_pick_end_record:*': 'Ф107',
-    'cat_range_records:*': 'Ф108',
+    'cat_range_records:*': 'Ф110',
     'cat_show_records:*': 'Ф109',
-    'cat_back_records:*': 'Ф110',
+    'cat_back_records:*': 'Ф149',
     'exp_pick_start:*': 'Ф111',
     'exp_pick_set_start:*': 'Ф112',
     'exp_pick_start_record:*': 'Ф113',
@@ -2117,6 +2327,24 @@ WINDOW_MARKER_CONSTANTS = {
     'currency_menu': 'Ф145',
     'currency_select:*': 'Ф146',
     'currency_back': 'Ф147',
+    'info_delta_status': 'Ф148',
+    'cat_usd_toggle_period:*': 'Ф150',
+    'cat_order_open_sum:*': 'Ф151',
+    'cat_order_open_exact:*': 'Ф152',
+    'cat_order_move_sum:*': 'Ф153',
+    'cat_order_move_exact:*': 'Ф154',
+    'cat_other_sort:*': 'Ф155',
+    'cat_other_sort_toggle:*': 'Ф156',
+    'cat_other_sort_choose:*': 'Ф157',
+    'cat_other_sort_target:*': 'Ф158',
+    'cat_pick_today_end:*': 'Ф159',
+    'exp_send:*:xlsxstat:*': 'Ф160',
+    'forwarded_fin_edit_mode_toggle': 'Ф161',
+    'fwd_fin_edit:*': 'Ф162',
+    'remaining_usd_toggle:*': 'Ф163',
+    'remaining_usd_month:*': 'Ф164',
+    'usd_rec:*': 'Ф165',
+    'usd_del:*': 'Ф166',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -2454,6 +2682,33 @@ def fmt_date_backup(day_key: str) -> str:
     except Exception:
         return str(day_key)
 
+def fmt_date_table(day_key: str) -> str:
+    """Формат дат в пользовательских CSV/Excel: DD.MM.YY."""
+    try:
+        d = datetime.strptime(str(day_key)[:10], "%Y-%m-%d")
+        return d.strftime("%d.%m.%y")
+    except Exception:
+        raw = str(day_key or "")
+        return raw.replace(":", ".")
+
+
+def insert_blank_rows_between_days(rows: list[list], header_rows: int = 1, date_col: int = 0) -> list[list]:
+    """Добавляет пустую строку между разными днями в Excel-таблицах."""
+    rows = list(rows or [])
+    head = rows[:max(0, int(header_rows))]
+    body = rows[max(0, int(header_rows)):]
+    out = list(head)
+    prev_day = None
+    for row in body:
+        row = list(row or [])
+        day = str(row[date_col]).strip() if len(row) > date_col else ""
+        if day and prev_day is not None and day != prev_day:
+            out.append([])
+        out.append(row)
+        if day:
+            prev_day = day
+    return out
+
 
 def backup_record_copy(rec: dict) -> dict:
     """Копия записи для JSON-бэкапа: добавляем date в формате DD:MM:YY, не ломая day_key для восстановления."""
@@ -2516,6 +2771,21 @@ def compose_edit_input_value(amount, note: str = "") -> str:
         base = fmt_num_compact(abs(amount))
     else:
         base = "0"
+    return (base + (" " + note if note else "")).strip()
+
+
+
+def compose_usd_edit_input_value(amount, note: str = "") -> str:
+    """Готовая строка для редактирования отдельной USD-транзакции."""
+    try:
+        amount = float(amount or 0)
+    except Exception:
+        amount = 0.0
+    note = re.sub(r"\s+", " ", str(note or "")).strip()
+    if amount > 0:
+        base = "+" + fmt_num_compact(abs(amount)) + " usd"
+    else:
+        base = fmt_num_compact(abs(amount)) + " usd"
     return (base + (" " + note if note else "")).strip()
 
 def fmt_num_compact(v) -> str:
@@ -3549,7 +3819,7 @@ def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
     if is_finance_mode(chat_id):
         return False
 
-    if data_str in {"info_close", "main_articles_toggle", "main_financial_values_toggle"}:
+    if data_str in {"info_close", "main_articles_toggle", "main_financial_values_toggle", "forwarded_fin_edit_mode_toggle"}:
         return False
     if data_str.startswith("d:") and data_str.endswith(":info"):
         return False
@@ -3584,6 +3854,7 @@ def build_help_text(chat_id: int) -> str:
         "/restore / /restore_off — режим восстановления JSON/CSV",
         "/dozvon — окно дозвона по связанным чатам",
         "/ost — слово «ост:» в Ф91 ВКЛ/ВЫКЛ",
+        "/izmenit — ответом на пересланное финсообщение открыть его редактирование",
     ]
     if is_owner_chat(chat_id):
         lines.extend([
@@ -3616,6 +3887,8 @@ def build_info_text(chat_id: int) -> str:
         if layout in {"v86", "v87"}:
             text += f"\nВалюта финансовых окон: {currency_mode(chat_id).upper().replace('_', '-')}"
             text += f"\n/ost — слово «ост:»: {'ВКЛ' if remaining_ost_label_enabled(chat_id) else 'ВЫКЛ'}"
+            if active_bot_behavior_profile() == "v92_current":
+                text += f"\nПересланные финансы: {forwarded_fin_edit_mode_label(chat_id)}"
     elif layout == "v83":
         text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
@@ -4395,7 +4668,7 @@ def mega_remote_file_path(filename: str = None) -> str:
 
 
 def _mega_required_commands():
-    return ["mega-login", "mega-whoami", "mega-mkdir", "mega-put", "mega-get", "mega-rm", "mega-mv"]
+    return ["mega-login", "mega-whoami", "mega-mkdir", "mega-put", "mega-get", "mega-rm", "mega-mv", "mega-find"]
 
 
 def mega_missing_commands():
@@ -4522,28 +4795,101 @@ def _copy_file_for_mega(src_path: str, dst_name: str) -> str | None:
         return None
 
 
+def _mega_remote_missing_error(raw: str) -> bool:
+    txt = str(raw or "").casefold()
+    return any(x in txt for x in ("couldn't find", "not found", "no such file", "does not exist"))
+
+
+def _mega_find_remote_files(remote_dir: str, pattern: str, limit: int | None = None) -> list[str]:
+    """Список удалённых файлов MEGA. Имена v90 содержат sortable timestamp."""
+    if not mega_is_configured() or shutil.which("mega-find") is None:
+        return []
+    try:
+        res = _mega_run(
+            "mega-find",
+            [str(remote_dir), f"--pattern={pattern}", "--type=f"],
+            check=False,
+            timeout=60,
+        )
+        rows = sorted({x.strip() for x in (res.stdout or "").splitlines() if x.strip()}, reverse=True)
+        return rows[: int(limit)] if limit else rows
+    except Exception as e:
+        log_error(f"_mega_find_remote_files({remote_dir},{pattern}): {e}")
+        return []
+
+
+def _mega_prune_remote_history(remote_dir: str, pattern: str, keep: int) -> int:
+    """Удаляет только лишние СТАРЫЕ исторические копии. Активный файл не затрагивается."""
+    rows = _mega_find_remote_files(remote_dir, pattern)
+    removed = 0
+    for remote_path in rows[max(1, int(keep)):]:
+        try:
+            res = _mega_run("mega-rm", [remote_path], check=False, timeout=30)
+            if res.returncode == 0:
+                removed += 1
+        except Exception:
+            pass
+    return removed
+
+
 def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None = None) -> bool:
-    """Загрузить файл в MEGA с заменой файла того же имени."""
-    if not mega_is_configured():
+    """Безопасно обновляет файл в MEGA без схемы rm->put.
+
+    1) новый файл целиком загружается как уникальный candidate;
+    2) прежний активный файл переносится в history;
+    3) candidate одним move становится активным;
+    4) хранится ограниченное число предыдущих версий.
+
+    Если процесс упадёт на шаге 1, старый файл не тронут. Если на шаге 2/3 —
+    старый уже находится в history, а candidate остаётся в MEGA.
+    """
+    if not mega_is_configured() or not local_path or not os.path.exists(local_path):
         return False
-    if not local_path or not os.path.exists(local_path):
-        return False
+    candidate_local = None
     try:
         mega_ensure_remote_path(remote_dir)
-        upload_path = local_path
-        if remote_name and os.path.basename(local_path) != remote_name:
-            copied = _copy_file_for_mega(local_path, remote_name)
-            if copied:
-                upload_path = copied
-        final_name = remote_name or os.path.basename(upload_path)
+        final_name = str(remote_name or os.path.basename(local_path))
+        stem, ext = os.path.splitext(final_name)
+        stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
+        candidate_name = f"candidate_{mega_safe_name(stem, 'file')}_{stamp}{ext or '.json'}"
+        candidate_local = _copy_file_for_mega(local_path, candidate_name)
+        if not candidate_local:
+            return False
+
+        # Сначала candidate. Активный remote_file пока существует без изменений.
+        _mega_run("mega-put", [candidate_local, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+        remote_candidate = remote_dir.rstrip("/") + "/" + candidate_name
         remote_file = remote_dir.rstrip("/") + "/" + final_name
-        _mega_run("mega-rm", [remote_file], check=False, timeout=30)
-        _mega_run("mega-put", [upload_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+
+        history_dir = remote_dir.rstrip("/") + "/history"
+        mega_ensure_remote_path(history_dir)
+        archive_name = f"{mega_safe_name(stem, 'file')}__{stamp}{ext or '.json'}"
+        remote_archive = history_dir.rstrip("/") + "/" + archive_name
+
+        # Отсутствие старого файла нормально. Любая другая ошибка оставляет старый файл на месте
+        # и не пытается насильно его удалить.
+        mv_old = _mega_run("mega-mv", [remote_file, remote_archive], check=False, timeout=60)
+        if mv_old.returncode != 0:
+            err = (mv_old.stderr or mv_old.stdout or "")[:500]
+            if not _mega_remote_missing_error(err):
+                log_error(f"[MEGA SAFE REPLACE] archive blocked for {remote_file}: {err}")
+                return False
+
+        _mega_run("mega-mv", [remote_candidate, remote_file], check=True, timeout=60)
+        try:
+            _mega_prune_remote_history(history_dir, f"{mega_safe_name(stem, 'file')}__*{ext or '.json'}", MEGA_FILE_HISTORY_KEEP)
+        except Exception:
+            pass
         return True
     except Exception as e:
-        log_error(f"[MEGA PUT ERROR] {local_path} -> {remote_dir}: {e}")
+        log_error(f"[MEGA SAFE REPLACE ERROR] {local_path} -> {remote_dir}: {e}")
         return False
-
+    finally:
+        try:
+            if candidate_local and os.path.exists(candidate_local):
+                os.remove(candidate_local)
+        except Exception:
+            pass
 
 def current_month_key() -> str:
     return now_local().strftime("%Y-%m")
@@ -4638,6 +4984,11 @@ def build_chat_monthly_backup_payload(chat_id: int, month_key: str | None = None
         rr["date"] = fmt_date_backup(rr["day_key"])
         clean_recs.append(rr)
     closing = opening + total_income - total_expense
+    usd_recs = usd_records_for_month(chat_id, month_key) if "usd_records_for_month" in globals() else []
+    usd_opening = usd_month_opening_balance(chat_id, month_key) if "usd_month_opening_balance" in globals() else 0.0
+    usd_income = sum(float(r.get("amount", 0) or 0) for r in usd_recs if float(r.get("amount", 0) or 0) >= 0)
+    usd_expense = -sum(float(r.get("amount", 0) or 0) for r in usd_recs if float(r.get("amount", 0) or 0) < 0)
+    usd_closing = usd_opening + usd_income - usd_expense
     return {
         "kind": "chat_monthly_backup",
         "version": VERSION,
@@ -4651,6 +5002,12 @@ def build_chat_monthly_backup_payload(chat_id: int, month_key: str | None = None
         "total_expense": total_expense,
         "closing_balance": closing,
         "record_count": len(clean_recs),
+        "usd_opening_balance": usd_opening,
+        "usd_total_income": usd_income,
+        "usd_total_expense": usd_expense,
+        "usd_closing_balance": usd_closing,
+        "usd_record_count": len(usd_recs),
+        "usd_records": [backup_record_copy(r) for r in usd_recs],
         "settings_backup": build_chat_settings_backup_payload(chat_id, store),
         "records": clean_recs,
     }
@@ -4680,9 +5037,13 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         w.writerow(["closing_balance", payload.get("closing_balance")])
         w.writerow([])
         w.writerow(["date", "amount", "note", "id", "short_id", "timestamp", "owner"])
+        prev_day = None
         for r in payload.get("records", []):
+            day_key = str(r.get("day_key") or "")[:10]
+            if prev_day is not None and day_key and day_key != prev_day:
+                w.writerow([])
             w.writerow([
-                r.get("date") or fmt_date_backup(r.get("day_key")),
+                fmt_date_table(day_key),
                 r.get("amount"),
                 r.get("note", ""),
                 r.get("id", ""),
@@ -4690,6 +5051,8 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
                 r.get("timestamp", ""),
                 r.get("owner", ""),
             ])
+            if day_key:
+                prev_day = day_key
 
     rows = [
         ["month", month_key],
@@ -4701,14 +5064,20 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         [],
         ["Дата", "Описание", "Приход", "Расход", "ID", "Номер", "Время", "Автор"],
     ]
+    prev_day = None
     for r in payload.get("records", []):
-        base_row = _xlsx_record_row(r.get("date") or fmt_date_backup(r.get("day_key")), r.get("amount"), r.get("note", ""))
+        day_key = str(r.get("day_key") or "")[:10]
+        if prev_day is not None and day_key and day_key != prev_day:
+            rows.append([])
+        base_row = _xlsx_record_row(fmt_date_table(day_key), r.get("amount"), r.get("note", ""))
         rows.append(base_row + [
             r.get("id", ""),
             r.get("short_id", ""),
             r.get("timestamp", ""),
             r.get("owner", ""),
         ])
+        if day_key:
+            prev_day = day_key
     _write_simple_xlsx(xlsx_path, rows, sheet_name="Месяц")
 
     return {"json": json_path, "csv": csv_path, "xlsx": xlsx_path}
@@ -4795,6 +5164,531 @@ def schedule_config_backup_for_chats(*chat_ids, delay: float = 3.0):
             pass
 
 
+
+# ─────────────────────────────────────────────────────────────
+# v90: append-only delta journal + редкие full snapshots
+# ─────────────────────────────────────────────────────────────
+_delta_state_lock = threading.RLock()
+_delta_record_baseline: dict[int, dict[str, str]] = {}
+_delta_meta_baseline: dict[int, dict[str, str]] = {}
+_delta_root_baseline: dict[str, str] = {}
+_delta_pending_chats: set[int] = set()
+_delta_chat_generation: dict[int, int] = defaultdict(int)
+_delta_generation = 0
+_delta_batch_timer = None
+_delta_last_success_at = ""
+_delta_last_file = ""
+_delta_last_event_count = 0
+_delta_last_error = ""
+_global_snapshot_pending = False
+_global_snapshot_last_success_monotonic = time.monotonic()
+_global_snapshot_last_success_at = ""
+_global_snapshot_last_change_monotonic = 0.0
+_global_snapshot_capture_generation = 0
+
+_DELTA_VOLATILE_CHAT_KEYS = {
+    "active_windows", "edit_wait", "edit_target", "categories_msg_id", "report_window_id",
+    "info_msg_id", "command_window_id", "total_msg_id", "balance_panel_id", "secret_wait",
+    "main_window_msg_count", "balance_panel_msg_count", "current_view_day",
+}
+_DELTA_VOLATILE_ROOT_KEYS = {"chats", "records", "active_messages", "bot_errors", "_state_meta"}
+_DELTA_ROOT_MAP_KEYS = {"forward_index", "forward_rules", "forward_finance", "finance_active_chats", "_global_settings", "csv_meta", "chat_backup_meta", "backup_flags"}
+
+
+def mega_delta_remote_root() -> str:
+    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_DELTA_BACKUP_DIR}"
+
+
+def mega_delta_remote_day_dir(day_key: str | None = None) -> str:
+    return mega_delta_remote_root().rstrip("/") + "/" + str(day_key or today_key())
+
+
+def _delta_json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _delta_hash(value) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _delta_record_key(rec: dict) -> str:
+    if not isinstance(rec, dict):
+        return "invalid:" + _delta_hash(rec)[:16]
+    for key in ("id", "record_id"):
+        value = rec.get(key)
+        if value not in (None, ""):
+            return f"id:{value}"
+    return "src:%s:%s:%s" % (
+        rec.get("source_chat_id") or rec.get("chat_id") or "",
+        rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or "",
+        rec.get("timestamp") or rec.get("day_key") or "",
+    )
+
+
+def _delta_chat_meta(store: dict) -> dict:
+    return {
+        str(k): _delta_json_clone(v)
+        for k, v in (store or {}).items()
+        if k not in _DELTA_VOLATILE_CHAT_KEYS and k not in {"records", "daily_records", "daily_records_by_date"}
+    }
+
+
+def _delta_root_patch(payload: dict) -> dict:
+    return {
+        str(k): _delta_json_clone(v)
+        for k, v in (payload or {}).items()
+        if k not in _DELTA_VOLATILE_ROOT_KEYS
+        and k not in {"_universal_backup", "_backup_meta", "_runtime_snapshot", "_delta_restore_meta"}
+    }
+
+
+def _delta_root_signature_state(root: dict) -> dict:
+    out = {}
+    for key, value in (root or {}).items():
+        if key in _DELTA_ROOT_MAP_KEYS and isinstance(value, dict):
+            out[str(key)] = {
+                "kind": "map",
+                "entries": {str(entry): _delta_hash(entry_value) for entry, entry_value in value.items()},
+            }
+        else:
+            out[str(key)] = {"kind": "value", "hash": _delta_hash(value)}
+    return out
+
+
+def _delta_baseline_from_payload(payload: dict) -> tuple[dict[int, dict[str, str]], dict[int, dict[str, str]], dict[str, str]]:
+    rec_baseline: dict[int, dict[str, str]] = {}
+    meta_baseline: dict[int, dict[str, str]] = {}
+    for cid_s, store in ((payload or {}).get("chats", {}) or {}).items():
+        try:
+            cid = int(cid_s)
+        except Exception:
+            continue
+        if not isinstance(store, dict):
+            continue
+        rec_baseline[cid] = {
+            _delta_record_key(rec): _delta_hash(rec)
+            for rec in (store.get("records", []) or [])
+            if isinstance(rec, dict)
+        }
+        meta = _delta_chat_meta(store)
+        meta_baseline[cid] = {str(key): _delta_hash(value) for key, value in meta.items()}
+    root = _delta_root_patch(payload or {})
+    root_baseline = _delta_root_signature_state(root)
+    return rec_baseline, meta_baseline, root_baseline
+
+def initialize_delta_baseline(payload: dict | None = None):
+    """Начальная точка delta. Ничего не загружает и не создаёт бэкап."""
+    global _delta_record_baseline, _delta_meta_baseline, _delta_root_baseline
+    snapshot = payload
+    if snapshot is None:
+        with data_lock:
+            _persist_forward_index_in_data(data)
+            snapshot = _delta_json_clone(data or {})
+    recs, metas, root_sig = _delta_baseline_from_payload(snapshot or {})
+    with _delta_state_lock:
+        _delta_record_baseline = recs
+        _delta_meta_baseline = metas
+        _delta_root_baseline = dict(root_sig or {})
+
+
+def _build_delta_payload(chat_ids: list[int], generation_map: dict[int, int]) -> tuple[dict | None, dict]:
+    """Строит только изменившиеся записи и поля настроек относительно подтверждённого delta/full."""
+    requested_ids = sorted({int(x) for x in chat_ids})
+    with data_lock:
+        _persist_forward_index_in_data(data)
+        # Не копируем все чаты для маленького delta: только root и реально изменившиеся чаты.
+        state = {
+            str(key): _delta_json_clone(value)
+            for key, value in (data or {}).items()
+            if key != "chats"
+        }
+        all_chats = (data or {}).get("chats", {}) or {}
+        state["chats"] = {
+            str(cid): _delta_json_clone(all_chats.get(str(cid), {}) or {})
+            for cid in requested_ids
+        }
+
+    with _delta_state_lock:
+        old_records = {int(cid): dict(sigs or {}) for cid, sigs in _delta_record_baseline.items()}
+        old_meta = {int(cid): dict(sigs or {}) for cid, sigs in _delta_meta_baseline.items()}
+        old_root = dict(_delta_root_baseline or {})
+
+    chat_changes = {}
+    next_record_sigs = {}
+    next_meta_sigs = {}
+    event_count = 0
+    chats = state.get("chats", {}) or {}
+    for cid in requested_ids:
+        store = chats.get(str(cid)) or {}
+        if not isinstance(store, dict):
+            continue
+        current_records = {
+            _delta_record_key(rec): rec
+            for rec in (store.get("records", []) or [])
+            if isinstance(rec, dict)
+        }
+        current_sigs = {key: _delta_hash(rec) for key, rec in current_records.items()}
+        previous_sigs = old_records.get(cid, {}) or {}
+        upsert_keys = [key for key, sig in current_sigs.items() if previous_sigs.get(key) != sig]
+        delete_keys = [key for key in previous_sigs if key not in current_sigs]
+
+        meta = _delta_chat_meta(store)
+        current_meta_sigs = {str(key): _delta_hash(value) for key, value in meta.items()}
+        previous_meta_sigs = old_meta.get(cid, {}) or {}
+        changed_meta_keys = [key for key, sig in current_meta_sigs.items() if previous_meta_sigs.get(key) != sig]
+        deleted_meta_keys = [key for key in previous_meta_sigs if key not in current_meta_sigs]
+
+        if upsert_keys or delete_keys or changed_meta_keys or deleted_meta_keys:
+            row = {
+                "chat_id": cid,
+                "upserts": [{"key": key, "record": current_records[key]} for key in upsert_keys],
+                "deletes": delete_keys,
+                "chat_meta_patch": {key: meta[key] for key in changed_meta_keys},
+                "chat_meta_deletes": deleted_meta_keys,
+            }
+            chat_changes[str(cid)] = row
+            event_count += len(upsert_keys) + len(delete_keys) + len(changed_meta_keys) + len(deleted_meta_keys)
+        next_record_sigs[cid] = current_sigs
+        next_meta_sigs[cid] = current_meta_sigs
+
+    root = _delta_root_patch(state)
+    current_root_sigs = _delta_root_signature_state(root)
+    root_patch = {}
+    root_deletes = []
+    root_map_patches = {}
+    root_map_deletes = {}
+    for key, sig_state in current_root_sigs.items():
+        old_state = old_root.get(key) or {}
+        if sig_state.get("kind") == "map":
+            current_entries = sig_state.get("entries") or {}
+            old_entries = old_state.get("entries") or {} if old_state.get("kind") == "map" else {}
+            changed_entries = [entry for entry, sig in current_entries.items() if old_entries.get(entry) != sig]
+            deleted_entries = [entry for entry in old_entries if entry not in current_entries]
+            if changed_entries:
+                root_map_patches[key] = {entry: root[key][entry] for entry in changed_entries}
+            if deleted_entries:
+                root_map_deletes[key] = deleted_entries
+            event_count += len(changed_entries) + len(deleted_entries)
+        elif old_state != sig_state:
+            root_patch[key] = root[key]
+            event_count += 1
+    for key in old_root:
+        if key not in current_root_sigs:
+            root_deletes.append(key)
+            event_count += 1
+
+    baseline = {
+        "record_sigs": next_record_sigs,
+        "meta_sigs": next_meta_sigs,
+        "root_sigs": current_root_sigs,
+        "generation_map": generation_map,
+    }
+    if event_count <= 0:
+        return None, baseline
+
+    created_at = now_local().isoformat(timespec="microseconds")
+    seq = time.time_ns()
+    payload = {
+        "kind": "telegram_finance_bot_delta",
+        "schema_version": 1,
+        "bot_version": VERSION,
+        "created_at": created_at,
+        "delta_id": f"{now_local().strftime('%Y%m%d_%H%M%S_%f')}_{seq}",
+        "chat_changes": chat_changes,
+        "root_patch": root_patch,
+        "root_deletes": root_deletes,
+        "root_map_patches": root_map_patches,
+        "root_map_deletes": root_map_deletes,
+        "event_count": event_count,
+        "chat_count": len(chat_changes),
+    }
+    return payload, baseline
+
+def _commit_delta_baseline(baseline: dict):
+    global _delta_root_baseline
+    with _delta_state_lock:
+        for cid, sigs in (baseline.get("record_sigs") or {}).items():
+            _delta_record_baseline[int(cid)] = dict(sigs or {})
+        for cid, sigs in (baseline.get("meta_sigs") or {}).items():
+            _delta_meta_baseline[int(cid)] = dict(sigs or {})
+        if "root_sigs" in baseline:
+            _delta_root_baseline = dict(baseline.get("root_sigs") or {})
+
+def _delta_upload_payload(payload: dict) -> tuple[bool, str]:
+    if not payload or not mega_is_configured():
+        return False, ""
+    day_dir = mega_delta_remote_day_dir(str(payload.get("created_at") or today_key())[:10])
+    os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+    name = f"delta_{payload.get('delta_id')}.json"
+    local_path = os.path.join(MEGA_LOCAL_TMP_DIR, name)
+    try:
+        _save_json(local_path, payload)
+        mega_ensure_remote_path(day_dir)
+        # Delta immutable: уникальное имя, старые файлы не удаляем и не заменяем.
+        _mega_run("mega-put", [local_path, day_dir], check=True, timeout=MEGA_TIMEOUT)
+        return True, day_dir.rstrip("/") + "/" + name
+    except Exception as e:
+        log_error(f"[MEGA DELTA ERROR] {e}")
+        return False, ""
+    finally:
+        try:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        except Exception:
+            pass
+
+
+def _mark_global_snapshot_pending():
+    """Full global: после 3 минут тишины, но максимум через 15 минут непрерывной работы."""
+    global _global_snapshot_pending, _global_snapshot_last_change_monotonic
+    if RESTORE_GUARD_ACTIVE or not mega_is_configured():
+        return
+    now_mono = time.monotonic()
+    with _delta_state_lock:
+        _global_snapshot_pending = True
+        _global_snapshot_last_change_monotonic = now_mono
+        elapsed = max(0.0, now_mono - _global_snapshot_last_success_monotonic)
+        max_wait = max(5.0, MEGA_GLOBAL_MAX_INTERVAL_SECONDS - elapsed)
+
+    def _quiet_fire():
+        with _delta_state_lock:
+            quiet_for = time.monotonic() - _global_snapshot_last_change_monotonic
+            pending = _global_snapshot_pending
+        if not pending:
+            return
+        if quiet_for + 0.5 < MEGA_GLOBAL_QUIET_SECONDS:
+            DELAYED_SCHEDULER.schedule("mega-global-quiet-v90", MEGA_GLOBAL_QUIET_SECONDS - quiet_for, _quiet_fire)
+            return
+        _submit_global_snapshot_v90("quiet")
+
+    def _max_fire():
+        with _delta_state_lock:
+            pending = _global_snapshot_pending
+        if pending:
+            _submit_global_snapshot_v90("max_interval")
+
+    DELAYED_SCHEDULER.cancel("mega-global-quiet-v90")
+    DELAYED_SCHEDULER.schedule("mega-global-quiet-v90", MEGA_GLOBAL_QUIET_SECONDS, _quiet_fire)
+    if DELAYED_SCHEDULER.deadline("mega-global-max-v90") is None:
+        DELAYED_SCHEDULER.schedule("mega-global-max-v90", max_wait, _max_fire)
+
+
+def _submit_global_snapshot_v90(reason: str):
+    if RESTORE_GUARD_ACTIVE:
+        return
+    def _job():
+        ok = mega_upload_latest_global_backup()
+        if not ok:
+            DELAYED_SCHEDULER.schedule("mega-global-retry-v90", BACKUP_BUSY_RETRY_SECONDS, _submit_global_snapshot_v90, "retry")
+    if not BACKUP_TASK_POOL.submit("mega-global-v90", _job):
+        log_error(f"GLOBAL v90 QUEUE FULL ({reason}), RETRY")
+        DELAYED_SCHEDULER.schedule("mega-global-retry-v90", BACKUP_BUSY_RETRY_SECONDS, _submit_global_snapshot_v90, "queue_retry")
+
+
+def _run_delta_batch():
+    global _delta_last_success_at, _delta_last_file, _delta_last_event_count, _delta_last_error
+    with _delta_state_lock:
+        chat_ids = sorted(_delta_pending_chats)
+        generation_map = {cid: int(_delta_chat_generation.get(cid, 0)) for cid in chat_ids}
+    if not chat_ids:
+        return True
+    payload, baseline = _build_delta_payload(chat_ids, generation_map)
+
+    if payload is not None:
+        ok, remote_path = _delta_upload_payload(payload)
+        if not ok:
+            _delta_last_error = "delta upload failed"
+            return False
+        _delta_last_success_at = str(payload.get("created_at") or "")
+        _delta_last_file = remote_path
+        _delta_last_event_count = int(payload.get("event_count", 0) or 0)
+        _delta_last_error = ""
+        log_info(f"[MEGA DELTA] uploaded {remote_path}; events={_delta_last_event_count}; chats={payload.get('chat_count')}")
+        _mark_global_snapshot_pending()
+
+    _commit_delta_baseline(baseline)
+    with _delta_state_lock:
+        for cid, gen in generation_map.items():
+            if int(_delta_chat_generation.get(cid, 0)) == int(gen):
+                _delta_pending_chats.discard(cid)
+        more_pending = bool(_delta_pending_chats)
+    with timer_lock:
+        for cid in generation_map:
+            _quick_backup_timers.pop(int(cid), None)
+            _quick_backup_dirty_chats.discard(int(cid))
+    if more_pending:
+        schedule_delta_backup(None, delay=1.0, reason="changes_during_upload")
+    return True
+
+def schedule_delta_backup(chat_id: int | None, delay: float | None = None, reason: str = "change"):
+    """Общий debounce разных чатов: несколько изменений попадают в один маленький delta."""
+    global _delta_generation, _delta_batch_timer
+    if RESTORE_GUARD_ACTIVE or not mega_is_configured():
+        return False
+    with _delta_state_lock:
+        _delta_generation += 1
+        if chat_id is not None:
+            cid = int(chat_id)
+            _delta_pending_chats.add(cid)
+            _delta_chat_generation[cid] = _delta_generation
+        elif not _delta_pending_chats:
+            return False
+    if delay is None:
+        delay = MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS
+    delay = max(0.5, float(delay))
+
+    def _fire():
+        def _job():
+            if not _run_delta_batch():
+                schedule_delta_backup(None, delay=BACKUP_BUSY_RETRY_SECONDS, reason="upload_retry")
+        if not DELTA_TASK_POOL.submit("mega-delta-v90", _job):
+            log_error("DELTA QUEUE FULL, RETRY")
+            schedule_delta_backup(None, delay=BACKUP_BUSY_RETRY_SECONDS, reason="queue_retry")
+
+    DELAYED_SCHEDULER.cancel("mega-delta-batch-v90")
+    _delta_batch_timer = DELAYED_SCHEDULER.schedule("mega-delta-batch-v90", delay, _fire)
+    return True
+
+
+def _apply_delta_payload_to_state(state: dict, delta: dict) -> dict:
+    if not isinstance(state, dict) or not isinstance(delta, dict):
+        return state
+    root_patch = delta.get("root_patch") or {}
+    for key in (delta.get("root_deletes") or []):
+        if key not in _DELTA_VOLATILE_ROOT_KEYS:
+            state.pop(str(key), None)
+    for key, value in root_patch.items():
+        if key not in _DELTA_VOLATILE_ROOT_KEYS:
+            state[key] = _delta_json_clone(value)
+    for key, entries in (delta.get("root_map_patches") or {}).items():
+        target = state.setdefault(str(key), {})
+        if not isinstance(target, dict):
+            target = {}
+            state[str(key)] = target
+        for entry, value in (entries or {}).items():
+            target[str(entry)] = _delta_json_clone(value)
+    for key, entries in (delta.get("root_map_deletes") or {}).items():
+        target = state.get(str(key))
+        if isinstance(target, dict):
+            for entry in entries or []:
+                target.pop(str(entry), None)
+    chats = state.setdefault("chats", {})
+    for cid_s, change in (delta.get("chat_changes") or {}).items():
+        if not isinstance(change, dict):
+            continue
+        store = chats.setdefault(str(cid_s), {})
+        # Поддержка первых тестовых delta с chat_meta и основной field-patch формат v90.
+        meta = change.get("chat_meta")
+        if isinstance(meta, dict):
+            for key, value in meta.items():
+                store[key] = _delta_json_clone(value)
+        for key in (change.get("chat_meta_deletes") or []):
+            store.pop(str(key), None)
+        for key, value in (change.get("chat_meta_patch") or {}).items():
+            store[str(key)] = _delta_json_clone(value)
+        current = {
+            _delta_record_key(rec): rec
+            for rec in (store.get("records", []) or [])
+            if isinstance(rec, dict)
+        }
+        for key in (change.get("deletes") or []):
+            current.pop(str(key), None)
+        for item in (change.get("upserts") or []):
+            if not isinstance(item, dict) or not isinstance(item.get("record"), dict):
+                continue
+            current[str(item.get("key") or _delta_record_key(item["record"]))] = _delta_json_clone(item["record"])
+        records = sorted(current.values(), key=record_sort_key)
+        daily = defaultdict(list)
+        for rec in records:
+            dk = _record_day_key(rec)
+            rec["day_key"] = dk
+            daily[dk].append(rec)
+        store["records"] = records
+        store["daily_records"] = {dk: sorted(rows, key=record_sort_key) for dk, rows in sorted(daily.items())}
+        store["balance"] = sum(float(rec.get("amount", 0) or 0) for rec in records)
+    state["overall_balance"] = sum(float((s or {}).get("balance", 0) or 0) for s in chats.values() if isinstance(s, dict))
+    state["records"] = []
+    state["_delta_restore_meta"] = {
+        "last_delta_id": delta.get("delta_id"),
+        "last_delta_created_at": delta.get("created_at"),
+        "last_delta_event_count": delta.get("event_count"),
+    }
+    return state
+
+
+def _delta_remote_candidates_after(created_at: str, limit: int | None = None) -> list[str]:
+    rows = _mega_find_remote_files(mega_delta_remote_root(), "delta_*.json")
+    base_ts = _parse_iso_timestamp(created_at)
+    selected = []
+    for path in sorted(rows):
+        name = os.path.basename(path)
+        match = re.search(r"delta_(\d{8})_(\d{6})_(\d{6})_", name)
+        if match:
+            try:
+                dt = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S%f").replace(tzinfo=get_tz())
+                if dt.timestamp() <= base_ts:
+                    continue
+            except Exception:
+                pass
+        selected.append(path)
+    return selected[: int(limit or MEGA_DELTA_RESTORE_LIMIT)]
+
+
+def merge_global_snapshot_with_mega_deltas(local_global_path: str) -> tuple[str, int]:
+    """Скачивает и применяет immutable delta, созданные после full snapshot."""
+    base = _load_json(local_global_path, {}) or {}
+    if not _global_payload_is_structurally_valid(base):
+        return local_global_path, 0
+    created_at = str((base.get("_universal_backup") or {}).get("created_at") or (base.get("_backup_meta") or {}).get("created_at") or "")
+    remote_rows = _delta_remote_candidates_after(created_at)
+    applied = 0
+    for remote_path in remote_rows:
+        local_delta = _mega_download_remote_path(remote_path)
+        if not local_delta:
+            continue
+        delta = _load_json(local_delta, {}) or {}
+        if delta.get("kind") != "telegram_finance_bot_delta":
+            continue
+        if _parse_iso_timestamp(delta.get("created_at")) <= _parse_iso_timestamp(created_at):
+            continue
+        _apply_delta_payload_to_state(base, delta)
+        applied += 1
+    if not applied:
+        return local_global_path, 0
+    merged = os.path.join(MEGA_LOCAL_TMP_DIR, f"merged_global_with_{applied}_deltas.json")
+    _save_json(merged, base)
+    log_info(f"[MEGA RESTORE] merged full snapshot + {applied} delta files")
+    return merged, applied
+
+
+def _prune_delta_files_after_full_snapshot():
+    try:
+        rows = _mega_find_remote_files(mega_delta_remote_root(), "delta_*.json")
+        for remote_path in rows[MEGA_DELTA_KEEP_FILES:]:
+            _mega_run("mega-rm", [remote_path], check=False, timeout=30)
+    except Exception as e:
+        log_error(f"_prune_delta_files_after_full_snapshot: {e}")
+
+
+def delta_status_text() -> str:
+    with _delta_state_lock:
+        pending = len(_delta_pending_chats)
+        global_pending = _global_snapshot_pending
+        since_full = max(0, int(time.monotonic() - _global_snapshot_last_success_monotonic))
+    return (
+        "🧩 Delta / snapshots v91\n"
+        f"Ожидают чаты: {pending}\n"
+        f"Последний delta: {_delta_last_success_at or '-'}\n"
+        f"Событий в нём: {_delta_last_event_count}\n"
+        f"Файл: {_delta_last_file or '-'}\n"
+        f"Ошибка: {_delta_last_error or '-'}\n"
+        f"Full global ожидается: {'да' if global_pending else 'нет'}\n"
+        f"После последнего full: {since_full} сек.\n"
+        f"Тишина для full: {int(MEGA_GLOBAL_QUIET_SECONDS)} сек.; максимум: {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)} сек."
+    )
+
+
 def _snapshot_runtime_state_for_backup(payload: dict) -> dict:
     """Минимальный стабильный runtime-слой, необходимый для восстановления между версиями."""
     return {
@@ -4833,7 +5727,7 @@ def make_global_backup_payload() -> dict:
         "created_at": created_at,
         "restore_mode": "replace_full_state",
         "contains": [
-            "all_chats", "records", "settings", "global_settings", "forward_rules",
+            "all_chats", "records", "usd_records", "settings", "global_settings", "forward_rules",
             "forward_finance", "forward_index", "secret_messages", "backup_metadata"
         ],
     }
@@ -4848,7 +5742,7 @@ def make_global_backup_payload() -> dict:
         "forward_rules_count": sum(len(v or {}) for v in (payload.get("forward_rules", {}) or {}).values()),
         "forward_finance_count": sum(len(v or {}) for v in (payload.get("forward_finance", {}) or {}).values()),
         "forward_index_count": len(payload.get("forward_index", {}) or {}),
-        "note": "Универсальный полный JSON: все чаты, записи, настройки, секреты, пересылка и индекс сообщений.",
+        "note": "Универсальный полный JSON: все чаты, ARS/USD-записи, настройки, секреты, пересылка и индекс сообщений.",
     }
     return payload
 
@@ -4873,15 +5767,23 @@ def _global_payload_stats(payload: dict, path: str | None = None) -> dict:
     if not isinstance(chats, dict):
         chats = {}
     record_count = 0
+    usd_record_count = 0
     nonempty_chats = 0
     for store in chats.values():
         if not isinstance(store, dict):
             continue
         recs = store.get("records") or []
+        usd_recs = store.get("usd_records") or []
+        has_any = False
         if isinstance(recs, list):
             record_count += len(recs)
-            if recs:
-                nonempty_chats += 1
+            has_any = has_any or bool(recs)
+        if isinstance(usd_recs, list):
+            usd_record_count += len(usd_recs)
+            has_any = has_any or bool(usd_recs)
+        if has_any:
+            nonempty_chats += 1
+    total_record_count = record_count + usd_record_count
     try:
         size_bytes = os.path.getsize(path) if path and os.path.exists(path) else len(json.dumps(payload, ensure_ascii=False))
     except Exception:
@@ -4891,7 +5793,9 @@ def _global_payload_stats(payload: dict, path: str | None = None) -> dict:
         "size_bytes": int(size_bytes),
         "chat_count": len(chats),
         "nonempty_chats": nonempty_chats,
-        "record_count": int(record_count),
+        "record_count": int(total_record_count),
+        "ars_record_count": int(record_count),
+        "usd_record_count": int(usd_record_count),
         "schema_version": int(universal.get("schema_version") or 0),
         "created_at": str(universal.get("created_at") or (payload.get("_backup_meta") or {}).get("created_at") or ""),
         "is_universal": universal.get("kind") == UNIVERSAL_BACKUP_KIND,
@@ -5016,8 +5920,10 @@ def mega_upload_latest_global_backup(force: bool = False) -> bool:
     with MEGA_GLOBAL_BACKUP_LOCK:
         candidate_path = None
         try:
+            with _delta_state_lock:
+                snapshot_capture_generation = int(_delta_generation)
             os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-            stamp = now_local().strftime("%Y%m%d_%H%M%S")
+            stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
             candidate_name = f"candidate_global_{stamp}.json"
             candidate_path = os.path.join(MEGA_LOCAL_TMP_DIR, candidate_name)
             save_global_backup_snapshot(candidate_path)
@@ -5046,13 +5952,31 @@ def mega_upload_latest_global_backup(force: bool = False) -> bool:
             # предыдущий полный файл останется доступен для autorestore.
             if current_path and current_stats:
                 old_stamp = re.sub(r"[^0-9]", "", current_stats.get("created_at", ""))[:14] or stamp
-                archived = mega_history_remote_dir().rstrip("/") + f"/global_{old_stamp}_{current_stats.get('record_count',0)}r.json"
+                archived = mega_history_remote_dir().rstrip("/") + f"/global_{old_stamp}_{current_stats.get('record_count',0)}r_{stamp}.json"
                 mv = _mega_run("mega-mv", [remote_latest, archived], check=False, timeout=60)
                 if mv.returncode != 0:
                     log_error(f"[MEGA] could not archive previous latest: {(mv.stderr or mv.stdout or '')[:300]}")
 
             # Активируем новый latest одним move, без окна delete->put.
             _mega_run("mega-mv", [remote_candidate, remote_latest], check=True, timeout=60)
+            # Полный снимок успешно активирован: фиксируем baseline именно из candidate,
+            # а не из более нового live-state, который мог измениться во время загрузки.
+            initialize_delta_baseline(candidate_payload)
+            global _global_snapshot_pending, _global_snapshot_last_success_monotonic, _global_snapshot_last_success_at
+            with _delta_state_lock:
+                newer_changes_exist = int(_delta_generation) > int(snapshot_capture_generation)
+                _global_snapshot_pending = bool(newer_changes_exist)
+                _global_snapshot_last_success_monotonic = time.monotonic()
+                _global_snapshot_last_success_at = now_local().isoformat(timespec="seconds")
+            DELAYED_SCHEDULER.cancel("mega-global-max-v90")
+            DELAYED_SCHEDULER.cancel("mega-global-quiet-v90")
+            if newer_changes_exist:
+                _mark_global_snapshot_pending()
+            try:
+                _mega_prune_remote_history(mega_history_remote_dir(), "global_*.json", MEGA_GLOBAL_HISTORY_KEEP)
+                _prune_delta_files_after_full_snapshot()
+            except Exception:
+                pass
             log_info(f"[MEGA] guarded latest uploaded: {remote_latest}; stats={candidate_stats}")
             return True
         except Exception as e:
@@ -5078,10 +6002,13 @@ def is_data_effectively_empty_for_restore(d: dict) -> bool:
     for _, store in chats.items():
         if not isinstance(store, dict):
             continue
-        if store.get("records"):
+        if store.get("records") or store.get("usd_records"):
             return False
         daily = store.get("daily_records") or {}
         if any((daily.get(day) or []) for day in daily):
+            return False
+        usd_daily = store.get("usd_daily_records") or {}
+        if any((usd_daily.get(day) or []) for day in usd_daily):
             return False
         if store.get("secret_messages"):
             return False
@@ -5119,7 +6046,11 @@ def mega_autorestore_if_needed() -> bool:
             if not _global_payload_is_structurally_valid(remote_raw):
                 log_error(f"[MEGA] restore candidate invalid: {label}")
                 continue
+            # v90: full snapshot + все маленькие delta, появившиеся после него.
+            local_path, applied_delta_count = merge_global_snapshot_with_mega_deltas(local_path)
+            remote_raw = _load_json(local_path, {}) or {}
             stats = _global_payload_stats(remote_raw, local_path)
+            stats["applied_deltas"] = applied_delta_count
             if local_empty and stats.get("record_count", 0) == 0 and not ALLOW_EMPTY_MEGA_RESTORE:
                 log_error(f"[MEGA] empty restore candidate rejected: {label}, stats={stats}")
                 continue
@@ -5150,6 +6081,9 @@ def mega_status_text() -> str:
     lines.append(f"MEGA_AUTORESTORE: {'ВКЛ' if MEGA_AUTORESTORE else 'ВЫКЛ'}")
     lines.append(f"RESTORE_GUARD: {'ВКЛ — ' + RESTORE_GUARD_REASON if RESTORE_GUARD_ACTIVE else 'ВЫКЛ'}")
     lines.append(f"MEGA_HISTORY_DIR: {mega_history_remote_dir()}")
+    lines.append(f"MEGA_DELTA_DIR: {mega_delta_remote_root()}")
+    lines.append(f"Delta delay: {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g} сек")
+    lines.append(f"Global full: после {int(MEGA_GLOBAL_QUIET_SECONDS)} сек. тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)} сек.")
     lines.append(f"MEGA_EMAIL: {'есть' if MEGA_EMAIL else 'нет'}")
     lines.append(f"MEGA_BACKUP_DIR: {MEGA_BACKUP_DIR}")
     lines.append(f"MEGA_CHAT_BACKUP_DIR: {MEGA_CHAT_BACKUP_DIR}")
@@ -5579,6 +6513,10 @@ def get_chat_store(chat_id: int) -> dict:
                 "records": [],
                 "daily_records": {},
                 "next_id": 1,
+                "usd_balance": 0,
+                "usd_records": [],
+                "usd_daily_records": {},
+                "usd_next_id": 1,
                 "active_windows": {},
                 "edit_wait": None,
                 "edit_target": None,
@@ -5602,7 +6540,9 @@ def get_chat_store(chat_id: int) -> dict:
                     "remaining_with_gomonk": True,
                     "usd_display_enabled": False,
                     "currency_mode": "ars",
-                    "remaining_show_ost_label": True
+                    "remaining_show_ost_label": True,
+                    "remaining_view_mode": "ars",
+                    "forwarded_fin_edit_mode": "normal"
                 },
             }
         )
@@ -5627,6 +6567,16 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("currency_mode", "ars_usd" if store.setdefault("settings", {}).get("usd_display_enabled", False) else "ars")
         store.setdefault("settings", {}).setdefault("remaining_show_ost_label", True)
         store.setdefault("settings", {}).setdefault("category_usd_enabled", False)
+        store.setdefault("settings", {}).setdefault("remaining_view_mode", "ars")
+        store.setdefault("settings", {}).setdefault("forwarded_fin_edit_mode", "normal")
+        store.setdefault("usd_records", [])
+        store.setdefault("usd_daily_records", {})
+        store.setdefault("usd_balance", 0)
+        store.setdefault("usd_next_id", 1)
+        try:
+            _recalc_usd_store(store)
+        except Exception:
+            pass
         store.setdefault("finance_mode", False)
 
         if is_owner_chat(chat_id):
@@ -6103,8 +7053,8 @@ def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = N
         for dk in sorted(daily.keys()):
             recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
             for r in recs_sorted:
-                rows.append(_xlsx_record_row(fmt_date_backup(dk), r.get("amount", 0), r.get("note", "")))
-        _write_simple_xlsx(path, rows, sheet_name="Данные")
+                rows.append(_xlsx_record_row(fmt_date_table(dk), r.get("amount", 0), r.get("note", "")))
+        _write_simple_xlsx(path, insert_blank_rows_between_days(rows, header_rows=1), sheet_name="Данные")
         return path
     except Exception as e:
         log_error(f"save_chat_xlsx({get_chat_display_name(chat_id)}): {e}")
@@ -6142,6 +7092,10 @@ def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
         "daily_records": daily_desc,
         "daily_records_by_date": daily_by_date_desc,
         "next_id": store.get("next_id", 1),
+        "usd_balance": store.get("usd_balance", 0),
+        "usd_records": backup_records_list(sorted((store.get("usd_records", []) or []), key=record_sort_key, reverse=True)),
+        "usd_daily_records": {str(k): backup_records_list(sorted((v or []), key=record_sort_key, reverse=True)) for k, v in sorted((store.get("usd_daily_records", {}) or {}).items(), reverse=True)},
+        "usd_next_id": store.get("usd_next_id", 1),
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
         "settings_backup": build_chat_settings_backup_payload(chat_id, store),
@@ -6178,14 +7132,15 @@ def save_chat_json(chat_id: int):
             rows = []
             for dk in sorted(daily.keys()):
                 for r in sorted(daily.get(dk, []) or [], key=record_sort_key):
-                    rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                    rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             write_csv_rows_with_day_gaps(w, rows, 3)
         if backup_excel_all_enabled():
             save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
-            "date_format": "DD:MM:YY",
+            "date_format": "DD.MM.YY",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
+            "usd_record_count": len(store.get("usd_records", []) or []),
             "excel_enabled": backup_excel_all_enabled(),
         }
         _save_json(chat_path_meta, meta)
@@ -6292,7 +7247,7 @@ def restore_from_json(chat_id: int, path: str):
         save_data(data, full=True)
         if not is_data_effectively_empty_for_restore(data):
             _clear_restore_guard()
-        # v89: после restore не запускаем автоматический overwrite; бэкап начнётся только после нового изменения.
+        # v90: после restore не запускаем overwrite; baseline+delta начнутся только после нового изменения.
         log_info(
             "restore_from_json: universal global state restored "
             f"schema={(raw_payload.get('_universal_backup') or {}).get('schema_version', 'legacy')} "
@@ -6306,6 +7261,10 @@ def restore_from_json(chat_id: int, path: str):
         store["records"] = payload.get("records", []) or []
         store["daily_records"] = payload.get("daily_records", {}) or {}
         store["next_id"] = int(payload.get("next_id", 1) or 1)
+        store["usd_records"] = payload.get("usd_records", store.get("usd_records", [])) or []
+        store["usd_daily_records"] = payload.get("usd_daily_records", store.get("usd_daily_records", {})) or {}
+        store["usd_next_id"] = int(payload.get("usd_next_id", store.get("usd_next_id", 1)) or 1)
+        store["usd_balance"] = float(payload.get("usd_balance", store.get("usd_balance", 0)) or 0)
         store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
         store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
         if isinstance(payload.get("settings"), dict):
@@ -6319,10 +7278,11 @@ def restore_from_json(chat_id: int, path: str):
 
         renumber_chat_records(chat_id)
         recalc_balance(chat_id)
+        _recalc_usd_store(store)
         rebuild_global_records()
 
         save_data(data, chat_ids=[chat_id])
-        if store.get("records") or any(store.get("daily_records", {}).values()):
+        if store.get("records") or store.get("usd_records") or any(store.get("daily_records", {}).values()) or any(store.get("usd_daily_records", {}).values()):
             _clear_restore_guard()
         finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day", today_key()), reason="restore_json_core", delay=0.1)
 
@@ -6502,7 +7462,259 @@ def split_amount_and_note(text: str):
     if amount < 0 and note_has_income_marker(note):
         amount = abs(amount)
 
+
     return amount, note
+
+
+# ─────────────────────────────────────────────────────────────
+# v92: отдельный учёт долларовых транзакций.
+# USD-записи не смешиваются с ARS records/daily_records и не влияют на ARS balance.
+# ─────────────────────────────────────────────────────────────
+USD_CURRENCY_WORD_RE = re.compile(r"(?i)(?:\busd\b|\bусд\b|доллар(?:а|ов|ы)?|бакс(?:а|ов|ы)?)")
+ARS_CURRENCY_WORD_RE = re.compile(r"(?i)(?:\bars\b|песо|пессо|peso(?:s)?)")
+_USD_EXPLICIT_AMOUNT_RE = re.compile(
+    r"(?i)(?P<token>(?:[+\-–]?\s*\d[\d\s.,_'’]*?(?:\s*[kк])?|\d[\d\s.,_'’]*?\s*\+\s*[kк]))\s*(?P<cur>usd|усд|доллар(?:а|ов|ы)?|бакс(?:а|ов|ы)?)\b"
+)
+_USD_K_AMOUNT_RE = re.compile(
+    r"(?i)(?<![\w\d])(?P<token>(?:[+\-–]?\s*\d+(?:[.,]\d+)?\s*[kк]|\d+(?:[.,]\d+)?\s*\+\s*[kк]))(?!\w)"
+)
+_GENERIC_AMOUNT_TOKEN_RE = re.compile(r"[+\-–]?\s*\d[\d\s.,_'’]*(?:\s*[kк])?")
+
+
+def _parse_usd_token(raw: str) -> float:
+    """Парсит 2к / +3k / 5+к / 1700 в USD. Без знака = расход."""
+    token = str(raw or "").strip().lower().replace("–", "-")
+    positive = bool(re.match(r"^\s*\+", token)) or bool(re.search(r"\+\s*[kк]\s*$", token))
+    negative = bool(re.match(r"^\s*-", token))
+    mult = 1000.0 if re.search(r"[kк]\s*$", token) or re.search(r"\+\s*[kк]\s*$", token) else 1.0
+    token = re.sub(r"[kк]\s*$", "", token)
+    token = re.sub(r"\+\s*$", "", token)
+    token = token.strip().lstrip("+-").strip()
+    if not token:
+        raise ValueError("empty usd token")
+    # Для USD 1.5к трактуем как 1.5 * 1000, а 1.700 как 1700.
+    if mult == 1000.0 and re.fullmatch(r"\d+[.,]\d{1,2}", token):
+        value = float(token.replace(",", ".")) * mult
+    else:
+        value = abs(parse_amount(token)) * mult
+    if negative:
+        return -abs(value)
+    if positive:
+        return abs(value)
+    return -abs(value)
+
+
+def parse_usd_transactions(text: str) -> list[dict]:
+    """Находит отдельные USD-движения в одном сообщении.
+
+    Поддерживает примеры пользователя:
+    2к усд; +1700 усд; 700 усд; +3к усд; 500 усд;
+    +420.000 обмен 300 усд; 75000 ... 1900 усд;
+    5+к; +5000 USD; ... 3000 USD; -500 usd;
+    +1.385.000 обмен 1к; +1к; 1к обмен на пессо.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return []
+    found = []
+    occupied = []
+
+    def _add(match, explicit_currency: bool):
+        span = match.span("token")
+        if any(not (span[1] <= a or span[0] >= b) for a, b in occupied):
+            return
+        token = match.group("token")
+        try:
+            amount = _parse_usd_token(token)
+        except Exception:
+            return
+        occupied.append(span)
+        found.append({
+            "amount": amount,
+            "span": span,
+            "token": token,
+            "explicit_currency": bool(explicit_currency),
+        })
+
+    for m in _USD_EXPLICIT_AMOUNT_RE.finditer(raw):
+        _add(m, True)
+    for m in _USD_K_AMOUNT_RE.finditer(raw):
+        _add(m, False)
+
+    found.sort(key=lambda item: item["span"][0])
+    result = []
+    for item in found:
+        start, end = item["span"]
+        # Убираем из описания только конкретное USD-значение и ближайшее обозначение валюты.
+        note = raw[:start] + " " + raw[end:]
+        note = USD_CURRENCY_WORD_RE.sub(" ", note, count=1 if item.get("explicit_currency") else 0)
+        note = re.sub(r"\s+", " ", note).strip(" ,.;:-").lower()
+        result.append({"amount": float(item["amount"]), "note": note, "span": item["span"]})
+    return result
+
+
+def _generic_amount_spans(text: str) -> list[tuple[int, int, str]]:
+    out = []
+    for m in _GENERIC_AMOUNT_TOKEN_RE.finditer(str(text or "")):
+        raw = m.group(0)
+        if not re.search(r"\d", raw):
+            continue
+        out.append((m.start(), m.end(), raw))
+    return out
+
+
+def parse_ars_component_when_usd_present(text: str, usd_items: list[dict] | None = None):
+    """Если сообщение смешанное ARS+USD, выделяет ARS-часть.
+    Если это чистая USD-операция, возвращает None и не создаёт ложную ARS-запись.
+    """
+    raw = str(text or "")
+    usd_items = usd_items if usd_items is not None else parse_usd_transactions(raw)
+    if not usd_items:
+        try:
+            return split_amount_and_note(raw)
+        except Exception:
+            return None
+    usd_spans = [tuple(x.get("span") or (0, 0)) for x in usd_items]
+    candidates = []
+    for start, end, token in _generic_amount_spans(raw):
+        if any(not (end <= a or start >= b) for a, b in usd_spans):
+            continue
+        # "по 1500" / "at 1500" — обычно курс обмена, а не ARS-операция.
+        prefix = raw[max(0, start - 8):start].casefold()
+        if re.search(r"(?:\bпо|\bat)\s*$", prefix):
+            continue
+        # k/к без явного ARS — это USD shorthand и уже должно было попасть в usd_items.
+        if re.search(r"[kк]\s*$", token, re.I):
+            continue
+        candidates.append((start, end, token))
+    if not candidates:
+        return None
+
+    # Предпочитаем число, рядом с которым явно написано ARS/peso.
+    chosen = None
+    for item in candidates:
+        start, end, token = item
+        around = raw[max(0, start - 12):min(len(raw), end + 16)]
+        if ARS_CURRENCY_WORD_RE.search(around):
+            chosen = item
+            break
+    if chosen is None:
+        chosen = candidates[0]
+    start, end, token = chosen
+    try:
+        amount = parse_amount(token)
+    except Exception:
+        return None
+
+    lower = raw.casefold()
+    # Для обмена без знака определяем направление по порядку валют.
+    if not re.match(r"\s*[+\-–]", token) and re.search(r"обмен|exchange", lower):
+        usd_pos = min((a for a, _b in usd_spans), default=10**9)
+        ars_pos = start
+        amount = abs(amount) if usd_pos < ars_pos else -abs(amount)
+
+    note = (raw[:start] + " " + raw[end:]).strip()
+    note = re.sub(r"\s+", " ", note).lower()
+    return float(amount), note
+
+
+def _usd_records(store: dict) -> list[dict]:
+    return store.setdefault("usd_records", [])
+
+
+def _recalc_usd_store(store: dict):
+    recs = [r for r in _usd_records(store) if isinstance(r, dict)]
+    recs.sort(key=record_sort_key)
+    for idx, rec in enumerate(recs, 1):
+        rec.setdefault("id", idx)
+        rec["short_id"] = f"U{int(rec.get('id') or idx)}"
+    store["usd_records"] = recs
+    store["usd_next_id"] = max([int(r.get("id", 0) or 0) for r in recs] + [0]) + 1
+    store["usd_balance"] = sum(float(r.get("amount", 0) or 0) for r in recs)
+    daily = {}
+    for rec in recs:
+        daily.setdefault(str(rec.get("day_key") or today_key())[:10], []).append(rec)
+    store["usd_daily_records"] = daily
+
+
+def sync_usd_records_from_text(chat_id: int, source_msg_id: int | None, text: str, owner: int = 0,
+                               day_key: str | None = None, timestamp: str | None = None,
+                               source_order_msg_id: int | None = None, forwarded: bool = False) -> int:
+    """Создаёт/обновляет USD-записи, связанные с одним исходным сообщением."""
+    items = parse_usd_transactions(text)
+    store = get_chat_store(int(chat_id))
+    recs = _usd_records(store)
+    sid = int(source_msg_id or 0)
+    existing = [r for r in recs if int(r.get("source_msg_id") or 0) == sid] if sid else []
+    existing.sort(key=lambda r: int(r.get("id", 0) or 0))
+    # Переиспользуем id существующих записей, чтобы старые кнопки не ломались.
+    for idx, item in enumerate(items):
+        if idx < len(existing):
+            rec = existing[idx]
+        else:
+            rec = {
+                "id": int(store.get("usd_next_id", 1) or 1),
+            }
+            store["usd_next_id"] = int(rec["id"]) + 1
+            recs.append(rec)
+        rec.update({
+            "short_id": f"U{int(rec.get('id') or 0)}",
+            "timestamp": timestamp or now_local().isoformat(timespec="seconds"),
+            "amount": float(item.get("amount", 0) or 0),
+            "note": str(item.get("note") or "").strip(),
+            "raw_text": str(text or ""),
+            "source_msg_id": sid or None,
+            "source_order_msg_id": int(source_order_msg_id or sid or 0) or None,
+            "owner": int(owner or 0),
+            "msg_id": sid or None,
+            "origin_msg_id": sid or None,
+            "day_key": str(day_key or finance_today_key())[:10],
+            "forwarded_finance": bool(forwarded),
+        })
+    for rec in existing[len(items):]:
+        try:
+            recs.remove(rec)
+        except ValueError:
+            pass
+    _recalc_usd_store(store)
+    return len(items)
+
+
+def usd_records_for_month(chat_id: int, month_key: str) -> list[dict]:
+    store = get_chat_store(int(chat_id))
+    return sorted(
+        [r for r in _usd_records(store) if str(r.get("day_key") or "")[:7] == str(month_key)[:7]],
+        key=record_sort_key,
+    )
+
+
+def usd_month_opening_balance(chat_id: int, month_key: str) -> float:
+    return sum(
+        float(r.get("amount", 0) or 0)
+        for r in _usd_records(get_chat_store(int(chat_id)))
+        if str(r.get("day_key") or "")[:7] < str(month_key)[:7]
+    )
+
+
+def fmt_usd_ledger(amount: float, signed: bool = True) -> str:
+    whole = int(round(abs(float(amount or 0))))
+    body = f"${whole:,}".replace(",", ".")
+    if not signed:
+        return body
+    return ("+" if float(amount or 0) >= 0 else "-") + body
+
+
+def split_usd_amount_and_note(text: str):
+    items = parse_usd_transactions(text)
+    if items:
+        return float(items[0]["amount"]), str(items[0].get("note") or "").strip()
+    m = num_re.search(str(text or ""))
+    if not m:
+        raise ValueError("no usd amount")
+    raw_number = m.group(0)
+    amount = parse_amount(raw_number)
+    note = re.sub(r"\s+", " ", str(text).replace(raw_number, " ")).strip().lower()
+    return float(amount), note
 
 
 EXPENSE_CATEGORIES = {
@@ -6616,12 +7828,41 @@ def make_custom_category_slug(name: str, existing=None) -> str:
     return f"{slug}_{i}"
 
 
+def get_expense_category_order_slugs(store: dict | None = None) -> list[str]:
+    """Стабильный порядок статей сверху вниз; пользователь может менять его в v91."""
+    items = list(_base_category_items(store)) + list(_custom_category_list(store))
+    available = [str(item.get("slug") or "") for item in items if str(item.get("slug") or "")]
+    try:
+        settings = (store or {}).setdefault("settings", {})
+        saved = [str(x) for x in (settings.get("expense_category_order_slugs") or []) if str(x)]
+    except Exception:
+        saved = []
+    result = [slug for slug in saved if slug in available]
+    result.extend(slug for slug in available if slug not in result)
+    return result
+
+
 def get_expense_category_order(store: dict | None = None) -> list[str]:
-    names = [item["name"] for item in _base_category_items(store)]
-    for item in _custom_category_list(store):
-        if item["name"] not in names:
-            names.append(item["name"])
-    return names
+    by_slug = {}
+    for item in list(_base_category_items(store)) + list(_custom_category_list(store)):
+        slug = str(item.get("slug") or "")
+        if slug:
+            by_slug[slug] = item.get("name")
+    return [by_slug[slug] for slug in get_expense_category_order_slugs(store) if slug in by_slug]
+
+
+def move_expense_category_order(store: dict, slug: str, direction: str) -> bool:
+    order = get_expense_category_order_slugs(store)
+    slug = str(slug or "")
+    if slug not in order:
+        return False
+    idx = order.index(slug)
+    new_idx = idx - 1 if str(direction).lower() == "up" else idx + 1
+    if new_idx < 0 or new_idx >= len(order):
+        return False
+    order[idx], order[new_idx] = order[new_idx], order[idx]
+    store.setdefault("settings", {})["expense_category_order_slugs"] = order
+    return True
 
 
 def get_expense_category_slug(category: str, store: dict | None = None) -> str | None:
@@ -6713,6 +7954,18 @@ def resolve_expense_category(note: str, store: dict | None = None):
     other = _base_category_item_by_slug(store, "other")
     return (other or {}).get("name") or "ПРОЧЕЕ"
 
+def resolve_expense_category_for_record(rec: dict, store: dict | None = None):
+    """Учитывает ручной перенос записи из ПРОЧЕЕ в выбранную статью."""
+    try:
+        override_slug = str((rec or {}).get("category_override_slug") or "").strip()
+        if override_slug:
+            category = get_category_by_slug(override_slug, store)
+            if category:
+                return category
+    except Exception:
+        pass
+    return resolve_expense_category((rec or {}).get("note", ""), store)
+
 def calc_categories_for_period(store: dict, start: str, end: str) -> dict:
     """Считает суммы расходов по статьям (только отрицательные amount) в диапазоне дат включительно."""
     out = {}
@@ -6724,7 +7977,7 @@ def calc_categories_for_period(store: dict, start: str, end: str) -> dict:
             amt = float(r.get("amount", 0) or 0)
             if amt >= 0:
                 continue
-            cat = resolve_expense_category(r.get("note", ""), store)
+            cat = resolve_expense_category_for_record(r, store)
             if not cat:
                 continue
             out[cat] = out.get(cat, 0) + (-amt)
@@ -6763,7 +8016,7 @@ def expense_anchor_button_label(rec: dict, store: dict | None = None) -> str:
     except Exception:
         amount = str(rec.get("amount", ""))
     note = _clean_category_display_name(re.sub(r"\s+", " ", str(rec.get("note", "") or "")).strip())
-    category = _clean_category_display_name(resolve_expense_category(note, store) or "")
+    category = _clean_category_display_name(resolve_expense_category_for_record(rec, store) or "")
     rec_code = str(rec.get("short_id") or f"R{_record_int_id(rec)}")
     parts = [rec_code, amount]
     if note:
@@ -6841,7 +8094,7 @@ def calc_categories_for_record_range(store: dict, start_day: str, start_rid: int
             continue
         if amt >= 0:
             continue
-        category = resolve_expense_category(rec.get("note", ""), store)
+        category = resolve_expense_category_for_record(rec, store)
         if not category:
             continue
         out[category] = out.get(category, 0) + (-amt)
@@ -6858,7 +8111,7 @@ def collect_items_for_category_record_range(store: dict, start_day: str, start_r
         if amt >= 0:
             continue
         note = rec.get("note", "")
-        if resolve_expense_category(note, store) == category:
+        if resolve_expense_category_for_record(rec, store) == category:
             items.append((day_key, -amt, note))
     return items
 
@@ -6902,7 +8155,7 @@ def collect_items_for_category(store: dict, start: str, end: str, category: str)
             if amt >= 0:
                 continue
             note = r.get("note", "")
-            if resolve_expense_category(note, store) == category:
+            if resolve_expense_category_for_record(r, store) == category:
                 items.append((day, -amt, note))
     return items
 
@@ -7129,6 +8382,11 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
             IB("📆 Выбор недели", callback_data=cat_callback("cat_months"))
         )
 
+    if _v85_enabled("usd_categories") and currency_mode_from_store(store or {}) == "ars":
+        usd_on = bool((store or {}).setdefault("settings", {}).get("category_usd_enabled", False))
+        kb.row(IB("💵 USD ВЫКЛ" if usd_on else "💵 USD ВКЛ", callback_data=cat_callback(f"cat_usd_toggle_period:{mode}:{start}:{end}")))
+    if mode == "wthu":
+        kb.row(IB("↕️ Расположение", callback_data=cat_callback(f"cat_order_open_sum:{mode}:{start}:{end}")))
     kb.row(IB("📚 Описание статей", callback_data=cat_callback("cat_desc")))
     kb.row(
         IB("➕ Добавить", callback_data=cat_callback("cat_add")),
@@ -7139,6 +8397,46 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
         IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
         IB("❌ Закрыть", callback_data=cat_callback("cat_close")),
     )
+    return kb
+
+
+def build_category_layout_text(store: dict) -> str:
+    lines = ["↕️ Расположение статей", "", "Меняйте порядок стрелками. Этот порядок используется сверху вниз в окнах статей.", ""]
+    for idx, name in enumerate(get_expense_category_order(store), 1):
+        lines.append(f"{idx}. {_clean_category_display_name(name)}")
+    return wm_common("\n".join(lines), 7)
+
+
+def build_category_layout_keyboard(store: dict, context: str, params: tuple) -> object:
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    slugs = get_expense_category_order_slugs(store)
+    for idx, slug in enumerate(slugs):
+        name = _clean_category_display_name(get_category_by_slug(slug, store) or slug)
+        if context == "sum":
+            mode, start, end = params
+            up_cb = cat_callback(f"cat_order_move_sum:{slug}:up:{mode}:{start}:{end}")
+            down_cb = cat_callback(f"cat_order_move_sum:{slug}:down:{mode}:{start}:{end}")
+        else:
+            start_key, start_rid, end_key, end_rid = params
+            up_cb = cat_callback(f"cat_order_move_exact:{slug}:up:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+            down_cb = cat_callback(f"cat_order_move_exact:{slug}:down:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+        kb.row(
+            IB("⬆️" if idx > 0 else "·", callback_data=up_cb if idx > 0 else "none"),
+            IB(name[:36], callback_data="none"),
+            IB("⬇️" if idx < len(slugs) - 1 else "·", callback_data=down_cb if idx < len(slugs) - 1 else "none"),
+        )
+    if context == "sum":
+        mode, start, end = params
+        if mode == "wthu":
+            back_cb = cat_callback(f"cat_wthu:{start}")
+        elif mode == "wk":
+            back_cb = cat_callback(f"cat_wk:{start}")
+        else:
+            back_cb = cat_callback(f"cat_range_custom2:{start}:{end}")
+    else:
+        start_key, start_rid, end_key, end_rid = params
+        back_cb = cat_callback(f"cat_range_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+    kb.row(IB("⬅️ Назад", callback_data=back_cb), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
     return kb
 
 
@@ -9382,10 +10680,53 @@ def cmd_toggle_remaining_ost_label(msg):
         pass
 
 
+@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/izmenit(?:_[RUru]?\d+)?(?:@\w+)?", m.text.strip(), re.I)))
+def cmd_forwarded_finance_edit(msg):
+    """v92: /izmenit как ответ на пересланное финансовое сообщение.
+    Команда пользователя удаляется сразу, чтобы не засорять чат.
+    """
+    chat_id = int(msg.chat.id)
+    try:
+        bot.delete_message(chat_id, msg.message_id)
+    except Exception:
+        pass
+    target = None
+    reply = getattr(msg, "reply_to_message", None)
+    if reply is not None:
+        target = _forwarded_finance_target_for_message(chat_id, getattr(reply, "message_id", 0))
+    if target is None:
+        cmd = (msg.text or "").split("@", 1)[0]
+        m = re.search(r"_([RUru]?)(\d+)$", cmd)
+        if m:
+            prefix, rid_s = m.group(1).upper(), m.group(2)
+            rid = int(rid_s)
+            if prefix == "U":
+                rec = next((r for r in get_chat_store(chat_id).get("usd_records", []) if int(r.get("id", 0) or 0) == rid), None)
+                if rec:
+                    target = ("usd", rid, rec)
+            else:
+                rec = next((r for r in get_chat_store(chat_id).get("records", []) if int(r.get("id", 0) or 0) == rid), None)
+                if rec:
+                    target = ("ars", rid, rec)
+                else:
+                    rec = next((r for r in get_chat_store(chat_id).get("usd_records", []) if int(r.get("id", 0) or 0) == rid), None)
+                    if rec:
+                        target = ("usd", rid, rec)
+    if not target:
+        send_and_auto_delete(chat_id, "Ответьте командой /izmenit на пересланное финансовое сообщение.", 10)
+        return
+    kind, rid, rec = target
+    if kind == "usd":
+        start_usd_record_edit_prompt(chat_id, rid, month_key=str(rec.get("day_key") or today_key())[:7])
+    else:
+        start_record_edit_prompt(chat_id, rec.get("day_key") or today_key(), rid)
+
+
 @bot.message_handler(func=lambda m: bool(
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
+    and not m.text.split()[0].split("@")[0].casefold().startswith("/izmenit")
     and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/ost", "/остаток", "/off_on_backup_excel", "/queues", "/queue_status"}
 ))
 def cmd_total_secret_capture(msg):
@@ -9600,6 +10941,51 @@ def on_any_message(msg):
     if msg.content_type == "text":
         try:
             store = get_chat_store(chat_id)
+            usd_wait = store.get("usd_edit_wait")
+            if usd_wait:
+                text = sanitize_telegram_inserted_text((msg.text or "").strip())
+                try:
+                    amount, note = split_usd_amount_and_note(text)
+                except Exception:
+                    send_and_auto_delete(chat_id, "❌ Неверный USD-формат. Пример: -500 usd обмен или +900 usd", 10)
+                    return
+                rid = int(usd_wait.get("rid") or 0)
+                rec = next((r for r in store.get("usd_records", []) if int(r.get("id", 0) or 0) == rid), None)
+                if not rec:
+                    store["usd_edit_wait"] = None
+                    save_data(data, chat_ids=[chat_id])
+                    send_and_auto_delete(chat_id, "❌ USD-запись не найдена.", 10)
+                    return
+                rec["amount"] = float(amount)
+                rec["note"] = str(note or "").strip()
+                _recalc_usd_store(store)
+                prompt_id = int(usd_wait.get("prompt_msg_id") or 0)
+                month_key = usd_wait.get("month_key") or str(rec.get("day_key") or today_key())[:7]
+                store["usd_edit_wait"] = None
+                save_data(data, chat_ids=[chat_id])
+                try:
+                    bot.delete_message(chat_id, msg.message_id)
+                except Exception:
+                    pass
+                if prompt_id:
+                    try:
+                        bot.delete_message(chat_id, prompt_id)
+                    except Exception:
+                        pass
+                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="usd_edit", delay=0.05)
+                try:
+                    store["remaining_usd_month"] = str(month_key)[:7]
+                    set_remaining_view_mode(chat_id, "usd")
+                    open_remaining_window(chat_id, store.get("current_view_day") or today_key())
+                except Exception:
+                    pass
+                send_and_auto_delete(chat_id, f"✅ USD-запись обновлена: {fmt_usd_ledger(amount)} {note}", 8)
+                return
+        except Exception as e:
+            log_error(f"usd_edit_wait handler error: {e}")
+    if msg.content_type == "text":
+        try:
+            store = get_chat_store(chat_id)
             edit_wait = store.get("edit_wait")
 
             if edit_wait and edit_wait.get("type") == "edit":
@@ -9667,18 +11053,11 @@ def on_any_message(msg):
 
     schedule_forward_any_message(chat_id, msg)
 def handle_finance_text(msg):
-    """
-    Обработка обычного ввода для финучёта.
-    Теперь принимает сумму не только из text, но и из caption
-    у фото/видео/документов/аудио и т.п.
-    """
-
+    """v92: обычный ARS-учёт + независимый USD-учёт из того же сообщения."""
     chat_id = msg.chat.id
     bot_journal("finance_text_start", chat_id, describe_msg_for_log(msg))
     text = _message_text_for_finance(msg)
-    if not text:
-        return False
-    if not is_finance_mode(chat_id):
+    if not text or not is_finance_mode(chat_id):
         return False
 
     store = get_chat_store(chat_id)
@@ -9686,81 +11065,131 @@ def handle_finance_text(msg):
     if not settings.get("auto_add", True):
         return False
 
-    if not looks_like_amount(text):
-        # Не считаем обычный текст ошибкой, но если в сообщении есть цифры,
-        # это полезно видеть в /errors: возможно, формат суммы не распознан.
-        if text_has_any_digit(text):
-            log_error(f"[FINANCE SKIP] amount not recognized: {describe_msg_for_log(msg)} text={text[:220]!r}")
-        return False
-
-    try:
-        amount, note = split_amount_and_note(text)
-    except Exception as e:
-        log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
-        return False
-
     entry_day = finance_day_key_from_message(msg)
     store["current_view_day"] = entry_day
+    owner_id = getattr(getattr(msg, "from_user", None), "id", 0)
+    source_msg_id = getattr(msg, "message_id", None)
+    usd_items = parse_usd_transactions(text)
+    changed = False
 
-    try:
-        add_record_to_chat(
-            chat_id,
-            amount,
-            note,
-            getattr(getattr(msg, "from_user", None), "id", 0),
-            source_msg=msg,
-            day_key=entry_day
-        )
+    if usd_items:
+        try:
+            sync_usd_records_from_text(
+                chat_id,
+                source_msg_id,
+                text,
+                owner_id,
+                day_key=entry_day,
+                timestamp=message_timestamp_iso(msg),
+                source_order_msg_id=getattr(msg, "message_id", None),
+                forwarded=False,
+            )
+            changed = True
+            bot_journal("usd_finance_sync", chat_id, f"msg={source_msg_id} count={len(usd_items)}")
+        except Exception as e:
+            log_error(f"[USD FINANCE ADD ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
+
+    # Если USD присутствует, ARS-часть выделяем отдельно, чтобы 2к USD не стало -2 ARS.
+    ars_parsed = parse_ars_component_when_usd_present(text, usd_items) if usd_items else None
+    if not usd_items:
+        if not looks_like_amount(text):
+            if text_has_any_digit(text):
+                log_error(f"[FINANCE SKIP] amount not recognized: {describe_msg_for_log(msg)} text={text[:220]!r}")
+            return changed
+        try:
+            ars_parsed = split_amount_and_note(text)
+        except Exception as e:
+            log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
+            ars_parsed = None
+
+    if ars_parsed is not None:
+        try:
+            amount, note = ars_parsed
+            add_record_to_chat(
+                chat_id,
+                amount,
+                note,
+                owner_id,
+                source_msg=msg,
+                day_key=entry_day,
+            )
+            changed = True
+        except Exception as e:
+            log_error(f"[FINANCE ADD ERROR] {describe_msg_for_log(msg)} parsed={ars_parsed!r}: {e}")
+
+    if changed:
         schedule_finalize(chat_id, entry_day)
-        return True
-    except Exception as e:
-        log_error(f"[FINANCE ADD ERROR] {describe_msg_for_log(msg)} amount={amount} note={note!r}: {e}")
-        return False
+    return changed
+
 
 def handle_finance_edit(msg):
     chat_id = msg.chat.id
     text = (msg.text or msg.caption or "").strip()
-
     store = get_chat_store(chat_id)
-    target = None
+    source_msg_id = int(getattr(msg, "message_id", 0) or 0)
+    entry_day = finance_day_key_from_message(msg)
+    owner_id = getattr(getattr(msg, "from_user", None), "id", 0)
 
+    target = None
     for r in store.get("records", []):
         if (
-            r.get("source_msg_id") == msg.message_id
-            or r.get("origin_msg_id") == msg.message_id
-            or r.get("msg_id") == msg.message_id
+            r.get("source_msg_id") == source_msg_id
+            or r.get("origin_msg_id") == source_msg_id
+            or r.get("msg_id") == source_msg_id
         ):
             target = r
             break
 
-    if not target:
-        log_info(f"[EDIT-FIN] record not found for msg_id={msg.message_id}")
-        return False
+    usd_items = parse_usd_transactions(text) if text else []
+    try:
+        sync_usd_records_from_text(
+            chat_id,
+            source_msg_id,
+            text,
+            owner_id,
+            day_key=(target.get("day_key") if target else entry_day) or entry_day,
+            timestamp=message_timestamp_iso(msg),
+            source_order_msg_id=source_msg_id,
+            forwarded=False,
+        )
+    except Exception as e:
+        log_error(f"[EDIT-USD] sync failed msg_id={source_msg_id}: {e}")
 
-    if text and looks_like_amount(text):
+    ars_parsed = parse_ars_component_when_usd_present(text, usd_items) if usd_items else None
+    if not usd_items and text and looks_like_amount(text):
         try:
-            amount, note = split_amount_and_note(text)
+            ars_parsed = split_amount_and_note(text)
         except Exception:
-            amount, note = 0, "удалено"
-    else:
-        amount, note = 0, "удалено"
+            ars_parsed = None
 
-    target["amount"] = amount
-    target["note"] = note
+    if target:
+        if ars_parsed is None:
+            target["amount"] = 0
+            target["note"] = "удалено"
+        else:
+            target["amount"], target["note"] = ars_parsed
+        target["timestamp"] = message_timestamp_iso(msg)
+        for day, arr in store.get("daily_records", {}).items():
+            for r in arr:
+                if r.get("id") == target.get("id"):
+                    r.update(target)
+        store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
+        log_info(f"[EDIT-FIN] updated record R{target['id']} amount={target['amount']} note={target['note']}")
+        save_data(data, chat_ids=[chat_id])
+        return True
 
-    for day, arr in store.get("daily_records", {}).items():
-        for r in arr:
-            if r.get("id") == target.get("id"):
-                r.update(target)
+    if ars_parsed is not None:
+        amount, note = ars_parsed
+        add_record_to_chat(chat_id, amount, note, owner_id, source_msg=msg, day_key=entry_day)
+        save_data(data, chat_ids=[chat_id])
+        return True
 
-    store["balance"] = sum(r["amount"] for r in store.get("records", []))
+    if usd_items:
+        save_data(data, chat_ids=[chat_id])
+        return True
+    return False
 
-    log_info(
-        f"[EDIT-FIN] updated record R{target['id']} "
-        f"amount={amount} note={note}"
-    )
-    save_data(data)
-    return True
+
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0, source_msg=None):
     with locked_chat(dst_chat_id):
         if not is_finance_mode(dst_chat_id):
@@ -9770,7 +11199,6 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
 
         store = get_chat_store(dst_chat_id)
         existing = None
-
         for r in store.get("records", []):
             if (
                 r.get("source_msg_id") == dst_msg_id
@@ -9782,19 +11210,42 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
 
         entry_day = finance_day_key_from_message(source_msg) if source_msg is not None else finance_today_key()
         store["current_view_day"] = entry_day
-
-        if text and looks_like_amount(text):
+        usd_items = parse_usd_transactions(text) if text else []
+        usd_changed = False
+        if text is not None:
             try:
-                amount, note = split_amount_and_note(text)
+                sync_usd_records_from_text(
+                    dst_chat_id,
+                    dst_msg_id,
+                    text,
+                    owner,
+                    day_key=(existing.get("day_key") if existing else entry_day) or entry_day,
+                    timestamp=message_timestamp_iso(source_msg),
+                    source_order_msg_id=getattr(source_msg, "message_id", dst_msg_id) if source_msg is not None else dst_msg_id,
+                    forwarded=True,
+                )
+                usd_changed = bool(usd_items)
+            except Exception as e:
+                log_error(f"[FWD USD SYNC ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id}: {e}")
+
+        ars_parsed = parse_ars_component_when_usd_present(text, usd_items) if usd_items else None
+        if not usd_items and text and looks_like_amount(text):
+            try:
+                ars_parsed = split_amount_and_note(text)
             except Exception as e:
                 log_error(f"[FWD FINANCE PARSE ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}: {e}")
-                return False
+                ars_parsed = None
 
-            try:
+        ars_changed = False
+        try:
+            if ars_parsed is not None:
+                amount, note = ars_parsed
                 if existing:
                     existing["amount"] = amount
                     existing["note"] = note
                     existing["timestamp"] = message_timestamp_iso(source_msg)
+                    existing["raw_text"] = str(text or "")
+                    existing["forwarded_finance"] = True
                     if source_msg is not None:
                         existing["source_order_msg_id"] = getattr(source_msg, "message_id", existing.get("source_order_msg_id", 0))
                     entry_day = existing.get("day_key") or entry_day
@@ -9807,32 +11258,39 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                         "date": getattr(source_msg, "date", int(time.time())) if source_msg is not None else int(time.time()),
                         "forward_source_msg_id": getattr(source_msg, "message_id", int(dst_msg_id)) if source_msg is not None else int(dst_msg_id),
                     })()
-                    add_record_to_chat(
-                        dst_chat_id,
-                        amount,
-                        note,
-                        owner,
-                        source_msg=shadow_msg,
-                        day_key=entry_day
-                    )
-            except Exception as e:
-                log_error(f"[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} amount={amount} note={note!r}: {e}")
-                return False
+                    add_record_to_chat(dst_chat_id, amount, note, owner, source_msg=shadow_msg, day_key=entry_day)
+                    created = next((r for r in reversed(store.get("records", [])) if int(r.get("source_msg_id") or 0) == int(dst_msg_id)), None)
+                    if created:
+                        created["raw_text"] = str(text or "")
+                        created["forwarded_finance"] = True
+                ars_changed = True
+            elif existing:
+                existing["amount"] = 0
+                existing["note"] = "удалено"
+                existing["raw_text"] = str(text or "")
+                existing["forwarded_finance"] = True
+                entry_day = existing.get("day_key") or entry_day
+                rebuild_month_short_ids(dst_chat_id)
+                rebuild_global_records()
+                store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
+                ars_changed = True
+        except Exception as e:
+            log_error(f"[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} parsed={ars_parsed!r}: {e}")
+            return False
 
-        elif existing:
-            existing["amount"] = 0
-            existing["note"] = "удалено"
-            entry_day = existing.get("day_key") or entry_day
-            rebuild_month_short_ids(dst_chat_id)
-            rebuild_global_records()
-            store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
-        else:
+        if not ars_changed and not usd_changed:
             if text_has_any_digit(text):
                 log_error(f"[FWD FINANCE SKIP] amount not recognized: dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}")
             return False
 
     schedule_finalize(dst_chat_id, entry_day)
+    # Кнопка/слеш-режим накладывается отдельно и не блокирует пересылку.
+    try:
+        GENERAL_TASK_POOL.submit(f"fwd-fin-ui:{dst_chat_id}:{dst_msg_id}", apply_forwarded_finance_edit_ui_for_message, dst_chat_id, dst_msg_id)
+    except Exception:
+        pass
     return True
+
 
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel), date DD:MM:YY."""
@@ -9844,7 +11302,7 @@ def export_global_csv(d: dict):
             for cid, cdata in d.get("chats", {}).items():
                 for dk, records in (cdata.get("daily_records", {}) or {}).items():
                     for r in records or []:
-                        rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                        rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             # Сортируем по исходной дате, если можем восстановить из DD:MM:YY.
             rows.sort(key=lambda row: str(row[0]))
             write_csv_rows_with_day_gaps(w, rows, 3)
@@ -10832,7 +12290,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -11022,15 +12480,16 @@ def toggle_remaining_ost_label(chat_id: int) -> bool:
 
 
 def fmt_usd_compact(amount: float, rate_info: dict | None, signed: bool = True, absolute: bool = False) -> str:
+    """USD во всех финансовых окнах v91 округляется до целых долларов."""
     if not rate_info or not rate_info.get("rate"):
         return "$—"
     amount = float(amount or 0)
-    value = abs(amount) / float(rate_info["rate"])
+    value = int(round(abs(amount) / float(rate_info["rate"])))
     if absolute or not signed:
         sign = ""
     else:
         sign = "+" if amount >= 0 else "-"
-    return f"{sign}${value:,.2f}".replace(",", " ")
+    return f"{sign}${value:,}".replace(",", " ")
 
 
 def format_chat_amount(chat_id: int, amount: float, mixed_space: bool = False) -> str:
@@ -11159,6 +12618,95 @@ def _opening_balance_before_day(store: dict, day_key: str) -> float:
     return total
 
 
+def remaining_view_mode(chat_id: int) -> str:
+    mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("remaining_view_mode", "ars") or "ars")
+    return mode if mode in {"ars", "usd"} else "ars"
+
+
+def set_remaining_view_mode(chat_id: int, mode: str):
+    get_chat_store(int(chat_id)).setdefault("settings", {})["remaining_view_mode"] = "usd" if mode == "usd" else "ars"
+    save_data(data, chat_ids=[int(chat_id)])
+
+
+def _shift_month_key(month_key: str, delta: int) -> str:
+    try:
+        dt = datetime.strptime(str(month_key)[:7] + "-01", "%Y-%m-%d")
+    except Exception:
+        dt = now_local().replace(day=1)
+    if delta > 0:
+        for _ in range(delta):
+            dt = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
+    elif delta < 0:
+        for _ in range(-delta):
+            dt = (dt.replace(day=1) - timedelta(days=1)).replace(day=1)
+    return dt.strftime("%Y-%m")
+
+
+def build_usd_month_text(chat_id: int, month_key: str) -> str:
+    recs = usd_records_for_month(chat_id, month_key)
+    opening = usd_month_opening_balance(chat_id, month_key)
+    income = sum(float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) >= 0)
+    expense = -sum(float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) < 0)
+    closing = opening + income - expense
+    try:
+        y, m = [int(x) for x in month_key.split("-")[:2]]
+        title = f"{russian_month_name(m)} {y}"
+    except Exception:
+        title = month_key
+    lines = [
+        "💵 Долларовые операции",
+        f"📆 {title}",
+        "",
+        f"💰 Баланс на начало: {fmt_usd_ledger(opening)}",
+        "",
+    ]
+    if not recs:
+        lines.append("За этот месяц долларовых операций нет.")
+    else:
+        for rec in recs:
+            sid = rec.get("short_id") or f"U{rec.get('id', '')}"
+            day = fmt_date_ddmmyy(str(rec.get("day_key") or today_key())[:10])
+            note = html.escape(str(rec.get("note") or "").strip())
+            lines.append(f"{sid} {day} {fmt_usd_ledger(float(rec.get('amount', 0) or 0))} {note}".rstrip())
+    lines.extend([
+        "",
+        f"📉 Расход за месяц: {fmt_usd_ledger(-expense)}",
+        f"📈 Приход за месяц: {fmt_usd_ledger(income)}",
+        f"🏦 Остаток на конец месяца: {fmt_usd_ledger(closing)}",
+        f"💵 Общий USD-баланс: {fmt_usd_ledger(float(get_chat_store(chat_id).get('usd_balance', 0) or 0))}",
+    ])
+    return wm_common("\n".join(lines), 9, html_mode=True)
+
+
+def usd_record_button_label(rec: dict) -> str:
+    note = re.sub(r"\s+", " ", str(rec.get("note") or "").strip())
+    if len(note) > 30:
+        note = note[:29] + "…"
+    label = f"{rec.get('short_id') or 'U'+str(rec.get('id',''))} {fmt_usd_ledger(float(rec.get('amount',0) or 0))}"
+    if note:
+        label += f" {note}"
+    if FIN_BUTTON_RIGHT_PAD:
+        label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
+    return label
+
+
+def build_usd_month_keyboard(chat_id: int, month_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    if effective_main_financial_value_buttons_enabled(chat_id):
+        for rec in usd_records_for_month(chat_id, month_key)[:84]:
+            kb.row(IB(usd_record_button_label(rec), callback_data=f"usd_rec:{int(rec.get('id', 0) or 0)}:{month_key}"))
+    prev_m = _shift_month_key(month_key, -1)
+    next_m = _shift_month_key(month_key, 1)
+    row = [IB("⬅️ Месяц", callback_data=f"remaining_usd_month:{prev_m}")]
+    if month_key != now_local().strftime("%Y-%m"):
+        row.append(IB("📅 Текущий", callback_data=f"remaining_usd_month:{now_local().strftime('%Y-%m')}"))
+    row.append(IB("Месяц ➡️", callback_data=f"remaining_usd_month:{next_m}"))
+    kb.row(*row)
+    kb.row(IB("💰 ARS операции", callback_data=f"remaining_usd_toggle:{today_key()}"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day') or today_key()}:back_main"), IB("❌ Закрыть", callback_data="aux_close"))
+    return kb
+
+
 def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = None) -> str:
     store = get_chat_store(chat_id)
     settings = _gomonk_settings(chat_id)
@@ -11211,6 +12759,16 @@ def build_remaining_keyboard(chat_id: int, day_key: str):
     prev_key = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
     next_key = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
     kb = types.InlineKeyboardMarkup(row_width=3)
+    # v91: если включён режим «Финансы-кнопки», записи идут первыми, сверху окна Ф91.
+    if effective_main_financial_value_buttons_enabled(chat_id):
+        for rec in financial_value_records_for_day(chat_id, day_key)[:84]:
+            try:
+                rid = int(rec.get("id"))
+            except Exception:
+                continue
+            kb.row(IB(financial_record_button_label(rec, chat_id), callback_data=f"d:{day_key}:value_rec_{rid}"))
+    if active_bot_behavior_profile() == "v92_current":
+        kb.row(IB("💵 Долларовые операции", callback_data=f"remaining_usd_toggle:{day_key}"))
     nav = [IB("⬅️ День", callback_data=f"remaining_open:{prev_key}")]
     if day_key != today_key():
         nav.append(IB("📅 Сегодня", callback_data=f"remaining_open:{today_key()}"))
@@ -11221,8 +12779,13 @@ def build_remaining_keyboard(chat_id: int, day_key: str):
     return kb
 
 def open_remaining_window(chat_id: int, day_key: str, message_id: int | None = None):
-    text = build_remaining_text(chat_id, day_key)
-    kb = build_remaining_keyboard(chat_id, day_key)
+    if active_bot_behavior_profile() == "v92_current" and remaining_view_mode(chat_id) == "usd":
+        month_key = str(get_chat_store(chat_id).get("remaining_usd_month") or str(day_key)[:7] or now_local().strftime("%Y-%m"))[:7]
+        text = build_usd_month_text(chat_id, month_key)
+        kb = build_usd_month_keyboard(chat_id, month_key)
+    else:
+        text = build_remaining_text(chat_id, day_key)
+        kb = build_remaining_keyboard(chat_id, day_key)
     if message_id:
         fast_ui_edit_message_text(chat_id, message_id, text, reply_markup=kb, parse_mode="HTML", purpose="remaining_window")
     else:
@@ -11322,6 +12885,8 @@ def render_day_window(chat_id: int, day_key: str):
     bal_chat = store.get("balance", 0)
 
     footer = [""]
+    opening_balance = _opening_balance_before_day(store, day_key)
+    footer.append(f"💰 Баланс: {format_chat_amount(chat_id, opening_balance, mixed_space=True)}")
     if recs_sorted:
         expense_value = -total_expense if total_expense else 0.0
         income_value = total_income if total_income else 0.0
@@ -11571,6 +13136,52 @@ def start_record_edit_prompt(chat_id: int, day_key: str, rid: int) -> bool:
         return True
     except Exception as e:
         log_error(f"start_record_edit_prompt({chat_id},{day_key},{rid}): {e}")
+        return False
+
+
+def start_usd_record_edit_prompt(chat_id: int, rid: int, month_key: str | None = None) -> bool:
+    try:
+        chat_id = int(chat_id)
+        rid = int(rid)
+        store = get_chat_store(chat_id)
+        rec = next((r for r in store.get("usd_records", []) if int(r.get("id", 0) or 0) == rid), None)
+        if not rec:
+            send_and_auto_delete(chat_id, "❌ USD-запись не найдена.", 10)
+            return False
+        month_key = str(month_key or rec.get("day_key") or today_key())[:7]
+        text = wm_common(
+            f"✏️ Редактирование USD-записи {rec.get('short_id') or 'U'+str(rid)}\n\n"
+            f"Текущие данные:\n{fmt_usd_ledger(float(rec.get('amount',0) or 0))} {rec.get('note','')}\n\n"
+            "Отправьте новое значение, например:\n-500 usd обмен\n+900 usd от ст\n700 проклейка обоев",
+            10,
+        )
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        insert_value = compose_usd_edit_input_value(rec.get("amount", 0), rec.get("note", ""))
+        kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + insert_value)[:256]))
+        kb.row(IB("🗑 Удалить USD", callback_data=f"usd_del:{rid}:{month_key}"), IB("❌ Отмена", callback_data="aux_close"))
+        sent = bot.send_message(chat_id, text, reply_markup=kb)
+        store["usd_edit_wait"] = {
+            "rid": rid,
+            "month_key": month_key,
+            "prompt_msg_id": sent.message_id,
+            "expires_at": time.time() + 40,
+        }
+        save_data(data, chat_ids=[chat_id])
+        def _expire():
+            st = get_chat_store(chat_id)
+            wait = st.get("usd_edit_wait") or {}
+            if int(wait.get("prompt_msg_id") or 0) != int(sent.message_id):
+                return
+            st["usd_edit_wait"] = None
+            save_data(data, chat_ids=[chat_id])
+            try:
+                bot.delete_message(chat_id, sent.message_id)
+            except Exception:
+                pass
+        DELAYED_SCHEDULER.schedule(f"usd-edit-wait:{chat_id}", 40.0, _expire)
+        return True
+    except Exception as e:
+        log_error(f"start_usd_record_edit_prompt({chat_id},{rid}): {e}")
         return False
 
 
@@ -11847,6 +13458,9 @@ def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_ri
             f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsx:{return_day_key}"
         )),
     )
+    kb.row(IB("📊 Excel стат", callback_data=export_callback(
+        f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsxstat:{return_day_key}"
+    )))
     end_dt = datetime.strptime(end_key, "%Y-%m-%d")
     kb.row(IB("🔙 Изменить конец", callback_data=export_callback(
         f"exp_pick_set_end:{start_key}:{int(start_rid)}:{end_dt.year}:{end_dt.month}:{end_dt.day}:{return_day_key}"
@@ -11859,7 +13473,75 @@ def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: st
     store = get_chat_store(chat_id)
     rows = []
     for day_key, rec in exact_record_range(store, start_key, start_rid, end_key, end_rid):
-        rows.append((fmt_date_backup(day_key), fmt_csv_amount(rec.get("amount")), rec.get("note", "")))
+        rows.append((fmt_date_table(day_key), fmt_csv_amount(rec.get("amount")), rec.get("note", "")))
+    return rows
+
+
+def exact_range_opening_balance(store: dict, start_key: str, start_rid: int) -> float:
+    """Остаток непосредственно перед первой записью выбранного точного периода."""
+    total = 0.0
+    start_key = str(start_key)[:10]
+    try:
+        start_rid = int(start_rid or 0)
+    except Exception:
+        start_rid = 0
+    daily = store.get("daily_records", {}) or {}
+    for day_key in sorted(daily.keys()):
+        if day_key < start_key:
+            for rec in sorted_records_for_day(store, day_key):
+                total += float(rec.get("amount", 0) or 0)
+            continue
+        if day_key > start_key:
+            break
+        if day_key == start_key:
+            for rec in sorted_records_for_day(store, day_key):
+                if start_rid and _record_int_id(rec) == start_rid:
+                    break
+                total += float(rec.get("amount", 0) or 0)
+            break
+    return total
+
+
+def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
+    """Excel стат: Дата | Описание | Приход | статьи расходов, с остатком на начало."""
+    store = get_chat_store(target_chat_id)
+    records = exact_record_range(store, start_key, start_rid, end_key, end_rid)
+    cats_map = calc_categories_for_record_range(store, start_key, start_rid, end_key, end_rid)
+    categories = get_ordered_category_names(cats=cats_map, store=store)
+    clean_categories = [_clean_category_display_name(x) for x in categories]
+    headers = ["Дата", "Описание", "Приход"] + clean_categories
+    rows = [headers]
+    opening_balance = exact_range_opening_balance(store, start_key, start_rid)
+    income_total = 0.0
+    expense_total = 0.0
+    cat_totals = {cat: 0.0 for cat in categories}
+    prev_day = None
+    for day_key, rec in records:
+        try:
+            amount = float(rec.get("amount", 0) or 0)
+        except Exception:
+            amount = 0.0
+        if prev_day is not None and day_key != prev_day:
+            rows.append([])
+        prev_day = day_key
+        row = [fmt_date_table(day_key), str(rec.get("note") or ""), ""] + [""] * len(categories)
+        if amount >= 0:
+            income_total += amount
+            row[2] = int(round(amount))
+        else:
+            value = abs(amount)
+            expense_total += value
+            category = resolve_expense_category_for_record(rec, store)
+            if category in cat_totals:
+                cat_totals[category] += value
+                row[3 + categories.index(category)] = int(round(value))
+        rows.append(row)
+    rows.append([])
+    rows.append(["", "Остаток на начало", int(round(opening_balance))] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in categories])
+    rows.append([])
+    rows.append(["", "Расход", int(round(expense_total))] + [""] * len(categories))
+    rows.append(["", "Приход", int(round(income_total))] + [""] * len(categories))
+    rows.append(["", "Остаток", int(round(opening_balance + income_total - expense_total))] + [""] * len(categories))
     return rows
 
 
@@ -11868,18 +13550,23 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
     trace = ProcessTrace(recipient_chat_id, f"Точный экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
     tmp_name = None
     try:
-        file_type = "xlsx" if str(file_type).lower() == "xlsx" else "csv"
+        file_type = str(file_type or "csv").lower()
+        if file_type not in {"csv", "xlsx", "xlsxstat"}:
+            file_type = "csv"
         rows = _exact_export_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
         if not rows:
             send_and_auto_delete(recipient_chat_id, "Нет записей в выбранном точном диапазоне.", 10)
             trace.finish("экспорт завершён без данных")
             return
-        ext = file_type
+        ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         tmp_name = os.path.join(
             MEGA_LOCAL_TMP_DIR,
             f"exact_export_{target_chat_id}_{int(time.time() * 1000)}.{ext}",
         )
-        if ext == "xlsx":
+        if file_type == "xlsxstat":
+            xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
+            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Excel стат")
+        elif ext == "xlsx":
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
             for date_v, amount_v, note_v in rows:
                 try:
@@ -11887,7 +13574,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                 except Exception:
                     parsed_amount = 0.0
                 xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Точный период")
+            _write_simple_xlsx(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), sheet_name="Точный период")
         else:
             with open(tmp_name, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
@@ -11900,10 +13587,10 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         )
         start_label = fmt_date_backup(start_key).replace(":", ".")
         end_label = fmt_date_backup(end_key).replace(":", ".")
-        display_name = f"{chat_name}_({start_label}-{end_label})_точный.{ext}"
+        display_name = f"{chat_name}_({start_label}-{end_label})_{'excel_стат' if file_type == 'xlsxstat' else 'точный'}.{ext}"
         store = get_chat_store(target_chat_id)
         caption = (
-            f"🎯 {'Excel' if ext == 'xlsx' else 'CSV'} — точный период\n"
+            f"🎯 {'Excel стат' if file_type == 'xlsxstat' else ('Excel' if ext == 'xlsx' else 'CSV')} — точный период\n"
             f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}\n"
             f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}"
         )
@@ -12079,7 +13766,8 @@ def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None):
     kb = types.InlineKeyboardMarkup()
     # Кнопка открывает поле ввода через inline current chat; возможное @имя_бота очищается обработчиком перед сохранением.
     if insert_text:
-        kb.row(make_copy_or_inline_button("✍️ Вставить текст", str(insert_text)))
+        # v91: Telegram показывает @имя_бота, а сам текст начинается с новой строки, не сплошняком.
+        kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(insert_text))[:256]))
     kb.row(
         IB("❌ Закрыть", callback_data=f"d:{day_key}:cancel_edit"),
         IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"),
@@ -12893,15 +14581,15 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
                 return
         elif mode == "day":
             for r in store.get("daily_records", {}).get(day_key, []) or []:
-                rows.append((fmt_date_backup(day_key), fmt_csv_amount(r.get("amount")), r.get("note", "")))
-            caption = f"📅 CSV за день {fmt_date_backup(day_key)}: {get_chat_display_name(target_chat_id)}"
+                rows.append((fmt_date_table(day_key), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            caption = f"📅 CSV за день {fmt_date_table(day_key)}: {get_chat_display_name(target_chat_id)}"
         elif mode == "week":
             base = datetime.strptime(day_key, "%Y-%m-%d")
             start = base - timedelta(days=6)
             for i in range(7):
                 dk = (start + timedelta(days=i)).strftime("%Y-%m-%d")
                 for r in store.get("daily_records", {}).get(dk, []) or []:
-                    rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                    rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             caption = f"🗓 CSV за неделю: {get_chat_display_name(target_chat_id)}"
         elif mode == "month":
             base = datetime.strptime(day_key, "%Y-%m-%d")
@@ -12913,7 +14601,7 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
                     continue
                 if start <= dt <= base:
                     for r in recs or []:
-                        rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                        rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             caption = f"📆 CSV за месяц: {get_chat_display_name(target_chat_id)}"
         elif mode == "wedthu":
             base = datetime.strptime(day_key, "%Y-%m-%d")
@@ -12922,7 +14610,7 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
             for i in range(2):
                 dk = (base + timedelta(days=i)).strftime("%Y-%m-%d")
                 for r in store.get("daily_records", {}).get(dk, []) or []:
-                    rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+                    rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             caption = f"📊 CSV Ср–Чт: {get_chat_display_name(target_chat_id)}"
 
         if not rows:
@@ -12956,11 +14644,11 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
 
     def _append_day(dk: str):
         for r in sorted(store.get("daily_records", {}).get(dk, []) or [], key=record_sort_key):
-            rows.append((fmt_date_backup(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
+            rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
 
     if mode == "day":
         _append_day(day_key)
-        label = f"за день {fmt_date_backup(day_key)}"
+        label = f"за день {fmt_date_table(day_key)}"
     elif mode == "week":
         base = datetime.strptime(day_key, "%Y-%m-%d")
         start = base - timedelta(days=6)
@@ -13044,7 +14732,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                     log_error(f"xlsx export amount parse skip: chat={get_chat_display_name(target_chat_id)} amount={amount_v!r} note={note_v!r}: {e_amount}")
                     parsed_amount = 0.0
                 xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Экспорт")
+            _write_simple_xlsx(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), sheet_name="Экспорт")
         else:
             trace.step("создаёт временный CSV файл")
             with open(tmp_name, "w", newline="", encoding="utf-8") as f:
@@ -13693,9 +15381,9 @@ def build_owner_instruction_text() -> str:
         "3. Пересылка: порядок сохраняется внутри исходного чата. Несколько разных чатов пересылаются параллельно.\n"
         "4. Секрет: сообщение сначала пересылается, если включена пересылка, затем сохраняется и удаляется из исходного чата.\n"
         "5. SQLite сохраняется сразу. В обычной операции точечно обновляется только изменившийся чат.\n"
-        "6. Быстрый JSON: примерно через 15 секунд после последнего изменения конкретного чата. При включённой MEGA обновляется latest JSON этого чата.\n"
-        "7. Полный бэкап: примерно через 120 секунд тишины именно в этом чате. JSON/CSV создаются всегда; Excel зависит от /off_on_backup_excel; канал получает JSON и при включении Excel; MEGA получает JSON.\n"
-        "8. У каждого чата собственный таймер бэкапа: активность одного чата не переносит бэкап остальных.\n"
+        "6. Быстрый MEGA: через 1 сек. в приоритетном режиме или примерно через 8 сек. обычно загружается маленький immutable delta нескольких чатов. Старые delta не заменяются.\n"
+        "7. Полный файл чата: примерно через 120 секунд тишины именно в этом чате. MEGA обновляется безопасно: candidate → history → active, без предварительного удаления.\n"
+        "8. Полный global: после 3 минут общей тишины, но не реже одного раза за 15 минут непрерывных изменений. Между full snapshot восстановление выполняется как global + delta.\n"
         "9. Очереди ограничены. При перегрузке webhook вернёт 503, и Telegram повторит доставку вместо потери update.\n"
         "10. /queues показывает размер очередей, работников, отказы и ожидание. /diag показывает общее состояние."
     )
@@ -13712,7 +15400,7 @@ def build_owner_instruction_keyboard(chat_id: int):
 def all_task_pool_stats() -> list[dict]:
     return [
         WEBHOOK_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
-        BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
+        DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
         JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
     ]
 
@@ -13728,8 +15416,11 @@ def build_queue_status_text() -> str:
     with timer_lock:
         lines.append("")
         lines.append(f"Таймеров полного бэкапа: {len(_backup_timers)}")
-        lines.append(f"Таймеров быстрого JSON: {len(_quick_backup_timers)}")
+        lines.append(f"Таймеров delta: {len(_quick_backup_timers)}")
         lines.append(f"Dirty чатов: {len(_backup_dirty_chats)}")
+    with _delta_state_lock:
+        lines.append(f"Delta pending chats: {len(_delta_pending_chats)}")
+        lines.append(f"Global full pending: {'да' if _global_snapshot_pending else 'нет'}")
     ds = DELAYED_SCHEDULER.stats()
     lines.append(f"Планировщик: задач {ds['scheduled']}, отменено {ds['cancelled']}, выполнено {ds['executed']}")
     lines.append(f"Excel-бэкап всех чатов: {backup_excel_all_label()}")
@@ -13877,6 +15568,8 @@ def build_info_keyboard(chat_id: int):
                 )
             else:
                 kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
+        if active_bot_behavior_profile() == "v92_current":
+            kb.row(IB(forwarded_fin_edit_mode_label(chat_id), callback_data="forwarded_fin_edit_mode_toggle"))
         if layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
         # Кнопка выбора версии присутствует при любом режиме, включая полный откат v81/v82.
@@ -13891,6 +15584,8 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
+        if active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current"}:
+            kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
@@ -13910,6 +15605,8 @@ def build_info_keyboard(chat_id: int):
                 )
             else:
                 kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
+        if active_bot_behavior_profile() == "v92_current":
+            kb.row(IB(forwarded_fin_edit_mode_label(chat_id), callback_data="forwarded_fin_edit_mode_toggle"))
         elif layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
     kb.row(
@@ -13998,7 +15695,7 @@ def _send_category_pick_end_precise(chat_id: int, message_id: int, start_key: st
     nav.append(IB(f"{russian_month_name(view_month)} {view_year}", callback_data="none"))
     nav.append(IB("Месяц ➡️", callback_data=cat_callback(f"cat_pick_end3:{start_key}:{int(start_rid)}:{next_y}:{next_m}")))
     kb.row(*nav)
-    kb.row(IB("▶️ С сегодняшнего дня", callback_data=cat_callback("cat_pick_today_start")))
+    kb.row(IB(f"⏹ По сегодняшний день · {fmt_date_ddmmyy(today_key())}", callback_data=cat_callback(f"cat_pick_today_end:{start_key}:{int(start_rid)}")))
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
     kb.row(IB("🔙 Изменить начало", callback_data=cat_callback(f"cat_pick_set_start:{start_dt.year}:{start_dt.month}:{start_dt.day}")))
     text = (
@@ -14061,7 +15758,8 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
     add_buttons_in_rows(kb, buttons, 3)
     if _v85_enabled("usd_categories") and currency_mode_from_store(store) == "ars":
         usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False))
-        kb.row(IB("💵 Скрыть USD" if usd_on else "💵 Показать USD", callback_data=cat_callback(f"cat_usd_toggle_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+        kb.row(IB("💵 USD ВЫКЛ" if usd_on else "💵 USD ВКЛ", callback_data=cat_callback(f"cat_usd_toggle_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    kb.row(IB("↕️ Расположение", callback_data=cat_callback(f"cat_order_open_exact:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
     end_dt = datetime.strptime(end_key, "%Y-%m-%d")
     kb.row(
@@ -14101,8 +15799,97 @@ def build_category_record_detail_text(store: dict, start_key: str, start_rid: in
             lines.append(f"• {fmt_date_ddmmyy(day_key)}: {format_category_amount(store, amount, category_mixed)} {clean_note}".rstrip())
     return wm_common("\n".join(lines), 8)
 
-def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int):
+_category_other_sort_state = {}
+
+
+def _other_sort_key(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
+    return (int(chat_id), str(start_key), int(start_rid), str(end_key), int(end_rid))
+
+
+def other_sort_records(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[dict]:
+    out = []
+    for _day, rec in exact_record_range(store, start_key, start_rid, end_key, end_rid):
+        try:
+            if float(rec.get("amount", 0) or 0) >= 0:
+                continue
+        except Exception:
+            continue
+        category = resolve_expense_category_for_record(rec, store)
+        if get_expense_category_slug(category, store) == "other":
+            out.append(rec)
+    return out
+
+
+def build_other_sort_text(store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int) -> str:
+    count = len(other_sort_records(store, start_key, start_rid, end_key, end_rid))
+    return wm_common(
+        "🔀 Сортировка статьи ПРОЧЕЕ\n\n"
+        "Выберите финансовые значения, которые нужно перенести в другую статью. "
+        "После выбора нажмите «Выбрать их».\n\n"
+        f"Доступно записей: {count}", 8
+    )
+
+
+def build_other_sort_keyboard(chat_id: int, store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    key = _other_sort_key(chat_id, start_key, start_rid, end_key, end_rid)
+    selected = _category_other_sort_state.setdefault(key, set())
+    valid_ids = set()
+    for rec in other_sort_records(store, start_key, start_rid, end_key, end_rid):
+        rid = _record_int_id(rec)
+        valid_ids.add(rid)
+        mark = "✅" if rid in selected else "▫️"
+        label = f"{mark} {financial_record_button_label(rec, chat_id)}"
+        kb.row(IB(label, callback_data=cat_callback(f"cat_other_sort_toggle:{rid}:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    selected.intersection_update(valid_ids)
+    if selected:
+        kb.row(IB(f"✅ Выбрать их ({len(selected)})", callback_data=cat_callback(f"cat_other_sort_choose:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    else:
+        kb.row(IB("Выберите значения выше", callback_data="none"))
+    kb.row(IB("⬅️ Назад", callback_data=cat_callback(f"cat_show_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:other")))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
+    return kb
+
+
+def build_other_sort_target_text(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> str:
+    key = _other_sort_key(chat_id, start_key, start_rid, end_key, end_rid)
+    selected = _category_other_sort_state.get(key, set())
+    return wm_common(f"📦 Куда перенести выбранные записи?\n\nВыбрано: {len(selected)}", 8)
+
+
+def build_other_sort_target_keyboard(chat_id: int, store: dict, start_key: str, start_rid: int, end_key: str, end_rid: int):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for slug in get_expense_category_order_slugs(store):
+        if slug == "other":
+            continue
+        name = _clean_category_display_name(get_category_by_slug(slug, store) or slug)
+        buttons.append(IB(name, callback_data=cat_callback(f"cat_other_sort_target:{slug}:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    add_buttons_in_rows(kb, buttons, 2)
+    kb.row(IB("⬅️ Назад к выбору", callback_data=cat_callback(f"cat_other_sort:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
+    return kb
+
+
+def apply_other_sort_target(store: dict, selected_ids: set[int], target_slug: str) -> int:
+    changed = 0
+    ids = {int(x) for x in selected_ids}
+    for rec in store.get("records", []) or []:
+        if _record_int_id(rec) in ids:
+            rec["category_override_slug"] = str(target_slug)
+            changed += 1
+    # daily_records обычно содержит те же dict, но обновляем и отдельные копии после restore.
+    for arr in (store.get("daily_records", {}) or {}).values():
+        for rec in arr or []:
+            if _record_int_id(rec) in ids:
+                rec["category_override_slug"] = str(target_slug)
+    return changed
+
+
+def build_category_record_detail_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, category: str | None = None, store: dict | None = None):
     kb = types.InlineKeyboardMarkup()
+    if category and get_expense_category_slug(category, store) == "other":
+        kb.row(IB("🔀 Сортировка", callback_data=cat_callback(f"cat_other_sort:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     kb.row(IB("⬅️ Назад", callback_data=cat_callback(f"cat_back_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     kb.row(
         IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
@@ -14444,6 +16231,17 @@ def handle_categories_callback(call, data_str: str) -> bool:
             log_error(f"cat_pick_start_record: {e}")
         return True
 
+    if data_str.startswith("cat_pick_today_end:"):
+        try:
+            _, start_key, start_rid = data_str.split(":")
+            end_key = today_key()
+            if end_key < start_key:
+                end_key = start_key
+            _send_category_pick_end_record(chat_id, call.message.message_id, start_key, int(start_rid), end_key)
+        except Exception as e:
+            log_error(f"cat_pick_today_end: {e}")
+        return True
+
     if data_str == "cat_pick_today_start":
         try:
             start_key = today_key()
@@ -14451,6 +16249,78 @@ def handle_categories_callback(call, data_str: str) -> bool:
             _send_category_pick_end_precise(chat_id, call.message.message_id, start_key, 0, now_dt.year, now_dt.month)
         except Exception as e:
             log_error(f"cat_pick_today_start: {e}")
+        return True
+
+    if data_str.startswith("cat_usd_toggle_period:"):
+        try:
+            _, mode, start, end = data_str.split(":", 3)
+            settings = store.setdefault("settings", {})
+            settings["category_usd_enabled"] = not bool(settings.get("category_usd_enabled", False))
+            save_data(data, chat_ids=[chat_id])
+            schedule_config_backup_for_chats(chat_id)
+            if settings["category_usd_enabled"]:
+                usd_rate_cached(force=False)
+            label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
+            text, _ = summarize_categories(store, start, end, label)
+            kb = build_categories_summary_keyboard(mode, start, end, store=store)
+            marker = "cat_wthu:*" if mode == "wthu" else ("cat_wk:*" if mode == "wk" else "cat_range_custom2:*")
+            send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id, marker_action=marker)
+        except Exception as e:
+            log_error(f"cat_usd_toggle_period: {e}")
+        return True
+
+    if data_str.startswith("cat_order_open_sum:"):
+        try:
+            _, mode, start, end = data_str.split(":", 3)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end)),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_open_sum: {e}")
+        return True
+
+    if data_str.startswith("cat_order_move_sum:"):
+        try:
+            _, slug, direction, mode, start, end = data_str.split(":", 5)
+            if move_expense_category_order(store, slug, direction):
+                save_data(data, chat_ids=[chat_id])
+                schedule_config_backup_for_chats(chat_id)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end)),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_move_sum:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_move_sum: {e}")
+        return True
+
+    if data_str.startswith("cat_order_open_exact:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store),
+                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid))),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_exact:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_open_exact: {e}")
+        return True
+
+    if data_str.startswith("cat_order_move_exact:"):
+        try:
+            _, slug, direction, start_key, start_rid, end_key, end_rid = data_str.split(":", 6)
+            if move_expense_category_order(store, slug, direction):
+                save_data(data, chat_ids=[chat_id])
+                schedule_config_backup_for_chats(chat_id)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store),
+                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid))),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_move_exact:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_move_exact: {e}")
         return True
 
     if data_str.startswith("cat_pick_end3:"):
@@ -14527,10 +16397,81 @@ def handle_categories_callback(call, data_str: str) -> bool:
                 text,
                 reply_markup=kb,
                 preferred_message_id=call.message.message_id,
-                marker_action="cat_back_records:*",
+                marker_action="cat_range_records:*",
             )
         except Exception as e:
             log_error(f"cat_back_records: {e}")
+        return True
+
+    if data_str.startswith("cat_other_sort:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            send_or_edit_categories_window(
+                chat_id, build_other_sort_text(store, start_key, int(start_rid), end_key, int(end_rid)),
+                reply_markup=build_other_sort_keyboard(chat_id, store, start_key, int(start_rid), end_key, int(end_rid)),
+                preferred_message_id=call.message.message_id, marker_action="cat_other_sort:*",
+            )
+        except Exception as e:
+            log_error(f"cat_other_sort: {e}")
+        return True
+
+    if data_str.startswith("cat_other_sort_toggle:"):
+        try:
+            _, rid, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            key = _other_sort_key(chat_id, start_key, int(start_rid), end_key, int(end_rid))
+            selected = _category_other_sort_state.setdefault(key, set())
+            rid_i = int(rid)
+            if rid_i in selected:
+                selected.remove(rid_i)
+            else:
+                selected.add(rid_i)
+            send_or_edit_categories_window(
+                chat_id, build_other_sort_text(store, start_key, int(start_rid), end_key, int(end_rid)),
+                reply_markup=build_other_sort_keyboard(chat_id, store, start_key, int(start_rid), end_key, int(end_rid)),
+                preferred_message_id=call.message.message_id, marker_action="cat_other_sort_toggle:*",
+            )
+        except Exception as e:
+            log_error(f"cat_other_sort_toggle: {e}")
+        return True
+
+    if data_str.startswith("cat_other_sort_choose:"):
+        try:
+            _, start_key, start_rid, end_key, end_rid = data_str.split(":")
+            key = _other_sort_key(chat_id, start_key, int(start_rid), end_key, int(end_rid))
+            if not _category_other_sort_state.get(key):
+                bot.answer_callback_query(call.id, "Сначала выберите записи", show_alert=False)
+                return True
+            send_or_edit_categories_window(
+                chat_id, build_other_sort_target_text(chat_id, start_key, int(start_rid), end_key, int(end_rid)),
+                reply_markup=build_other_sort_target_keyboard(chat_id, store, start_key, int(start_rid), end_key, int(end_rid)),
+                preferred_message_id=call.message.message_id, marker_action="cat_other_sort_choose:*",
+            )
+        except Exception as e:
+            log_error(f"cat_other_sort_choose: {e}")
+        return True
+
+    if data_str.startswith("cat_other_sort_target:"):
+        try:
+            _, target_slug, start_key, start_rid, end_key, end_rid = data_str.split(":", 5)
+            key = _other_sort_key(chat_id, start_key, int(start_rid), end_key, int(end_rid))
+            selected = set(_category_other_sort_state.get(key, set()))
+            changed = apply_other_sort_target(store, selected, target_slug)
+            _category_other_sort_state.pop(key, None)
+            if changed:
+                save_data(data, chat_ids=[chat_id])
+                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="category_manual_sort", delay=0.05)
+                schedule_config_backup_for_chats(chat_id)
+            text, _ = summarize_categories_record_range(store, start_key, int(start_rid), end_key, int(end_rid))
+            kb = build_categories_record_summary_keyboard(start_key, int(start_rid), end_key, int(end_rid), store)
+            send_or_edit_categories_window(
+                chat_id, text, reply_markup=kb, preferred_message_id=call.message.message_id, marker_action="cat_range_records:*",
+            )
+            try:
+                bot.answer_callback_query(call.id, f"Перенесено записей: {changed}", show_alert=False)
+            except Exception:
+                pass
+        except Exception as e:
+            log_error(f"cat_other_sort_target: {e}")
         return True
 
     if data_str.startswith("cat_show_records:"):
@@ -14544,7 +16485,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
                     pass
                 return True
             text = build_category_record_detail_text(store, start_key, int(start_rid), end_key, int(end_rid), category)
-            kb = build_category_record_detail_keyboard(start_key, int(start_rid), end_key, int(end_rid))
+            kb = build_category_record_detail_keyboard(start_key, int(start_rid), end_key, int(end_rid), category=category, store=store)
             send_or_edit_categories_window(
                 chat_id,
                 text,
@@ -15806,6 +17747,50 @@ def on_callback(call):
             save_data(data, chat_ids=[chat_id])
             open_remaining_window(chat_id, day_key, call.message.message_id)
             return
+        if data_str.startswith("remaining_usd_toggle:"):
+            if active_bot_behavior_profile() != "v92_current":
+                return
+            day_key = data_str.split(":", 1)[1] or today_key()
+            new_mode = "ars" if remaining_view_mode(chat_id) == "usd" else "usd"
+            set_remaining_view_mode(chat_id, new_mode)
+            if new_mode == "usd":
+                get_chat_store(chat_id)["remaining_usd_month"] = str(day_key)[:7]
+                save_data(data, chat_ids=[chat_id])
+            open_remaining_window(chat_id, day_key, call.message.message_id)
+            return
+        if data_str.startswith("remaining_usd_month:"):
+            if active_bot_behavior_profile() != "v92_current":
+                return
+            month_key = data_str.split(":", 1)[1] or now_local().strftime("%Y-%m")
+            set_remaining_view_mode(chat_id, "usd")
+            get_chat_store(chat_id)["remaining_usd_month"] = str(month_key)[:7]
+            save_data(data, chat_ids=[chat_id])
+            open_remaining_window(chat_id, get_chat_store(chat_id).get("current_view_day") or today_key(), call.message.message_id)
+            return
+        if data_str.startswith("usd_rec:"):
+            if active_bot_behavior_profile() != "v92_current":
+                return
+            try:
+                _p, rid_s, month_key = data_str.split(":", 2)
+                rid = int(rid_s)
+            except Exception:
+                return
+            start_usd_record_edit_prompt(chat_id, rid, month_key=month_key)
+            return
+        if data_str.startswith("usd_del:"):
+            try:
+                _p, rid_s, month_key = data_str.split(":", 2)
+                rid = int(rid_s)
+            except Exception:
+                return
+            store = get_chat_store(chat_id)
+            store["usd_records"] = [r for r in store.get("usd_records", []) if int(r.get("id", 0) or 0) != rid]
+            _recalc_usd_store(store)
+            store["usd_edit_wait"] = None
+            save_data(data, chat_ids=[chat_id])
+            finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="usd_delete", delay=0.05)
+            open_remaining_window(chat_id, store.get("current_view_day") or today_key(), call.message.message_id)
+            return
         if data_str == "main_articles_toggle":
             if not version_mode_feature("article_buttons"):
                 return
@@ -15861,6 +17846,31 @@ def on_callback(call):
             new_state = toggle_forward_menu_new_style()
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nМеню пересылки: {'по-новому' if new_state else 'как обычно'}", reply_markup=build_info_keyboard(chat_id))
             return
+        if data_str == "forwarded_fin_edit_mode_toggle":
+            if active_bot_behavior_profile() != "v92_current":
+                return
+            new_mode = cycle_forwarded_fin_edit_mode(chat_id)
+            labels = {"normal": "обычно", "button": "кнопка", "slash": "слеш"}
+            try:
+                bot.answer_callback_query(call.id, f"Пересланные финансы: {labels.get(new_mode, new_mode)}")
+            except Exception:
+                pass
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            GENERAL_TASK_POOL.submit(f"fwd-fin-retrofit:{chat_id}", apply_forwarded_finance_edit_mode_to_existing, chat_id)
+            return
+        if data_str.startswith("fwd_fin_edit:"):
+            try:
+                _pfx, kind, rid_s = data_str.split(":", 2)
+                rid = int(rid_s)
+            except Exception:
+                return
+            if kind == "usd":
+                start_usd_record_edit_prompt(chat_id, rid)
+            else:
+                rec = next((r for r in get_chat_store(chat_id).get("records", []) if int(r.get("id", 0) or 0) == rid), None)
+                if rec:
+                    start_record_edit_prompt(chat_id, rec.get("day_key") or today_key(), rid)
+            return
         if data_str == "buttons_current_toggle":
             if not is_owner_chat(chat_id):
                 return
@@ -15901,6 +17911,14 @@ def on_callback(call):
                     pass
                 return
             safe_edit(bot, call, build_owner_instruction_text(), reply_markup=build_owner_instruction_keyboard(chat_id))
+            return
+        if data_str == "info_delta_status":
+            if not is_owner_chat(chat_id):
+                return
+            kbd = types.InlineKeyboardMarkup()
+            kbd.row(IB("🔄 Обновить", callback_data="info_delta_status"))
+            kbd.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
+            safe_edit(bot, call, delta_status_text(), reply_markup=kbd)
             return
         if data_str == "info_queues":
             if not is_owner_chat(chat_id):
@@ -16873,7 +18891,7 @@ def send_csv_week(chat_id: int, day_key: str):
         for i in range(7):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             for r in store.get("daily_records", {}).get(d, []):
-                rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+                rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных за неделю")
@@ -16907,7 +18925,7 @@ def send_csv_month(chat_id: int, day_key: str):
             dt = datetime.strptime(d, "%Y-%m-%d")
             if dt >= start and dt <= base:
                 for r in recs:
-                    rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+                    rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных за месяц")
@@ -16944,7 +18962,7 @@ def send_csv_wedthu(chat_id: int, day_key: str):
         for i in range(2):
             d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
             for r in store.get("daily_records", {}).get(d, []):
-                rows.append((fmt_date_backup(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+                rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
 
         if not rows:
             send_info(chat_id, "Нет данных Ср–Чт")
@@ -17554,7 +19572,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
             rows = []
             for r in day_recs:
                 rows.append((
-                    fmt_date_backup(day_key),
+                    fmt_date_table(day_key),
                     get_chat_display_name(chat_id),
                     r.get("id"),
                     r.get("short_id"),
@@ -17566,7 +19584,7 @@ def cmd_csv_day(chat_id: int, day_key: str):
                 ))
             write_csv_rows_with_day_gaps(w, rows, 9)
         with open(tmp_name, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"📅 CSV за день {fmt_date_backup(day_key)}: {get_chat_display_name(chat_id)}")
+            bot.send_document(chat_id, f, caption=f"📅 CSV за день {fmt_date_table(day_key)}: {get_chat_display_name(chat_id)}")
     except Exception as e:
         log_error(f"cmd_csv_day: {e}")
     finally:
@@ -18471,39 +20489,29 @@ def schedule_all_finance_backups(delay: float = 10.0):
 
 
 def _schedule_global_mega_snapshot(delay: float = 30.0):
-    global _global_mega_timer
-    if RESTORE_GUARD_ACTIVE:
-        log_error(f"GLOBAL MEGA SNAPSHOT BLOCKED: {RESTORE_GUARD_REASON}")
-        return
-    if not mega_is_configured():
-        return
-    _global_mega_timer = time.time() + max(5.0, float(delay))
-    def _fire():
-        global _global_mega_timer
-        _global_mega_timer = None
-        if not BACKUP_TASK_POOL.submit("mega-global", mega_upload_latest_global_backup):
-            log_error("GLOBAL MEGA QUEUE FULL, RETRY")
-            _schedule_global_mega_snapshot(BACKUP_BUSY_RETRY_SECONDS)
-    DELAYED_SCHEDULER.schedule("mega-global-snapshot", max(5.0, float(delay)), _fire)
+    """Совместимость старых вызовов: v90 лишь отмечает pending full snapshot.
+
+    Полный global больше не создаётся через 20–30 секунд после каждого чата.
+    Его запускает общий quiet/max scheduler.
+    """
+    _mark_global_snapshot_pending()
 
 
 def _run_quick_chat_backup(chat_id: int):
+    """v90 quick backup = маленький immutable delta, а не полная копия чата/global."""
     chat_id = int(chat_id)
     if RESTORE_GUARD_ACTIVE:
-        log_error(f"QUICK BACKUP BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        log_error(f"QUICK DELTA BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
         return
     with state_chat_context(chat_id):
         try:
             save_data(data, chat_ids=[chat_id])
-            save_chat_json_only(chat_id)
-            if is_backup_to_mega_enabled(chat_id):
-                mega_upload_chat_latest_json_only(chat_id)
-                if mega_backup_priority_enabled():
-                    # Приоритетный режим: универсальный снимок фиксируется сразу,
-                    # до ожидания полного Telegram/Excel/месячного пакета.
-                    mega_upload_latest_global_backup()
-                else:
-                    _schedule_global_mega_snapshot(30.0)
+            with _delta_state_lock:
+                _delta_pending_chats.add(chat_id)
+                if not _delta_chat_generation.get(chat_id):
+                    _delta_chat_generation[chat_id] = int(time.time_ns())
+            if not _run_delta_batch():
+                schedule_delta_backup(chat_id, BACKUP_BUSY_RETRY_SECONDS, reason="delta_retry")
         finally:
             with timer_lock:
                 _quick_backup_dirty_chats.discard(chat_id)
@@ -18529,20 +20537,16 @@ def _run_full_chat_backup(chat_id: int):
             trace.step("создаёт JSON/CSV" + ("/Excel" if backup_excel_all_enabled() else ""))
             save_chat_json(chat_id)
 
-            mega_done = False
-            if mega_backup_priority_enabled() and is_backup_to_mega_enabled(chat_id):
-                trace.step("сначала загружает полный снимок в MEGA")
-                mega_upload_chat_backup_bundle(chat_id, current_month_key())
-                mega_upload_latest_global_backup()
-                mega_done = True
-
+            # Канал/личный чат работают как раньше, но MEGA-файлы теперь заменяются
+            # через candidate -> history -> move, без предварительного удаления.
             if is_backup_to_chat_enabled(chat_id) and can_receive_direct_json_backup(chat_id) and not is_finance_output_suppressed(chat_id):
                 send_backup_to_chat(chat_id, ensure_files=False)
             if is_backup_to_channel_enabled(chat_id):
                 send_backup_to_channel(chat_id, ensure_files=False)
-            if is_backup_to_mega_enabled(chat_id) and not mega_done:
+            if is_backup_to_mega_enabled(chat_id):
+                trace.step("безопасно обновляет JSON чата и месячный JSON в MEGA")
                 mega_upload_chat_backup_bundle(chat_id, current_month_key())
-                _schedule_global_mega_snapshot(20.0)
+                _mark_global_snapshot_pending()
             trace.finish("бэкап завершён")
         except Exception as exc:
             trace.fail(exc)
@@ -18553,35 +20557,45 @@ def _run_full_chat_backup(chat_id: int):
                 _backup_timers.pop(chat_id, None)
 
 
-def schedule_quick_backup(chat_id: int, delay: float = 15.0):
+def schedule_quick_backup(chat_id: int, delay: float | None = None):
+    """Debounce delta для конкретного чата; разные чаты объединяются общим delta batch."""
     chat_id = int(chat_id)
     if RESTORE_GUARD_ACTIVE:
         return
-    due = time.time() + max(1.0, float(delay))
+    if delay is None:
+        delay = MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS
+    due = time.time() + max(0.5, float(delay))
     with timer_lock:
         _quick_backup_dirty_chats.add(chat_id)
         _quick_backup_timers[chat_id] = due
+    with _delta_state_lock:
+        global _delta_generation
+        _delta_generation += 1
+        _delta_pending_chats.add(chat_id)
+        _delta_chat_generation[chat_id] = _delta_generation
+
     def _fire():
-        with timer_lock:
-            _quick_backup_timers.pop(chat_id, None)
-        if not BACKUP_TASK_POOL.submit(f"quick:{chat_id}", _run_quick_chat_backup, chat_id):
-            log_error(f"QUICK BACKUP QUEUE FULL, RETRY: {chat_id}")
+        # Одна общая задача заберёт изменения всех чатов, накопившиеся к этому моменту.
+        def _job():
+            if not _run_delta_batch():
+                schedule_delta_backup(None, delay=BACKUP_BUSY_RETRY_SECONDS, reason="quick_upload_retry")
+        if not DELTA_TASK_POOL.submit("mega-delta-v90", _job):
+            log_error(f"QUICK DELTA QUEUE FULL, RETRY: {chat_id}")
             schedule_quick_backup(chat_id, BACKUP_BUSY_RETRY_SECONDS)
-    DELAYED_SCHEDULER.schedule(f"quick-backup:{chat_id}", max(1.0, float(delay)), _fire)
+    DELAYED_SCHEDULER.cancel("mega-delta-batch-v90")
+    DELAYED_SCHEDULER.schedule("mega-delta-batch-v90", max(0.5, float(delay)), _fire)
 
 
-def schedule_backup_flush(chat_id: int, delay: float = 3.0):
-    """Отдельный логический debounce каждого чата без отдельного OS-потока."""
+def schedule_full_backup_only(chat_id: int, delay: float = 3.0):
+    """Тяжёлый JSON/канал/MEGA-файл чата — отдельно от быстрого delta."""
     chat_id = int(chat_id)
     if RESTORE_GUARD_ACTIVE:
-        log_error(f"BACKUP SCHEDULE BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        log_error(f"FULL BACKUP SCHEDULE BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
         return
     try:
         delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
     except Exception:
         delay = BACKUP_MIN_DELAY_SECONDS
-    quick_delay = 1.0 if mega_backup_priority_enabled() else 15.0
-    schedule_quick_backup(chat_id, quick_delay)
     due = time.time() + delay
     with timer_lock:
         _backup_dirty_chats.add(chat_id)
@@ -18591,8 +20605,19 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
             _backup_timers.pop(chat_id, None)
         if not BACKUP_TASK_POOL.submit(f"full:{chat_id}", _run_full_chat_backup, chat_id):
             log_error(f"FULL BACKUP QUEUE FULL, RETRY: {chat_id}")
-            schedule_backup_flush(chat_id, BACKUP_BUSY_RETRY_SECONDS)
+            schedule_full_backup_only(chat_id, BACKUP_BUSY_RETRY_SECONDS)
     DELAYED_SCHEDULER.schedule(f"full-backup:{chat_id}", delay, _fire)
+
+
+def schedule_backup_flush(chat_id: int, delay: float = 3.0):
+    """SQLite уже сохранена; delta быстро; полный файл чата после 120 сек. тишины."""
+    chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"BACKUP SCHEDULE BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
+    quick_delay = MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS
+    schedule_quick_backup(chat_id, quick_delay)
+    schedule_full_backup_only(chat_id, delay)
 
 def _safe_stabilize(action_name, func):
     try:
@@ -18653,6 +20678,17 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             trace.step("проверяет скрытый финрежим")
             hidden = is_finance_output_suppressed(chat_id)
 
+        # v90: сразу после подтверждённой SQLite ставим маленький delta, ДО Telegram-окон.
+        # Поэтому медленное редактирование интерфейса не откладывает аварийную копию.
+        trace.step("ставит быстрый delta до обновления окон")
+        _safe_stabilize(
+            "delta_queue_early",
+            lambda: schedule_quick_backup(
+                chat_id,
+                MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
+            ),
+        )
+
         # Ниже тяжёлые Telegram-вызовы уже вне chat_lock.
         if not hidden:
             if is_owner_chat(chat_id):
@@ -18670,7 +20706,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         trace.step("ставит бэкап в отдельную очередь")
-        _safe_stabilize("backup_queue", lambda: schedule_backup_flush(chat_id, BACKUP_MIN_DELAY_SECONDS))
+        _safe_stabilize("full_backup_queue", lambda: schedule_full_backup_only(chat_id, BACKUP_MIN_DELAY_SECONDS))
 
         # Важно: действия в других чатах не должны менять личное окно владельца.
         # Поэтому здесь не вызываем backup_window_for_owner/refresh_owner_after_chat_change.
@@ -18856,6 +20892,10 @@ def reset_chat_data(chat_id: int):
             store["records"] = []
             store["daily_records"] = {}
             store["next_id"] = 1
+            store["usd_balance"] = 0
+            store["usd_records"] = []
+            store["usd_daily_records"] = {}
+            store["usd_next_id"] = 1
             store["active_windows"] = {}
             clear_edit_wait_state(chat_id, delete_prompt=True)
             store["edit_target"] = None
@@ -19249,6 +21289,18 @@ def cmd_restore_guard(msg):
     )
 
 
+@bot.message_handler(commands=["delta_status"])
+def cmd_delta_status(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    if not is_owner_chat(msg.chat.id):
+        return
+    send_and_auto_delete(msg.chat.id, delta_status_text(), 120)
+
+
 @bot.message_handler(commands=["mega_status"])
 def cmd_mega_status(msg):
     try:
@@ -19344,11 +21396,15 @@ def build_diag_text() -> str:
         f"Очередь webhook: {WEBHOOK_TASK_POOL.stats()['pending']}",
         f"Очередь пересылки: {FORWARD_TASK_POOL.stats()['pending']}",
         f"Очередь финансов: {FINANCE_TASK_POOL.stats()['pending']}",
+        f"Очередь delta: {DELTA_TASK_POOL.stats()['pending']}",
         f"Очередь backup: {BACKUP_TASK_POOL.stats()['pending']}",
         f"BACKUP_CHAT_ID: {'есть' if BACKUP_CHAT_ID else 'нет'}",
         f"Бэкап в канал: {'ВКЛ' if backup_flags.get('channel', True) else 'ВЫКЛ'}",
         f"MEGA: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'} / {'настроено' if mega_is_configured() else 'не настроено'}",
         f"MEGA dir: {MEGA_BACKUP_DIR}",
+        f"MEGA delta dir: {mega_delta_remote_root()}",
+        f"Delta pending: {len(_delta_pending_chats)} / last events: {_delta_last_event_count}",
+        f"Global full pending: {'да' if _global_snapshot_pending else 'нет'}",
         f"Ошибок в журнале: {len(get_recent_errors(80))}",
     ]
     if errors:
@@ -19591,12 +21647,24 @@ def main():
                     _store.setdefault("settings", {})["journal_enabled"] = False
             gs["journal_default_off_v83_applied"] = True
         gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
-        # Новая база v89: сохраняем выбранный профиль интерфейса; меняется только безопасное ядро хранения.
+        # Новая база v90: интерфейсный профиль сохраняется; ядро хранения = delta + редкие snapshots.
         # Явно выбранные старые версии сохраняются без изменений.
         if not bool(gs.get("version_mode_v88_migrated", False)):
             if str(gs.get("bot_behavior_profile") or "") == "v87_current":
                 gs["bot_behavior_profile"] = "v88_current"
             gs["version_mode_v88_migrated"] = True
+        if not bool(gs.get("version_mode_v90_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v88_current":
+                gs["bot_behavior_profile"] = "v90_current"
+            gs["version_mode_v90_migrated"] = True
+        if not bool(gs.get("version_mode_v91_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v90_current":
+                gs["bot_behavior_profile"] = "v91_current"
+            gs["version_mode_v91_migrated"] = True
+        if not bool(gs.get("version_mode_v92_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v91_current":
+                gs["bot_behavior_profile"] = "v92_current"
+            gs["version_mode_v92_migrated"] = True
         # Одноразово очищаем сохранённые имена статей от @username бота.
         if not bool(gs.get("category_names_clean_v88_applied", False)):
             for _cid, _store in (data.get("chats", {}) or {}).items():
@@ -19631,6 +21699,8 @@ def main():
             settings.setdefault("main_financial_value_buttons_enabled", False)
             settings.setdefault("currency_mode", "ars_usd" if settings.get("usd_display_enabled", False) else "ars")
             settings.setdefault("remaining_show_ost_label", True)
+            settings.setdefault("remaining_view_mode", "ars")
+            settings.setdefault("forwarded_fin_edit_mode", "normal")
             settings.setdefault("total_secret_mode", False)
             store.setdefault("secret_messages", [])
             _ensure_secret_media_numbers(int(cid))
@@ -19645,9 +21715,13 @@ def main():
     else:
         # Аварийный режим: не создаём/не сохраняем новую пустую SQLite и не запускаем startup-backup.
         data.setdefault("forward_rules", {})
-        log_error("v89 emergency mode: local writes and all automatic backups remain blocked")
-    # Критическое изменение v89: запуск/деплой сам по себе больше НЕ планирует бэкап.
+        log_error("v92 emergency mode: local writes and all automatic backups remain blocked")
+    # v90: запуск/деплой не планирует бэкап; baseline delta создаётся без загрузки в MEGA.
     # Бэкап ставится только после реального изменения данных.
+    try:
+        initialize_delta_baseline(data)
+    except Exception as e:
+        log_error(f"initialize_delta_baseline: {e}")
     if OWNER_ID:
         try:
             finance_active_chats.add(int(OWNER_ID))
@@ -19671,7 +21745,8 @@ def main():
                     f"Защита бэкапа: {'ВКЛ — ' + RESTORE_GUARD_REASON if RESTORE_GUARD_ACTIVE else 'норма'}\n"
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
-                    f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}"
+                    f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
+                    f"Бэкап v92: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
