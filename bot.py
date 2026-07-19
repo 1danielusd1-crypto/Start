@@ -11911,13 +11911,13 @@ def gomonk_summary_lines(chat_id: int) -> list[str]:
         return []
     entries = gomonk_entries(chat_id)
     if not entries:
-        return ["", f"🧮 Сумма гомонковых: {format_chat_amount(chat_id, 0, mixed_space=True)}"]
+        return ["", f"🧮 Гомонковые: {format_chat_amount(chat_id, 0, mixed_space=True)}"]
     balance = float(get_chat_store(chat_id).get("balance", 0) or 0)
     total = gomonk_total(chat_id)
     return [
         "",
-        f"🧮 Сумма гомонковых: {format_chat_amount(chat_id, total, mixed_space=True)}",
-        f"🏦 Остаток без гомонковых: {format_chat_amount(chat_id, balance - total, mixed_space=True)}",
+        f"🧮 Гомонковые: {format_chat_amount(chat_id, total, mixed_space=True)}",
+        f"🏦 Ост. без гомонковых: {format_chat_amount(chat_id, balance - total, mixed_space=True)}",
     ]
 
 
@@ -12032,7 +12032,7 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
     if not shown:
         lines.append("За этот день расходов нет.")
     current_remaining = float(store.get("balance", 0) or 0) - reserve
-    lines.extend(["", f"🏦 Текущий остаток по чату: {format_chat_amount(chat_id, current_remaining, mixed_space=True)}"])
+    lines.extend(["", f"🏦 Ост. по чату: {format_chat_amount(chat_id, current_remaining, mixed_space=True)}"])
     if reserve:
         lines.append(f"🧳 Вычтено гомонковых: {format_chat_amount(chat_id, reserve, mixed_space=True)}")
     return wm_common("\n".join(lines), 9, html_mode=True)
