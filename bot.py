@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v92_usd_transactions_forward_edit"
+VERSION = "bot_v91_articles_excel_history"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -396,7 +396,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 11
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 10
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -752,25 +752,6 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
-    "v92_current": {
-        "title": "v92 USD-транзакции / Перес",
-        "ui_edit_interval": 0.03,
-        "fast_tg_gap": 0.01,
-        "info_layout": "v87",
-        "per_chat_journal": True,
-        "mega_priority": True,
-        "keepalive_menu": True,
-        "article_buttons": False,
-        "financial_value_buttons": True,
-        "financial_buttons_per_row": 1,
-        "gomonk_wallets": True,
-        "remaining_window": True,
-        "usd_categories": True,
-        "daily_usd": True,
-        "usd_transactions": True,
-        "forwarded_fin_edit": True,
-        "description": "Текущая версия: отдельный учёт USD-транзакций, безопасное редактирование пересланных финансов и все функции v91.",
-    },
     "v91_current": {
         "title": "v91 Статьи / Excel стат",
         "ui_edit_interval": 0.03,
@@ -942,7 +923,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v92_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v91_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -968,7 +949,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
         "buttons_current_window", "journal_enabled", "main_article_buttons_enabled",
         "main_financial_value_buttons_enabled", "gomonk_enabled", "gomonk_entries",
         "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
-        "category_usd_enabled", "expense_category_order_slugs", "remaining_view_mode", "forwarded_fin_edit_mode",
+        "category_usd_enabled", "expense_category_order_slugs",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
         "process_trace_enabled",
     )
@@ -1154,7 +1135,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
-    if active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
+    if active_bot_behavior_profile() in {"v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
         label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
     return label
 
@@ -1238,122 +1219,6 @@ def toggle_forward_menu_new_style() -> bool:
 
 def forward_menu_style_label() -> str:
     return "🧩 Пересылка: по-новому" if forward_menu_new_style_enabled() else "🔁 Пересылка: обычно"
-
-# v92: способ быстрого редактирования финансовых сообщений, которые бот переслал в этот чат.
-FORWARDED_FIN_EDIT_MODES = ("normal", "button", "slash")
-
-
-def forwarded_fin_edit_mode(chat_id: int) -> str:
-    try:
-        mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("forwarded_fin_edit_mode", "normal") or "normal")
-    except Exception:
-        mode = "normal"
-    return mode if mode in FORWARDED_FIN_EDIT_MODES else "normal"
-
-
-def forwarded_fin_edit_mode_label(chat_id: int) -> str:
-    labels = {"normal": "обычно", "button": "кнопка", "slash": "слеш"}
-    return f"💰Перес: {labels.get(forwarded_fin_edit_mode(chat_id), 'обычно')}"
-
-
-def cycle_forwarded_fin_edit_mode(chat_id: int) -> str:
-    store = get_chat_store(int(chat_id))
-    settings = store.setdefault("settings", {})
-    current = forwarded_fin_edit_mode(chat_id)
-    idx = FORWARDED_FIN_EDIT_MODES.index(current)
-    new_mode = FORWARDED_FIN_EDIT_MODES[(idx + 1) % len(FORWARDED_FIN_EDIT_MODES)]
-    settings["forwarded_fin_edit_mode"] = new_mode
-    save_data(data, chat_ids=[int(chat_id)])
-    schedule_config_backup_for_chats(int(chat_id))
-    return new_mode
-
-
-def _forward_destination_message_ids_for_chat(chat_id: int) -> set[int]:
-    out = set()
-    with forward_map_lock:
-        for _src, pairs in forward_map.items():
-            for dst_chat_id, dst_msg_id in pairs or []:
-                try:
-                    if int(dst_chat_id) == int(chat_id):
-                        out.add(int(dst_msg_id))
-                except Exception:
-                    pass
-    return out
-
-
-def _forwarded_finance_target_for_message(chat_id: int, message_id: int):
-    store = get_chat_store(int(chat_id))
-    mid = int(message_id)
-    for rec in store.get("records", []) or []:
-        if int(rec.get("source_msg_id") or 0) == mid and str(rec.get("note") or "") != "удалено":
-            return "ars", int(rec.get("id") or 0), rec
-    for rec in store.get("usd_records", []) or []:
-        if int(rec.get("source_msg_id") or 0) == mid:
-            return "usd", int(rec.get("id") or 0), rec
-    return None
-
-def _forwarded_finance_targets_for_message(chat_id: int, message_id: int):
-    store = get_chat_store(int(chat_id))
-    mid = int(message_id)
-    out = []
-    for rec in store.get("records", []) or []:
-        if int(rec.get("source_msg_id") or 0) == mid and str(rec.get("note") or "") != "удалено":
-            out.append(("ars", int(rec.get("id") or 0), rec))
-    for rec in store.get("usd_records", []) or []:
-        if int(rec.get("source_msg_id") or 0) == mid:
-            out.append(("usd", int(rec.get("id") or 0), rec))
-    return out
-
-
-def apply_forwarded_finance_edit_ui_for_message(chat_id: int, message_id: int):
-    """Накладывает/снимает inline-редактирование на пересланное финсообщение.
-    Сам текст не переписываем, поэтому старые сообщения остаются исходными.
-    """
-    targets = _forwarded_finance_targets_for_message(chat_id, message_id)
-    mode = forwarded_fin_edit_mode(chat_id)
-    if mode == "normal" or not targets:
-        try:
-            bot.edit_message_reply_markup(chat_id=int(chat_id), message_id=int(message_id), reply_markup=None)
-        except Exception:
-            pass
-        return
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    buttons = []
-    multi = len(targets) > 1
-    for kind, rid, _rec in targets[:4]:
-        if mode == "button":
-            label = ("✏️ ARS" if kind == "ars" else "✏️ USD") if multi else "✏️ Изменить"
-        else:
-            # Слеш-режим выглядит как исполняемая команда и остаётся однозначным
-            # даже у старых сообщений: /izmenit_R127 или /izmenit_U3.
-            label = f"/izmenit_{'U' if kind == 'usd' else 'R'}{rid}"
-        buttons.append(IB(label, callback_data=f"fwd_fin_edit:{kind}:{rid}"))
-    if buttons:
-        kb.row(*buttons[:2])
-        if len(buttons) > 2:
-            kb.row(*buttons[2:4])
-    try:
-        bot.edit_message_reply_markup(chat_id=int(chat_id), message_id=int(message_id), reply_markup=kb)
-    except Exception as e:
-        err = str(e).lower()
-        if "message is not modified" not in err:
-            log_error(f"forwarded_fin_edit_ui {chat_id}:{message_id}: {e}")
-
-
-def apply_forwarded_finance_edit_mode_to_existing(chat_id: int):
-    """Применяет режим и к старым пересланным финсообщениям, не блокируя callback."""
-    mids = _forward_destination_message_ids_for_chat(chat_id)
-    store = get_chat_store(int(chat_id))
-    for rec in (store.get("records", []) or []) + (store.get("usd_records", []) or []):
-        if rec.get("forwarded_finance") and rec.get("source_msg_id"):
-            try:
-                mids.add(int(rec.get("source_msg_id")))
-            except Exception:
-                pass
-    for mid in sorted(mids):
-        if _forwarded_finance_target_for_message(chat_id, mid):
-            apply_forwarded_finance_edit_ui_for_message(chat_id, mid)
-            time.sleep(0.02)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2339,12 +2204,6 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_other_sort_target:*': 'Ф158',
     'cat_pick_today_end:*': 'Ф159',
     'exp_send:*:xlsxstat:*': 'Ф160',
-    'forwarded_fin_edit_mode_toggle': 'Ф161',
-    'fwd_fin_edit:*': 'Ф162',
-    'remaining_usd_toggle:*': 'Ф163',
-    'remaining_usd_month:*': 'Ф164',
-    'usd_rec:*': 'Ф165',
-    'usd_del:*': 'Ф166',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -2771,21 +2630,6 @@ def compose_edit_input_value(amount, note: str = "") -> str:
         base = fmt_num_compact(abs(amount))
     else:
         base = "0"
-    return (base + (" " + note if note else "")).strip()
-
-
-
-def compose_usd_edit_input_value(amount, note: str = "") -> str:
-    """Готовая строка для редактирования отдельной USD-транзакции."""
-    try:
-        amount = float(amount or 0)
-    except Exception:
-        amount = 0.0
-    note = re.sub(r"\s+", " ", str(note or "")).strip()
-    if amount > 0:
-        base = "+" + fmt_num_compact(abs(amount)) + " usd"
-    else:
-        base = fmt_num_compact(abs(amount)) + " usd"
     return (base + (" " + note if note else "")).strip()
 
 def fmt_num_compact(v) -> str:
@@ -3819,7 +3663,7 @@ def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
     if is_finance_mode(chat_id):
         return False
 
-    if data_str in {"info_close", "main_articles_toggle", "main_financial_values_toggle", "forwarded_fin_edit_mode_toggle"}:
+    if data_str in {"info_close", "main_articles_toggle", "main_financial_values_toggle"}:
         return False
     if data_str.startswith("d:") and data_str.endswith(":info"):
         return False
@@ -3854,7 +3698,6 @@ def build_help_text(chat_id: int) -> str:
         "/restore / /restore_off — режим восстановления JSON/CSV",
         "/dozvon — окно дозвона по связанным чатам",
         "/ost — слово «ост:» в Ф91 ВКЛ/ВЫКЛ",
-        "/izmenit — ответом на пересланное финсообщение открыть его редактирование",
     ]
     if is_owner_chat(chat_id):
         lines.extend([
@@ -3887,8 +3730,6 @@ def build_info_text(chat_id: int) -> str:
         if layout in {"v86", "v87"}:
             text += f"\nВалюта финансовых окон: {currency_mode(chat_id).upper().replace('_', '-')}"
             text += f"\n/ost — слово «ост:»: {'ВКЛ' if remaining_ost_label_enabled(chat_id) else 'ВЫКЛ'}"
-            if active_bot_behavior_profile() == "v92_current":
-                text += f"\nПересланные финансы: {forwarded_fin_edit_mode_label(chat_id)}"
     elif layout == "v83":
         text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
@@ -4984,11 +4825,6 @@ def build_chat_monthly_backup_payload(chat_id: int, month_key: str | None = None
         rr["date"] = fmt_date_backup(rr["day_key"])
         clean_recs.append(rr)
     closing = opening + total_income - total_expense
-    usd_recs = usd_records_for_month(chat_id, month_key) if "usd_records_for_month" in globals() else []
-    usd_opening = usd_month_opening_balance(chat_id, month_key) if "usd_month_opening_balance" in globals() else 0.0
-    usd_income = sum(float(r.get("amount", 0) or 0) for r in usd_recs if float(r.get("amount", 0) or 0) >= 0)
-    usd_expense = -sum(float(r.get("amount", 0) or 0) for r in usd_recs if float(r.get("amount", 0) or 0) < 0)
-    usd_closing = usd_opening + usd_income - usd_expense
     return {
         "kind": "chat_monthly_backup",
         "version": VERSION,
@@ -5002,12 +4838,6 @@ def build_chat_monthly_backup_payload(chat_id: int, month_key: str | None = None
         "total_expense": total_expense,
         "closing_balance": closing,
         "record_count": len(clean_recs),
-        "usd_opening_balance": usd_opening,
-        "usd_total_income": usd_income,
-        "usd_total_expense": usd_expense,
-        "usd_closing_balance": usd_closing,
-        "usd_record_count": len(usd_recs),
-        "usd_records": [backup_record_copy(r) for r in usd_recs],
         "settings_backup": build_chat_settings_backup_payload(chat_id, store),
         "records": clean_recs,
     }
@@ -5727,7 +5557,7 @@ def make_global_backup_payload() -> dict:
         "created_at": created_at,
         "restore_mode": "replace_full_state",
         "contains": [
-            "all_chats", "records", "usd_records", "settings", "global_settings", "forward_rules",
+            "all_chats", "records", "settings", "global_settings", "forward_rules",
             "forward_finance", "forward_index", "secret_messages", "backup_metadata"
         ],
     }
@@ -5742,7 +5572,7 @@ def make_global_backup_payload() -> dict:
         "forward_rules_count": sum(len(v or {}) for v in (payload.get("forward_rules", {}) or {}).values()),
         "forward_finance_count": sum(len(v or {}) for v in (payload.get("forward_finance", {}) or {}).values()),
         "forward_index_count": len(payload.get("forward_index", {}) or {}),
-        "note": "Универсальный полный JSON: все чаты, ARS/USD-записи, настройки, секреты, пересылка и индекс сообщений.",
+        "note": "Универсальный полный JSON: все чаты, записи, настройки, секреты, пересылка и индекс сообщений.",
     }
     return payload
 
@@ -5767,23 +5597,15 @@ def _global_payload_stats(payload: dict, path: str | None = None) -> dict:
     if not isinstance(chats, dict):
         chats = {}
     record_count = 0
-    usd_record_count = 0
     nonempty_chats = 0
     for store in chats.values():
         if not isinstance(store, dict):
             continue
         recs = store.get("records") or []
-        usd_recs = store.get("usd_records") or []
-        has_any = False
         if isinstance(recs, list):
             record_count += len(recs)
-            has_any = has_any or bool(recs)
-        if isinstance(usd_recs, list):
-            usd_record_count += len(usd_recs)
-            has_any = has_any or bool(usd_recs)
-        if has_any:
-            nonempty_chats += 1
-    total_record_count = record_count + usd_record_count
+            if recs:
+                nonempty_chats += 1
     try:
         size_bytes = os.path.getsize(path) if path and os.path.exists(path) else len(json.dumps(payload, ensure_ascii=False))
     except Exception:
@@ -5793,9 +5615,7 @@ def _global_payload_stats(payload: dict, path: str | None = None) -> dict:
         "size_bytes": int(size_bytes),
         "chat_count": len(chats),
         "nonempty_chats": nonempty_chats,
-        "record_count": int(total_record_count),
-        "ars_record_count": int(record_count),
-        "usd_record_count": int(usd_record_count),
+        "record_count": int(record_count),
         "schema_version": int(universal.get("schema_version") or 0),
         "created_at": str(universal.get("created_at") or (payload.get("_backup_meta") or {}).get("created_at") or ""),
         "is_universal": universal.get("kind") == UNIVERSAL_BACKUP_KIND,
@@ -6002,13 +5822,10 @@ def is_data_effectively_empty_for_restore(d: dict) -> bool:
     for _, store in chats.items():
         if not isinstance(store, dict):
             continue
-        if store.get("records") or store.get("usd_records"):
+        if store.get("records"):
             return False
         daily = store.get("daily_records") or {}
         if any((daily.get(day) or []) for day in daily):
-            return False
-        usd_daily = store.get("usd_daily_records") or {}
-        if any((usd_daily.get(day) or []) for day in usd_daily):
             return False
         if store.get("secret_messages"):
             return False
@@ -6513,10 +6330,6 @@ def get_chat_store(chat_id: int) -> dict:
                 "records": [],
                 "daily_records": {},
                 "next_id": 1,
-                "usd_balance": 0,
-                "usd_records": [],
-                "usd_daily_records": {},
-                "usd_next_id": 1,
                 "active_windows": {},
                 "edit_wait": None,
                 "edit_target": None,
@@ -6540,9 +6353,7 @@ def get_chat_store(chat_id: int) -> dict:
                     "remaining_with_gomonk": True,
                     "usd_display_enabled": False,
                     "currency_mode": "ars",
-                    "remaining_show_ost_label": True,
-                    "remaining_view_mode": "ars",
-                    "forwarded_fin_edit_mode": "normal"
+                    "remaining_show_ost_label": True
                 },
             }
         )
@@ -6567,16 +6378,6 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("currency_mode", "ars_usd" if store.setdefault("settings", {}).get("usd_display_enabled", False) else "ars")
         store.setdefault("settings", {}).setdefault("remaining_show_ost_label", True)
         store.setdefault("settings", {}).setdefault("category_usd_enabled", False)
-        store.setdefault("settings", {}).setdefault("remaining_view_mode", "ars")
-        store.setdefault("settings", {}).setdefault("forwarded_fin_edit_mode", "normal")
-        store.setdefault("usd_records", [])
-        store.setdefault("usd_daily_records", {})
-        store.setdefault("usd_balance", 0)
-        store.setdefault("usd_next_id", 1)
-        try:
-            _recalc_usd_store(store)
-        except Exception:
-            pass
         store.setdefault("finance_mode", False)
 
         if is_owner_chat(chat_id):
@@ -7092,10 +6893,6 @@ def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
         "daily_records": daily_desc,
         "daily_records_by_date": daily_by_date_desc,
         "next_id": store.get("next_id", 1),
-        "usd_balance": store.get("usd_balance", 0),
-        "usd_records": backup_records_list(sorted((store.get("usd_records", []) or []), key=record_sort_key, reverse=True)),
-        "usd_daily_records": {str(k): backup_records_list(sorted((v or []), key=record_sort_key, reverse=True)) for k, v in sorted((store.get("usd_daily_records", {}) or {}).items(), reverse=True)},
-        "usd_next_id": store.get("usd_next_id", 1),
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
         "settings_backup": build_chat_settings_backup_payload(chat_id, store),
@@ -7140,7 +6937,6 @@ def save_chat_json(chat_id: int):
             "last_saved": now_local().isoformat(timespec="seconds"),
             "date_format": "DD.MM.YY",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
-            "usd_record_count": len(store.get("usd_records", []) or []),
             "excel_enabled": backup_excel_all_enabled(),
         }
         _save_json(chat_path_meta, meta)
@@ -7261,10 +7057,6 @@ def restore_from_json(chat_id: int, path: str):
         store["records"] = payload.get("records", []) or []
         store["daily_records"] = payload.get("daily_records", {}) or {}
         store["next_id"] = int(payload.get("next_id", 1) or 1)
-        store["usd_records"] = payload.get("usd_records", store.get("usd_records", [])) or []
-        store["usd_daily_records"] = payload.get("usd_daily_records", store.get("usd_daily_records", {})) or {}
-        store["usd_next_id"] = int(payload.get("usd_next_id", store.get("usd_next_id", 1)) or 1)
-        store["usd_balance"] = float(payload.get("usd_balance", store.get("usd_balance", 0)) or 0)
         store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
         store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
         if isinstance(payload.get("settings"), dict):
@@ -7278,11 +7070,10 @@ def restore_from_json(chat_id: int, path: str):
 
         renumber_chat_records(chat_id)
         recalc_balance(chat_id)
-        _recalc_usd_store(store)
         rebuild_global_records()
 
         save_data(data, chat_ids=[chat_id])
-        if store.get("records") or store.get("usd_records") or any(store.get("daily_records", {}).values()) or any(store.get("usd_daily_records", {}).values()):
+        if store.get("records") or any(store.get("daily_records", {}).values()):
             _clear_restore_guard()
         finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day", today_key()), reason="restore_json_core", delay=0.1)
 
@@ -7462,259 +7253,7 @@ def split_amount_and_note(text: str):
     if amount < 0 and note_has_income_marker(note):
         amount = abs(amount)
 
-
     return amount, note
-
-
-# ─────────────────────────────────────────────────────────────
-# v92: отдельный учёт долларовых транзакций.
-# USD-записи не смешиваются с ARS records/daily_records и не влияют на ARS balance.
-# ─────────────────────────────────────────────────────────────
-USD_CURRENCY_WORD_RE = re.compile(r"(?i)(?:\busd\b|\bусд\b|доллар(?:а|ов|ы)?|бакс(?:а|ов|ы)?)")
-ARS_CURRENCY_WORD_RE = re.compile(r"(?i)(?:\bars\b|песо|пессо|peso(?:s)?)")
-_USD_EXPLICIT_AMOUNT_RE = re.compile(
-    r"(?i)(?P<token>(?:[+\-–]?\s*\d[\d\s.,_'’]*?(?:\s*[kк])?|\d[\d\s.,_'’]*?\s*\+\s*[kк]))\s*(?P<cur>usd|усд|доллар(?:а|ов|ы)?|бакс(?:а|ов|ы)?)\b"
-)
-_USD_K_AMOUNT_RE = re.compile(
-    r"(?i)(?<![\w\d])(?P<token>(?:[+\-–]?\s*\d+(?:[.,]\d+)?\s*[kк]|\d+(?:[.,]\d+)?\s*\+\s*[kк]))(?!\w)"
-)
-_GENERIC_AMOUNT_TOKEN_RE = re.compile(r"[+\-–]?\s*\d[\d\s.,_'’]*(?:\s*[kк])?")
-
-
-def _parse_usd_token(raw: str) -> float:
-    """Парсит 2к / +3k / 5+к / 1700 в USD. Без знака = расход."""
-    token = str(raw or "").strip().lower().replace("–", "-")
-    positive = bool(re.match(r"^\s*\+", token)) or bool(re.search(r"\+\s*[kк]\s*$", token))
-    negative = bool(re.match(r"^\s*-", token))
-    mult = 1000.0 if re.search(r"[kк]\s*$", token) or re.search(r"\+\s*[kк]\s*$", token) else 1.0
-    token = re.sub(r"[kк]\s*$", "", token)
-    token = re.sub(r"\+\s*$", "", token)
-    token = token.strip().lstrip("+-").strip()
-    if not token:
-        raise ValueError("empty usd token")
-    # Для USD 1.5к трактуем как 1.5 * 1000, а 1.700 как 1700.
-    if mult == 1000.0 and re.fullmatch(r"\d+[.,]\d{1,2}", token):
-        value = float(token.replace(",", ".")) * mult
-    else:
-        value = abs(parse_amount(token)) * mult
-    if negative:
-        return -abs(value)
-    if positive:
-        return abs(value)
-    return -abs(value)
-
-
-def parse_usd_transactions(text: str) -> list[dict]:
-    """Находит отдельные USD-движения в одном сообщении.
-
-    Поддерживает примеры пользователя:
-    2к усд; +1700 усд; 700 усд; +3к усд; 500 усд;
-    +420.000 обмен 300 усд; 75000 ... 1900 усд;
-    5+к; +5000 USD; ... 3000 USD; -500 usd;
-    +1.385.000 обмен 1к; +1к; 1к обмен на пессо.
-    """
-    raw = str(text or "")
-    if not raw.strip():
-        return []
-    found = []
-    occupied = []
-
-    def _add(match, explicit_currency: bool):
-        span = match.span("token")
-        if any(not (span[1] <= a or span[0] >= b) for a, b in occupied):
-            return
-        token = match.group("token")
-        try:
-            amount = _parse_usd_token(token)
-        except Exception:
-            return
-        occupied.append(span)
-        found.append({
-            "amount": amount,
-            "span": span,
-            "token": token,
-            "explicit_currency": bool(explicit_currency),
-        })
-
-    for m in _USD_EXPLICIT_AMOUNT_RE.finditer(raw):
-        _add(m, True)
-    for m in _USD_K_AMOUNT_RE.finditer(raw):
-        _add(m, False)
-
-    found.sort(key=lambda item: item["span"][0])
-    result = []
-    for item in found:
-        start, end = item["span"]
-        # Убираем из описания только конкретное USD-значение и ближайшее обозначение валюты.
-        note = raw[:start] + " " + raw[end:]
-        note = USD_CURRENCY_WORD_RE.sub(" ", note, count=1 if item.get("explicit_currency") else 0)
-        note = re.sub(r"\s+", " ", note).strip(" ,.;:-").lower()
-        result.append({"amount": float(item["amount"]), "note": note, "span": item["span"]})
-    return result
-
-
-def _generic_amount_spans(text: str) -> list[tuple[int, int, str]]:
-    out = []
-    for m in _GENERIC_AMOUNT_TOKEN_RE.finditer(str(text or "")):
-        raw = m.group(0)
-        if not re.search(r"\d", raw):
-            continue
-        out.append((m.start(), m.end(), raw))
-    return out
-
-
-def parse_ars_component_when_usd_present(text: str, usd_items: list[dict] | None = None):
-    """Если сообщение смешанное ARS+USD, выделяет ARS-часть.
-    Если это чистая USD-операция, возвращает None и не создаёт ложную ARS-запись.
-    """
-    raw = str(text or "")
-    usd_items = usd_items if usd_items is not None else parse_usd_transactions(raw)
-    if not usd_items:
-        try:
-            return split_amount_and_note(raw)
-        except Exception:
-            return None
-    usd_spans = [tuple(x.get("span") or (0, 0)) for x in usd_items]
-    candidates = []
-    for start, end, token in _generic_amount_spans(raw):
-        if any(not (end <= a or start >= b) for a, b in usd_spans):
-            continue
-        # "по 1500" / "at 1500" — обычно курс обмена, а не ARS-операция.
-        prefix = raw[max(0, start - 8):start].casefold()
-        if re.search(r"(?:\bпо|\bat)\s*$", prefix):
-            continue
-        # k/к без явного ARS — это USD shorthand и уже должно было попасть в usd_items.
-        if re.search(r"[kк]\s*$", token, re.I):
-            continue
-        candidates.append((start, end, token))
-    if not candidates:
-        return None
-
-    # Предпочитаем число, рядом с которым явно написано ARS/peso.
-    chosen = None
-    for item in candidates:
-        start, end, token = item
-        around = raw[max(0, start - 12):min(len(raw), end + 16)]
-        if ARS_CURRENCY_WORD_RE.search(around):
-            chosen = item
-            break
-    if chosen is None:
-        chosen = candidates[0]
-    start, end, token = chosen
-    try:
-        amount = parse_amount(token)
-    except Exception:
-        return None
-
-    lower = raw.casefold()
-    # Для обмена без знака определяем направление по порядку валют.
-    if not re.match(r"\s*[+\-–]", token) and re.search(r"обмен|exchange", lower):
-        usd_pos = min((a for a, _b in usd_spans), default=10**9)
-        ars_pos = start
-        amount = abs(amount) if usd_pos < ars_pos else -abs(amount)
-
-    note = (raw[:start] + " " + raw[end:]).strip()
-    note = re.sub(r"\s+", " ", note).lower()
-    return float(amount), note
-
-
-def _usd_records(store: dict) -> list[dict]:
-    return store.setdefault("usd_records", [])
-
-
-def _recalc_usd_store(store: dict):
-    recs = [r for r in _usd_records(store) if isinstance(r, dict)]
-    recs.sort(key=record_sort_key)
-    for idx, rec in enumerate(recs, 1):
-        rec.setdefault("id", idx)
-        rec["short_id"] = f"U{int(rec.get('id') or idx)}"
-    store["usd_records"] = recs
-    store["usd_next_id"] = max([int(r.get("id", 0) or 0) for r in recs] + [0]) + 1
-    store["usd_balance"] = sum(float(r.get("amount", 0) or 0) for r in recs)
-    daily = {}
-    for rec in recs:
-        daily.setdefault(str(rec.get("day_key") or today_key())[:10], []).append(rec)
-    store["usd_daily_records"] = daily
-
-
-def sync_usd_records_from_text(chat_id: int, source_msg_id: int | None, text: str, owner: int = 0,
-                               day_key: str | None = None, timestamp: str | None = None,
-                               source_order_msg_id: int | None = None, forwarded: bool = False) -> int:
-    """Создаёт/обновляет USD-записи, связанные с одним исходным сообщением."""
-    items = parse_usd_transactions(text)
-    store = get_chat_store(int(chat_id))
-    recs = _usd_records(store)
-    sid = int(source_msg_id or 0)
-    existing = [r for r in recs if int(r.get("source_msg_id") or 0) == sid] if sid else []
-    existing.sort(key=lambda r: int(r.get("id", 0) or 0))
-    # Переиспользуем id существующих записей, чтобы старые кнопки не ломались.
-    for idx, item in enumerate(items):
-        if idx < len(existing):
-            rec = existing[idx]
-        else:
-            rec = {
-                "id": int(store.get("usd_next_id", 1) or 1),
-            }
-            store["usd_next_id"] = int(rec["id"]) + 1
-            recs.append(rec)
-        rec.update({
-            "short_id": f"U{int(rec.get('id') or 0)}",
-            "timestamp": timestamp or now_local().isoformat(timespec="seconds"),
-            "amount": float(item.get("amount", 0) or 0),
-            "note": str(item.get("note") or "").strip(),
-            "raw_text": str(text or ""),
-            "source_msg_id": sid or None,
-            "source_order_msg_id": int(source_order_msg_id or sid or 0) or None,
-            "owner": int(owner or 0),
-            "msg_id": sid or None,
-            "origin_msg_id": sid or None,
-            "day_key": str(day_key or finance_today_key())[:10],
-            "forwarded_finance": bool(forwarded),
-        })
-    for rec in existing[len(items):]:
-        try:
-            recs.remove(rec)
-        except ValueError:
-            pass
-    _recalc_usd_store(store)
-    return len(items)
-
-
-def usd_records_for_month(chat_id: int, month_key: str) -> list[dict]:
-    store = get_chat_store(int(chat_id))
-    return sorted(
-        [r for r in _usd_records(store) if str(r.get("day_key") or "")[:7] == str(month_key)[:7]],
-        key=record_sort_key,
-    )
-
-
-def usd_month_opening_balance(chat_id: int, month_key: str) -> float:
-    return sum(
-        float(r.get("amount", 0) or 0)
-        for r in _usd_records(get_chat_store(int(chat_id)))
-        if str(r.get("day_key") or "")[:7] < str(month_key)[:7]
-    )
-
-
-def fmt_usd_ledger(amount: float, signed: bool = True) -> str:
-    whole = int(round(abs(float(amount or 0))))
-    body = f"${whole:,}".replace(",", ".")
-    if not signed:
-        return body
-    return ("+" if float(amount or 0) >= 0 else "-") + body
-
-
-def split_usd_amount_and_note(text: str):
-    items = parse_usd_transactions(text)
-    if items:
-        return float(items[0]["amount"]), str(items[0].get("note") or "").strip()
-    m = num_re.search(str(text or ""))
-    if not m:
-        raise ValueError("no usd amount")
-    raw_number = m.group(0)
-    amount = parse_amount(raw_number)
-    note = re.sub(r"\s+", " ", str(text).replace(raw_number, " ")).strip().lower()
-    return float(amount), note
 
 
 EXPENSE_CATEGORIES = {
@@ -10680,53 +10219,10 @@ def cmd_toggle_remaining_ost_label(msg):
         pass
 
 
-@bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/izmenit(?:_[RUru]?\d+)?(?:@\w+)?", m.text.strip(), re.I)))
-def cmd_forwarded_finance_edit(msg):
-    """v92: /izmenit как ответ на пересланное финансовое сообщение.
-    Команда пользователя удаляется сразу, чтобы не засорять чат.
-    """
-    chat_id = int(msg.chat.id)
-    try:
-        bot.delete_message(chat_id, msg.message_id)
-    except Exception:
-        pass
-    target = None
-    reply = getattr(msg, "reply_to_message", None)
-    if reply is not None:
-        target = _forwarded_finance_target_for_message(chat_id, getattr(reply, "message_id", 0))
-    if target is None:
-        cmd = (msg.text or "").split("@", 1)[0]
-        m = re.search(r"_([RUru]?)(\d+)$", cmd)
-        if m:
-            prefix, rid_s = m.group(1).upper(), m.group(2)
-            rid = int(rid_s)
-            if prefix == "U":
-                rec = next((r for r in get_chat_store(chat_id).get("usd_records", []) if int(r.get("id", 0) or 0) == rid), None)
-                if rec:
-                    target = ("usd", rid, rec)
-            else:
-                rec = next((r for r in get_chat_store(chat_id).get("records", []) if int(r.get("id", 0) or 0) == rid), None)
-                if rec:
-                    target = ("ars", rid, rec)
-                else:
-                    rec = next((r for r in get_chat_store(chat_id).get("usd_records", []) if int(r.get("id", 0) or 0) == rid), None)
-                    if rec:
-                        target = ("usd", rid, rec)
-    if not target:
-        send_and_auto_delete(chat_id, "Ответьте командой /izmenit на пересланное финансовое сообщение.", 10)
-        return
-    kind, rid, rec = target
-    if kind == "usd":
-        start_usd_record_edit_prompt(chat_id, rid, month_key=str(rec.get("day_key") or today_key())[:7])
-    else:
-        start_record_edit_prompt(chat_id, rec.get("day_key") or today_key(), rid)
-
-
 @bot.message_handler(func=lambda m: bool(
     getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
-    and not m.text.split()[0].split("@")[0].casefold().startswith("/izmenit")
     and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/ost", "/остаток", "/off_on_backup_excel", "/queues", "/queue_status"}
 ))
 def cmd_total_secret_capture(msg):
@@ -10941,51 +10437,6 @@ def on_any_message(msg):
     if msg.content_type == "text":
         try:
             store = get_chat_store(chat_id)
-            usd_wait = store.get("usd_edit_wait")
-            if usd_wait:
-                text = sanitize_telegram_inserted_text((msg.text or "").strip())
-                try:
-                    amount, note = split_usd_amount_and_note(text)
-                except Exception:
-                    send_and_auto_delete(chat_id, "❌ Неверный USD-формат. Пример: -500 usd обмен или +900 usd", 10)
-                    return
-                rid = int(usd_wait.get("rid") or 0)
-                rec = next((r for r in store.get("usd_records", []) if int(r.get("id", 0) or 0) == rid), None)
-                if not rec:
-                    store["usd_edit_wait"] = None
-                    save_data(data, chat_ids=[chat_id])
-                    send_and_auto_delete(chat_id, "❌ USD-запись не найдена.", 10)
-                    return
-                rec["amount"] = float(amount)
-                rec["note"] = str(note or "").strip()
-                _recalc_usd_store(store)
-                prompt_id = int(usd_wait.get("prompt_msg_id") or 0)
-                month_key = usd_wait.get("month_key") or str(rec.get("day_key") or today_key())[:7]
-                store["usd_edit_wait"] = None
-                save_data(data, chat_ids=[chat_id])
-                try:
-                    bot.delete_message(chat_id, msg.message_id)
-                except Exception:
-                    pass
-                if prompt_id:
-                    try:
-                        bot.delete_message(chat_id, prompt_id)
-                    except Exception:
-                        pass
-                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="usd_edit", delay=0.05)
-                try:
-                    store["remaining_usd_month"] = str(month_key)[:7]
-                    set_remaining_view_mode(chat_id, "usd")
-                    open_remaining_window(chat_id, store.get("current_view_day") or today_key())
-                except Exception:
-                    pass
-                send_and_auto_delete(chat_id, f"✅ USD-запись обновлена: {fmt_usd_ledger(amount)} {note}", 8)
-                return
-        except Exception as e:
-            log_error(f"usd_edit_wait handler error: {e}")
-    if msg.content_type == "text":
-        try:
-            store = get_chat_store(chat_id)
             edit_wait = store.get("edit_wait")
 
             if edit_wait and edit_wait.get("type") == "edit":
@@ -11053,11 +10504,18 @@ def on_any_message(msg):
 
     schedule_forward_any_message(chat_id, msg)
 def handle_finance_text(msg):
-    """v92: обычный ARS-учёт + независимый USD-учёт из того же сообщения."""
+    """
+    Обработка обычного ввода для финучёта.
+    Теперь принимает сумму не только из text, но и из caption
+    у фото/видео/документов/аудио и т.п.
+    """
+
     chat_id = msg.chat.id
     bot_journal("finance_text_start", chat_id, describe_msg_for_log(msg))
     text = _message_text_for_finance(msg)
-    if not text or not is_finance_mode(chat_id):
+    if not text:
+        return False
+    if not is_finance_mode(chat_id):
         return False
 
     store = get_chat_store(chat_id)
@@ -11065,131 +10523,81 @@ def handle_finance_text(msg):
     if not settings.get("auto_add", True):
         return False
 
+    if not looks_like_amount(text):
+        # Не считаем обычный текст ошибкой, но если в сообщении есть цифры,
+        # это полезно видеть в /errors: возможно, формат суммы не распознан.
+        if text_has_any_digit(text):
+            log_error(f"[FINANCE SKIP] amount not recognized: {describe_msg_for_log(msg)} text={text[:220]!r}")
+        return False
+
+    try:
+        amount, note = split_amount_and_note(text)
+    except Exception as e:
+        log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
+        return False
+
     entry_day = finance_day_key_from_message(msg)
     store["current_view_day"] = entry_day
-    owner_id = getattr(getattr(msg, "from_user", None), "id", 0)
-    source_msg_id = getattr(msg, "message_id", None)
-    usd_items = parse_usd_transactions(text)
-    changed = False
 
-    if usd_items:
-        try:
-            sync_usd_records_from_text(
-                chat_id,
-                source_msg_id,
-                text,
-                owner_id,
-                day_key=entry_day,
-                timestamp=message_timestamp_iso(msg),
-                source_order_msg_id=getattr(msg, "message_id", None),
-                forwarded=False,
-            )
-            changed = True
-            bot_journal("usd_finance_sync", chat_id, f"msg={source_msg_id} count={len(usd_items)}")
-        except Exception as e:
-            log_error(f"[USD FINANCE ADD ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
-
-    # Если USD присутствует, ARS-часть выделяем отдельно, чтобы 2к USD не стало -2 ARS.
-    ars_parsed = parse_ars_component_when_usd_present(text, usd_items) if usd_items else None
-    if not usd_items:
-        if not looks_like_amount(text):
-            if text_has_any_digit(text):
-                log_error(f"[FINANCE SKIP] amount not recognized: {describe_msg_for_log(msg)} text={text[:220]!r}")
-            return changed
-        try:
-            ars_parsed = split_amount_and_note(text)
-        except Exception as e:
-            log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
-            ars_parsed = None
-
-    if ars_parsed is not None:
-        try:
-            amount, note = ars_parsed
-            add_record_to_chat(
-                chat_id,
-                amount,
-                note,
-                owner_id,
-                source_msg=msg,
-                day_key=entry_day,
-            )
-            changed = True
-        except Exception as e:
-            log_error(f"[FINANCE ADD ERROR] {describe_msg_for_log(msg)} parsed={ars_parsed!r}: {e}")
-
-    if changed:
+    try:
+        add_record_to_chat(
+            chat_id,
+            amount,
+            note,
+            getattr(getattr(msg, "from_user", None), "id", 0),
+            source_msg=msg,
+            day_key=entry_day
+        )
         schedule_finalize(chat_id, entry_day)
-    return changed
-
+        return True
+    except Exception as e:
+        log_error(f"[FINANCE ADD ERROR] {describe_msg_for_log(msg)} amount={amount} note={note!r}: {e}")
+        return False
 
 def handle_finance_edit(msg):
     chat_id = msg.chat.id
     text = (msg.text or msg.caption or "").strip()
-    store = get_chat_store(chat_id)
-    source_msg_id = int(getattr(msg, "message_id", 0) or 0)
-    entry_day = finance_day_key_from_message(msg)
-    owner_id = getattr(getattr(msg, "from_user", None), "id", 0)
 
+    store = get_chat_store(chat_id)
     target = None
+
     for r in store.get("records", []):
         if (
-            r.get("source_msg_id") == source_msg_id
-            or r.get("origin_msg_id") == source_msg_id
-            or r.get("msg_id") == source_msg_id
+            r.get("source_msg_id") == msg.message_id
+            or r.get("origin_msg_id") == msg.message_id
+            or r.get("msg_id") == msg.message_id
         ):
             target = r
             break
 
-    usd_items = parse_usd_transactions(text) if text else []
-    try:
-        sync_usd_records_from_text(
-            chat_id,
-            source_msg_id,
-            text,
-            owner_id,
-            day_key=(target.get("day_key") if target else entry_day) or entry_day,
-            timestamp=message_timestamp_iso(msg),
-            source_order_msg_id=source_msg_id,
-            forwarded=False,
-        )
-    except Exception as e:
-        log_error(f"[EDIT-USD] sync failed msg_id={source_msg_id}: {e}")
+    if not target:
+        log_info(f"[EDIT-FIN] record not found for msg_id={msg.message_id}")
+        return False
 
-    ars_parsed = parse_ars_component_when_usd_present(text, usd_items) if usd_items else None
-    if not usd_items and text and looks_like_amount(text):
+    if text and looks_like_amount(text):
         try:
-            ars_parsed = split_amount_and_note(text)
+            amount, note = split_amount_and_note(text)
         except Exception:
-            ars_parsed = None
+            amount, note = 0, "удалено"
+    else:
+        amount, note = 0, "удалено"
 
-    if target:
-        if ars_parsed is None:
-            target["amount"] = 0
-            target["note"] = "удалено"
-        else:
-            target["amount"], target["note"] = ars_parsed
-        target["timestamp"] = message_timestamp_iso(msg)
-        for day, arr in store.get("daily_records", {}).items():
-            for r in arr:
-                if r.get("id") == target.get("id"):
-                    r.update(target)
-        store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
-        log_info(f"[EDIT-FIN] updated record R{target['id']} amount={target['amount']} note={target['note']}")
-        save_data(data, chat_ids=[chat_id])
-        return True
+    target["amount"] = amount
+    target["note"] = note
 
-    if ars_parsed is not None:
-        amount, note = ars_parsed
-        add_record_to_chat(chat_id, amount, note, owner_id, source_msg=msg, day_key=entry_day)
-        save_data(data, chat_ids=[chat_id])
-        return True
+    for day, arr in store.get("daily_records", {}).items():
+        for r in arr:
+            if r.get("id") == target.get("id"):
+                r.update(target)
 
-    if usd_items:
-        save_data(data, chat_ids=[chat_id])
-        return True
-    return False
+    store["balance"] = sum(r["amount"] for r in store.get("records", []))
 
-
+    log_info(
+        f"[EDIT-FIN] updated record R{target['id']} "
+        f"amount={amount} note={note}"
+    )
+    save_data(data)
+    return True
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0, source_msg=None):
     with locked_chat(dst_chat_id):
         if not is_finance_mode(dst_chat_id):
@@ -11199,6 +10607,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
 
         store = get_chat_store(dst_chat_id)
         existing = None
+
         for r in store.get("records", []):
             if (
                 r.get("source_msg_id") == dst_msg_id
@@ -11210,42 +10619,19 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
 
         entry_day = finance_day_key_from_message(source_msg) if source_msg is not None else finance_today_key()
         store["current_view_day"] = entry_day
-        usd_items = parse_usd_transactions(text) if text else []
-        usd_changed = False
-        if text is not None:
-            try:
-                sync_usd_records_from_text(
-                    dst_chat_id,
-                    dst_msg_id,
-                    text,
-                    owner,
-                    day_key=(existing.get("day_key") if existing else entry_day) or entry_day,
-                    timestamp=message_timestamp_iso(source_msg),
-                    source_order_msg_id=getattr(source_msg, "message_id", dst_msg_id) if source_msg is not None else dst_msg_id,
-                    forwarded=True,
-                )
-                usd_changed = bool(usd_items)
-            except Exception as e:
-                log_error(f"[FWD USD SYNC ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id}: {e}")
 
-        ars_parsed = parse_ars_component_when_usd_present(text, usd_items) if usd_items else None
-        if not usd_items and text and looks_like_amount(text):
+        if text and looks_like_amount(text):
             try:
-                ars_parsed = split_amount_and_note(text)
+                amount, note = split_amount_and_note(text)
             except Exception as e:
                 log_error(f"[FWD FINANCE PARSE ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}: {e}")
-                ars_parsed = None
+                return False
 
-        ars_changed = False
-        try:
-            if ars_parsed is not None:
-                amount, note = ars_parsed
+            try:
                 if existing:
                     existing["amount"] = amount
                     existing["note"] = note
                     existing["timestamp"] = message_timestamp_iso(source_msg)
-                    existing["raw_text"] = str(text or "")
-                    existing["forwarded_finance"] = True
                     if source_msg is not None:
                         existing["source_order_msg_id"] = getattr(source_msg, "message_id", existing.get("source_order_msg_id", 0))
                     entry_day = existing.get("day_key") or entry_day
@@ -11258,39 +10644,32 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                         "date": getattr(source_msg, "date", int(time.time())) if source_msg is not None else int(time.time()),
                         "forward_source_msg_id": getattr(source_msg, "message_id", int(dst_msg_id)) if source_msg is not None else int(dst_msg_id),
                     })()
-                    add_record_to_chat(dst_chat_id, amount, note, owner, source_msg=shadow_msg, day_key=entry_day)
-                    created = next((r for r in reversed(store.get("records", [])) if int(r.get("source_msg_id") or 0) == int(dst_msg_id)), None)
-                    if created:
-                        created["raw_text"] = str(text or "")
-                        created["forwarded_finance"] = True
-                ars_changed = True
-            elif existing:
-                existing["amount"] = 0
-                existing["note"] = "удалено"
-                existing["raw_text"] = str(text or "")
-                existing["forwarded_finance"] = True
-                entry_day = existing.get("day_key") or entry_day
-                rebuild_month_short_ids(dst_chat_id)
-                rebuild_global_records()
-                store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
-                ars_changed = True
-        except Exception as e:
-            log_error(f"[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} parsed={ars_parsed!r}: {e}")
-            return False
+                    add_record_to_chat(
+                        dst_chat_id,
+                        amount,
+                        note,
+                        owner,
+                        source_msg=shadow_msg,
+                        day_key=entry_day
+                    )
+            except Exception as e:
+                log_error(f"[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} amount={amount} note={note!r}: {e}")
+                return False
 
-        if not ars_changed and not usd_changed:
+        elif existing:
+            existing["amount"] = 0
+            existing["note"] = "удалено"
+            entry_day = existing.get("day_key") or entry_day
+            rebuild_month_short_ids(dst_chat_id)
+            rebuild_global_records()
+            store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
+        else:
             if text_has_any_digit(text):
                 log_error(f"[FWD FINANCE SKIP] amount not recognized: dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}")
             return False
 
     schedule_finalize(dst_chat_id, entry_day)
-    # Кнопка/слеш-режим накладывается отдельно и не блокирует пересылку.
-    try:
-        GENERAL_TASK_POOL.submit(f"fwd-fin-ui:{dst_chat_id}:{dst_msg_id}", apply_forwarded_finance_edit_ui_for_message, dst_chat_id, dst_msg_id)
-    except Exception:
-        pass
     return True
-
 
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel), date DD:MM:YY."""
@@ -12290,7 +11669,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -12618,95 +11997,6 @@ def _opening_balance_before_day(store: dict, day_key: str) -> float:
     return total
 
 
-def remaining_view_mode(chat_id: int) -> str:
-    mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("remaining_view_mode", "ars") or "ars")
-    return mode if mode in {"ars", "usd"} else "ars"
-
-
-def set_remaining_view_mode(chat_id: int, mode: str):
-    get_chat_store(int(chat_id)).setdefault("settings", {})["remaining_view_mode"] = "usd" if mode == "usd" else "ars"
-    save_data(data, chat_ids=[int(chat_id)])
-
-
-def _shift_month_key(month_key: str, delta: int) -> str:
-    try:
-        dt = datetime.strptime(str(month_key)[:7] + "-01", "%Y-%m-%d")
-    except Exception:
-        dt = now_local().replace(day=1)
-    if delta > 0:
-        for _ in range(delta):
-            dt = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
-    elif delta < 0:
-        for _ in range(-delta):
-            dt = (dt.replace(day=1) - timedelta(days=1)).replace(day=1)
-    return dt.strftime("%Y-%m")
-
-
-def build_usd_month_text(chat_id: int, month_key: str) -> str:
-    recs = usd_records_for_month(chat_id, month_key)
-    opening = usd_month_opening_balance(chat_id, month_key)
-    income = sum(float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) >= 0)
-    expense = -sum(float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) < 0)
-    closing = opening + income - expense
-    try:
-        y, m = [int(x) for x in month_key.split("-")[:2]]
-        title = f"{russian_month_name(m)} {y}"
-    except Exception:
-        title = month_key
-    lines = [
-        "💵 Долларовые операции",
-        f"📆 {title}",
-        "",
-        f"💰 Баланс на начало: {fmt_usd_ledger(opening)}",
-        "",
-    ]
-    if not recs:
-        lines.append("За этот месяц долларовых операций нет.")
-    else:
-        for rec in recs:
-            sid = rec.get("short_id") or f"U{rec.get('id', '')}"
-            day = fmt_date_ddmmyy(str(rec.get("day_key") or today_key())[:10])
-            note = html.escape(str(rec.get("note") or "").strip())
-            lines.append(f"{sid} {day} {fmt_usd_ledger(float(rec.get('amount', 0) or 0))} {note}".rstrip())
-    lines.extend([
-        "",
-        f"📉 Расход за месяц: {fmt_usd_ledger(-expense)}",
-        f"📈 Приход за месяц: {fmt_usd_ledger(income)}",
-        f"🏦 Остаток на конец месяца: {fmt_usd_ledger(closing)}",
-        f"💵 Общий USD-баланс: {fmt_usd_ledger(float(get_chat_store(chat_id).get('usd_balance', 0) or 0))}",
-    ])
-    return wm_common("\n".join(lines), 9, html_mode=True)
-
-
-def usd_record_button_label(rec: dict) -> str:
-    note = re.sub(r"\s+", " ", str(rec.get("note") or "").strip())
-    if len(note) > 30:
-        note = note[:29] + "…"
-    label = f"{rec.get('short_id') or 'U'+str(rec.get('id',''))} {fmt_usd_ledger(float(rec.get('amount',0) or 0))}"
-    if note:
-        label += f" {note}"
-    if FIN_BUTTON_RIGHT_PAD:
-        label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
-    return label
-
-
-def build_usd_month_keyboard(chat_id: int, month_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    if effective_main_financial_value_buttons_enabled(chat_id):
-        for rec in usd_records_for_month(chat_id, month_key)[:84]:
-            kb.row(IB(usd_record_button_label(rec), callback_data=f"usd_rec:{int(rec.get('id', 0) or 0)}:{month_key}"))
-    prev_m = _shift_month_key(month_key, -1)
-    next_m = _shift_month_key(month_key, 1)
-    row = [IB("⬅️ Месяц", callback_data=f"remaining_usd_month:{prev_m}")]
-    if month_key != now_local().strftime("%Y-%m"):
-        row.append(IB("📅 Текущий", callback_data=f"remaining_usd_month:{now_local().strftime('%Y-%m')}"))
-    row.append(IB("Месяц ➡️", callback_data=f"remaining_usd_month:{next_m}"))
-    kb.row(*row)
-    kb.row(IB("💰 ARS операции", callback_data=f"remaining_usd_toggle:{today_key()}"))
-    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day') or today_key()}:back_main"), IB("❌ Закрыть", callback_data="aux_close"))
-    return kb
-
-
 def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = None) -> str:
     store = get_chat_store(chat_id)
     settings = _gomonk_settings(chat_id)
@@ -12767,8 +12057,6 @@ def build_remaining_keyboard(chat_id: int, day_key: str):
             except Exception:
                 continue
             kb.row(IB(financial_record_button_label(rec, chat_id), callback_data=f"d:{day_key}:value_rec_{rid}"))
-    if active_bot_behavior_profile() == "v92_current":
-        kb.row(IB("💵 Долларовые операции", callback_data=f"remaining_usd_toggle:{day_key}"))
     nav = [IB("⬅️ День", callback_data=f"remaining_open:{prev_key}")]
     if day_key != today_key():
         nav.append(IB("📅 Сегодня", callback_data=f"remaining_open:{today_key()}"))
@@ -12779,13 +12067,8 @@ def build_remaining_keyboard(chat_id: int, day_key: str):
     return kb
 
 def open_remaining_window(chat_id: int, day_key: str, message_id: int | None = None):
-    if active_bot_behavior_profile() == "v92_current" and remaining_view_mode(chat_id) == "usd":
-        month_key = str(get_chat_store(chat_id).get("remaining_usd_month") or str(day_key)[:7] or now_local().strftime("%Y-%m"))[:7]
-        text = build_usd_month_text(chat_id, month_key)
-        kb = build_usd_month_keyboard(chat_id, month_key)
-    else:
-        text = build_remaining_text(chat_id, day_key)
-        kb = build_remaining_keyboard(chat_id, day_key)
+    text = build_remaining_text(chat_id, day_key)
+    kb = build_remaining_keyboard(chat_id, day_key)
     if message_id:
         fast_ui_edit_message_text(chat_id, message_id, text, reply_markup=kb, parse_mode="HTML", purpose="remaining_window")
     else:
@@ -12885,8 +12168,6 @@ def render_day_window(chat_id: int, day_key: str):
     bal_chat = store.get("balance", 0)
 
     footer = [""]
-    opening_balance = _opening_balance_before_day(store, day_key)
-    footer.append(f"💰 Баланс: {format_chat_amount(chat_id, opening_balance, mixed_space=True)}")
     if recs_sorted:
         expense_value = -total_expense if total_expense else 0.0
         income_value = total_income if total_income else 0.0
@@ -13136,52 +12417,6 @@ def start_record_edit_prompt(chat_id: int, day_key: str, rid: int) -> bool:
         return True
     except Exception as e:
         log_error(f"start_record_edit_prompt({chat_id},{day_key},{rid}): {e}")
-        return False
-
-
-def start_usd_record_edit_prompt(chat_id: int, rid: int, month_key: str | None = None) -> bool:
-    try:
-        chat_id = int(chat_id)
-        rid = int(rid)
-        store = get_chat_store(chat_id)
-        rec = next((r for r in store.get("usd_records", []) if int(r.get("id", 0) or 0) == rid), None)
-        if not rec:
-            send_and_auto_delete(chat_id, "❌ USD-запись не найдена.", 10)
-            return False
-        month_key = str(month_key or rec.get("day_key") or today_key())[:7]
-        text = wm_common(
-            f"✏️ Редактирование USD-записи {rec.get('short_id') or 'U'+str(rid)}\n\n"
-            f"Текущие данные:\n{fmt_usd_ledger(float(rec.get('amount',0) or 0))} {rec.get('note','')}\n\n"
-            "Отправьте новое значение, например:\n-500 usd обмен\n+900 usd от ст\n700 проклейка обоев",
-            10,
-        )
-        kb = types.InlineKeyboardMarkup(row_width=2)
-        insert_value = compose_usd_edit_input_value(rec.get("amount", 0), rec.get("note", ""))
-        kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + insert_value)[:256]))
-        kb.row(IB("🗑 Удалить USD", callback_data=f"usd_del:{rid}:{month_key}"), IB("❌ Отмена", callback_data="aux_close"))
-        sent = bot.send_message(chat_id, text, reply_markup=kb)
-        store["usd_edit_wait"] = {
-            "rid": rid,
-            "month_key": month_key,
-            "prompt_msg_id": sent.message_id,
-            "expires_at": time.time() + 40,
-        }
-        save_data(data, chat_ids=[chat_id])
-        def _expire():
-            st = get_chat_store(chat_id)
-            wait = st.get("usd_edit_wait") or {}
-            if int(wait.get("prompt_msg_id") or 0) != int(sent.message_id):
-                return
-            st["usd_edit_wait"] = None
-            save_data(data, chat_ids=[chat_id])
-            try:
-                bot.delete_message(chat_id, sent.message_id)
-            except Exception:
-                pass
-        DELAYED_SCHEDULER.schedule(f"usd-edit-wait:{chat_id}", 40.0, _expire)
-        return True
-    except Exception as e:
-        log_error(f"start_usd_record_edit_prompt({chat_id},{rid}): {e}")
         return False
 
 
@@ -13477,33 +12712,8 @@ def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: st
     return rows
 
 
-def exact_range_opening_balance(store: dict, start_key: str, start_rid: int) -> float:
-    """Остаток непосредственно перед первой записью выбранного точного периода."""
-    total = 0.0
-    start_key = str(start_key)[:10]
-    try:
-        start_rid = int(start_rid or 0)
-    except Exception:
-        start_rid = 0
-    daily = store.get("daily_records", {}) or {}
-    for day_key in sorted(daily.keys()):
-        if day_key < start_key:
-            for rec in sorted_records_for_day(store, day_key):
-                total += float(rec.get("amount", 0) or 0)
-            continue
-        if day_key > start_key:
-            break
-        if day_key == start_key:
-            for rec in sorted_records_for_day(store, day_key):
-                if start_rid and _record_int_id(rec) == start_rid:
-                    break
-                total += float(rec.get("amount", 0) or 0)
-            break
-    return total
-
-
 def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
-    """Excel стат: Дата | Описание | Приход | статьи расходов, с остатком на начало."""
+    """Excel стат: Дата | Описание | Приход | статьи расходов."""
     store = get_chat_store(target_chat_id)
     records = exact_record_range(store, start_key, start_rid, end_key, end_rid)
     cats_map = calc_categories_for_record_range(store, start_key, start_rid, end_key, end_rid)
@@ -13511,7 +12721,6 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
     clean_categories = [_clean_category_display_name(x) for x in categories]
     headers = ["Дата", "Описание", "Приход"] + clean_categories
     rows = [headers]
-    opening_balance = exact_range_opening_balance(store, start_key, start_rid)
     income_total = 0.0
     expense_total = 0.0
     cat_totals = {cat: 0.0 for cat in categories}
@@ -13537,11 +12746,11 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
                 row[3 + categories.index(category)] = int(round(value))
         rows.append(row)
     rows.append([])
-    rows.append(["", "Остаток на начало", int(round(opening_balance))] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in categories])
+    rows.append(["", "Сумма", int(round(income_total))] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in categories])
     rows.append([])
     rows.append(["", "Расход", int(round(expense_total))] + [""] * len(categories))
     rows.append(["", "Приход", int(round(income_total))] + [""] * len(categories))
-    rows.append(["", "Остаток", int(round(opening_balance + income_total - expense_total))] + [""] * len(categories))
+    rows.append(["", "Остаток", int(round(income_total - expense_total))] + [""] * len(categories))
     return rows
 
 
@@ -15568,8 +14777,6 @@ def build_info_keyboard(chat_id: int):
                 )
             else:
                 kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
-        if active_bot_behavior_profile() == "v92_current":
-            kb.row(IB(forwarded_fin_edit_mode_label(chat_id), callback_data="forwarded_fin_edit_mode_toggle"))
         if layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
         # Кнопка выбора версии присутствует при любом режиме, включая полный откат v81/v82.
@@ -15584,7 +14791,7 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
-        if active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current"}:
+        if active_bot_behavior_profile() in {"v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
@@ -15605,8 +14812,6 @@ def build_info_keyboard(chat_id: int):
                 )
             else:
                 kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
-        if active_bot_behavior_profile() == "v92_current":
-            kb.row(IB(forwarded_fin_edit_mode_label(chat_id), callback_data="forwarded_fin_edit_mode_toggle"))
         elif layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
     kb.row(
@@ -17747,50 +16952,6 @@ def on_callback(call):
             save_data(data, chat_ids=[chat_id])
             open_remaining_window(chat_id, day_key, call.message.message_id)
             return
-        if data_str.startswith("remaining_usd_toggle:"):
-            if active_bot_behavior_profile() != "v92_current":
-                return
-            day_key = data_str.split(":", 1)[1] or today_key()
-            new_mode = "ars" if remaining_view_mode(chat_id) == "usd" else "usd"
-            set_remaining_view_mode(chat_id, new_mode)
-            if new_mode == "usd":
-                get_chat_store(chat_id)["remaining_usd_month"] = str(day_key)[:7]
-                save_data(data, chat_ids=[chat_id])
-            open_remaining_window(chat_id, day_key, call.message.message_id)
-            return
-        if data_str.startswith("remaining_usd_month:"):
-            if active_bot_behavior_profile() != "v92_current":
-                return
-            month_key = data_str.split(":", 1)[1] or now_local().strftime("%Y-%m")
-            set_remaining_view_mode(chat_id, "usd")
-            get_chat_store(chat_id)["remaining_usd_month"] = str(month_key)[:7]
-            save_data(data, chat_ids=[chat_id])
-            open_remaining_window(chat_id, get_chat_store(chat_id).get("current_view_day") or today_key(), call.message.message_id)
-            return
-        if data_str.startswith("usd_rec:"):
-            if active_bot_behavior_profile() != "v92_current":
-                return
-            try:
-                _p, rid_s, month_key = data_str.split(":", 2)
-                rid = int(rid_s)
-            except Exception:
-                return
-            start_usd_record_edit_prompt(chat_id, rid, month_key=month_key)
-            return
-        if data_str.startswith("usd_del:"):
-            try:
-                _p, rid_s, month_key = data_str.split(":", 2)
-                rid = int(rid_s)
-            except Exception:
-                return
-            store = get_chat_store(chat_id)
-            store["usd_records"] = [r for r in store.get("usd_records", []) if int(r.get("id", 0) or 0) != rid]
-            _recalc_usd_store(store)
-            store["usd_edit_wait"] = None
-            save_data(data, chat_ids=[chat_id])
-            finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="usd_delete", delay=0.05)
-            open_remaining_window(chat_id, store.get("current_view_day") or today_key(), call.message.message_id)
-            return
         if data_str == "main_articles_toggle":
             if not version_mode_feature("article_buttons"):
                 return
@@ -17845,31 +17006,6 @@ def on_callback(call):
                 return
             new_state = toggle_forward_menu_new_style()
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nМеню пересылки: {'по-новому' if new_state else 'как обычно'}", reply_markup=build_info_keyboard(chat_id))
-            return
-        if data_str == "forwarded_fin_edit_mode_toggle":
-            if active_bot_behavior_profile() != "v92_current":
-                return
-            new_mode = cycle_forwarded_fin_edit_mode(chat_id)
-            labels = {"normal": "обычно", "button": "кнопка", "slash": "слеш"}
-            try:
-                bot.answer_callback_query(call.id, f"Пересланные финансы: {labels.get(new_mode, new_mode)}")
-            except Exception:
-                pass
-            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
-            GENERAL_TASK_POOL.submit(f"fwd-fin-retrofit:{chat_id}", apply_forwarded_finance_edit_mode_to_existing, chat_id)
-            return
-        if data_str.startswith("fwd_fin_edit:"):
-            try:
-                _pfx, kind, rid_s = data_str.split(":", 2)
-                rid = int(rid_s)
-            except Exception:
-                return
-            if kind == "usd":
-                start_usd_record_edit_prompt(chat_id, rid)
-            else:
-                rec = next((r for r in get_chat_store(chat_id).get("records", []) if int(r.get("id", 0) or 0) == rid), None)
-                if rec:
-                    start_record_edit_prompt(chat_id, rec.get("day_key") or today_key(), rid)
             return
         if data_str == "buttons_current_toggle":
             if not is_owner_chat(chat_id):
@@ -20892,10 +20028,6 @@ def reset_chat_data(chat_id: int):
             store["records"] = []
             store["daily_records"] = {}
             store["next_id"] = 1
-            store["usd_balance"] = 0
-            store["usd_records"] = []
-            store["usd_daily_records"] = {}
-            store["usd_next_id"] = 1
             store["active_windows"] = {}
             clear_edit_wait_state(chat_id, delete_prompt=True)
             store["edit_target"] = None
@@ -21661,10 +20793,6 @@ def main():
             if str(gs.get("bot_behavior_profile") or "") == "v90_current":
                 gs["bot_behavior_profile"] = "v91_current"
             gs["version_mode_v91_migrated"] = True
-        if not bool(gs.get("version_mode_v92_migrated", False)):
-            if str(gs.get("bot_behavior_profile") or "") == "v91_current":
-                gs["bot_behavior_profile"] = "v92_current"
-            gs["version_mode_v92_migrated"] = True
         # Одноразово очищаем сохранённые имена статей от @username бота.
         if not bool(gs.get("category_names_clean_v88_applied", False)):
             for _cid, _store in (data.get("chats", {}) or {}).items():
@@ -21699,8 +20827,6 @@ def main():
             settings.setdefault("main_financial_value_buttons_enabled", False)
             settings.setdefault("currency_mode", "ars_usd" if settings.get("usd_display_enabled", False) else "ars")
             settings.setdefault("remaining_show_ost_label", True)
-            settings.setdefault("remaining_view_mode", "ars")
-            settings.setdefault("forwarded_fin_edit_mode", "normal")
             settings.setdefault("total_secret_mode", False)
             store.setdefault("secret_messages", [])
             _ensure_secret_media_numbers(int(cid))
@@ -21715,7 +20841,7 @@ def main():
     else:
         # Аварийный режим: не создаём/не сохраняем новую пустую SQLite и не запускаем startup-backup.
         data.setdefault("forward_rules", {})
-        log_error("v92 emergency mode: local writes and all automatic backups remain blocked")
+        log_error("v91 emergency mode: local writes and all automatic backups remain blocked")
     # v90: запуск/деплой не планирует бэкап; baseline delta создаётся без загрузки в MEGA.
     # Бэкап ставится только после реального изменения данных.
     try:
@@ -21746,7 +20872,7 @@ def main():
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
-                    f"Бэкап v92: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
+                    f"Бэкап v91: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
