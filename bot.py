@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v92_usd_finance_forward_edit"
+VERSION = "bot_v93_forward_message_controls_article_periods"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -752,6 +752,29 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v93_current": {
+        "title": "v93 Перес в сообщениях / Excel статьи",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "native_usd_finance": True,
+        "forwarded_finance_edit": True,
+        "forwarded_finance_message_controls": True,
+        "forwarded_finance_slash_in_message": True,
+        "forwarded_finance_controls_in_main": False,
+        "period_xlsxstat": True,
+        "description": "v92 + режим Перес только на самих пересланных сообщениях, без элементов в Ф91; Excel статьи для стандартных периодов Ф47; корректный отдельный профиль переключения версии.",
+    },
     "v92_current": {
         "title": "v92 USD финансы / Перес",
         "ui_edit_interval": 0.03,
@@ -767,7 +790,13 @@ BOT_BEHAVIOR_PROFILES = {
         "remaining_window": True,
         "usd_categories": True,
         "daily_usd": True,
-        "description": "v91 + отдельный нативный USD-учёт, месячное USD-окно Ф91, баланс на начало и режим редактирования пересланных финансов.",
+        "native_usd_finance": True,
+        "forwarded_finance_edit": True,
+        "forwarded_finance_message_controls": True,
+        "forwarded_finance_slash_in_message": False,
+        "forwarded_finance_controls_in_main": True,
+        "period_xlsxstat": False,
+        "description": "v91 + отдельный нативный USD-учёт, месячное USD-окно Ф91, баланс на начало и прежний режим редактирования пересланных финансов.",
     },
     "v91_current": {
         "title": "v91 Статьи / Excel стат",
@@ -940,7 +969,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v92_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v93_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -1055,6 +1084,15 @@ def set_bot_behavior_profile(profile_key: str) -> str:
         schedule_config_backup_for_chats(delay=1.0)
     except Exception:
         pass
+    # v93: при переключении версии обновляем элементы управления на самих
+    # пересланных сообщениях. Это снимает кнопки/слеш-команды при откате на
+    # старую версию и возвращает их при повторном выборе v93.
+    try:
+        if "schedule_forwarded_finance_message_controls" in globals():
+            for _cid in collect_finance_chat_ids():
+                schedule_forwarded_finance_message_controls(int(_cid))
+    except Exception as e:
+        log_error(f"set_bot_behavior_profile forwarded controls refresh: {e}")
     return profile_key
 
 
@@ -1152,7 +1190,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
-    if active_bot_behavior_profile() in {"v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
+    if active_bot_behavior_profile() in {"v93_current", "v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
         label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
     return label
 
@@ -2239,6 +2277,11 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_pick_today_end:*': 'Ф159',
     'exp_send:*:xlsxstat:*': 'Ф160',
     'forwarded_finance_edit_toggle': 'Ф161',
+    'd:*:xlsxstat_day': 'Ф164',
+    'd:*:xlsxstat_week': 'Ф165',
+    'd:*:xlsxstat_month': 'Ф166',
+    'd:*:xlsxstat_wedthu': 'Ф167',
+    'd:*:xlsxstat_all': 'Ф168',
     'd:*:usd_view_toggle': 'Ф162',
     'fwd_edit:*': 'Ф163',
 }
@@ -3767,7 +3810,9 @@ def build_info_text(chat_id: int) -> str:
         if layout in {"v86", "v87"}:
             text += f"\nВалюта финансовых окон: {currency_mode(chat_id).upper().replace('_', '-')}"
             text += f"\n/ost — слово «ост:»: {'ВКЛ' if remaining_ost_label_enabled(chat_id) else 'ВЫКЛ'}"
-        text += f"\nРедактирование пересланных финансов: {forwarded_finance_edit_mode(chat_id)}"
+        
+        if version_mode_feature("forwarded_finance_edit"):
+            text += f"\nРедактирование пересланных финансов: {forwarded_finance_edit_mode(chat_id)}"
     elif layout == "v83":
         text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
@@ -10455,7 +10500,7 @@ def cmd_edit_forwarded_finance_record(msg):
         bot.delete_message(chat_id, msg.message_id)
     except Exception:
         pass
-    if forwarded_finance_edit_mode(chat_id) != "slash":
+    if effective_forwarded_finance_edit_mode(chat_id) != "slash":
         send_and_auto_delete(chat_id, "💰Перес сейчас не в режиме «слеш».", 8)
         return
     rec = next((r for r in get_chat_store(chat_id).get("records", []) if int(r.get("id", 0) or 0) == rid), None)
@@ -10884,6 +10929,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                     existing["usd_amount"] = usd_amount
                     existing["note"] = note
                     existing["forwarded_finance"] = True
+                    existing["forwarded_original_text"] = str(text or "")
                     existing["timestamp"] = message_timestamp_iso(source_msg)
                     if source_msg is not None:
                         existing["source_order_msg_id"] = getattr(source_msg, "message_id", existing.get("source_order_msg_id", 0))
@@ -10905,7 +10951,10 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                         source_msg=shadow_msg,
                         day_key=entry_day,
                         usd_amount=usd_amount,
-                        extra_fields={"forwarded_finance": True}
+                        extra_fields={
+                            "forwarded_finance": True,
+                            "forwarded_original_text": str(text or ""),
+                        }
                     )
             except Exception as e:
                 log_error(f"[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} amount={amount} note={note!r}: {e}")
@@ -11935,7 +11984,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v93_current", "v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -12049,6 +12098,13 @@ def forwarded_finance_edit_mode(chat_id: int) -> str:
         return "normal"
 
 
+def effective_forwarded_finance_edit_mode(chat_id: int) -> str:
+    """Режим Перес действует только в версиях, где функция включена профилем."""
+    if not version_mode_feature("forwarded_finance_edit"):
+        return "normal"
+    return forwarded_finance_edit_mode(chat_id)
+
+
 def cycle_forwarded_finance_edit_mode(chat_id: int) -> str:
     order = ["normal", "button", "slash"]
     current = forwarded_finance_edit_mode(chat_id)
@@ -12098,10 +12154,62 @@ def forwarded_finance_message_markup(rid: int):
     return kb
 
 
-def apply_forwarded_finance_message_control(chat_id: int, rec: dict) -> bool:
-    """Ставит/убирает кнопку прямо на пересланном финансовом сообщении.
+def _forwarded_finance_original_text(rec: dict) -> str:
+    """Исходный текст/подпись пересланного сообщения, сохранённый начиная с v93."""
+    for key in ("forwarded_original_text", "forwarded_text", "raw_text"):
+        value = str((rec or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
-    Выполняется вне основного callback-потока, чтобы переключатель INFO не зависал.
+
+def _delete_forwarded_slash_helper(chat_id: int, rec: dict):
+    try:
+        helper_id = int((rec or {}).get("forwarded_slash_helper_msg_id") or 0)
+    except Exception:
+        helper_id = 0
+    if helper_id:
+        try:
+            bot.delete_message(int(chat_id), helper_id)
+        except Exception:
+            pass
+        rec.pop("forwarded_slash_helper_msg_id", None)
+
+
+def _set_forwarded_slash_helper(chat_id: int, msg_id: int, rec: dict, rid: int):
+    """Fallback для старых записей v92, где исходный текст не был сохранён.
+
+    Не перезаписываем старое пересланное сообщение приблизительно восстановленным
+    текстом. Вместо этого создаём короткий reply непосредственно к нему.
+    """
+    try:
+        current = int((rec or {}).get("forwarded_slash_helper_msg_id") or 0)
+    except Exception:
+        current = 0
+    if current:
+        return
+    try:
+        sent = _tg_call_retry(
+            bot.send_message,
+            int(chat_id),
+            f"/izmenit_R{int(rid)}",
+            reply_to_message_id=int(msg_id),
+            purpose="forwarded_finance_slash_helper",
+        )
+        rec["forwarded_slash_helper_msg_id"] = int(sent.message_id)
+    except Exception as e:
+        log_error(f"forwarded slash helper {get_chat_display_name(chat_id)}:{msg_id}: {e}")
+
+
+def apply_forwarded_finance_message_control(chat_id: int, rec: dict) -> bool:
+    """v93: управление Перес находится на самом пересланном сообщении, не в Ф91.
+
+    • кнопка — inline «✏️ Изменить» на конкретном copied-message;
+    • слеш — /izmenit_R… дописывается в текст/подпись конкретного copied-message;
+    • обычно — оба элемента удаляются.
+
+    Для старых записей без сохранённого исходного текста слеш создаётся reply к
+    сообщению, чтобы не портить его содержимое.
     """
     if not rec or not is_forwarded_finance_record(chat_id, rec):
         return False
@@ -12112,23 +12220,80 @@ def apply_forwarded_finance_message_control(chat_id: int, rec: dict) -> bool:
         return False
     if not msg_id or not rid:
         return False
-    markup = forwarded_finance_message_markup(rid) if forwarded_finance_edit_mode(chat_id) == "button" else None
+
+    mode = effective_forwarded_finance_edit_mode(chat_id)
+    markup = forwarded_finance_message_markup(rid) if mode == "button" else None
+    original = _forwarded_finance_original_text(rec)
+    slash_in_message = bool(version_mode_feature("forwarded_finance_slash_in_message"))
+
+    # Сначала чистим legacy helper, если он больше не нужен.
+    if mode != "slash" or original:
+        _delete_forwarded_slash_helper(chat_id, rec)
+
+    # v93: если знаем исходный текст, меняем сам copied-message. Если ранее v93
+    # уже добавляла слеш, при откате на v92/v91 здесь же восстанавливаем original.
+    slash_was_applied = bool(rec.get("forwarded_slash_applied", False))
+    if original and (slash_in_message or slash_was_applied):
+        desired = original.rstrip()
+        should_append_slash = bool(slash_in_message and mode == "slash")
+        if should_append_slash:
+            desired += f"\n/izmenit_R{rid}"
+        edited = False
+        try:
+            _tg_call_retry(
+                bot.edit_message_text,
+                desired,
+                chat_id=int(chat_id),
+                message_id=msg_id,
+                reply_markup=markup,
+                attempts=2,
+                purpose="forwarded_finance_message_text_control",
+            )
+            edited = True
+        except Exception as e_text:
+            err = str(e_text).casefold()
+            if "message is not modified" in err:
+                edited = True
+            else:
+                try:
+                    _tg_call_retry(
+                        bot.edit_message_caption,
+                        chat_id=int(chat_id),
+                        message_id=msg_id,
+                        caption=desired,
+                        reply_markup=markup,
+                        attempts=2,
+                        purpose="forwarded_finance_message_caption_control",
+                    )
+                    edited = True
+                except Exception as e_caption:
+                    err2 = str(e_caption).casefold()
+                    if "message is not modified" in err2:
+                        edited = True
+                    elif "message to edit not found" not in err2:
+                        log_error(f"forwarded finance message control {get_chat_display_name(chat_id)}:{msg_id}: {e_caption}")
+        if edited:
+            rec["forwarded_slash_applied"] = bool(should_append_slash)
+            return True
+
+    # Старые записи без original: button/normal всё равно можно менять через markup.
     try:
         _tg_call_retry(
             bot.edit_message_reply_markup,
-            chat_id=chat_id,
+            chat_id=int(chat_id),
             message_id=msg_id,
             reply_markup=markup,
             attempts=2,
             purpose="forwarded_finance_edit_control",
         )
-        return True
     except Exception as e:
         err = str(e).casefold()
         if "message is not modified" not in err and "message to edit not found" not in err:
             log_error(f"forwarded finance control {get_chat_display_name(chat_id)}:{msg_id}: {e}")
-        return False
 
+    if slash_in_message and mode == "slash" and not original:
+        _set_forwarded_slash_helper(chat_id, msg_id, rec, rid)
+    return True
 
 def refresh_forwarded_finance_message_controls(chat_id: int):
     """Обновляет и старые пересланные финансовые сообщения текущего чата."""
@@ -12138,6 +12303,7 @@ def refresh_forwarded_finance_message_controls(chat_id: int):
         for rec in sorted(recs, key=record_sort_key):
             apply_forwarded_finance_message_control(int(chat_id), rec)
             time.sleep(max(0.01, effective_fast_telegram_gap()))
+        save_data(data, chat_ids=[int(chat_id)])
     except Exception as e:
         log_error(f"refresh_forwarded_finance_message_controls({chat_id}): {e}")
 
@@ -12153,6 +12319,7 @@ def sync_one_forwarded_finance_message_control(chat_id: int, msg_id: int):
         rec = find_record_by_message_id(int(chat_id), int(msg_id))
         if rec:
             apply_forwarded_finance_message_control(int(chat_id), rec)
+            save_data(data, chat_ids=[int(chat_id)])
     except Exception as e:
         log_error(f"sync_one_forwarded_finance_message_control({chat_id},{msg_id}): {e}")
 
@@ -12577,7 +12744,7 @@ def render_usd_month_window(chat_id: int, day_key: str):
     total_expense = sum(abs(native_usd_amount(r)) for r in recs_sorted if native_usd_amount(r) < 0)
     closing = opening + total_income - total_expense
     overall = calc_usd_total_balance(store)
-    edit_mode = forwarded_finance_edit_mode(chat_id)
+    edit_mode = effective_forwarded_finance_edit_mode(chat_id)
 
     header = [f"💵 USD операции — {month_label}", ""]
     lines = []
@@ -12586,7 +12753,7 @@ def render_usd_month_window(chat_id: int, day_key: str):
         sid = r.get("short_id", f"R{r.get('id', '')}")
         note = html.escape(str(r.get("note", "") or ""))
         suffix = ""
-        if edit_mode == "slash" and is_forwarded_finance_record(chat_id, r):
+        if version_mode_feature("forwarded_finance_controls_in_main") and edit_mode == "slash" and is_forwarded_finance_record(chat_id, r):
             suffix = f" /izmenit_R{int(r.get('id', 0) or 0)}"
         lines.append(f"{fmt_date_ddmmyy(_record_day_key(r))} {sid} {format_native_usd(usd)} {note}{suffix}".rstrip())
 
@@ -12618,7 +12785,7 @@ def render_usd_month_window(chat_id: int, day_key: str):
 
 
 def render_day_window(chat_id: int, day_key: str):
-    if finance_view_mode(chat_id) == "usd":
+    if version_mode_feature("native_usd_finance") and finance_view_mode(chat_id) == "usd":
         return render_usd_month_window(chat_id, day_key)
 
     store = get_chat_store(chat_id)
@@ -12643,7 +12810,7 @@ def render_day_window(chat_id: int, day_key: str):
     rate_info = usd_rate_cached(force=False) if mode != "ars" else None
     total_income = 0.0
     total_expense = 0.0
-    edit_mode = forwarded_finance_edit_mode(chat_id)
+    edit_mode = effective_forwarded_finance_edit_mode(chat_id)
 
     recs_sorted = sorted(recs, key=lambda x: x.get("timestamp"))
     all_record_lines = []
@@ -12658,7 +12825,7 @@ def render_day_window(chat_id: int, day_key: str):
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
         slash = ""
-        if edit_mode == "slash" and is_forwarded_finance_record(chat_id, r):
+        if version_mode_feature("forwarded_finance_controls_in_main") and edit_mode == "slash" and is_forwarded_finance_record(chat_id, r):
             slash = f" /izmenit_R{int(r.get('id', 0) or 0)}"
         usd_tail = f" [{format_native_usd(native_usd_amount(r))}]" if native_usd_amount(r) != 0 else ""
         all_record_lines.append(f"{sid} {format_chat_amount(chat_id, amt, mixed_space=False)}{usd_tail} {note}{slash}".rstrip())
@@ -12862,12 +13029,15 @@ def build_main_keyboard(day_key: str, chat_id=None):
             article_buttons.append(IB(f"✏️ {name}", callback_data=cat_callback(f"cat_main_edit:{slug}:{day_key}")))
         add_buttons_in_rows(kb, article_buttons[:84], 2)
 
-    # v92: отдельный нативный USD-режим Ф91. Меню остаётся тем же, меняется только финансовое представление.
-    if chat_id is not None:
+    # v92+: отдельный нативный USD-режим Ф91. В старых профилях кнопки нет.
+    if chat_id is not None and version_mode_feature("native_usd_finance"):
         kb.row(IB(finance_view_toggle_label(int(chat_id)), callback_data=f"d:{day_key}:usd_view_toggle"))
 
-    # Режим «💰Перес: кнопка»: отдельные кнопки изменения только для пересланных финансов.
-    if chat_id is not None and forwarded_finance_edit_mode(int(chat_id)) == "button" and not effective_main_financial_value_buttons_enabled(int(chat_id)):
+    # Историческое поведение v92: кнопки Перес также появлялись в Ф91.
+    # В v93 управление находится только на самих пересланных сообщениях.
+    if (chat_id is not None and version_mode_feature("forwarded_finance_controls_in_main")
+            and forwarded_finance_edit_mode(int(chat_id)) == "button"
+            and not effective_main_financial_value_buttons_enabled(int(chat_id))):
         for rec in forwarded_finance_records_for_scope(int(chat_id), day_key)[:84]:
             try:
                 rid = int(rec.get("id"))
@@ -13089,7 +13259,7 @@ def _backup_toggle_label(chat_id: int, target: str, label: str) -> str:
 
 
 def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | None = None, target_chat_id: int | None = None):
-    """Ряды: слева период, справа CSV и Excel."""
+    """Ф47/v93: период + CSV + Excel + Excel статьи по тем же датам."""
     periods = [
         ("📅 День", "day"),
         ("🗓 Неделя", "week"),
@@ -13101,16 +13271,22 @@ def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | 
         if prefix == "fv":
             csv_cb = f"fv:{target_chat_id}:{day_key}:csv_{mode}:{owner_day_key}"
             xlsx_cb = f"fv:{target_chat_id}:{day_key}:xlsx_{mode}:{owner_day_key}"
+            xlsxstat_cb = f"fv:{target_chat_id}:{day_key}:xlsxstat_{mode}:{owner_day_key}"
         else:
             csv_action = "csv_all_real" if mode == "all" else f"csv_{mode}"
             xlsx_action = "xlsx_all" if mode == "all" else f"xlsx_{mode}"
+            xlsxstat_action = "xlsxstat_all" if mode == "all" else f"xlsxstat_{mode}"
             csv_cb = f"d:{day_key}:{csv_action}"
             xlsx_cb = f"d:{day_key}:{xlsx_action}"
-        kb.row(
+            xlsxstat_cb = f"d:{day_key}:{xlsxstat_action}"
+        buttons = [
             IB(label, callback_data="none"),
             IB("CSV", callback_data=csv_cb),
             IB("Excel", callback_data=xlsx_cb),
-        )
+        ]
+        if version_mode_feature("period_xlsxstat"):
+            buttons.append(IB("Excel статьи", callback_data=xlsxstat_cb))
+        kb.row(*buttons)
 
 
 
@@ -14434,17 +14610,47 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     return rows, label
 
 
+def period_export_bounds(chat_id: int, mode: str, day_key: str) -> tuple[str, str]:
+    """Те же календарные границы, что используют CSV/Excel стандартных периодов."""
+    store = get_chat_store(int(chat_id))
+    mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "").replace("xlsxstat_", "")
+    if mode == "all_real":
+        mode = "all"
+    try:
+        base = datetime.strptime(str(day_key)[:10], "%Y-%m-%d")
+    except Exception:
+        base = now_local()
+    if mode == "day":
+        dk = base.strftime("%Y-%m-%d")
+        return dk, dk
+    if mode == "week":
+        return (base - timedelta(days=6)).strftime("%Y-%m-%d"), base.strftime("%Y-%m-%d")
+    if mode == "month":
+        return base.replace(day=1).strftime("%Y-%m-%d"), base.strftime("%Y-%m-%d")
+    if mode == "wedthu":
+        while base.weekday() != 2:
+            base -= timedelta(days=1)
+        return base.strftime("%Y-%m-%d"), (base + timedelta(days=1)).strftime("%Y-%m-%d")
+    keys = sorted((store.get("daily_records", {}) or {}).keys())
+    if keys:
+        return str(keys[0])[:10], str(keys[-1])[:10]
+    dk = base.strftime("%Y-%m-%d")
+    return dk, dk
+
+
 def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv"):
     """Отправка CSV или Excel по выбранному периоду. Работает для обычного чата и для меню владельца по чужому чату."""
     trace = ProcessTrace(recipient_chat_id, f"Экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
     try:
         trace.step("читает режим периода")
         file_type = str(file_type or "csv").lower().lstrip(".")
-        mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
+        if file_type not in {"csv", "xlsx", "xlsxstat"}:
+            file_type = "csv"
+        mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "").replace("xlsxstat_", "")
         if mode == "all_real":
             mode = "all"
 
-        if mode == "all":
+        if mode == "all" and file_type in {"csv", "xlsx"}:
             trace.step("экспорт за всё время — обновляет локальные файлы")
             save_chat_json(target_chat_id)
             path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
@@ -14465,7 +14671,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
 
         trace.step("собирает строки за выбранный период")
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
-        ext = "xlsx" if file_type == "xlsx" else "csv"
+        ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         if not rows and ext != "xlsx":
             trace.step("строк нет — отправляет уведомление")
             send_info(recipient_chat_id, f"Нет данных {label}.")
@@ -14475,7 +14681,13 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             trace.step("строк нет — создаёт пустой Excel с заголовками")
         tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}")
         display_name = export_display_filename(target_chat_id, mode, day_key, ext)
-        if ext == "xlsx":
+        if file_type == "xlsxstat":
+            trace.step("создаёт Excel по статьям за выбранный стандартный период")
+            start_key, end_key = period_export_bounds(target_chat_id, mode, day_key)
+            xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
+            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Excel статьи")
+            display_name = display_name[:-5] + "_excel_статьи.xlsx" if display_name.lower().endswith(".xlsx") else display_name
+        elif ext == "xlsx":
             trace.step("создаёт временный Excel файл")
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
             for date_v, amount_v, note_v in rows:
@@ -14500,7 +14712,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
-                caption=f"📂 {'Excel' if ext == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                caption=f"📂 {'Excel статьи' if file_type == 'xlsxstat' else ('Excel' if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
                 purpose="export_send_document"
             )
         trace.step("удаляет временный файл")
@@ -15308,7 +15520,8 @@ def build_info_keyboard(chat_id: int):
                 IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
                 IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"),
             )
-            kb.row(IB(forwarded_finance_edit_label(chat_id), callback_data="forwarded_finance_edit_toggle"))
+            if version_mode_feature("forwarded_finance_edit"):
+                kb.row(IB(forwarded_finance_edit_label(chat_id), callback_data="forwarded_finance_edit_toggle"))
         if layout in {"v85", "v86", "v87"}:
             if layout == "v87":
                 kb.row(
@@ -15336,7 +15549,7 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
-        if active_bot_behavior_profile() in {"v91_current", "v90_current"}:
+        if active_bot_behavior_profile() in {"v93_current", "v92_current", "v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
@@ -15344,7 +15557,8 @@ def build_info_keyboard(chat_id: int):
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
         if layout in {"v84", "v85", "v86", "v87"}:
             kb.row(IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"))
-            kb.row(IB(forwarded_finance_edit_label(chat_id), callback_data="forwarded_finance_edit_toggle"))
+            if version_mode_feature("forwarded_finance_edit"):
+                kb.row(IB(forwarded_finance_edit_label(chat_id), callback_data="forwarded_finance_edit_toggle"))
         if layout in {"v85", "v86", "v87"}:
             if layout == "v87":
                 kb.row(
@@ -17519,18 +17733,22 @@ def on_callback(call):
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "forwarded_finance_edit_toggle":
+            if not version_mode_feature("forwarded_finance_edit"):
+                return
             mode = cycle_forwarded_finance_edit_mode(chat_id)
             try:
                 bot.answer_callback_query(call.id, f"💰Перес: {mode}", show_alert=False)
             except Exception:
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            # v93: меняем сами пересланные сообщения; Ф91 не перерисовываем.
             schedule_forwarded_finance_message_controls(chat_id)
-            try:
-                day = get_chat_store(chat_id).get("current_view_day") or today_key()
-                finance_changed(chat_id, day, reason="forwarded_finance_edit_mode", delay=0.03)
-            except Exception:
-                pass
+            if version_mode_feature("forwarded_finance_controls_in_main"):
+                try:
+                    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+                    finance_changed(chat_id, day, reason="forwarded_finance_edit_mode", delay=0.03)
+                except Exception:
+                    pass
             return
         if data_str == "version_menu":
             if not is_owner_chat(chat_id):
@@ -17832,9 +18050,14 @@ def on_callback(call):
                     parse_mode="HTML"
                 )
                 return
-            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu", "xlsx_all", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu"}:
-                file_type = "xlsx" if action.startswith("xlsx_") else "csv"
-                mode = action.replace("csv_", "").replace("xlsx_", "")
+            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu", "xlsx_all", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsxstat_all", "xlsxstat_day", "xlsxstat_week", "xlsxstat_month", "xlsxstat_wedthu"}:
+                if action.startswith("xlsxstat_"):
+                    if not version_mode_feature("period_xlsxstat"):
+                        return
+                    file_type = "xlsxstat"
+                else:
+                    file_type = "xlsx" if action.startswith("xlsx_") else "csv"
+                mode = action.replace("csv_", "").replace("xlsxstat_", "").replace("xlsx_", "")
                 send_export_for_chat_to(chat_id, target_chat_id, mode, view_day, file_type)
                 return
             return
@@ -18009,6 +18232,8 @@ def on_callback(call):
             answer_removed_chat(call, removed_chat_id)
             return
         if cmd == "usd_view_toggle":
+            if not version_mode_feature("native_usd_finance"):
+                return
             mode = toggle_finance_view_mode(chat_id)
             try:
                 bot.answer_callback_query(call.id, "USD операции за месяц" if mode == "usd" else "Обычный ARS режим", show_alert=False)
@@ -18299,9 +18524,14 @@ def on_callback(call):
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
             return
-        if cmd in {"csv_day", "csv_week", "csv_month", "csv_wedthu", "csv_all_real", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsx_all"}:
-            file_type = "xlsx" if cmd.startswith("xlsx_") else "csv"
-            mode = cmd.replace("csv_", "").replace("xlsx_", "")
+        if cmd in {"csv_day", "csv_week", "csv_month", "csv_wedthu", "csv_all_real", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsx_all", "xlsxstat_day", "xlsxstat_week", "xlsxstat_month", "xlsxstat_wedthu", "xlsxstat_all"}:
+            if cmd.startswith("xlsxstat_"):
+                if not version_mode_feature("period_xlsxstat"):
+                    return
+                file_type = "xlsxstat"
+            else:
+                file_type = "xlsx" if cmd.startswith("xlsx_") else "csv"
+            mode = cmd.replace("csv_", "").replace("xlsxstat_", "").replace("xlsx_", "")
             if mode == "all_real":
                 mode = "all"
             send_export_for_chat_to(chat_id, chat_id, mode, day_key, file_type)
@@ -21384,6 +21614,12 @@ def main():
             if str(gs.get("bot_behavior_profile") or "") == "v91_current":
                 gs["bot_behavior_profile"] = "v92_current"
             gs["version_mode_v92_migrated"] = True
+        if not bool(gs.get("version_mode_v93_migrated", False)):
+            # При обычном обновлении v92 -> v93 включаем новую версию автоматически.
+            # Если владелец вручную оставил v91/v90/старее, его выбор не меняем.
+            if str(gs.get("bot_behavior_profile") or "") == "v92_current":
+                gs["bot_behavior_profile"] = "v93_current"
+            gs["version_mode_v93_migrated"] = True
         # Одноразово очищаем сохранённые имена статей от @username бота.
         if not bool(gs.get("category_names_clean_v88_applied", False)):
             for _cid, _store in (data.get("chats", {}) or {}).items():
