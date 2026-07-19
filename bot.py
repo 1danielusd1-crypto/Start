@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v91_articles_excel_history"
+VERSION = "bot_v92_usd_finance_forward_edit"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -752,6 +752,23 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v92_current": {
+        "title": "v92 USD финансы / Перес",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "description": "v91 + отдельный нативный USD-учёт, месячное USD-окно Ф91, баланс на начало и режим редактирования пересланных финансов.",
+    },
     "v91_current": {
         "title": "v91 Статьи / Excel стат",
         "ui_edit_interval": 0.03,
@@ -923,7 +940,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v91_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v92_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -951,7 +968,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
         "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
         "category_usd_enabled", "expense_category_order_slugs",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
-        "process_trace_enabled",
+        "process_trace_enabled", "finance_view_mode", "forwarded_finance_edit_mode",
     )
     return global_fields, chat_fields
 
@@ -1141,10 +1158,27 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
 
 def financial_value_records_for_day(chat_id: int, day_key: str) -> list[dict]:
     try:
-        recs = get_chat_store(int(chat_id)).get("daily_records", {}).get(str(day_key), []) or []
-        return sorted((r for r in recs if isinstance(r, dict)), key=record_sort_key)
+        store = get_chat_store(int(chat_id))
+        if finance_view_mode(chat_id) == "usd":
+            return usd_records_for_month(store, str(day_key)[:7])
+        recs = store.get("daily_records", {}).get(str(day_key), []) or []
+        # В ARS-режиме не показываем отдельной кнопкой USD-only запись с amount=0.
+        return sorted(
+            (r for r in recs if isinstance(r, dict) and (float(r.get("amount", 0) or 0) != 0 or native_usd_amount(r) == 0)),
+            key=record_sort_key,
+        )
     except Exception:
         return []
+
+
+def financial_record_button_label_for_view(rec: dict, chat_id: int) -> str:
+    if finance_view_mode(chat_id) == "usd" and native_usd_amount(rec) != 0:
+        sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}")
+        note = re.sub(r"\s+", " ", str((rec or {}).get("note") or "").strip())
+        if len(note) > 31:
+            note = note[:30] + "…"
+        return f"{sid} {format_native_usd(native_usd_amount(rec))} {note}".strip()
+    return financial_record_button_label(rec, chat_id)
 
 
 def buttons_current_window_enabled() -> bool:
@@ -2204,6 +2238,9 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_other_sort_target:*': 'Ф158',
     'cat_pick_today_end:*': 'Ф159',
     'exp_send:*:xlsxstat:*': 'Ф160',
+    'forwarded_finance_edit_toggle': 'Ф161',
+    'd:*:usd_view_toggle': 'Ф162',
+    'fwd_edit:*': 'Ф163',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -3730,6 +3767,7 @@ def build_info_text(chat_id: int) -> str:
         if layout in {"v86", "v87"}:
             text += f"\nВалюта финансовых окон: {currency_mode(chat_id).upper().replace('_', '-')}"
             text += f"\n/ost — слово «ост:»: {'ВКЛ' if remaining_ost_label_enabled(chat_id) else 'ВЫКЛ'}"
+        text += f"\nРедактирование пересланных финансов: {forwarded_finance_edit_mode(chat_id)}"
     elif layout == "v83":
         text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
@@ -6353,7 +6391,9 @@ def get_chat_store(chat_id: int) -> dict:
                     "remaining_with_gomonk": True,
                     "usd_display_enabled": False,
                     "currency_mode": "ars",
-                    "remaining_show_ost_label": True
+                    "remaining_show_ost_label": True,
+                    "finance_view_mode": "ars",
+                    "forwarded_finance_edit_mode": "normal"
                 },
             }
         )
@@ -6378,6 +6418,8 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("currency_mode", "ars_usd" if store.setdefault("settings", {}).get("usd_display_enabled", False) else "ars")
         store.setdefault("settings", {}).setdefault("remaining_show_ost_label", True)
         store.setdefault("settings", {}).setdefault("category_usd_enabled", False)
+        store.setdefault("settings", {}).setdefault("finance_view_mode", "ars")
+        store.setdefault("settings", {}).setdefault("forwarded_finance_edit_mode", "normal")
         store.setdefault("finance_mode", False)
 
         if is_owner_chat(chat_id):
@@ -7254,6 +7296,183 @@ def split_amount_and_note(text: str):
         amount = abs(amount)
 
     return amount, note
+
+
+# ─────────────────────────────────────────────────────────────
+# v92: нативные USD-операции хранятся отдельно от ARS.
+# amount = движение ARS; usd_amount = фактическое движение USD.
+# Это НЕ пересчёт песо по текущему курсу.
+# ─────────────────────────────────────────────────────────────
+_USD_EXPLICIT_RE = re.compile(
+    r"(?P<sign>[+\-–]?)\s*(?P<num>\d+(?:[\s.,_'’]\d+)*)\s*(?P<k>[kкKК]?)\s*(?P<cur>usd|usdt|усд|\$)",
+    re.I,
+)
+_USD_PREFIX_RE = re.compile(
+    r"(?P<cur>\$|usd|usdt|усд)\s*(?P<sign>[+\-–]?)\s*(?P<num>\d+(?:[\s.,_'’]\d+)*)\s*(?P<k>[kкKК]?)",
+    re.I,
+)
+_USD_K_SHORTHAND_RE = re.compile(
+    r"(?P<sign>[+\-–]?)\s*(?P<num>\d+(?:[.,]\d+)?)\s*(?P<postplus>\+?)\s*(?P<k>[kкKК])\b",
+    re.I,
+)
+_ARS_MARKER_RE = re.compile(r"\b(?:ars|арс|peso|pesos|песо)\b", re.I)
+
+
+def _money_number_abs(raw: str, thousand_suffix: bool = False) -> float:
+    raw = str(raw or "").strip()
+    value = abs(parse_amount("+" + raw.lstrip("+-–").strip()))
+    if thousand_suffix:
+        value *= 1000.0
+    return float(value)
+
+
+def _spans_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return max(int(a[0]), int(b[0])) < min(int(a[1]), int(b[1]))
+
+
+def extract_native_usd_amount(text: str) -> tuple[float, list[tuple[int, int]]]:
+    """Извлекает нативное движение USD и диапазоны USD-значений в исходной строке.
+
+    Правила v92:
+    • +1700 usd / +3к усд -> приход USD;
+    • 700 usd / 2к усд / -500 usd -> расход USD;
+    • слово «обмен» само по себе НЕ превращает USD в приход;
+    • +1к, 5+к, 1к обмен на песо также понимаются как USD shorthand.
+    """
+    source = str(text or "")
+    low = source.casefold()
+    matches: list[tuple[tuple[int, int], float]] = []
+
+    def add_match(m):
+        span = (m.start(), m.end())
+        if any(_spans_overlap(span, old_span) for old_span, _ in matches):
+            return
+        sign = str(m.groupdict().get("sign") or "")
+        k = bool(m.groupdict().get("k"))
+        value = _money_number_abs(m.group("num"), thousand_suffix=k)
+        # Нативная USD-операция без знака по общей логике бота = расход.
+        if sign == "+":
+            signed = value
+        elif sign in {"-", "–"}:
+            signed = -value
+        else:
+            local = low[max(0, m.start() - 24): min(len(low), m.end() + 24)]
+            # Явное слово «приход» может задавать приход без плюса; «обмен» не влияет.
+            signed = value if re.search(r"\bприход\b|\bincome\b", local, re.I) else -value
+        matches.append((span, signed))
+
+    for rx in (_USD_PREFIX_RE, _USD_EXPLICIT_RE):
+        for m in rx.finditer(source):
+            add_match(m)
+
+    # Shorthand «+1к», «5+к», «1к обмен на песо». Не дублируем «2к усд».
+    for m in _USD_K_SHORTHAND_RE.finditer(source):
+        span = (m.start(), m.end())
+        if any(_spans_overlap(span, old_span) for old_span, _ in matches):
+            continue
+        sign = str(m.group("sign") or "")
+        postplus = str(m.group("postplus") or "")
+        local = low[max(0, m.start() - 28): min(len(low), m.end() + 40)]
+        has_context = bool(
+            sign or postplus
+            or re.search(r"обмен|пессо|песо|peso|ars|\bот\b|приход", local, re.I)
+        )
+        if not has_context:
+            continue
+        value = _money_number_abs(m.group("num"), thousand_suffix=True)
+        if sign == "+" or postplus == "+" or re.search(r"\bприход\b", local, re.I):
+            signed = value
+        else:
+            signed = -value
+        matches.append((span, signed))
+
+    matches.sort(key=lambda item: item[0][0])
+    return sum(value for _span, value in matches), [span for span, _value in matches]
+
+
+def _mask_text_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    chars = list(str(text or ""))
+    for start, end in spans:
+        for i in range(max(0, int(start)), min(len(chars), int(end))):
+            chars[i] = " "
+    return "".join(chars)
+
+
+def _clean_multicurrency_note(text: str) -> str:
+    note = str(text or "").casefold()
+    # Убираем денежные числа с валютными обозначениями и shorthand тысяч.
+    note = _USD_PREFIX_RE.sub(" ", note)
+    note = _USD_EXPLICIT_RE.sub(" ", note)
+    note = _USD_K_SHORTHAND_RE.sub(" ", note)
+    # Обычные числовые суммы/курсы убираем из описания, слова сохраняем для статей.
+    note = num_re.sub(" ", note)
+    note = re.sub(r"\b(?:usd|usdt|усд|ars|арс|peso|pesos|песо)\b|\$", " ", note, flags=re.I)
+    note = re.sub(r"\s+", " ", note).strip(" ,.;:-")
+    return note
+
+
+def split_finance_components(text: str) -> tuple[float, float, str]:
+    """Возвращает (ars_amount, usd_amount, note).
+
+    Если USD в сообщении нет, полностью сохраняет старую логику split_amount_and_note().
+    Если USD есть, USD фиксируется отдельно, а ARS ищется среди оставшихся чисел.
+    Поэтому «+420.000 обмен 300 usd» => +420000 ARS и -300 USD.
+    """
+    source = str(text or "").strip()
+    usd_amount, usd_spans = extract_native_usd_amount(source)
+    if not usd_spans:
+        amount, note = split_amount_and_note(source)
+        return amount, 0.0, note
+
+    masked = _mask_text_spans(source, usd_spans)
+    ars_amount = 0.0
+    remaining_numbers = list(num_re.finditer(masked))
+    if remaining_numbers:
+        # «1к обмен на песо по 1500»: 1500 — курс, а не сумма ARS.
+        non_rate = []
+        for m in remaining_numbers:
+            prefix = masked[max(0, m.start() - 8):m.start()].casefold()
+            if re.search(r"\bпо\s*$|\brate\s*$", prefix, re.I):
+                continue
+            non_rate.append(m)
+        candidates = non_rate or []
+        if candidates:
+            first = candidates[0]
+            raw = first.group(0)
+            try:
+                ars_amount = parse_amount(raw)
+                remainder = (masked[:first.start()] + " " + masked[first.end():]).strip()
+                remainder = re.sub(r"\s+", " ", remainder).casefold()
+                # Для ARS сохраняем старое правило: «обмен» означает приход песо.
+                if ars_amount < 0 and note_has_income_marker(remainder):
+                    ars_amount = abs(ars_amount)
+            except Exception:
+                ars_amount = 0.0
+
+    note = _clean_multicurrency_note(source)
+    return float(ars_amount), float(usd_amount), note
+
+
+def native_usd_amount(rec: dict) -> float:
+    try:
+        return float((rec or {}).get("usd_amount", 0) or 0)
+    except Exception:
+        return 0.0
+
+
+def format_native_usd(amount: float, signed: bool = True) -> str:
+    try:
+        value = float(amount or 0)
+    except Exception:
+        value = 0.0
+    body = fmt_num_plain(abs(value))
+    if not signed:
+        return f"${body}"
+    if value > 0:
+        return f"+${body}"
+    if value < 0:
+        return f"-${body}"
+    return "$0"
 
 
 EXPENSE_CATEGORIES = {
@@ -10221,8 +10440,36 @@ def cmd_toggle_remaining_ost_label(msg):
 
 @bot.message_handler(func=lambda m: bool(
     getattr(m, "text", None)
+    and re.fullmatch(r"/izmenit(?:_?R?)?(\d+)(?:@\w+)?", m.text.strip(), re.I)
+))
+def cmd_edit_forwarded_finance_record(msg):
+    """v92 slash-режим: /izmenit_R12 открывает штатное окно редактирования и сразу удаляет команду."""
+    chat_id = int(msg.chat.id)
+    raw = str(msg.text or "").strip()
+    try:
+        m = re.fullmatch(r"/izmenit(?:_?R?)?(\d+)(?:@\w+)?", raw, re.I)
+        rid = int(m.group(1)) if m else 0
+    except Exception:
+        rid = 0
+    try:
+        bot.delete_message(chat_id, msg.message_id)
+    except Exception:
+        pass
+    if forwarded_finance_edit_mode(chat_id) != "slash":
+        send_and_auto_delete(chat_id, "💰Перес сейчас не в режиме «слеш».", 8)
+        return
+    rec = next((r for r in get_chat_store(chat_id).get("records", []) if int(r.get("id", 0) or 0) == rid), None)
+    if not rec or not is_forwarded_finance_record(chat_id, rec):
+        send_and_auto_delete(chat_id, "❌ Пересланная финансовая запись не найдена.", 8)
+        return
+    start_record_edit_prompt(chat_id, rec.get("day_key") or today_key(), rid)
+
+
+@bot.message_handler(func=lambda m: bool(
+    getattr(m, "text", None)
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
+    and not re.match(r"/izmenit", m.text.split()[0].split("@")[0], re.I)
     and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/ost", "/остаток", "/off_on_backup_excel", "/queues", "/queue_status"}
 ))
 def cmd_total_secret_capture(msg):
@@ -10393,9 +10640,9 @@ def on_any_message(msg):
             if finwin_wait and finwin_wait.get("type") == "finwin_edit":
                 text = sanitize_telegram_inserted_text((msg.text or "").strip())
                 try:
-                    amount, note = split_amount_and_note(text)
+                    amount, usd_amount, note = split_finance_components(text)
                 except Exception:
-                    send_and_auto_delete(chat_id, "❌ Неверный формат. Пример: 1500 продукты", 10)
+                    send_and_auto_delete(chat_id, "❌ Неверный формат. Пример: 1500 продукты или 500 usd аренда", 10)
                     return
 
                 target_chat_id = int(finwin_wait.get("target_chat_id"))
@@ -10405,7 +10652,7 @@ def on_any_message(msg):
                 fin_window_msg_id = finwin_wait.get("fin_window_msg_id")
 
                 with locked_chat(target_chat_id):
-                    ok = update_record_in_chat(target_chat_id, rid, amount, note)
+                    ok = update_record_in_chat(target_chat_id, rid, amount, note, usd_amount=usd_amount)
 
                 clear_finwin_edit_wait_state(chat_id, delete_prompt=True)
                 try:
@@ -10445,11 +10692,11 @@ def on_any_message(msg):
                     return
 
                 try:
-                    amount, note = split_amount_and_note(text)
+                    amount, usd_amount, note = split_finance_components(text)
                 except Exception:
                     send_and_auto_delete(
                         chat_id,
-                        "❌ Неверный формат.\nПример: 1500 продукты",
+                        "❌ Неверный формат.\nПример: 1500 продукты или 500 usd аренда",
                         10
                     )
                     return
@@ -10469,12 +10716,14 @@ def on_any_message(msg):
                     return
 
                 target["amount"] = amount
+                target["usd_amount"] = usd_amount
                 target["note"] = note
 
                 for dk, arr in store.get("daily_records", {}).items():
                     for r in arr:
                         if r.get("id") == rid:
                             r["amount"] = amount
+                            r["usd_amount"] = usd_amount
                             r["note"] = note
 
                 store["balance"] = sum(r["amount"] for r in store.get("records", []))
@@ -10531,7 +10780,7 @@ def handle_finance_text(msg):
         return False
 
     try:
-        amount, note = split_amount_and_note(text)
+        amount, usd_amount, note = split_finance_components(text)
     except Exception as e:
         log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
         return False
@@ -10546,7 +10795,8 @@ def handle_finance_text(msg):
             note,
             getattr(getattr(msg, "from_user", None), "id", 0),
             source_msg=msg,
-            day_key=entry_day
+            day_key=entry_day,
+            usd_amount=usd_amount
         )
         schedule_finalize(chat_id, entry_day)
         return True
@@ -10576,13 +10826,14 @@ def handle_finance_edit(msg):
 
     if text and looks_like_amount(text):
         try:
-            amount, note = split_amount_and_note(text)
+            amount, usd_amount, note = split_finance_components(text)
         except Exception:
-            amount, note = 0, "удалено"
+            amount, usd_amount, note = 0, 0, "удалено"
     else:
-        amount, note = 0, "удалено"
+        amount, usd_amount, note = 0, 0, "удалено"
 
     target["amount"] = amount
+    target["usd_amount"] = usd_amount
     target["note"] = note
 
     for day, arr in store.get("daily_records", {}).items():
@@ -10622,7 +10873,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
 
         if text and looks_like_amount(text):
             try:
-                amount, note = split_amount_and_note(text)
+                amount, usd_amount, note = split_finance_components(text)
             except Exception as e:
                 log_error(f"[FWD FINANCE PARSE ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}: {e}")
                 return False
@@ -10630,7 +10881,9 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             try:
                 if existing:
                     existing["amount"] = amount
+                    existing["usd_amount"] = usd_amount
                     existing["note"] = note
+                    existing["forwarded_finance"] = True
                     existing["timestamp"] = message_timestamp_iso(source_msg)
                     if source_msg is not None:
                         existing["source_order_msg_id"] = getattr(source_msg, "message_id", existing.get("source_order_msg_id", 0))
@@ -10650,7 +10903,9 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                         note,
                         owner,
                         source_msg=shadow_msg,
-                        day_key=entry_day
+                        day_key=entry_day,
+                        usd_amount=usd_amount,
+                        extra_fields={"forwarded_finance": True}
                     )
             except Exception as e:
                 log_error(f"[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} amount={amount} note={note!r}: {e}")
@@ -10658,6 +10913,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
 
         elif existing:
             existing["amount"] = 0
+            existing["usd_amount"] = 0
             existing["note"] = "удалено"
             entry_day = existing.get("day_key") or entry_day
             rebuild_month_short_ids(dst_chat_id)
@@ -10669,6 +10925,14 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
             return False
 
     schedule_finalize(dst_chat_id, entry_day)
+    try:
+        GENERAL_TASK_POOL.submit(
+            f"forwarded-control-one:{int(dst_chat_id)}:{int(dst_msg_id)}",
+            sync_one_forwarded_finance_message_control,
+            int(dst_chat_id), int(dst_msg_id),
+        )
+    except Exception:
+        pass
     return True
 
 def export_global_csv(d: dict):
@@ -11267,9 +11531,11 @@ def rebind_forwarded_finance_record(chat_id: int, old_msg_id: int, new_msg_id: i
 
             if text and looks_like_amount(text):
                 try:
-                    amount, note = split_amount_and_note(text)
+                    amount, usd_amount, note = split_finance_components(text)
                     rec["amount"] = amount
+                    rec["usd_amount"] = usd_amount
                     rec["note"] = note
+                    rec["forwarded_finance"] = True
                 except Exception:
                     pass
 
@@ -11750,6 +12016,175 @@ def gomonk_info_label(chat_id: int) -> str:
     return "🧳 Гомонковые ВКЛ" if gomonk_enabled(chat_id) else "🧳 Гомонковые ВЫКЛ"
 
 
+def finance_view_mode(chat_id: int) -> str:
+    try:
+        mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("finance_view_mode") or "ars").strip().lower()
+        return mode if mode in {"ars", "usd"} else "ars"
+    except Exception:
+        return "ars"
+
+
+def set_finance_view_mode(chat_id: int, mode: str):
+    mode = "usd" if str(mode or "").strip().lower() == "usd" else "ars"
+    store = get_chat_store(int(chat_id))
+    store.setdefault("settings", {})["finance_view_mode"] = mode
+    save_data(data, chat_ids=[int(chat_id)])
+
+
+def toggle_finance_view_mode(chat_id: int) -> str:
+    mode = "ars" if finance_view_mode(chat_id) == "usd" else "usd"
+    set_finance_view_mode(chat_id, mode)
+    return mode
+
+
+def finance_view_toggle_label(chat_id: int) -> str:
+    return "💵 USD расходы" if finance_view_mode(chat_id) == "ars" else "💵 Назад ARS"
+
+
+def forwarded_finance_edit_mode(chat_id: int) -> str:
+    try:
+        mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("forwarded_finance_edit_mode") or "normal").strip().lower()
+        return mode if mode in {"normal", "button", "slash"} else "normal"
+    except Exception:
+        return "normal"
+
+
+def cycle_forwarded_finance_edit_mode(chat_id: int) -> str:
+    order = ["normal", "button", "slash"]
+    current = forwarded_finance_edit_mode(chat_id)
+    mode = order[(order.index(current) + 1) % len(order)]
+    store = get_chat_store(int(chat_id))
+    store.setdefault("settings", {})["forwarded_finance_edit_mode"] = mode
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+    return mode
+
+
+def forwarded_finance_edit_label(chat_id: int) -> str:
+    labels = {"normal": "обычно", "button": "кнопка", "slash": "слеш"}
+    mode = forwarded_finance_edit_mode(chat_id)
+    if mode == "slash":
+        return "💰Перес:слеш"
+    return f"💰Перес: {labels.get(mode, 'обычно')}"
+
+
+def is_forwarded_finance_record(chat_id: int, rec: dict) -> bool:
+    if bool((rec or {}).get("forwarded_finance", False)):
+        return True
+    try:
+        msg_id = int((rec or {}).get("source_msg_id") or (rec or {}).get("origin_msg_id") or (rec or {}).get("msg_id") or 0)
+    except Exception:
+        msg_id = 0
+    if not msg_id:
+        return False
+    try:
+        with forward_map_lock:
+            for _origin, pairs in forward_map.items():
+                for dst_chat_id, dst_msg_id in pairs:
+                    if int(dst_chat_id) == int(chat_id) and int(dst_msg_id) == msg_id:
+                        try:
+                            rec["forwarded_finance"] = True
+                        except Exception:
+                            pass
+                        return True
+    except Exception:
+        pass
+    return False
+
+
+def forwarded_finance_message_markup(rid: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(IB("✏️ Изменить", callback_data=f"fwd_edit:{int(rid)}"))
+    return kb
+
+
+def apply_forwarded_finance_message_control(chat_id: int, rec: dict) -> bool:
+    """Ставит/убирает кнопку прямо на пересланном финансовом сообщении.
+
+    Выполняется вне основного callback-потока, чтобы переключатель INFO не зависал.
+    """
+    if not rec or not is_forwarded_finance_record(chat_id, rec):
+        return False
+    try:
+        msg_id = int(rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or 0)
+        rid = int(rec.get("id", 0) or 0)
+    except Exception:
+        return False
+    if not msg_id or not rid:
+        return False
+    markup = forwarded_finance_message_markup(rid) if forwarded_finance_edit_mode(chat_id) == "button" else None
+    try:
+        _tg_call_retry(
+            bot.edit_message_reply_markup,
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=markup,
+            attempts=2,
+            purpose="forwarded_finance_edit_control",
+        )
+        return True
+    except Exception as e:
+        err = str(e).casefold()
+        if "message is not modified" not in err and "message to edit not found" not in err:
+            log_error(f"forwarded finance control {get_chat_display_name(chat_id)}:{msg_id}: {e}")
+        return False
+
+
+def refresh_forwarded_finance_message_controls(chat_id: int):
+    """Обновляет и старые пересланные финансовые сообщения текущего чата."""
+    try:
+        store = get_chat_store(int(chat_id))
+        recs = [r for r in (store.get("records", []) or []) if is_forwarded_finance_record(chat_id, r)]
+        for rec in sorted(recs, key=record_sort_key):
+            apply_forwarded_finance_message_control(int(chat_id), rec)
+            time.sleep(max(0.01, effective_fast_telegram_gap()))
+    except Exception as e:
+        log_error(f"refresh_forwarded_finance_message_controls({chat_id}): {e}")
+
+
+def schedule_forwarded_finance_message_controls(chat_id: int):
+    key = f"forwarded-controls:{int(chat_id)}"
+    if not GENERAL_TASK_POOL.submit(key, refresh_forwarded_finance_message_controls, int(chat_id)):
+        log_error(f"FORWARDED CONTROLS QUEUE FULL: {chat_id}")
+
+
+def sync_one_forwarded_finance_message_control(chat_id: int, msg_id: int):
+    try:
+        rec = find_record_by_message_id(int(chat_id), int(msg_id))
+        if rec:
+            apply_forwarded_finance_message_control(int(chat_id), rec)
+    except Exception as e:
+        log_error(f"sync_one_forwarded_finance_message_control({chat_id},{msg_id}): {e}")
+
+
+def forwarded_finance_records_for_scope(chat_id: int, day_key: str) -> list[dict]:
+    store = get_chat_store(int(chat_id))
+    if finance_view_mode(chat_id) == "usd":
+        prefix = str(day_key)[:7] + "-"
+        recs = [r for r in (store.get("records", []) or []) if _record_day_key(r).startswith(prefix) and native_usd_amount(r) != 0]
+    else:
+        recs = list((store.get("daily_records", {}) or {}).get(str(day_key), []) or [])
+        recs = [r for r in recs if float(r.get("amount", 0) or 0) != 0]
+    return [r for r in sorted(recs, key=record_sort_key) if is_forwarded_finance_record(chat_id, r)]
+
+
+def usd_records_for_month(store: dict, month_key: str) -> list[dict]:
+    prefix = str(month_key)[:7] + "-"
+    return sorted(
+        [r for r in (store.get("records", []) or []) if _record_day_key(r).startswith(prefix) and native_usd_amount(r) != 0],
+        key=record_sort_key,
+    )
+
+
+def calc_usd_balance_before_month(store: dict, month_key: str) -> float:
+    start = str(month_key)[:7] + "-01"
+    return sum(native_usd_amount(r) for r in (store.get("records", []) or []) if _record_day_key(r) < start)
+
+
+def calc_usd_total_balance(store: dict) -> float:
+    return sum(native_usd_amount(r) for r in (store.get("records", []) or []))
+
+
 def currency_mode(chat_id: int) -> str:
     """Режим отображения сумм одного чата: ars, ars_usd или usd."""
     try:
@@ -12128,9 +12563,68 @@ def fmt_usd_from_ars(amount: float, rate_info: dict | None) -> str:
     return fmt_usd_compact(amount, rate_info, signed=False, absolute=True)
 
 
-def render_day_window(chat_id: int, day_key: str):
+def render_usd_month_window(chat_id: int, day_key: str):
     store = get_chat_store(chat_id)
-    recs = store.get("daily_records", {}).get(day_key, [])
+    month_key = str(day_key)[:7]
+    try:
+        month_dt = datetime.strptime(month_key + "-01", "%Y-%m-%d")
+        month_label = f"{russian_month_name(month_dt.month)} {month_dt.year}"
+    except Exception:
+        month_label = month_key
+    recs_sorted = usd_records_for_month(store, month_key)
+    opening = calc_usd_balance_before_month(store, month_key)
+    total_income = sum(native_usd_amount(r) for r in recs_sorted if native_usd_amount(r) > 0)
+    total_expense = sum(abs(native_usd_amount(r)) for r in recs_sorted if native_usd_amount(r) < 0)
+    closing = opening + total_income - total_expense
+    overall = calc_usd_total_balance(store)
+    edit_mode = forwarded_finance_edit_mode(chat_id)
+
+    header = [f"💵 USD операции — {month_label}", ""]
+    lines = []
+    for r in recs_sorted:
+        usd = native_usd_amount(r)
+        sid = r.get("short_id", f"R{r.get('id', '')}")
+        note = html.escape(str(r.get("note", "") or ""))
+        suffix = ""
+        if edit_mode == "slash" and is_forwarded_finance_record(chat_id, r):
+            suffix = f" /izmenit_R{int(r.get('id', 0) or 0)}"
+        lines.append(f"{fmt_date_ddmmyy(_record_day_key(r))} {sid} {format_native_usd(usd)} {note}{suffix}".rstrip())
+
+    footer = [
+        "",
+        f"💰 Баланс: {format_native_usd(opening)}",
+        f"📉 Расход за месяц: {format_native_usd(-total_expense)}",
+        f"📈 Приход за месяц: {format_native_usd(total_income)}",
+        f"📆 Остаток на конец месяца: {format_native_usd(closing)}",
+        f"🏦 Остаток USD: {format_native_usd(overall)}",
+    ]
+    if not lines:
+        return wm_common("\n".join(header + ["Нет USD-операций за этот месяц."] + footer), 1, html_mode=True), closing - opening
+
+    hidden = 0
+    visible = list(lines)
+    if len(visible) > DAY_WINDOW_MAX_RECORDS:
+        hidden = len(visible) - DAY_WINDOW_MAX_RECORDS
+        visible = visible[-DAY_WINDOW_MAX_RECORDS:]
+    while True:
+        prefix = [f"… скрыто ранних USD-записей: {hidden}", ""] if hidden > 0 else []
+        body = "\n".join(header + prefix + visible + footer)
+        if len(body) <= DAY_WINDOW_MAX_CHARS:
+            return wm_common(body, 1, html_mode=True), closing - opening
+        if len(visible) <= 5:
+            return wm_common(body[:DAY_WINDOW_MAX_CHARS], 1, html_mode=True), closing - opening
+        hidden += 1
+        visible = visible[1:]
+
+
+def render_day_window(chat_id: int, day_key: str):
+    if finance_view_mode(chat_id) == "usd":
+        return render_usd_month_window(chat_id, day_key)
+
+    store = get_chat_store(chat_id)
+    recs_all = store.get("daily_records", {}).get(day_key, [])
+    # USD-only записи не загрязняют обычное ARS-окно; смешанные ARS+USD остаются.
+    recs = [r for r in recs_all if float(r.get("amount", 0) or 0) != 0 or native_usd_amount(r) == 0]
 
     d = datetime.strptime(day_key, "%Y-%m-%d")
     wd = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"][d.weekday()]
@@ -12149,6 +12643,7 @@ def render_day_window(chat_id: int, day_key: str):
     rate_info = usd_rate_cached(force=False) if mode != "ars" else None
     total_income = 0.0
     total_expense = 0.0
+    edit_mode = forwarded_finance_edit_mode(chat_id)
 
     recs_sorted = sorted(recs, key=lambda x: x.get("timestamp"))
     all_record_lines = []
@@ -12162,15 +12657,22 @@ def render_day_window(chat_id: int, day_key: str):
 
         note = html.escape(r.get("note", ""))
         sid = r.get("short_id", f"R{r['id']}")
-        all_record_lines.append(f"{sid} {format_chat_amount(chat_id, amt, mixed_space=False)} {note}".rstrip())
+        slash = ""
+        if edit_mode == "slash" and is_forwarded_finance_record(chat_id, r):
+            slash = f" /izmenit_R{int(r.get('id', 0) or 0)}"
+        usd_tail = f" [{format_native_usd(native_usd_amount(r))}]" if native_usd_amount(r) != 0 else ""
+        all_record_lines.append(f"{sid} {format_chat_amount(chat_id, amt, mixed_space=False)}{usd_tail} {note}{slash}".rstrip())
 
     day_balance = calc_day_balance(store, day_key)
     bal_chat = store.get("balance", 0)
+    day_net = total_income - total_expense
+    opening_balance = day_balance - day_net
 
     footer = [""]
     if recs_sorted:
         expense_value = -total_expense if total_expense else 0.0
         income_value = total_income if total_income else 0.0
+        footer.append(f"💰 Баланс: {format_chat_amount(chat_id, opening_balance, mixed_space=True)}")
         footer.append(f"📉 Расход за день: {format_chat_amount(chat_id, expense_value, mixed_space=True)}")
         footer.append(f"📈 Приход за день: {format_chat_amount(chat_id, income_value, mixed_space=True)}")
     footer.append(f"📆 Остаток на конец дня: {format_chat_amount(chat_id, day_balance, mixed_space=True)}")
@@ -12200,13 +12702,13 @@ def render_day_window(chat_id: int, day_key: str):
         if hidden > 0:
             prefix = [f"… скрыто ранних записей: {hidden}", ""]
 
-        text = "\n".join(header + prefix + visible + footer)
+        body = "\n".join(header + prefix + visible + footer)
 
-        if len(text) <= DAY_WINDOW_MAX_CHARS:
-            return wm_common(text, 1, html_mode=True), total
+        if len(body) <= DAY_WINDOW_MAX_CHARS:
+            return wm_common(body, 1, html_mode=True), total
 
         if len(visible) <= 5:
-            return wm_common(text[:DAY_WINDOW_MAX_CHARS], 1, html_mode=True), total
+            return wm_common(body[:DAY_WINDOW_MAX_CHARS], 1, html_mode=True), total
 
         hidden += 1
         visible = visible[1:]
@@ -12343,7 +12845,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
                 rid = int(rec.get("id"))
             except Exception:
                 continue
-            value_buttons.append(IB(financial_record_button_label(rec, int(chat_id)), callback_data=f"d:{day_key}:value_rec_{rid}"))
+            value_buttons.append(IB(financial_record_button_label_for_view(rec, int(chat_id)), callback_data=f"d:{day_key}:value_rec_{rid}"))
         per_row = max(1, int(active_bot_behavior_profile_info().get("financial_buttons_per_row", 2) or 2))
         add_buttons_in_rows(kb, value_buttons[:84], per_row)
         if len(value_buttons) > 84:
@@ -12359,6 +12861,19 @@ def build_main_keyboard(day_key: str, chat_id=None):
                 continue
             article_buttons.append(IB(f"✏️ {name}", callback_data=cat_callback(f"cat_main_edit:{slug}:{day_key}")))
         add_buttons_in_rows(kb, article_buttons[:84], 2)
+
+    # v92: отдельный нативный USD-режим Ф91. Меню остаётся тем же, меняется только финансовое представление.
+    if chat_id is not None:
+        kb.row(IB(finance_view_toggle_label(int(chat_id)), callback_data=f"d:{day_key}:usd_view_toggle"))
+
+    # Режим «💰Перес: кнопка»: отдельные кнопки изменения только для пересланных финансов.
+    if chat_id is not None and forwarded_finance_edit_mode(int(chat_id)) == "button" and not effective_main_financial_value_buttons_enabled(int(chat_id)):
+        for rec in forwarded_finance_records_for_scope(int(chat_id), day_key)[:84]:
+            try:
+                rid = int(rec.get("id"))
+            except Exception:
+                continue
+            kb.row(IB(f"✏️ Изменить {financial_record_button_label_for_view(rec, int(chat_id))}", callback_data=f"fwd_edit:{rid}"))
 
     # Обнуление убрано из основного окна о1 по ТЗ. Оставлена команда /reset в окне ℹ️ Инфо.
     if chat_id is not None and _v85_enabled("remaining_window"):
@@ -12392,14 +12907,25 @@ def start_record_edit_prompt(chat_id: int, day_key: str, rid: int) -> bool:
         if not rec:
             send_and_auto_delete(chat_id, "❌ Запись не найдена.")
             return False
+        current_parts = []
+        if float(rec.get("amount", 0) or 0) != 0:
+            current_parts.append(fmt_num(rec.get("amount", 0)))
+        if native_usd_amount(rec) != 0:
+            current_parts.append(format_native_usd(native_usd_amount(rec)))
+        current_parts.append(str(rec.get("note", "") or ""))
+        current_value = " ".join(x for x in current_parts if x).strip() or "0"
         text = (
             f"✏️ Редактирование записи R{rid}\n\n"
             f"Текущие данные:\n"
-            f"{fmt_num(rec.get('amount', 0))} {rec.get('note','')}\n\n"
+            f"{current_value}\n\n"
             f"✍️ Напишите новые данные.\n\n"
             f"⏳ Это сообщение и режим редактирования будут автоматически отменены через 40 секунд."
         )
-        insert_value = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+        if native_usd_amount(rec) != 0 and float(rec.get("amount", 0) or 0) == 0:
+            usd = native_usd_amount(rec)
+            insert_value = (f"{'+' if usd > 0 else ''}{fmt_num_plain(abs(usd))} usd " + str(rec.get("note", "") or "")).strip()
+        else:
+            insert_value = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
         text = wm_common(text, 10)
         kb = build_cancel_edit_keyboard(day_key, insert_text=insert_value)
         prompt_id = send_or_edit_edit_prompt(chat_id, "edit_wait", text, reply_markup=kb)
@@ -12712,6 +13238,19 @@ def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: st
     return rows
 
 
+def calc_opening_balance_for_exact_range(store: dict, start_key: str, start_rid: int) -> float:
+    """ARS-остаток непосредственно перед первой записью точного диапазона."""
+    total = 0.0
+    for rec in sorted((store.get("records", []) or []), key=record_sort_key):
+        dk = _record_day_key(rec)
+        rid = _record_int_id(rec)
+        if dk < str(start_key) or (dk == str(start_key) and rid < int(start_rid)):
+            total += float(rec.get("amount", 0) or 0)
+            continue
+        break
+    return total
+
+
 def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
     """Excel стат: Дата | Описание | Приход | статьи расходов."""
     store = get_chat_store(target_chat_id)
@@ -12721,6 +13260,7 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
     clean_categories = [_clean_category_display_name(x) for x in categories]
     headers = ["Дата", "Описание", "Приход"] + clean_categories
     rows = [headers]
+    opening_balance = calc_opening_balance_for_exact_range(store, start_key, int(start_rid))
     income_total = 0.0
     expense_total = 0.0
     cat_totals = {cat: 0.0 for cat in categories}
@@ -12746,11 +13286,11 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
                 row[3 + categories.index(category)] = int(round(value))
         rows.append(row)
     rows.append([])
-    rows.append(["", "Сумма", int(round(income_total))] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in categories])
+    rows.append(["", "Остаток на начало", int(round(opening_balance))] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in categories])
     rows.append([])
     rows.append(["", "Расход", int(round(expense_total))] + [""] * len(categories))
     rows.append(["", "Приход", int(round(income_total))] + [""] * len(categories))
-    rows.append(["", "Остаток", int(round(income_total - expense_total))] + [""] * len(categories))
+    rows.append(["", "Остаток", int(round(opening_balance + income_total - expense_total))] + [""] * len(categories))
     return rows
 
 
@@ -13649,7 +14189,7 @@ def clear_edit_delete_selection(chat_id: int, day_key: str | None = None):
     save_data(data)
 
 
-def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str) -> bool:
+def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, usd_amount: float | None = None) -> bool:
     """v27: только меняет данные. Окна/бэкапы делает finance_changed()."""
     bot_journal("record_update_start", chat_id, f"rid={rid} amount={amount} note={note}")
     store = get_chat_store(chat_id)
@@ -13657,11 +14197,15 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str) -> b
     if not target:
         return False
     target["amount"] = amount
+    if usd_amount is not None:
+        target["usd_amount"] = float(usd_amount or 0)
     target["note"] = note
     for dk, arr in (store.get("daily_records", {}) or {}).items():
         for r in arr:
             if int(r.get("id", -1)) == int(rid):
                 r["amount"] = amount
+                if usd_amount is not None:
+                    r["usd_amount"] = float(usd_amount or 0)
                 r["note"] = note
     recalc_balance(chat_id)
     rebuild_month_short_ids(chat_id)
@@ -14764,6 +15308,7 @@ def build_info_keyboard(chat_id: int):
                 IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
                 IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"),
             )
+            kb.row(IB(forwarded_finance_edit_label(chat_id), callback_data="forwarded_finance_edit_toggle"))
         if layout in {"v85", "v86", "v87"}:
             if layout == "v87":
                 kb.row(
@@ -14799,6 +15344,7 @@ def build_info_keyboard(chat_id: int):
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
         if layout in {"v84", "v85", "v86", "v87"}:
             kb.row(IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"))
+            kb.row(IB(forwarded_finance_edit_label(chat_id), callback_data="forwarded_finance_edit_toggle"))
         if layout in {"v85", "v86", "v87"}:
             if layout == "v87":
                 kb.row(
@@ -16972,6 +17518,20 @@ def on_callback(call):
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
+        if data_str == "forwarded_finance_edit_toggle":
+            mode = cycle_forwarded_finance_edit_mode(chat_id)
+            try:
+                bot.answer_callback_query(call.id, f"💰Перес: {mode}", show_alert=False)
+            except Exception:
+                pass
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            schedule_forwarded_finance_message_controls(chat_id)
+            try:
+                day = get_chat_store(chat_id).get("current_view_day") or today_key()
+                finance_changed(chat_id, day, reason="forwarded_finance_edit_mode", delay=0.03)
+            except Exception:
+                pass
+            return
         if data_str == "version_menu":
             if not is_owner_chat(chat_id):
                 return
@@ -17425,6 +17985,18 @@ def on_callback(call):
                 log_error(f"exp_send: {e}")
             return
 
+        if data_str.startswith("fwd_edit:"):
+            try:
+                rid = int(data_str.split(":", 1)[1])
+            except Exception:
+                return
+            rec = next((r for r in get_chat_store(chat_id).get("records", []) if int(r.get("id", 0) or 0) == rid), None)
+            if not rec or not is_forwarded_finance_record(chat_id, rec):
+                send_and_auto_delete(chat_id, "❌ Пересланная финансовая запись не найдена.", 8)
+                return
+            start_record_edit_prompt(chat_id, rec.get("day_key") or today_key(), rid)
+            return
+
         if not data_str.startswith("d:"):
             return
         _, day_key, cmd = data_str.split(":", 2)
@@ -17435,6 +18007,15 @@ def on_callback(call):
             except Exception:
                 return
             answer_removed_chat(call, removed_chat_id)
+            return
+        if cmd == "usd_view_toggle":
+            mode = toggle_finance_view_mode(chat_id)
+            try:
+                bot.answer_callback_query(call.id, "USD операции за месяц" if mode == "usd" else "Обычный ARS режим", show_alert=False)
+            except Exception:
+                pass
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(bot, call, txt, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode="HTML")
             return
         if cmd == "open":
             clear_edit_delete_selection(chat_id, day_key)
@@ -18124,7 +18705,9 @@ def add_record_to_chat(
     note: str,
     owner: int,
     source_msg=None,
-    day_key=None
+    day_key=None,
+    usd_amount: float = 0.0,
+    extra_fields: dict | None = None
 ):
     bot_journal("record_add_start", chat_id, f"amount={amount} note={note}")
     with locked_chat(chat_id):
@@ -18146,6 +18729,7 @@ def add_record_to_chat(
             "short_id": "",
             "timestamp": message_timestamp_iso(source_msg),
             "amount": amount,
+            "usd_amount": float(usd_amount or 0),
             "note": note,
             "source_msg_id": source_msg_id,
             "source_order_msg_id": source_order_msg_id,
@@ -18154,6 +18738,8 @@ def add_record_to_chat(
             "origin_msg_id": source_msg_id,
             "day_key": day_key,
         }
+        if isinstance(extra_fields, dict):
+            rec.update(extra_fields)
 
         store.setdefault("records", []).append(rec)
         normalize_chat_records(chat_id)
@@ -19490,6 +20076,7 @@ def normalize_chat_records(chat_id: int) -> None:
             continue
         rec.setdefault("timestamp", now_local().isoformat(timespec="seconds"))
         rec.setdefault("amount", 0)
+        rec.setdefault("usd_amount", 0)
         rec.setdefault("note", "")
         rec.setdefault("owner", "")
         rec.setdefault("source_order_msg_id", rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or rec.get("id") or 0)
@@ -20793,6 +21380,10 @@ def main():
             if str(gs.get("bot_behavior_profile") or "") == "v90_current":
                 gs["bot_behavior_profile"] = "v91_current"
             gs["version_mode_v91_migrated"] = True
+        if not bool(gs.get("version_mode_v92_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v91_current":
+                gs["bot_behavior_profile"] = "v92_current"
+            gs["version_mode_v92_migrated"] = True
         # Одноразово очищаем сохранённые имена статей от @username бота.
         if not bool(gs.get("category_names_clean_v88_applied", False)):
             for _cid, _store in (data.get("chats", {}) or {}).items():
@@ -20827,6 +21418,8 @@ def main():
             settings.setdefault("main_financial_value_buttons_enabled", False)
             settings.setdefault("currency_mode", "ars_usd" if settings.get("usd_display_enabled", False) else "ars")
             settings.setdefault("remaining_show_ost_label", True)
+            settings.setdefault("finance_view_mode", "ars")
+            settings.setdefault("forwarded_finance_edit_mode", "normal")
             settings.setdefault("total_secret_mode", False)
             store.setdefault("secret_messages", [])
             _ensure_secret_media_numbers(int(cid))
@@ -20841,7 +21434,7 @@ def main():
     else:
         # Аварийный режим: не создаём/не сохраняем новую пустую SQLite и не запускаем startup-backup.
         data.setdefault("forward_rules", {})
-        log_error("v91 emergency mode: local writes and all automatic backups remain blocked")
+        log_error("v92 emergency mode: local writes and all automatic backups remain blocked")
     # v90: запуск/деплой не планирует бэкап; baseline delta создаётся без загрузки в MEGA.
     # Бэкап ставится только после реального изменения данных.
     try:
@@ -20872,7 +21465,7 @@ def main():
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
-                    f"Бэкап v91: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
+                    f"Бэкап v92: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
