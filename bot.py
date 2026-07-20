@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v92_forward_copy_edit"
+VERSION = "bot_v92_forward_copy_edit_fixed"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -10731,8 +10731,10 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 log_error(f"[FWD FINANCE SKIP] amount not recognized: dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}")
             return False
 
+    # v92 fix: возвращаем конкретную запись, чтобы UI бот-копии не искал её второй раз.
+    result_rec = find_record_by_message_id(dst_chat_id, dst_msg_id)
     schedule_finalize(dst_chat_id, entry_day)
-    return True
+    return result_rec if result_rec is not None else True
 
 def export_global_csv(d: dict):
     """Legacy global CSV with all chats (for backup channel), date DD:MM:YY."""
@@ -11242,18 +11244,41 @@ def _set_forward_record_metadata(dst_chat_id: int, dst_msg_id: int, source_chat_
         return None
 
 
-def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id: int, source_msg):
-    """Добавляет кнопку или /izm_R… непосредственно в бот-копию в чате Б."""
+def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id: int, source_msg, rec: dict | None = None) -> bool:
+    """Добавляет кнопку или /izm_R… непосредственно в бот-копию в чате Б.
+
+    v92 fix: запись можно передать напрямую из sync_forwarded_finance_message(),
+    чтобы оформление копии не зависело от повторного поиска записи сразу после её создания.
+    """
     if not version_mode_feature("forward_copy_edit"):
-        return
+        return False
     mode = forward_copy_edit_mode(int(source_chat_id))
-    rec = _set_forward_record_metadata(dst_chat_id, dst_msg_id, source_chat_id, source_msg)
+    if rec is None:
+        rec = find_record_by_message_id(int(dst_chat_id), int(dst_msg_id))
+    if rec:
+        try:
+            rec["forward_source_chat_id"] = int(source_chat_id)
+            rec["forward_source_msg_id"] = int(getattr(source_msg, "message_id", 0) or 0)
+            rec["forward_copy_content_type"] = str(getattr(source_msg, "content_type", "text") or "text")
+            for _dk, arr in (get_chat_store(int(dst_chat_id)).get("daily_records", {}) or {}).items():
+                for item in arr:
+                    if int(item.get("id", -1)) == int(rec.get("id", -2)):
+                        item.update(rec)
+            save_data(data, chat_ids=[int(dst_chat_id)])
+        except Exception as e:
+            log_error(f"apply_forward_copy_edit_ui metadata {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
+    else:
+        # Последний fallback на старую функцию поиска/привязки.
+        rec = _set_forward_record_metadata(dst_chat_id, dst_msg_id, source_chat_id, source_msg)
     if not rec:
-        return
+        log_error(f"[FWD COPY UI] record not found: {source_chat_id}->{dst_chat_id}:{dst_msg_id} mode={mode}")
+        return False
+    try:
+        bot_journal("forward_copy_edit_apply", int(source_chat_id), f"mode={mode} dst={dst_chat_id}:{dst_msg_id} rec={rec.get('short_id') or rec.get('id')}")
+    except Exception:
+        pass
     try:
         if mode == "normal":
-            # Нормальный режим: никаких элементов на копии. Это также очищает старую
-            # кнопку, если режим сменили и затем исходное сообщение было отредактировано.
             try:
                 _tg_call_retry(
                     bot.edit_message_reply_markup,
@@ -11265,27 +11290,46 @@ def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id
                 )
             except Exception:
                 pass
-            return
+            return True
         if mode == "button":
             _tg_call_retry(
                 bot.edit_message_reply_markup,
                 int(dst_chat_id),
                 int(dst_msg_id),
                 reply_markup=_forward_copy_edit_keyboard(mode),
+                attempts=3,
                 purpose="forward_copy_edit_button",
             )
-            return
+            return True
         base_text = _message_text_for_finance(source_msg)
         display_text = _forward_copy_display_text(base_text, rec, mode)
         ct = str(getattr(source_msg, "content_type", "text") or "text")
         if ct == "text":
-            _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), purpose="forward_copy_edit_slash")
+            _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), attempts=3, purpose="forward_copy_edit_slash")
+            return True
         elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
-            _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), purpose="forward_copy_edit_slash")
+            _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), attempts=3, purpose="forward_copy_edit_slash")
+            return True
+        log_error(f"[FWD COPY UI] unsupported content type: {ct} dst={dst_chat_id}:{dst_msg_id}")
+        return False
     except Exception as e:
         err = str(e).lower()
-        if "message is not modified" not in err:
-            log_error(f"apply_forward_copy_edit_ui {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
+        if "message is not modified" in err:
+            return True
+        log_error(f"apply_forward_copy_edit_ui {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
+        return False
+
+
+def schedule_forward_copy_edit_ui_retry(source_chat_id: int, dst_chat_id: int, dst_msg_id: int, source_msg, rec: dict | None = None, delay: float = 0.8):
+    """Одна отложенная повторная попытка, если Telegram ещё не дал изменить свежую copyMessage."""
+    key = f"forward-copy-ui:{int(dst_chat_id)}:{int(dst_msg_id)}"
+    def _job():
+        try:
+            apply_forward_copy_edit_ui(int(source_chat_id), int(dst_chat_id), int(dst_msg_id), source_msg, rec=rec)
+        except Exception as e:
+            log_error(f"schedule_forward_copy_edit_ui_retry {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
+    DELAYED_SCHEDULER.cancel(key)
+    DELAYED_SCHEDULER.schedule(key, float(delay), _job)
 
 
 def _find_forward_copy_record_by_short_id(chat_id: int, short_id: str):
@@ -11888,7 +11932,10 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
             ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=msg)
             if ok_fin:
-                apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg)
+                _rec = ok_fin if isinstance(ok_fin, dict) else None
+                _ui_ok = apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec)
+                if not _ui_ok and forward_copy_edit_mode(int(source_chat_id)) != "normal":
+                    schedule_forward_copy_edit_ui_retry(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec, delay=0.8)
             elif text_has_any_digit(text_for_finance):
                 log_error(f"[FWD FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
         except Exception as e:
@@ -11962,7 +12009,10 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                         owner_id = src_msg.from_user.id if getattr(src_msg, "from_user", None) else 0
                         ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=src_msg)
                         if ok_fin:
-                            apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, src_msg)
+                            _rec = ok_fin if isinstance(ok_fin, dict) else None
+                            _ui_ok = apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, src_msg, rec=_rec)
+                            if not _ui_ok and forward_copy_edit_mode(int(source_chat_id)) != "normal":
+                                schedule_forward_copy_edit_ui_retry(source_chat_id, dst_chat_id, dst_msg_id, src_msg, rec=_rec, delay=0.8)
                         elif text_has_any_digit(text_for_finance):
                             log_error(f"[FWD MEDIA FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{src_msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
                     except Exception as e:
