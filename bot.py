@@ -1,3 +1,4 @@
+# bot_v97_usd_transactions_forward_edit
 import os
 import io
 import json
@@ -369,7 +370,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v92_forward_copy_edit_fixed_global"
+VERSION = "bot_v97_usd_transactions_forward_edit"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -753,6 +754,44 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v97_current": {
+        "title": "v97 Все правки чата / USD v93 сохранён",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "forward_copy_edit": True,
+        "usd_transactions": True,
+        "description": "v93 USD-транзакции + все исправления из текущего чата до отдельной команды восстановления USD-кнопки.",
+    },
+    "v93_current": {
+        "title": "v93 USD / 💰Перес редактирование",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "forward_copy_edit": True,
+        "usd_transactions": True,
+        "description": "v92 + безопасный отдельный учёт USD-транзакций и улучшенное окно редактирования бот-копии.",
+    },
     "v92_current": {
         "title": "v92 💰Перес / редактирование копий",
         "ui_edit_interval": 0.03,
@@ -769,6 +808,7 @@ BOT_BEHAVIOR_PROFILES = {
         "usd_categories": True,
         "daily_usd": True,
         "forward_copy_edit": True,
+        "usd_transactions": True,
         "description": "v91 + режим 💰Перес: обычно / кнопка / слеш для редактирования бот-копии и связанной финансовой записи.",
     },
     "v91_current": {
@@ -942,7 +982,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v92_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v97_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -970,7 +1010,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
         "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
         "category_usd_enabled", "expense_category_order_slugs",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
-        "process_trace_enabled", "forward_copy_edit_mode",
+        "process_trace_enabled", "forward_copy_edit_mode", "usd_transactions_view",
     )
     return global_fields, chat_fields
 
@@ -1161,7 +1201,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
 def financial_value_records_for_day(chat_id: int, day_key: str) -> list[dict]:
     try:
         recs = get_chat_store(int(chat_id)).get("daily_records", {}).get(str(day_key), []) or []
-        return sorted((r for r in recs if isinstance(r, dict)), key=record_sort_key)
+        return sorted((r for r in recs if isinstance(r, dict) and not bool(r.get("usd_only", False))), key=record_sort_key)
     except Exception:
         return []
 
@@ -2235,6 +2275,7 @@ WINDOW_MARKER_CONSTANTS = {
     'forward_copy_edit_mode_toggle': 'Ф161',
     'fwdcopy_edit': 'Ф162',
     'fwdcopy_edit_cancel': 'Ф163',
+    'd:*:usd_tx_toggle': 'Ф164',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -2260,15 +2301,15 @@ def strip_window_mark(text: str) -> str:
 
 
 def window_mark(text: str, code: str, html_mode: bool = False) -> str:
+    """Добавляет чистый служебный маркер окна без декоративных пробелов/HTML-знаков."""
     try:
         text = strip_window_mark(str(text or ""))
         code = str(code or "").strip()
         if not code:
             return text
-        pad = " " * 26
-        if html_mode:
-            return text + "\n\n" + pad + f"<i>{html.escape(code)}</i>"
-        return text + "\n\n" + pad + code
+        # Маркер показываем ровно как «Ф110», «С4», «П22» — без отступов,
+        # курсива, скобок и других лишних знаков. Это одинаково для HTML/plain.
+        return text + "\n\n" + code
     except Exception:
         return str(text or "")
 
@@ -3510,6 +3551,8 @@ def _clear_stored_window(chat_id: int, store_key: str, message_id: int | None = 
         if message_id is not None and int(current) != int(message_id):
             return
         store[store_key] = None
+        if current:
+            unregister_open_window(chat_id, int(current))
         save_data(data)
     except Exception as e:
         log_error(f"_clear_stored_window({chat_id},{store_key}): {e}")
@@ -3530,6 +3573,7 @@ def schedule_stored_window_delete(chat_id: int, store_key: str, delay: int = AUX
                 pass
             if store.get(store_key) == message_id:
                 store[store_key] = None
+                unregister_open_window(chat_id, int(message_id))
                 save_data(data)
         except Exception as e:
             log_error(f"schedule_stored_window_delete({chat_id},{store_key}): {e}")
@@ -3560,17 +3604,26 @@ def register_open_window(chat_id: int, message_id: int, window_type: str, code: 
         chat_id = int(chat_id)
         message_id = int(message_id)
         key = f"{owner_scope_id(chat_id)}:{chat_id}:{message_id}"
+        params = params or {}
+        currency_chat_id = chat_id
+        try:
+            if params.get("target_chat_id") is not None:
+                currency_chat_id = int(params.get("target_chat_id"))
+        except Exception:
+            currency_chat_id = chat_id
         _open_window_registry()[key] = {
             "owner_id": owner_scope_id(chat_id),
             "chat_id": chat_id,
             "message_id": message_id,
             "window_type": str(window_type or ""),
             "code": str(code or ""),
-            "currency_mode": currency_mode(chat_id) if "currency_mode" in globals() else "ars",
+            "currency_mode": currency_mode(currency_chat_id) if "currency_mode" in globals() else "ars",
             "day_key": day_key,
-            "params": params or {},
+            "params": params,
             "updated_at": now_local().isoformat(timespec="seconds"),
         }
+        # Реестр должен переживать перезапуск, поэтому фиксируем root SQLite сразу.
+        save_data(data, root_only=True)
     except Exception as e:
         log_error(f"register_open_window: {e}")
 
@@ -3579,11 +3632,36 @@ def unregister_open_window(chat_id: int, message_id: int):
     try:
         chat_id = int(chat_id); message_id = int(message_id)
         reg = _open_window_registry()
+        changed = False
         for key, item in list(reg.items()):
             if int(item.get("chat_id", 0) or 0) == chat_id and int(item.get("message_id", 0) or 0) == message_id:
                 reg.pop(key, None)
+                changed = True
+        if changed:
+            save_data(data, root_only=True)
     except Exception:
         pass
+
+
+def get_registered_open_window(chat_id: int, message_id: int) -> dict | None:
+    """Возвращает фактическое последнее состояние конкретного Telegram-сообщения."""
+    try:
+        chat_id = int(chat_id); message_id = int(message_id)
+        best = None
+        for item in (_open_window_registry() or {}).values():
+            if int((item or {}).get("chat_id", 0) or 0) != chat_id:
+                continue
+            if int((item or {}).get("message_id", 0) or 0) != message_id:
+                continue
+            best = item
+        return best
+    except Exception:
+        return None
+
+
+def register_static_open_view(chat_id: int, message_id: int, code: str = "", day_key: str | None = None, params: dict | None = None):
+    """Помечает открытое меню как фактически открытое, чтобы фин-синхронизация не превращала его обратно в О1."""
+    register_open_window(chat_id, message_id, "static_view", code=code, day_key=day_key, params=params or {})
 
 
 def _message_missing_error(exc) -> bool:
@@ -3625,6 +3703,16 @@ def _refresh_categories_window_from_state(chat_id: int) -> bool:
                 kb = build_categories_record_summary_keyboard(start_key, int(start_rid), end_key, int(end_rid), store)
                 send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=int(mid), marker_action="cat_range_records:*")
                 return True
+        if marker.startswith(("cat_order_open_sum", "cat_order_move_sum", "cat_order_select_sum", "cat_order_position_sum")):
+            cb = next((x for x in callbacks if x.startswith("cat_order_select_sum:")), None)
+            if cb:
+                _, _slug, mode, start, end = cb.split(":", 4)
+                send_or_edit_categories_window(
+                    chat_id, build_category_layout_text(store, "sum"),
+                    reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
+                    preferred_message_id=int(mid), marker_action="cat_order_open_sum:*",
+                )
+                return True
         if marker.startswith(("cat_order_open_exact", "cat_order_move_exact", "cat_order_select_exact", "cat_order_position_exact")):
             cb = next((x for x in callbacks if x.startswith("cat_order_select_exact:")), None)
             if cb:
@@ -3646,6 +3734,270 @@ def _refresh_categories_window_from_state(chat_id: int) -> bool:
     return False
 
 
+def _refresh_registered_fin_view(item: dict, changed_chat_id: int) -> bool:
+    """Перерисовывает окно владельца, которое показывает финансы другого чата."""
+    params = item.get("params") or {}
+    try:
+        target_chat_id = int(params.get("target_chat_id") or 0)
+        host_chat_id = int(item.get("chat_id") or 0)
+        message_id = int(item.get("message_id") or 0)
+    except Exception:
+        return False
+    if target_chat_id != int(changed_chat_id) or not host_chat_id or not message_id:
+        return False
+    view_day = str(item.get("day_key") or params.get("view_day") or get_chat_store(target_chat_id).get("current_view_day") or today_key())
+    owner_day_key = str(params.get("owner_day_key") or get_chat_store(host_chat_id).get("current_view_day") or today_key())
+    action = str(params.get("view_action") or "open")
+    target_store = get_chat_store(target_chat_id)
+    try:
+        if action in {"open", "back_main", "menu", "clear_delete_back"}:
+            text = render_fin_window_text(target_chat_id, view_day)
+            kb = build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=kb, parse_mode="HTML")
+        elif action in {"edit_list", "del_toggle"}:
+            text = render_fin_window_text(target_chat_id, view_day)
+            kb = build_edit_records_keyboard(view_day, target_chat_id, prefix="fv", owner_day_key=owner_day_key)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=kb, parse_mode="HTML")
+        elif action == "calendar":
+            try:
+                cdt = datetime.strptime(str(params.get("center_day") or view_day), "%Y-%m-%d")
+            except Exception:
+                cdt = now_local()
+            bot.edit_message_text(
+                f"📅 Календарь: {html.escape(get_chat_display_name(target_chat_id))}",
+                chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_fin_calendar_keyboard(target_chat_id, cdt, owner_day_key), parse_mode="HTML",
+            )
+        elif action == "report":
+            try:
+                month_key = datetime.strptime(view_day, "%Y-%m-%d").strftime("%Y-%m")
+            except Exception:
+                month_key = now_local().strftime("%Y-%m")
+            report_html, _ = build_month_report_text(target_chat_id, month_key)
+            bot.edit_message_text(
+                f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + report_html,
+                chat_id=host_chat_id, message_id=message_id,
+                reply_markup=_one_button_keyboard("🔙 Назад", f"fv:{target_chat_id}:{view_day}:open:{owner_day_key}"),
+                parse_mode="HTML",
+            )
+        elif action == "total":
+            text = f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n\n💰 Общий итог по чату: {format_chat_amount(target_chat_id, target_store.get('balance', 0), True)}"
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key), parse_mode="HTML")
+        elif action == "info":
+            text = build_info_text(target_chat_id) + "\n\n" + build_articles_description_text(target_chat_id)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key))
+        elif action == "csv_menu":
+            text = wm_common(f"📂 CSV / Excel: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:", 5)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=build_fin_window_csv_menu(target_chat_id, view_day, owner_day_key), parse_mode="HTML")
+        else:
+            return False
+        register_open_window(
+            host_chat_id, message_id, "fin_view", code=f"fv:{action}", day_key=view_day,
+            params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": action},
+        )
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        if _message_missing_error(e):
+            unregister_open_window(host_chat_id, message_id)
+            return False
+        log_error(f"_refresh_registered_fin_view({host_chat_id},{message_id}->{target_chat_id}): {e}")
+        return False
+
+
+def _build_total_window_text_for_registry(chat_id: int) -> str:
+    """Тот же итог, что показывает кнопка «💰 Общий итог», но пригодный для автообновления реестра."""
+    chat_id = int(chat_id)
+    store = get_chat_store(chat_id)
+    chat_bal = store.get("balance", 0)
+    if not is_owner_chat(chat_id):
+        return wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
+    lines = [
+        "💰 Общий итог (для владельца)",
+        "",
+        f"• Этот чат ({get_chat_display_name(chat_id)}): {format_chat_amount(chat_id, chat_bal, True)}",
+    ]
+    total_all = 0
+    other_lines = []
+    for cid, st in (data.get("chats", {}) or {}).items():
+        try:
+            cid_int = int(cid)
+        except Exception:
+            continue
+        bal = st.get("balance", 0)
+        total_all += bal
+        if cid_int == chat_id:
+            continue
+        other_lines.append(f"   • {get_chat_display_name(cid_int)}: {format_chat_amount(chat_id, bal, True)}")
+    if other_lines:
+        lines.extend(["", "• Другие чаты:"])
+        lines.extend(other_lines)
+    lines.extend(["", f"• Всего по всем чатам: {format_chat_amount(chat_id, total_all, True)}"])
+    return wm_common("\n".join(lines), 4)
+
+
+def _refresh_registered_local_fin_view(item: dict, changed_chat_id: int) -> bool:
+    """Сохраняет фактически открытый локальный финансовый экран, а не возвращает сообщение принудительно в О1."""
+    params = item.get("params") or {}
+    try:
+        host_chat_id = int(item.get("chat_id") or 0)
+        message_id = int(item.get("message_id") or 0)
+    except Exception:
+        return False
+    if not host_chat_id or not message_id:
+        return False
+    action = str(params.get("view_action") or item.get("code") or "")
+    depends_on_all = bool(params.get("depends_on_all"))
+    if host_chat_id != int(changed_chat_id) and not depends_on_all:
+        return False
+    view_day = str(item.get("day_key") or params.get("view_day") or get_chat_store(host_chat_id).get("current_view_day") or today_key())
+    try:
+        if action == "calendar":
+            center_s = str(params.get("center_day") or view_day)
+            try:
+                center_dt = datetime.strptime(center_s, "%Y-%m-%d")
+            except Exception:
+                center_dt = now_local()
+            bot.edit_message_text(
+                calendar_window_text(center_dt), chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_calendar_keyboard(center_dt, host_chat_id),
+            )
+        elif action == "report":
+            month_key = str(params.get("month_key") or view_day[:7])
+            report_html, _ = build_month_report_text(host_chat_id, month_key)
+            bot.edit_message_text(
+                report_html, chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_report_keyboard(month_key), parse_mode="HTML",
+            )
+        elif action == "total":
+            bot.edit_message_text(
+                _build_total_window_text_for_registry(host_chat_id),
+                chat_id=host_chat_id, message_id=message_id, parse_mode="HTML",
+            )
+        elif action == "info":
+            bot.edit_message_text(
+                wm_common(build_info_text(host_chat_id), 9),
+                chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_info_keyboard(host_chat_id),
+            )
+        elif action == "csv_menu":
+            txt, _ = render_day_window(host_chat_id, view_day)
+            bot.edit_message_text(
+                txt, chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_csv_menu(view_day, host_chat_id), parse_mode="HTML",
+            )
+        elif action == "edit_list":
+            txt, _ = render_day_window(host_chat_id, view_day)
+            bot.edit_message_text(
+                txt, chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_edit_records_keyboard(view_day, host_chat_id), parse_mode="HTML",
+            )
+        else:
+            return False
+        register_open_window(
+            host_chat_id, message_id, "local_fin_view", code=action, day_key=view_day,
+            params={**params, "view_action": action},
+        )
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        if _message_missing_error(e):
+            unregister_open_window(host_chat_id, message_id)
+            return False
+        log_error(f"_refresh_registered_local_fin_view({host_chat_id},{message_id},{action}): {e}")
+        return False
+
+
+def _refresh_registered_fin_categories_view(item: dict, changed_chat_id: int) -> bool:
+    """Автообновление открытых у владельца окон статей чужого/связанного чата."""
+    params = item.get("params") or {}
+    try:
+        host_chat_id = int(item.get("chat_id") or 0)
+        message_id = int(item.get("message_id") or 0)
+        target_chat_id = int(params.get("target_chat_id") or 0)
+    except Exception:
+        return False
+    if target_chat_id != int(changed_chat_id) or not host_chat_id or not message_id:
+        return False
+    action = str(params.get("view_action") or "")
+    owner_day_key = str(params.get("owner_day_key") or today_key())
+    store = get_chat_store(target_chat_id)
+    try:
+        if action == "wthu":
+            ref = str(params.get("ref") or today_key())
+            start_key = week_start_thursday(ref)
+            start, end = week_bounds_thu_wed(start_key)
+            label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
+            text, _ = summarize_categories(store, start, end, label)
+            text = f"👁 {get_chat_display_name(target_chat_id)}\n" + text
+            kb = build_fin_categories_summary_keyboard(target_chat_id, "wthu", start, end, owner_day_key)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=kb)
+        elif action == "show":
+            start = str(params.get("start") or today_key())
+            end = str(params.get("end") or start)
+            slug = str(params.get("slug") or "")
+            category = get_category_by_slug(slug, store)
+            if not category:
+                return False
+            label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
+            text = f"👁 {get_chat_display_name(target_chat_id)}\n" + build_category_detail_text(store, start, end, category, label)
+            kb = build_fin_categories_summary_keyboard(target_chat_id, "detail", start, end, owner_day_key)
+            kb.row(IB("🔙 Назад", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}")))
+            kb.row(IB("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=kb)
+        else:
+            return False
+        register_open_window(
+            host_chat_id, message_id, "fin_categories_view", code=f"fvcat:{action}", day_key=item.get("day_key"),
+            params=params,
+        )
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        if _message_missing_error(e):
+            unregister_open_window(host_chat_id, message_id)
+            return False
+        log_error(f"_refresh_registered_fin_categories_view({host_chat_id},{message_id}->{target_chat_id},{action}): {e}")
+        return False
+
+
+def _refresh_registered_stored_window(item: dict, changed_chat_id: int) -> bool:
+    """Перерисовывает известные отдельные окна текущего чата, зависящие от финансов/настроек."""
+    try:
+        host_chat_id = int(item.get("chat_id") or 0)
+        message_id = int(item.get("message_id") or 0)
+    except Exception:
+        return False
+    if host_chat_id != int(changed_chat_id) or not message_id:
+        return False
+    code = str(item.get("code") or "")
+    store = get_chat_store(host_chat_id)
+    try:
+        if code == "info_msg_id":
+            bot.edit_message_text(build_info_text(host_chat_id), chat_id=host_chat_id, message_id=message_id, reply_markup=build_info_keyboard(host_chat_id))
+            return True
+        if code == "report_window_id":
+            month_key = str(store.get("report_month") or now_local().strftime("%Y-%m"))
+            text, _ = build_month_report_text(host_chat_id, month_key)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=build_report_keyboard(month_key), parse_mode="HTML")
+            return True
+        # remaining_msg_id обновляется отдельным специализированным блоком ниже.
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        if _message_missing_error(e):
+            unregister_open_window(host_chat_id, message_id)
+            if store.get(code) == message_id:
+                store[code] = None
+                save_data(data, chat_ids=[host_chat_id])
+            return False
+        log_error(f"_refresh_registered_stored_window({host_chat_id},{message_id},{code}): {e}")
+    return False
+
+
 def refresh_registered_financial_windows(chat_id: int):
     """Обновляет известные открытые окна текущего owner scope после изменения финансов."""
     chat_id = int(chat_id)
@@ -3653,6 +4005,11 @@ def refresh_registered_financial_windows(chat_id: int):
     # Все фактически известные основные окна по дням, а не только current_view_day.
     for day_key, mid in list((get_or_create_active_windows(chat_id) or {}).items()):
         try:
+            # Одно и то же Telegram-сообщение может быть превращено кнопками из О1
+            # в Ф47/календарь/редактирование/другое меню. Не возвращаем его насильно в О1.
+            actual = get_registered_open_window(chat_id, int(mid))
+            if actual and str(actual.get("window_type") or "") not in {"", "main_day"}:
+                continue
             text, _ = render_day_window(chat_id, day_key)
             bot.edit_message_text(text, chat_id=chat_id, message_id=int(mid), reply_markup=build_main_keyboard(day_key, chat_id))
             register_open_window(chat_id, int(mid), "main_day", code="О1", day_key=day_key)
@@ -3677,6 +4034,22 @@ def refresh_registered_financial_windows(chat_id: int):
                 store["remaining_msg_id"] = None
                 unregister_open_window(chat_id, int(mid))
     _refresh_categories_window_from_state(chat_id)
+
+    # Полный реестр: окна могут физически находиться в другом чате владельца,
+    # но показывать данные изменившегося target_chat_id (Ф110/фин-окна).
+    for _key, item in list((_open_window_registry() or {}).items()):
+        try:
+            wtype = str((item or {}).get("window_type") or "")
+            if wtype == "fin_view":
+                _refresh_registered_fin_view(item, chat_id)
+            elif wtype == "local_fin_view":
+                _refresh_registered_local_fin_view(item, chat_id)
+            elif wtype == "fin_categories_view":
+                _refresh_registered_fin_categories_view(item, chat_id)
+            elif wtype == "stored":
+                _refresh_registered_stored_window(item, chat_id)
+        except Exception as e:
+            log_error(f"refresh_registered_financial_windows registry item: {e}")
 
 
 def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_markup=None, parse_mode=None, delay: int = AUX_WINDOW_DELETE_DELAY):
@@ -3905,6 +4278,7 @@ def build_help_text(chat_id: int) -> str:
             "/articles — описание статей: статья = ключевые слова",
             "/mega_status — статус MEGA/MEGAcmd",
             "/mega_backup_now — безопасно загрузить latest_global.json в MEGA",
+            "/mega_restore_now — принудительно полностью восстановить данные из MEGA",
             "/restore_guard — статус аварийной защиты восстановления",
             "/buttons — переключить кнопки: text/icons",
             "/mask — переключить маскировку тотального секрета",
@@ -3928,6 +4302,8 @@ def build_info_text(chat_id: int) -> str:
     ]
     if layout in {"v84", "v85", "v86", "v87"}:
         lines.append(f"Финансы-кнопки: {'ВКЛ' if main_financial_value_buttons_enabled(chat_id) else 'ВЫКЛ'}")
+    if _v85_enabled("gomonk_wallets"):
+        lines.append(f"Гомонковые: {'ВКЛ' if gomonk_enabled(chat_id) else 'ВЫКЛ'}")
     if layout in {"v86", "v87"}:
         lines.append(f"Валюта: {currency_mode(chat_id).upper().replace('_', '-')}")
         lines.append(f"Подпись «ост:»: {'ВКЛ' if remaining_ost_label_enabled(chat_id) else 'ВЫКЛ'}")
@@ -3942,6 +4318,52 @@ def build_info_text(chat_id: int) -> str:
         if version_mode_feature("mega_priority"):
             lines.append(f"MEGA: {'приоритетный' if mega_backup_priority_enabled(chat_id) else 'обычный'} режим")
         lines.append(f"Версия: {active_bot_behavior_profile_info().get('title')}")
+    lines.extend(["", "Слеш-команды:"])
+    commands = [
+        "/ok — включить финансовый режим",
+        "/start — открыть окно сегодняшнего дня",
+        "/prev — предыдущий день",
+        "/next — следующий день",
+        "/balance — баланс по текущему чату",
+        "/report — краткий отчёт",
+        "/csv — CSV текущего чата",
+        "/xlsx — Excel текущего чата",
+        "/tabl_lsx — Excel-таблица по периоду Чт–Ср",
+        "/json — JSON текущего чата",
+        "/ost — включить/выключить подпись «ост:»",
+        "/restore — включить режим восстановления",
+        "/restore_off — выключить режим восстановления",
+        "/dozvon — открыть дозвон по связанным чатам",
+        "/reset — обнулить данные чата с подтверждением",
+        "/ping — проверить работу бота",
+        "/help — полная справка",
+    ]
+    if is_owner_chat(chat_id):
+        commands.extend([
+            "/stopforward — полностью отключить пересылку",
+            "/backup_channel_on — включить бэкап в канал",
+            "/backup_channel_off — выключить бэкап в канал",
+            "/diag — диагностика бота",
+            "/errors — последние ошибки",
+            "/journal — скачать журнал действий",
+            "/articles — описание статей и ключевых слов",
+            "/mega_status — статус MEGA",
+            "/mega_backup_now — запустить безопасный бэкап MEGA",
+            "/restore_guard — статус защиты восстановления",
+            "/buttons — переключить вид кнопок",
+            "/mask — переключить маскировку тотального секрета",
+            "/day5 — начало финансовых суток 00:00 / 05:00",
+            "/off_on_backup_excel — Excel-бэкап всех чатов ВКЛ/ВЫКЛ",
+            "/queues — состояние очередей и нагрузки",
+        ])
+    # Защита от случайных дублей: команда (до первого пробела) выводится только один раз.
+    seen_commands = set()
+    for row in commands:
+        cmd = row.split(" — ", 1)[0].strip().casefold()
+        if cmd in seen_commands:
+            continue
+        seen_commands.add(cmd)
+        lines.append(row)
     lines.extend(["", "Нажмите нужную кнопку ниже. Полное описание — «📘 Инструкция»."])
     return "\n".join(lines)
 
@@ -6040,58 +6462,186 @@ def _parse_iso_timestamp(value: str | None) -> float:
         return 0.0
 
 
+def _local_restore_stats(d: dict) -> dict:
+    """Статистика локальной базы без создания нового backup timestamp."""
+    chats = (d or {}).get("chats", {}) if isinstance(d, dict) else {}
+    if not isinstance(chats, dict):
+        chats = {}
+    records = 0
+    nonempty = 0
+    secrets = 0
+    for store in chats.values():
+        if not isinstance(store, dict):
+            continue
+        recs = store.get("records") or []
+        if isinstance(recs, list):
+            records += len(recs)
+            if recs:
+                nonempty += 1
+        secrets += len(store.get("secret_messages") or []) if isinstance(store.get("secret_messages") or [], list) else 0
+    return {
+        "chat_count": len(chats),
+        "nonempty_chats": nonempty,
+        "record_count": records,
+        "secret_count": secrets,
+        "forward_rules_count": sum(len(v or {}) for v in ((d or {}).get("forward_rules", {}) or {}).values()),
+        "forward_index_count": len((d or {}).get("forward_index", {}) or {}),
+        "last_saved_at": str(((d or {}).get("_state_meta") or {}).get("last_saved_at") or ""),
+    }
+
+
+def _mega_discover_global_candidates(limit: int = 60) -> list[str]:
+    """Ищет полноценные global JSON во всём каталоге MEGA, а не только exact latest/history.
+
+    Это восстанавливает ситуацию, когда latest_global.json был временно перемещён в history,
+    остался candidate_global_*.json после прерванной ротации или файл лежит глубже в каталоге.
+    """
+    if not mega_is_configured() or shutil.which("mega-find") is None:
+        return []
+    rows = []
+    try:
+        mega_login_if_needed()
+        for pattern in (MEGA_LATEST_GLOBAL_NAME, "global_*.json", "candidate_global_*.json", "*global*.json"):
+            res = _mega_run(
+                "mega-find",
+                [MEGA_BACKUP_DIR, f"--pattern={pattern}", "--type=f"],
+                check=False,
+                timeout=90,
+            )
+            rows.extend(x.strip() for x in (res.stdout or "").splitlines() if x.strip().lower().endswith(".json"))
+    except Exception as e:
+        log_error(f"_mega_discover_global_candidates: {e}")
+    # latest первым, затем более новые имена; дубли убираем.
+    latest_path = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
+    uniq = []
+    seen = set()
+    for path in [latest_path] + sorted(set(rows), reverse=True):
+        if path and path not in seen:
+            seen.add(path)
+            uniq.append(path)
+    return uniq[:max(1, int(limit))]
+
+
+def _mega_select_best_global_candidate(limit: int = 60) -> tuple[str | None, dict, str]:
+    """Скачивает доступные global snapshots и выбирает лучший валидный полный снимок."""
+    best_path = None
+    best_stats = {}
+    best_label = ""
+    candidates = _mega_discover_global_candidates(limit=limit)
+    # На старых установках mega-find может не вернуть exact latest — пробуем его напрямую.
+    direct_latest = mega_download_latest_global_backup()
+    local_candidates = []
+    if direct_latest:
+        local_candidates.append(("latest", direct_latest))
+    for remote_path in candidates:
+        if remote_path == mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME) and direct_latest:
+            continue
+        local_candidates.append((remote_path, None))
+
+    for label, local_path in local_candidates:
+        try:
+            if local_path is None:
+                local_path = _mega_download_remote_path(label)
+            if not local_path:
+                continue
+            payload = _load_json(local_path, {}) or {}
+            if not _global_payload_is_structurally_valid(payload):
+                log_error(f"[MEGA RESTORE] invalid global candidate: {label}")
+                continue
+            stats = _global_payload_stats(payload, local_path)
+            if stats.get("record_count", 0) == 0 and not ALLOW_EMPTY_MEGA_RESTORE:
+                continue
+            score = (
+                _parse_iso_timestamp(stats.get("created_at")),
+                int(stats.get("record_count", 0) or 0),
+                int(stats.get("chat_count", 0) or 0),
+                int(stats.get("size_bytes", 0) or 0),
+            )
+            best_score = (
+                _parse_iso_timestamp(best_stats.get("created_at")),
+                int(best_stats.get("record_count", 0) or 0),
+                int(best_stats.get("chat_count", 0) or 0),
+                int(best_stats.get("size_bytes", 0) or 0),
+            ) if best_stats else (-1, -1, -1, -1)
+            if score > best_score:
+                best_path, best_stats, best_label = local_path, stats, label
+        except Exception as e:
+            log_error(f"[MEGA RESTORE] candidate scan error {label}: {e}")
+    return best_path, best_stats, best_label
+
+
+def mega_restore_full_from_cloud(force: bool = False) -> tuple[bool, str]:
+    """Полное восстановление из лучшего global snapshot + всех последующих delta.
+
+    Восстанавливает весь state целиком: chats, records, settings, owners, forwarding,
+    forward_index, secret_messages и прочие поля универсального backup.
+    """
+    global data
+    if not mega_is_configured():
+        return False, "MEGA не настроена"
+
+    local_empty = is_data_effectively_empty_for_restore(data)
+    local_stats = _local_restore_stats(data)
+    base_path, base_stats, label = _mega_select_best_global_candidate(limit=80)
+    if not base_path:
+        if local_empty:
+            _set_restore_guard("local database is empty; no valid full global snapshot found in MEGA")
+        return False, "В MEGA не найден валидный полный global JSON"
+
+    try:
+        merged_path, applied_delta_count = merge_global_snapshot_with_mega_deltas(base_path)
+        remote_payload = _load_json(merged_path, {}) or {}
+        if not _global_payload_is_structurally_valid(remote_payload):
+            return False, "Найденный global JSON повреждён после объединения delta"
+        remote_stats = _global_payload_stats(remote_payload, merged_path)
+        remote_stats["applied_deltas"] = applied_delta_count
+
+        remote_created = str(remote_stats.get("created_at") or "")
+        local_saved = str(local_stats.get("last_saved_at") or "")
+        remote_newer = _parse_iso_timestamp(remote_created) > _parse_iso_timestamp(local_saved) + 1
+        materially_richer = (
+            int(remote_stats.get("record_count", 0) or 0) > int(local_stats.get("record_count", 0) or 0)
+            or int(remote_stats.get("chat_count", 0) or 0) > int(local_stats.get("chat_count", 0) or 0)
+        )
+        local_suspicious = (
+            local_empty
+            or (int(local_stats.get("record_count", 0) or 0) == 0 and int(remote_stats.get("record_count", 0) or 0) > 0)
+            or (int(local_stats.get("chat_count", 0) or 0) <= 1 and int(remote_stats.get("chat_count", 0) or 0) > 1)
+        )
+
+        if not force and not (local_suspicious or remote_newer or materially_richer):
+            _clear_restore_guard()
+            return False, f"Локальная база не хуже MEGA; восстановление не требуется. local={local_stats}, mega={remote_stats}"
+
+        restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
+        restore_from_json(restore_chat_id, merged_path)
+        _restore_runtime_state_from_data(data)
+        initialize_delta_baseline(data)
+        _clear_restore_guard()
+        msg = (
+            f"Полное восстановление OK из {label or 'MEGA'}: "
+            f"чатов={remote_stats.get('chat_count', 0)}, записей={remote_stats.get('record_count', 0)}, "
+            f"delta={applied_delta_count}"
+        )
+        log_info("[MEGA RESTORE FULL] " + msg)
+        return True, msg
+    except Exception as e:
+        log_error(f"[MEGA RESTORE FULL ERROR] {e}")
+        if local_empty:
+            _set_restore_guard("MEGA full restore failed: " + str(e)[:500])
+        return False, "Ошибка полного восстановления: " + str(e)[:500]
+
+
 def mega_autorestore_if_needed() -> bool:
-    """При пустом локальном диске ищет последний содержательный global snapshot; иначе включает аварийную блокировку."""
+    """Надёжное авто-восстановление: всегда проверяет MEGA и умеет восстановить частичную/старую SQLite."""
     global data
     if not MEGA_AUTORESTORE or not mega_is_configured():
         if is_data_effectively_empty_for_restore(data):
             _set_restore_guard("local database is empty and MEGA autorestore is unavailable")
         return False
-
-    local_empty = is_data_effectively_empty_for_restore(data)
-    candidates: list[tuple[str, str | None]] = [("latest", mega_download_latest_global_backup())]
-    if local_empty:
-        for remote_path in _mega_history_candidates(limit=20):
-            candidates.append((remote_path, None))
-
-    for label, local_path in candidates:
-        try:
-            if local_path is None and label != "latest":
-                local_path = _mega_download_remote_path(label)
-            if not local_path:
-                continue
-            remote_raw = _load_json(local_path, {}) or {}
-            if not _global_payload_is_structurally_valid(remote_raw):
-                log_error(f"[MEGA] restore candidate invalid: {label}")
-                continue
-            # v90: full snapshot + все маленькие delta, появившиеся после него.
-            local_path, applied_delta_count = merge_global_snapshot_with_mega_deltas(local_path)
-            remote_raw = _load_json(local_path, {}) or {}
-            stats = _global_payload_stats(remote_raw, local_path)
-            stats["applied_deltas"] = applied_delta_count
-            if local_empty and stats.get("record_count", 0) == 0 and not ALLOW_EMPTY_MEGA_RESTORE:
-                log_error(f"[MEGA] empty restore candidate rejected: {label}, stats={stats}")
-                continue
-
-            universal = remote_raw.get("_universal_backup") or {}
-            remote_created = universal.get("created_at") or (remote_raw.get("_backup_meta") or {}).get("created_at") or ""
-            local_saved = ((data or {}).get("_state_meta") or {}).get("last_saved_at") or ""
-            if not local_empty and _parse_iso_timestamp(remote_created) <= _parse_iso_timestamp(local_saved):
-                log_info("[MEGA] autorestore skipped: local state is not older than universal backup")
-                _clear_restore_guard()
-                return False
-
-            restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
-            restore_from_json(restore_chat_id, local_path)
-            _clear_restore_guard()
-            log_info(f"[MEGA] autorestore completed from {label}: stats={stats}")
-            return True
-        except Exception as e:
-            log_error(f"[MEGA AUTORESTORE CANDIDATE ERROR] {label}: {e}")
-
-    if local_empty:
-        _set_restore_guard("local database is empty; no non-empty valid MEGA snapshot found. Automatic backups are blocked.")
-    return False
+    ok, detail = mega_restore_full_from_cloud(force=False)
+    log_info(f"[MEGA AUTORESTORE] ok={ok}; {detail}")
+    return bool(ok)
 
 def mega_status_text() -> str:
     lines = ["☁️ MEGA.nz / MEGAcmd"]
@@ -7445,6 +7995,166 @@ def note_has_income_marker(note: str) -> bool:
     return any(re.search(pat, t, re.I) for pat in income_patterns)
 
 
+USD_EXPLICIT_AFTER_RE = re.compile(
+    r"(?P<sign>[+\-–]?)\s*(?P<num>\d[\d\s.,_'’]*?)(?P<mult>[kк])?\s*(?P<cur>usd|usд|усд|\$)",
+    re.I,
+)
+USD_EXPLICIT_PREFIX_RE = re.compile(
+    r"\$\s*(?P<sign>[+\-–]?)\s*(?P<num>\d[\d\s.,_'’]*?)(?P<mult>[kк])?(?=\s|$)",
+    re.I,
+)
+USD_COMPACT_K_RE = re.compile(
+    r"(?P<sign>[+\-–]?)\s*(?P<num>\d+(?:[.,]\d+)?)\s*(?P<plus_after>\+)?\s*[kк]\b",
+    re.I,
+)
+USD_EXCHANGE_RE = re.compile(r"обмен|exchange|change", re.I)
+USD_PESO_RE = re.compile(r"песс?о|peso|ars|арс", re.I)
+
+
+def _parse_usd_number_parts(sign: str, num: str, mult: str = "") -> float:
+    raw = str(num or "").strip()
+    if not raw:
+        raise ValueError("empty usd amount")
+    # parse_amount без явного плюса считает число расходом, поэтому здесь берём модуль.
+    value = abs(float(parse_amount("+" + raw)))
+    if str(mult or "").strip().casefold() in {"k", "к"}:
+        value *= 1000.0
+    if str(sign or "").strip() in {"-", "–"}:
+        return -value
+    if str(sign or "").strip() == "+":
+        return value
+    return -value
+
+
+def extract_usd_transaction(text: str) -> dict | None:
+    """Извлекает отдельное движение USD из пользовательской строки.
+
+    Правила v93:
+    - явные USD/УСД/$: плюс = приход, минус/без знака = расход;
+    - «обмен ... песо/ARS» с компактным 1к/2к = расход USD;
+    - «+1к от ...» = приход USD;
+    - «И 5+к» = приход 5000 USD.
+    Возвращает span USD-фрагмента, чтобы ARS-часть можно было разобрать отдельно.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return None
+
+    candidates = []
+    for rx in (USD_EXPLICIT_AFTER_RE, USD_EXPLICIT_PREFIX_RE):
+        for m in rx.finditer(raw):
+            try:
+                amount = _parse_usd_number_parts(m.group("sign"), m.group("num"), m.group("mult"))
+            except Exception:
+                continue
+            # Если знака нет, слово «приход» может явно задать приход; «обмен» для USD остаётся расходом.
+            if not str(m.group("sign") or "").strip():
+                low = raw.casefold()
+                if ("приход" in low or "prihod" in low) and not USD_EXCHANGE_RE.search(low):
+                    amount = abs(amount)
+            candidates.append({
+                "amount": float(amount),
+                "span": m.span(),
+                "explicit": True,
+                "token": m.group(0),
+            })
+    if candidates:
+        # Берём первое явное USD-значение по порядку текста.
+        candidates.sort(key=lambda x: x["span"][0])
+        info = candidates[0]
+        info["note"] = re.sub(r"\s+", " ", raw).strip().lower()
+        return info
+
+    low = raw.casefold()
+    k_matches = list(USD_COMPACT_K_RE.finditer(raw))
+    if not k_matches:
+        return None
+
+    # «И 5+к» — специальная пользовательская запись прихода USD.
+    for m in k_matches:
+        before = low[max(0, m.start() - 6):m.start()]
+        if m.group("plus_after") and re.search(r"(?:^|\s)и\s*$", before):
+            value = abs(_parse_usd_number_parts("+", m.group("num"), "к"))
+            return {"amount": value, "span": m.span(), "explicit": False, "token": m.group(0), "note": re.sub(r"\s+", " ", raw).strip().lower()}
+
+    # Обмен USD -> песо/ARS: компактная сумма с «к» считается расходом USD.
+    if USD_EXCHANGE_RE.search(low) and (USD_PESO_RE.search(low) or len(num_re.findall(raw)) >= 2):
+        exchange_pos = USD_EXCHANGE_RE.search(low).start()
+        m = min(k_matches, key=lambda x: abs(x.start() - exchange_pos))
+        value = abs(_parse_usd_number_parts("+", m.group("num"), "к"))
+        return {"amount": -value, "span": m.span(), "explicit": False, "token": m.group(0), "note": re.sub(r"\s+", " ", raw).strip().lower()}
+
+    # «+1к от ...» / «+1к приход» — приход USD без явного USD.
+    for m in k_matches:
+        if str(m.group("sign") or "").strip() == "+" and (re.search(r"\bот\b", low) or "приход" in low):
+            value = abs(_parse_usd_number_parts("+", m.group("num"), "к"))
+            return {"amount": value, "span": m.span(), "explicit": False, "token": m.group(0), "note": re.sub(r"\s+", " ", raw).strip().lower()}
+
+    return None
+
+
+def _remove_usd_fragment_for_ars(text: str, usd_info: dict | None) -> str:
+    raw = str(text or "")
+    if not usd_info or not usd_info.get("span"):
+        return raw
+    try:
+        start, end = usd_info["span"]
+        rest = (raw[:int(start)] + " " + raw[int(end):]).strip()
+    except Exception:
+        rest = raw
+    # В «1к обмен на песо по 1500» число после «по» — курс, а не движение ARS.
+    rest = re.sub(r"(?i)\bпо\s*[+\-–]?\s*\d[\d\s.,_'’]*", " ", rest)
+    return re.sub(r"\s+", " ", rest).strip()
+
+
+def parse_financial_components(text: str) -> dict:
+    """Разбирает одну строку одновременно на ARS и отдельное движение USD."""
+    raw = str(text or "").strip()
+    usd = extract_usd_transaction(raw)
+    if usd is None:
+        amount, note = split_amount_and_note(raw)
+        return {
+            "amount": float(amount), "note": note,
+            "usd_amount": None, "usd_note": "", "usd_only": False,
+            "source_finance_text": raw,
+        }
+
+    ars_text = _remove_usd_fragment_for_ars(raw, usd)
+    ars_amount = None
+    ars_note = ""
+    if num_re.search(ars_text or ""):
+        try:
+            ars_amount, ars_note = split_amount_and_note(ars_text)
+        except Exception:
+            ars_amount, ars_note = None, ""
+
+    usd_only = ars_amount is None
+    try:
+        _us, _ue = usd.get("span") or (0, 0)
+        usd_note = re.sub(r"\s+", " ", (raw[:int(_us)] + " " + raw[int(_ue):])).strip().lower()
+    except Exception:
+        usd_note = ""
+    return {
+        "amount": float(ars_amount or 0.0),
+        "note": ars_note if ars_amount is not None else re.sub(r"\s+", " ", raw).strip().lower(),
+        "usd_amount": float(usd.get("amount", 0.0) or 0.0),
+        "usd_note": usd_note,
+        "usd_only": bool(usd_only),
+        "source_finance_text": raw,
+    }
+
+
+def parse_usd_edit_value(text: str):
+    """Редактирование уже найденной USD-записи: число без знака = расход, + = приход."""
+    m = num_re.search(str(text or ""))
+    if not m:
+        raise ValueError("no usd number")
+    amount = parse_amount(m.group(0))
+    note = (str(text or "")[:m.start()] + " " + str(text or "")[m.end():]).strip()
+    note = re.sub(r"\s+", " ", note).lower()
+    return float(amount), note
+
+
 def split_amount_and_note(text: str):
     """
     Возвращает:
@@ -8186,7 +8896,13 @@ def build_category_layout_text(store: dict, context: str = "exact") -> str:
             "",
         ]
     else:
-        lines = ["↕️ Расположение статей", "", "Меняйте порядок стрелками.", ""]
+        lines = [
+            "↕️ Расположение статей",
+            "",
+            "Слева выберите статью — возле неё появится ✅. Затем справа нажмите номер новой позиции.",
+            "Статья будет вставлена в выбранное место, остальные автоматически сдвинутся.",
+            "",
+        ]
     for idx, name in enumerate(get_expense_category_order(store), 1):
         lines.append(f"{idx}. {_clean_category_display_name(name)}")
     return wm_common("\n".join(lines), 7)
@@ -8209,17 +8925,16 @@ def build_category_layout_keyboard(store: dict, context: str, params: tuple, cha
         kb.row(IB("⬅️ Назад", callback_data=back_cb), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
         return kb
 
-    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb = types.InlineKeyboardMarkup(row_width=2)
     mode, start, end = params
-    for idx, slug in enumerate(slugs):
+    selection_key = _category_order_selection_key(int(chat_id or 0), ("sum", mode, start, end))
+    selected = _category_order_selection.get(selection_key)
+    for idx, slug in enumerate(slugs, 1):
         name = _clean_category_display_name(get_category_by_slug(slug, store) or slug)
-        up_cb = cat_callback(f"cat_order_move_sum:{slug}:up:{mode}:{start}:{end}")
-        down_cb = cat_callback(f"cat_order_move_sum:{slug}:down:{mode}:{start}:{end}")
-        kb.row(
-            IB("⬆️" if idx > 0 else "·", callback_data=up_cb if idx > 0 else "none"),
-            IB(name[:36], callback_data="none"),
-            IB("⬇️" if idx < len(slugs) - 1 else "·", callback_data=down_cb if idx < len(slugs) - 1 else "none"),
-        )
+        left = f"✅ {name}" if slug == selected else name
+        select_cb = cat_callback(f"cat_order_select_sum:{slug}:{mode}:{start}:{end}")
+        pos_cb = cat_callback(f"cat_order_position_sum:{idx}:{mode}:{start}:{end}")
+        kb.row(IB(left[:36], callback_data=select_cb), IB(str(idx), callback_data=pos_cb))
     if mode == "wthu":
         back_cb = cat_callback(f"cat_wthu:{start}")
     elif mode == "wk":
@@ -10559,7 +11274,7 @@ def cmd_total_secret_capture(msg):
 
 @bot.message_handler(func=lambda m: bool(
     getattr(m, "text", None)
-    and re.match(r"^/izm_R\d+(?:@[A-Za-z0-9_]+)?(?:\s*)$", m.text.strip(), flags=re.I)
+    and re.match(r"^/izm_[RU]\d+(?:@[A-Za-z0-9_]+)?(?:\s*)$", m.text.strip(), flags=re.I)
 ))
 def cmd_forward_copy_edit(msg):
     try:
@@ -10958,11 +11673,18 @@ def _add_record_to_currency_ledger(
 
 
 def handle_finance_text(msg):
-    """Обычный финансовый ввод с независимыми ARS/USD контурами."""
+    """
+    Обработка обычного ввода для финучёта.
+    Теперь принимает сумму не только из text, но и из caption
+    у фото/видео/документов/аудио и т.п.
+    """
+
     chat_id = msg.chat.id
     bot_journal("finance_text_start", chat_id, describe_msg_for_log(msg))
     text = _message_text_for_finance(msg)
-    if not text or not is_finance_mode(chat_id):
+    if not text:
+        return False
+    if not is_finance_mode(chat_id):
         return False
 
     store = get_chat_store(chat_id)
@@ -10970,59 +11692,41 @@ def handle_finance_text(msg):
     if not settings.get("auto_add", True):
         return False
 
-    entry_day = finance_day_key_from_message(msg)
-    store["current_view_day"] = entry_day
-    owner_id = getattr(getattr(msg, "from_user", None), "id", 0)
-    active_ledger = _ensure_currency_ledgers(store)
-
-    # В ARS/ARS-USD явные суммы с суффиксом USD пишутся в отдельный долларовый контур.
-    usd_ops = _parse_explicit_usd_operations(text)
-    usd_added = False
-    remaining_text = text
-    if active_ledger != "usd" and usd_ops:
-        spans = [tuple(op["span"]) for op in usd_ops]
-        remaining_text = _text_without_spans(text, spans)
-        for op in usd_ops:
-            note = _text_without_spans(text, [tuple(op["span"])]) or "USD"
-            _add_record_to_currency_ledger(
-                chat_id, "usd", op["amount"], note, owner_id,
-                source_msg=msg, day_key=entry_day,
-            )
-            usd_added = True
-
-    # Сообщение вида «500 USD» не должно одновременно создавать расход 500 ARS.
-    should_add_active = looks_like_amount(remaining_text) if remaining_text else False
-    if not should_add_active:
-        if usd_added:
-            _snapshot_active_currency_ledger(store, active_ledger)
-            save_data(data, chat_ids=[int(chat_id)])
-            schedule_config_backup_for_chats(int(chat_id), delay=0.2)
-            schedule_quick_backup(
-                int(chat_id),
-                MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
-            )
-            return True
+    if not looks_like_amount(text):
+        # Не считаем обычный текст ошибкой, но если в сообщении есть цифры,
+        # это полезно видеть в /errors: возможно, формат суммы не распознан.
         if text_has_any_digit(text):
             log_error(f"[FINANCE SKIP] amount not recognized: {describe_msg_for_log(msg)} text={text[:220]!r}")
         return False
 
     try:
-        amount, note = split_amount_and_note(remaining_text)
+        comp = parse_financial_components(text)
+        amount, note = comp["amount"], comp["note"]
     except Exception as e:
-        log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={remaining_text[:220]!r}: {e}")
-        return bool(usd_added)
+        log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
+        return False
+
+    entry_day = finance_day_key_from_message(msg)
+    store["current_view_day"] = entry_day
 
     try:
         add_record_to_chat(
-            chat_id, amount, note, owner_id,
-            source_msg=msg, day_key=entry_day,
+            chat_id,
+            amount,
+            note,
+            getattr(getattr(msg, "from_user", None), "id", 0),
+            source_msg=msg,
+            day_key=entry_day,
+            usd_amount=comp.get("usd_amount"),
+            usd_note=comp.get("usd_note", ""),
+            usd_only=comp.get("usd_only", False),
+            source_finance_text=comp.get("source_finance_text", text),
         )
-        # При ARS+USD в одном сообщении обе части уже сохранены до обновления окон.
         schedule_finalize(chat_id, entry_day)
         return True
     except Exception as e:
         log_error(f"[FINANCE ADD ERROR] {describe_msg_for_log(msg)} amount={amount} note={note!r}: {e}")
-        return bool(usd_added)
+        return False
 
 def handle_finance_edit(msg):
     chat_id = msg.chat.id
@@ -11046,14 +11750,26 @@ def handle_finance_edit(msg):
 
     if text and looks_like_amount(text):
         try:
-            amount, note = split_amount_and_note(text)
+            comp = parse_financial_components(text)
+            amount, note = comp["amount"], comp["note"]
         except Exception:
+            comp = {"usd_amount": 0.0, "usd_note": "", "usd_only": False}
             amount, note = 0, "удалено"
     else:
+        comp = {"usd_amount": 0.0, "usd_note": "", "usd_only": False}
         amount, note = 0, "удалено"
 
     target["amount"] = amount
     target["note"] = note
+    if comp.get("usd_amount") is not None:
+        target["usd_amount"] = float(comp.get("usd_amount") or 0)
+        target["usd_note"] = str(comp.get("usd_note") or "")
+        target["usd_only"] = bool(comp.get("usd_only", False))
+        target["source_finance_text"] = str(comp.get("source_finance_text") or text)
+    elif target.get("usd_amount") is not None:
+        target["usd_amount"] = 0.0
+        target["usd_note"] = ""
+        target["usd_only"] = False
 
     for day, arr in store.get("daily_records", {}).items():
         for r in arr:
@@ -11092,7 +11808,8 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
 
         if text and looks_like_amount(text):
             try:
-                amount, note = split_amount_and_note(text)
+                comp = parse_financial_components(text)
+                amount, note = comp["amount"], comp["note"]
             except Exception as e:
                 log_error(f"[FWD FINANCE PARSE ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} text={str(text)[:220]!r}: {e}")
                 return False
@@ -11101,6 +11818,15 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 if existing:
                     existing["amount"] = amount
                     existing["note"] = note
+                    if comp.get("usd_amount") is not None:
+                        existing["usd_amount"] = float(comp.get("usd_amount") or 0)
+                        existing["usd_note"] = str(comp.get("usd_note") or "")
+                        existing["usd_only"] = bool(comp.get("usd_only", False))
+                        existing["source_finance_text"] = str(comp.get("source_finance_text") or text)
+                    elif existing.get("usd_amount") is not None:
+                        existing["usd_amount"] = 0.0
+                        existing["usd_note"] = ""
+                        existing["usd_only"] = False
                     existing["timestamp"] = message_timestamp_iso(source_msg)
                     if source_msg is not None:
                         existing["source_order_msg_id"] = getattr(source_msg, "message_id", existing.get("source_order_msg_id", 0))
@@ -11120,7 +11846,11 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                         note,
                         owner,
                         source_msg=shadow_msg,
-                        day_key=entry_day
+                        day_key=entry_day,
+                        usd_amount=comp.get("usd_amount"),
+                        usd_note=comp.get("usd_note", ""),
+                        usd_only=comp.get("usd_only", False),
+                        source_finance_text=comp.get("source_finance_text", text),
                     )
             except Exception as e:
                 log_error(f"[FWD FINANCE ADD ERROR] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id} amount={amount} note={note!r}: {e}")
@@ -11129,6 +11859,9 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
         elif existing:
             existing["amount"] = 0
             existing["note"] = "удалено"
+            existing["usd_amount"] = 0.0
+            existing["usd_note"] = ""
+            existing["usd_only"] = False
             entry_day = existing.get("day_key") or entry_day
             rebuild_month_short_ids(dst_chat_id)
             rebuild_global_records()
@@ -11547,7 +12280,7 @@ def get_forward_finance(src_chat_id: int, dst_chat_id: int) -> bool:
 
 
 FORWARD_COPY_EDIT_MODES = ("normal", "button", "slash")
-FORWARD_COPY_EDIT_COMMAND_RE = re.compile(r"(?:^|\s)/izm_(R\d+)\s*$", re.I)
+FORWARD_COPY_EDIT_COMMAND_RE = re.compile(r"(?:^|\s)/izm_([RU]\d+)\s*$", re.I)
 
 
 def forward_copy_edit_mode(chat_id: int | None = None) -> str:
@@ -11656,13 +12389,13 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None
 
 def _strip_forward_copy_edit_command(text: str) -> str:
     raw = str(text or "").rstrip()
-    return re.sub(r"(?:\n|\s)+/izm_R\d+\s*$", "", raw, flags=re.I).rstrip()
+    return re.sub(r"(?:\n|\s)+/izm_[RU]\d+\s*$", "", raw, flags=re.I).rstrip()
 
 
 def _forward_copy_record_command(rec: dict) -> str:
-    sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}").strip()
-    if not sid.upper().startswith("R"):
-        sid = "R" + sid
+    sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}").strip().upper()
+    if not re.fullmatch(r"[RU]\d+", sid):
+        sid = "R" + re.sub(r"\D+", "", sid)
     return f"/izm_{sid}"
 
 
@@ -11771,7 +12504,8 @@ def _find_forward_copy_record_by_short_id(chat_id: int, short_id: str):
     sid = str(short_id or "").strip().upper()
     rows = []
     for rec in get_chat_store(int(chat_id)).get("records", []) or []:
-        if str(rec.get("short_id") or "").strip().upper() != sid:
+        record_ids = {str(rec.get("short_id") or "").strip().upper(), str(rec.get("usd_short_id") or "").strip().upper()}
+        if sid not in record_ids:
             continue
         msg_id = rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id")
         try:
@@ -11792,14 +12526,18 @@ def clear_forward_copy_edit_wait(chat_id: int, delete_prompt: bool = True):
     store = get_chat_store(int(chat_id))
     wait = store.get("forward_copy_edit_wait") or {}
     prompt_id = wait.get("prompt_msg_id")
+    force_reply_msg_id = wait.get("force_reply_msg_id")
     DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
     store["forward_copy_edit_wait"] = None
     save_data(data, chat_ids=[int(chat_id)])
-    if delete_prompt and prompt_id:
-        try:
-            bot.delete_message(int(chat_id), int(prompt_id))
-        except Exception:
-            pass
+    if delete_prompt:
+        for _mid in (prompt_id, force_reply_msg_id):
+            if not _mid:
+                continue
+            try:
+                bot.delete_message(int(chat_id), int(_mid))
+            except Exception:
+                pass
 
 
 def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int, delay: float = 40.0):
@@ -11809,7 +12547,7 @@ def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int,
             if int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
                 return
             clear_forward_copy_edit_wait(int(chat_id), delete_prompt=True)
-            send_and_auto_delete(int(chat_id), "⌛ Изменение копии бота отменено по таймеру.", 7)
+            send_and_auto_delete(int(chat_id), "⌛ Время изменения бот-копии истекло. Режим отменён.", 8)
         except Exception as e:
             log_error(f"schedule_forward_copy_edit_wait_cancel({chat_id}): {e}")
     DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
@@ -11824,7 +12562,13 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
     if source_chat_id is None:
         send_and_auto_delete(int(chat_id), "❌ Это сообщение не связано с бот-копией пересылки.", 8)
         return False
-    current = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+    current = str(rec.get("source_finance_text") or "").strip()
+    if not current:
+        if float(rec.get("usd_amount", 0) or 0) and bool(rec.get("usd_only", False)):
+            current = compose_edit_input_value(rec.get("usd_amount"), rec.get("usd_note") or rec.get("note", ""))
+        else:
+            current = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+
     kb = types.InlineKeyboardMarkup()
     kb.row(make_copy_or_inline_button("✍️ Вставить текст", current))
     kb.row(IB("❌ Отмена", callback_data="fwdcopy_edit_cancel"))
@@ -11837,13 +12581,39 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
         "⏳ Режим автоматически отменится через 40 секунд."
     )
     sent = _tg_call_retry(bot.send_message, int(chat_id), prompt, reply_markup=kb, purpose="forward_copy_edit_prompt")
+
+    # Telegram Bot API не позволяет без действия пользователя физически заполнить compose-поле.
+    # ForceReply сразу открывает режим ответа, а сообщение ниже даёт готовую строку @бот + значение.
+    try:
+        username = get_bot_username_cached()
+        force_text = (
+            f"@{username} {current}" if username
+            else str(current)
+        )
+        try:
+            force_reply = types.ForceReply(selective=True, input_field_placeholder=str(current)[:64])
+        except TypeError:
+            force_reply = types.ForceReply(selective=True)
+        force_msg = _tg_call_retry(
+            bot.send_message, int(chat_id), force_text,
+            reply_markup=force_reply,
+            reply_to_message_id=int(sent.message_id),
+            purpose="forward_copy_edit_force_reply",
+        )
+        force_msg_id = int(getattr(force_msg, "message_id", 0) or 0)
+    except Exception as e:
+        log_error(f"forward_copy_edit force reply {chat_id}: {e}")
+        force_msg_id = 0
+
     get_chat_store(int(chat_id))["forward_copy_edit_wait"] = {
         "type": "forward_copy_edit",
         "dst_msg_id": int(dst_msg_id),
         "rid": int(rec.get("id")),
         "source_chat_id": int(source_chat_id),
         "prompt_msg_id": int(sent.message_id),
+        "force_reply_msg_id": int(force_msg_id or 0),
         "insert_text": current,
+        "countdown_base_text": prompt,
         "expires_at": time.time() + 40,
     }
     save_data(data, chat_ids=[int(chat_id)])
@@ -11853,7 +12623,8 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
 def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -> bool:
     clean_text = sanitize_telegram_inserted_text(str(new_text or "").strip())
     try:
-        amount, note = split_amount_and_note(clean_text)
+        comp = parse_financial_components(clean_text)
+        amount, note = comp["amount"], comp["note"]
     except Exception:
         return False
     rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
@@ -11868,6 +12639,18 @@ def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -
         if not update_record_in_chat(int(chat_id), rid, amount, note):
             return False
         rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
+        if rec is not None:
+            if comp.get("usd_amount") is not None:
+                rec["usd_amount"] = float(comp.get("usd_amount") or 0)
+                rec["usd_note"] = str(comp.get("usd_note") or "")
+                rec["usd_only"] = bool(comp.get("usd_only", False))
+                rec["source_finance_text"] = str(comp.get("source_finance_text") or clean_text)
+            elif rec.get("usd_amount") is not None:
+                rec["usd_amount"] = 0.0
+                rec["usd_note"] = ""
+                rec["usd_only"] = False
+            rebuild_month_short_ids(int(chat_id))
+            save_data(data, chat_ids=[int(chat_id)])
     mode = forward_copy_edit_mode(int(source_chat_id))
     display_text = _forward_copy_display_text(clean_text, rec, mode)
     reply_markup = _forward_copy_edit_keyboard(mode)
@@ -12533,7 +13316,15 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
+    """Функции, появившиеся в v85+, остаются доступны и во всех новых профилях.
+
+    Раньше список был жёстко ограничен v92 и ниже, поэтому в v93/v97 режим
+    «Гомонковые» был объявлен в профиле, но фактически блокировался.
+    """
+    return bool(active_bot_behavior_profile() in {
+        "v97_current", "v93_current", "v92_current", "v91_current", "v90_current",
+        "v88_current", "v87_current", "v86_current", "v85_current"
+    } and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -13071,9 +13862,179 @@ def fmt_usd_from_ars(amount: float, rate_info: dict | None) -> str:
     return fmt_usd_compact(amount, rate_info, signed=False, absolute=True)
 
 
+def usd_transactions_view_enabled(chat_id: int) -> bool:
+    try:
+        return bool(get_chat_store(int(chat_id)).setdefault("settings", {}).get("usd_transactions_view", False))
+    except Exception:
+        return False
+
+
+def set_usd_transactions_view(chat_id: int, enabled: bool):
+    store = get_chat_store(int(chat_id))
+    store.setdefault("settings", {})["usd_transactions_view"] = bool(enabled)
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+
+
+def toggle_usd_transactions_view(chat_id: int) -> bool:
+    new_value = not usd_transactions_view_enabled(int(chat_id))
+    set_usd_transactions_view(int(chat_id), new_value)
+    return new_value
+
+
+def usd_transactions_toggle_label(chat_id: int) -> str:
+    return "🇦🇷 ARS операции" if usd_transactions_view_enabled(int(chat_id)) else "💵 USD операции"
+
+
+def ensure_usd_migration_for_chat(chat_id: int) -> int:
+    """Однократно подхватывает USD из старых v92-записей текущей базы.
+
+    Новые v93-записи сразу имеют usd_amount. Для старых реконструируем исходную строку
+    из amount + note и применяем тот же парсер. Миграция не создаёт дублей.
+    """
+    store = get_chat_store(int(chat_id))
+    settings = store.setdefault("settings", {})
+    if settings.get("usd_transactions_migrated_v93"):
+        return 0
+    changed = 0
+    with locked_chat(int(chat_id)):
+        for rec in store.get("records", []) or []:
+            if rec.get("usd_amount") is not None:
+                continue
+            note = str(rec.get("note") or "").strip()
+            low = note.casefold()
+            likely = bool(
+                re.search(r"usd|усд|\$", low)
+                or (("к" in low or re.search(r"\bk\b", low)) and (USD_EXCHANGE_RE.search(low) or re.search(r"\bот\b", low) or "+к" in low or "+k" in low))
+            )
+            if not likely:
+                continue
+            try:
+                old_amount = float(rec.get("amount", 0) or 0)
+            except Exception:
+                old_amount = 0.0
+            # Отдельный старый формат «И 5+к»: после старого парсера число 5 было amount, а в note осталось «и +к».
+            if re.search(r"(?i)(?:^|\s)и\s*\+[kк]\b", low):
+                rec["usd_amount"] = abs(old_amount) * 1000.0
+                rec["usd_note"] = ""
+                rec["usd_only"] = True
+                rec["source_finance_text"] = f"И {fmt_num_compact(abs(old_amount))}+к"
+                rec["amount"] = 0.0
+                changed += 1
+                continue
+
+            sign = "+" if old_amount > 0 else ""
+            amount_text = fmt_num_compact(abs(old_amount))
+            # Если в старой note остался USD-маркер без собственной суммы, значит старый парсер
+            # вырезал именно первое USD-число. Возвращаем число на прежнее место перед USD/УСД.
+            explicit_note_usd = extract_usd_transaction(note)
+            if explicit_note_usd is None and re.search(r"(?i)(?:usd|усд|\$)", note):
+                if USD_EXCHANGE_RE.search(low):
+                    sign = ""  # «обмен» раньше мог искусственно перевернуть расход в плюс
+                insert_value = sign + amount_text
+                # «2к усд» после старого парсера превращалось в amount=2, note="к усд ...".
+                mcur = re.search(r"(?i)(?P<mult>[kк]\s*)?(?P<cur>usd|усд|\$)", note)
+                if mcur:
+                    replacement = insert_value + (mcur.group("mult") or "") + mcur.group("cur")
+                    reconstructed = (note[:mcur.start()] + replacement + note[mcur.end():]).strip()
+                else:
+                    reconstructed = f"{insert_value} {note}".strip()
+            else:
+                reconstructed = f"{sign}{amount_text} {note}".strip()
+            try:
+                comp = parse_financial_components(reconstructed)
+            except Exception:
+                continue
+            if comp.get("usd_amount") is None:
+                continue
+            rec["usd_amount"] = float(comp.get("usd_amount") or 0)
+            rec["usd_note"] = str(comp.get("usd_note") or "")
+            rec["usd_only"] = bool(comp.get("usd_only", False))
+            rec["source_finance_text"] = reconstructed
+            # Если строка была только USD или парсер нашёл корректную отдельную ARS-часть, исправляем старое ARS-значение.
+            rec["amount"] = float(comp.get("amount", 0) or 0)
+            rec["note"] = str(comp.get("note") or rec.get("note") or "")
+            changed += 1
+
+        settings["usd_transactions_migrated_v93"] = True
+        if changed:
+            normalize_chat_records(int(chat_id))
+            recalc_balance(int(chat_id))
+            rebuild_month_short_ids(int(chat_id))
+            rebuild_global_records()
+        save_data(data, chat_ids=[int(chat_id)])
+    if changed:
+        try:
+            bot_journal("usd_v93_migration", int(chat_id), f"records={changed}")
+        except Exception:
+            pass
+    return changed
+
+
+def usd_records_for_month(chat_id: int, month_key: str) -> list[dict]:
+    ensure_usd_migration_for_chat(int(chat_id))
+    rows = []
+    for rec in get_chat_store(int(chat_id)).get("records", []) or []:
+        try:
+            if not _record_day_key(rec).startswith(str(month_key)[:7]):
+                continue
+            usd_amount = float(rec.get("usd_amount", 0) or 0)
+            if not usd_amount:
+                continue
+            rows.append(rec)
+        except Exception:
+            continue
+    return sorted(rows, key=record_sort_key)
+
+
+def usd_balance_for_chat(chat_id: int) -> float:
+    ensure_usd_migration_for_chat(int(chat_id))
+    total = 0.0
+    for rec in get_chat_store(int(chat_id)).get("records", []) or []:
+        try:
+            total += float(rec.get("usd_amount", 0) or 0)
+        except Exception:
+            pass
+    return total
+
+
+def render_usd_month_window(chat_id: int, day_key: str):
+    month_key = str(day_key or today_key())[:7]
+    try:
+        month_dt = datetime.strptime(month_key + "-01", "%Y-%m-%d")
+        month_label = month_dt.strftime("%m.%Y")
+    except Exception:
+        month_label = month_key
+    rows = usd_records_for_month(int(chat_id), month_key)
+    income = sum(float(r.get("usd_amount", 0) or 0) for r in rows if float(r.get("usd_amount", 0) or 0) > 0)
+    expense = sum(abs(float(r.get("usd_amount", 0) or 0)) for r in rows if float(r.get("usd_amount", 0) or 0) < 0)
+    lines = [f"💵 USD операции за {month_label}", ""]
+    if rows:
+        for rec in rows:
+            amt = float(rec.get("usd_amount", 0) or 0)
+            sid = str(rec.get("usd_short_id") or rec.get("short_id") or f"U{rec.get('id','')}")
+            dk = fmt_date_ddmmyy(_record_day_key(rec))
+            note = html.escape(str(rec.get("usd_note") or rec.get("note") or ""))
+            sign = "+" if amt >= 0 else "-"
+            val = fmt_num_plain(abs(amt))
+            lines.append(f"{sid} {dk} {sign}${val} {note}".rstrip())
+    else:
+        lines.append("Нет USD-транзакций за этот месяц.")
+    lines.extend([
+        "",
+        f"📉 Расход за месяц: -${fmt_num_plain(expense)}",
+        f"📈 Приход за месяц: +${fmt_num_plain(income)}",
+        f"💵 Итог месяца: {('+' if income-expense >= 0 else '-')}${fmt_num_plain(abs(income-expense))}",
+        f"🏦 USD остаток по чату: {('+' if usd_balance_for_chat(chat_id) >= 0 else '-')}${fmt_num_plain(abs(usd_balance_for_chat(chat_id)))}",
+    ])
+    return wm_common("\n".join(lines), 1, html_mode=True), income - expense
+
+
 def render_day_window(chat_id: int, day_key: str):
+    if version_mode_feature("usd_transactions") and usd_transactions_view_enabled(int(chat_id)):
+        return render_usd_month_window(int(chat_id), day_key)
     store = get_chat_store(chat_id)
-    recs = store.get("daily_records", {}).get(day_key, [])
+    recs = [r for r in (store.get("daily_records", {}).get(day_key, []) or []) if not bool(r.get("usd_only", False))]
 
     d = datetime.strptime(day_key, "%Y-%m-%d")
     wd = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"][d.weekday()]
@@ -13258,12 +14219,16 @@ def build_main_keyboard(day_key: str, chat_id=None):
     """Главное окно без отдельной кнопки «Меню»: все основные функции сразу на виду."""
     kb = types.InlineKeyboardMarkup(row_width=3)
 
-    nav_row = [
-        IB("⬅️ Вчера", callback_data=f"d:{day_key}:prev")
-    ]
-    if day_key != today_key():
-        nav_row.append(IB("📅 Сегодня", callback_data=f"d:{day_key}:today"))
-    nav_row.append(IB("➡️ Завтра", callback_data=f"d:{day_key}:next"))
+    if chat_id is not None and usd_transactions_view_enabled(int(chat_id)):
+        nav_row = [IB("⬅️ Пред. месяц", callback_data=f"d:{day_key}:prev")]
+        if str(day_key)[:7] != today_key()[:7]:
+            nav_row.append(IB("📅 Этот месяц", callback_data=f"d:{day_key}:today"))
+        nav_row.append(IB("След. месяц ➡️", callback_data=f"d:{day_key}:next"))
+    else:
+        nav_row = [IB("⬅️ Вчера", callback_data=f"d:{day_key}:prev")]
+        if day_key != today_key():
+            nav_row.append(IB("📅 Сегодня", callback_data=f"d:{day_key}:today"))
+        nav_row.append(IB("➡️ Завтра", callback_data=f"d:{day_key}:next"))
     kb.row(*nav_row)
 
     kb.row(
@@ -13276,10 +14241,12 @@ def build_main_keyboard(day_key: str, chat_id=None):
         IB("📂 CSV", callback_data=f"d:{day_key}:csv_all"),
         IB("📊 Статьи", callback_data=cat_callback("cat_today")),
     )
+    if chat_id is not None and version_mode_feature("usd_transactions"):
+        kb.row(IB(usd_transactions_toggle_label(int(chat_id)), callback_data=f"d:{day_key}:usd_tx_toggle"))
 
     # v84: каждая финансовая запись дня становится кнопкой. Нажатие сразу
     # открывает штатный 40-секундный режим редактирования этой записи.
-    if chat_id is not None and effective_main_financial_value_buttons_enabled(int(chat_id)):
+    if chat_id is not None and effective_main_financial_value_buttons_enabled(int(chat_id)) and not usd_transactions_view_enabled(int(chat_id)):
         value_buttons = []
         for rec in financial_value_records_for_day(int(chat_id), day_key):
             try:
@@ -13413,7 +14380,7 @@ def build_month_report_text(chat_id: int, month_key: str = None):
     has_any = False
     for day in range(1, days_in_month + 1):
         day_key = f"{year}-{month:02d}-{day:02d}"
-        recs = daily.get(day_key, [])
+        recs = [r for r in (daily.get(day_key, []) or []) if not bool(r.get("usd_only", False))]
         total_expense = sum(-float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) < 0)
         total_income = sum(float(r.get("amount", 0) or 0) for r in recs if float(r.get("amount", 0) or 0) >= 0)
         day_balance = calc_day_balance(store, day_key)
@@ -13490,7 +14457,7 @@ def _backup_toggle_label(chat_id: int, target: str, label: str) -> str:
 
 
 def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | None = None, target_chat_id: int | None = None):
-    """Ряды: слева период, справа CSV и Excel."""
+    """Ф47: пять строк периодов и четыре колонки: период / CSV / Excel / Excel статьи."""
     periods = [
         ("📅 День", "day"),
         ("🗓 Неделя", "week"),
@@ -13502,15 +14469,19 @@ def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | 
         if prefix == "fv":
             csv_cb = f"fv:{target_chat_id}:{day_key}:csv_{mode}:{owner_day_key}"
             xlsx_cb = f"fv:{target_chat_id}:{day_key}:xlsx_{mode}:{owner_day_key}"
+            xlsxstat_cb = f"fv:{target_chat_id}:{day_key}:xlsxstat_{mode}:{owner_day_key}"
         else:
             csv_action = "csv_all_real" if mode == "all" else f"csv_{mode}"
             xlsx_action = "xlsx_all" if mode == "all" else f"xlsx_{mode}"
+            xlsxstat_action = f"xlsxstat_{mode}"
             csv_cb = f"d:{day_key}:{csv_action}"
             xlsx_cb = f"d:{day_key}:{xlsx_action}"
+            xlsxstat_cb = f"d:{day_key}:{xlsxstat_action}"
         kb.row(
             IB(label, callback_data="none"),
             IB("CSV", callback_data=csv_cb),
             IB("Excel", callback_data=xlsx_cb),
+            IB("Excel статьи", callback_data=xlsxstat_cb),
         )
 
 
@@ -13781,16 +14752,6 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
 
 def build_csv_menu(day_key: str, chat_id: int | None = None):
     kb = types.InlineKeyboardMarkup(row_width=4)
-    try:
-        ref_dt = datetime.strptime(day_key, "%Y-%m-%d")
-    except Exception:
-        ref_dt = now_local()
-    kb.row(
-        IB("📅 Дата", callback_data=export_callback(f"exp_pick_start:{ref_dt.year}:{ref_dt.month}:{day_key}")),
-        IB("CSV", callback_data=f"d:{day_key}:csv_day"),
-        IB("Excel", callback_data=f"d:{day_key}:xlsx_day"),
-        IB("XL по стат", callback_data=export_callback(f"exp_send:{day_key}:0:{day_key}:0:xlsxstat:{day_key}")),
-    )
     _add_export_period_rows(kb, day_key, "d")
     try:
         ref_dt = datetime.strptime(day_key, "%Y-%m-%d")
@@ -13849,6 +14810,7 @@ def sanitize_telegram_inserted_text(text: str) -> str:
     return re.sub(r"[ \t]+", " ", s).strip()
 
 DIRECT_EDIT_TOKEN = "EDITREC"
+USD_DIRECT_EDIT_TOKEN = "EDITUSD"
 
 
 def compose_direct_edit_insert_value(target_chat_id: int, rid: int, day_key: str, amount, note: str = "") -> str:
@@ -13858,6 +14820,12 @@ def compose_direct_edit_insert_value(target_chat_id: int, rid: int, day_key: str
     """
     value = compose_edit_input_value(amount, note)
     meta = f"{DIRECT_EDIT_TOKEN}|{int(target_chat_id)}|{int(rid)}|{str(day_key)[:10]}|"
+    return f"({meta} служебное — можно не трогать)\n\n{value}"
+
+
+def compose_usd_edit_insert_value(target_chat_id: int, rid: int, day_key: str, amount, note: str = "") -> str:
+    value = compose_edit_input_value(amount, note)
+    meta = f"{USD_DIRECT_EDIT_TOKEN}|{int(target_chat_id)}|{int(rid)}|{str(day_key)[:10]}|"
     return f"({meta} служебное — можно не трогать)\n\n{value}"
 
 
@@ -13878,12 +14846,12 @@ def handle_direct_edit_insert_message(msg) -> bool:
             return False
         chat_id = int(msg.chat.id)
         text = (msg.text or "").strip()
-        if DIRECT_EDIT_TOKEN + "|" not in text:
+        token_kind = USD_DIRECT_EDIT_TOKEN if USD_DIRECT_EDIT_TOKEN + "|" in text else DIRECT_EDIT_TOKEN if DIRECT_EDIT_TOKEN + "|" in text else None
+        if not token_kind:
             return False
 
-        # Новый удобный формат: (EDITREC|chat|rid|day| служебное...) + ниже обычный текст суммы.
-        # Всё, что в скобках, используется как адрес записи и удаляется из текста перед разбором суммы.
-        m = re.search(r"\((%s\|[^)]*)\)" % re.escape(DIRECT_EDIT_TOKEN), text)
+        # Формат: (EDITREC/EDITUSD|chat|rid|day| служебное...) + ниже обычный текст суммы.
+        m = re.search(r"\((%s\|[^)]*)\)" % re.escape(token_kind), text)
         if m:
             meta_text = m.group(1)
             parts = meta_text.split("|", 4)
@@ -13893,7 +14861,7 @@ def handle_direct_edit_insert_message(msg) -> bool:
             value_text = (text[:m.start()] + " " + text[m.end():]).strip()
         else:
             # Старый формат для совместимости: EDITREC|chat|rid|day| сумма описание
-            text = text[text.find(DIRECT_EDIT_TOKEN + "|"):]
+            text = text[text.find(token_kind + "|"):]
             parts = text.split("|", 4)
             if len(parts) < 5:
                 return False
@@ -13914,9 +14882,21 @@ def handle_direct_edit_insert_message(msg) -> bool:
             send_and_auto_delete(chat_id, "⛔ Нельзя редактировать запись другого чата.", 10)
             return True
 
-        amount, note = split_amount_and_note(value_text)
-        with locked_chat(target_chat_id):
-            ok = update_record_in_chat(target_chat_id, rid, amount, note)
+        if token_kind == USD_DIRECT_EDIT_TOKEN:
+            amount, note = parse_usd_edit_value(value_text)
+            with locked_chat(target_chat_id):
+                rec = next((r for r in get_chat_store(target_chat_id).get("records", []) if int(r.get("id", -1)) == int(rid)), None)
+                ok = rec is not None
+                if rec is not None:
+                    rec["usd_amount"] = float(amount)
+                    rec["usd_note"] = str(note or rec.get("usd_note") or rec.get("note") or "")
+                    rec["usd_only"] = bool(rec.get("usd_only", False) and not float(rec.get("amount", 0) or 0))
+                    rebuild_month_short_ids(target_chat_id)
+                    save_data(data, chat_ids=[target_chat_id])
+        else:
+            amount, note = split_amount_and_note(value_text)
+            with locked_chat(target_chat_id):
+                ok = update_record_in_chat(target_chat_id, rid, amount, note)
         if not ok:
             send_and_auto_delete(chat_id, "❌ Запись для редактирования не найдена.", 10)
             return True
@@ -13926,7 +14906,10 @@ def handle_direct_edit_insert_message(msg) -> bool:
         except Exception:
             pass
         finance_changed(target_chat_id, day_key, reason="direct_edit_insert", delay=0.1)
-        send_and_auto_delete(chat_id, f"✅ Запись обновлена: {fmt_num(amount)} {note}", 8)
+        if token_kind == USD_DIRECT_EDIT_TOKEN:
+            send_and_auto_delete(chat_id, f"✅ USD-запись обновлена: {fmt_num(amount)} USD {note}", 8)
+        else:
+            send_and_auto_delete(chat_id, f"✅ Запись обновлена: {fmt_num(amount)} {note}", 8)
         return True
     except Exception as e:
         log_error(f"handle_direct_edit_insert_message: {e}")
@@ -14588,6 +15571,21 @@ def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str = "d", o
     else:
         kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
+def build_usd_edit_records_keyboard(day_key: str, chat_id: int):
+    month_key = str(day_key)[:7]
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    rows = usd_records_for_month(int(chat_id), month_key)
+    for rec in rows:
+        rid = int(rec.get("id"))
+        amt = float(rec.get("usd_amount", 0) or 0)
+        sid = str(rec.get("usd_short_id") or rec.get("short_id") or f"U{rid}")
+        label = f"{sid} {('+' if amt >= 0 else '-')}${fmt_num_plain(abs(amt))}"
+        insert_text = compose_usd_edit_insert_value(chat_id, rid, _record_day_key(rec), amt, rec.get("usd_note") or rec.get("note", ""))
+        kb.row(IB(label, callback_data="none"), make_direct_edit_insert_button("✏️", insert_text))
+    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+
 def toggle_edit_delete_selection(chat_id: int, day_key: str, rid: int):
     store = get_chat_store(chat_id)
     all_sel = store.setdefault("edit_delete_selected", {})
@@ -14861,11 +15859,14 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
     try:
         trace.step("читает режим периода")
         file_type = str(file_type or "csv").lower().lstrip(".")
-        mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
+        raw_mode = str(mode or "all")
+        if raw_mode.startswith("xlsxstat_"):
+            raw_mode = raw_mode[len("xlsxstat_"):]
+        mode = raw_mode.replace("csv_", "").replace("xlsx_", "")
         if mode == "all_real":
             mode = "all"
 
-        if mode == "all":
+        if mode == "all" and file_type in {"csv", "xlsx"}:
             trace.step("экспорт за всё время — обновляет локальные файлы")
             save_chat_json(target_chat_id)
             path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
@@ -14886,7 +15887,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
 
         trace.step("собирает строки за выбранный период")
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
-        ext = "xlsx" if file_type == "xlsx" else "csv"
+        ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         if not rows and ext != "xlsx":
             trace.step("строк нет — отправляет уведомление")
             send_info(recipient_chat_id, f"Нет данных {label}.")
@@ -14895,8 +15896,36 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         if not rows and ext == "xlsx":
             trace.step("строк нет — создаёт пустой Excel с заголовками")
         tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}")
-        display_name = export_display_filename(target_chat_id, mode, day_key, ext)
-        if ext == "xlsx":
+        if file_type == "xlsxstat":
+            safe_chat = mega_safe_name(get_chat_display_name(target_chat_id), "chat")
+            display_name = f"{safe_chat}_{mode}_{day_key}_excel_статьи.xlsx"
+        else:
+            display_name = export_display_filename(target_chat_id, mode, day_key, ext)
+        if file_type == "xlsxstat":
+            trace.step("создаёт Excel по статьям с формулами")
+            store = get_chat_store(target_chat_id)
+            base = datetime.strptime(day_key, "%Y-%m-%d")
+            if mode == "day":
+                start_key = end_key = day_key
+            elif mode == "week":
+                start_key = (base - timedelta(days=6)).strftime("%Y-%m-%d")
+                end_key = day_key
+            elif mode == "month":
+                start_key = base.replace(day=1).strftime("%Y-%m-%d")
+                end_key = day_key
+            elif mode == "wedthu":
+                start_dt = base
+                while start_dt.weekday() != 2:
+                    start_dt -= timedelta(days=1)
+                start_key = start_dt.strftime("%Y-%m-%d")
+                end_key = (start_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                keys = sorted((store.get("daily_records", {}) or {}).keys())
+                start_key = keys[0] if keys else day_key
+                end_key = keys[-1] if keys else day_key
+            xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
+            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Статьи")
+        elif ext == "xlsx":
             trace.step("создаёт временный Excel файл")
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
             for date_v, amount_v, note_v in rows:
@@ -14921,7 +15950,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
-                caption=f"📂 {'Excel' if ext == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                caption=f"📂 {'Excel статьи' if file_type == 'xlsxstat' else ('Excel' if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
                 purpose="export_send_document"
             )
         trace.step("удаляет временный файл")
@@ -15006,6 +16035,16 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
     except Exception:
         return True
     store = get_chat_store(target_chat_id)
+    # Любой экран статей заменяет на этом message_id прежнее фин-окно. Сразу фиксируем это,
+    # чтобы реестр не перерисовал его обратно; финансово-зависимые wthu/show ниже станут динамическими.
+    try:
+        register_static_open_view(
+            owner_chat_id, call.message.message_id, code=action,
+            day_key=parts[2] if len(parts) > 2 else None,
+            params={"target_chat_id": target_chat_id, "view_action": action},
+        )
+    except Exception:
+        pass
     if action == "fvcat_today":
         owner_day_key = parts[2] if len(parts) > 2 else today_key()
         return handle_finwindow_categories_callback(call, f"fvcat_wthu:{target_chat_id}:{today_key()}:{owner_day_key}")
@@ -15121,6 +16160,10 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
         text, _ = summarize_categories(store, start, end, label)
         text = f"👁 {get_chat_display_name(target_chat_id)}\n" + text
         safe_edit(bot, call, text, reply_markup=build_fin_categories_summary_keyboard(target_chat_id, "wthu", start, end, owner_day_key), parse_mode=None)
+        register_open_window(
+            owner_chat_id, call.message.message_id, "fin_categories_view", code="fvcat:wthu", day_key=ref,
+            params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": "wthu", "ref": ref},
+        )
         return True
     if action == "fvcat_show":
         try:
@@ -15137,6 +16180,10 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
         kb.row(IB("🔙 Назад", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}")))
         kb.row(IB("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
         safe_edit(bot, call, text, reply_markup=kb, parse_mode=None)
+        register_open_window(
+            owner_chat_id, call.message.message_id, "fin_categories_view", code="fvcat:show", day_key=start,
+            params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": "show", "start": start, "end": end, "slug": slug},
+        )
         return True
     return True
 
@@ -15568,7 +16615,7 @@ def build_owner_instruction_text() -> str:
         "📅 Дата — открыть календарь; в календаре можно менять месяц и год.\n"
         "📊 Отчёт — месячный отчёт. 🧮 Итог — общий итог. 🏦 с ост — остаток после каждого расхода.\n"
         "✏️ Изменить / 🗑 Удалить — работа с финансовыми записями. 📦 Статьи — расходы по категориям.\n"
-        "📄 CSV — окно Ф47: Дата, CSV, Excel и XL по стат.\n\n"
+        "📄 CSV — окно Ф47: пять периодов; в каждой строке Период / CSV / Excel / Excel статьи. Точный период открывается отдельной кнопкой ниже.\n\n"
         "💱 Валюта\n"
         "ARS — отдельный учёт в песо. ARS-USD — тот же ARS с эквивалентом по курсу. USD — отдельный долларовый учёт со всеми финансовыми функциями.\n"
         "/ost — включает или выключает подпись «ост:» в окне остатка.\n\n"
@@ -15784,7 +16831,7 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
-        if active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current"}:
+        if active_bot_behavior_profile() in {"v93_current", "v92_current", "v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
@@ -16295,7 +17342,10 @@ def handle_categories_callback(call, data_str: str) -> bool:
                 bot.delete_message(chat_id, mid)
             except Exception:
                 pass
+        if mid:
+            unregister_open_window(chat_id, int(mid))
         store["categories_msg_id"] = None
+        store["categories_refresh_state"] = None
         save_data(data)
         return True
 
@@ -16481,6 +17531,52 @@ def handle_categories_callback(call, data_str: str) -> bool:
             log_error(f"cat_order_open_sum: {e}")
         return True
 
+    if data_str.startswith("cat_order_select_sum:"):
+        try:
+            _, slug, mode, start, end = data_str.split(":", 4)
+            params = ("sum", mode, start, end)
+            key = _category_order_selection_key(chat_id, params)
+            _category_order_selection[key] = slug
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store, "sum"),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_select_sum: {e}")
+        return True
+
+    if data_str.startswith("cat_order_position_sum:"):
+        try:
+            _, position, mode, start, end = data_str.split(":", 4)
+            params = ("sum", mode, start, end)
+            key = _category_order_selection_key(chat_id, params)
+            slug = _category_order_selection.get(key)
+            if not slug:
+                try:
+                    bot.answer_callback_query(call.id, "Сначала выберите статью")
+                except Exception:
+                    pass
+                return True
+            moved = move_expense_category_to_position(store, slug, int(position))
+            _category_order_selection.pop(key, None)
+            if moved:
+                save_data(data, chat_ids=[chat_id])
+                schedule_quick_backup(
+                    chat_id,
+                    MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
+                )
+                schedule_config_backup_for_chats(chat_id, delay=0.4)
+                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="category_order_position_f36", delay=0.03)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store, "sum"),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_position_sum: {e}")
+        return True
+
     if data_str.startswith("cat_order_move_sum:"):
         try:
             _, slug, direction, mode, start, end = data_str.split(":", 5)
@@ -16535,8 +17631,9 @@ def handle_categories_callback(call, data_str: str) -> bool:
                 except Exception:
                     pass
                 return True
-            if move_expense_category_to_position(store, slug, int(position)):
-                _category_order_selection.pop(key, None)
+            moved = move_expense_category_to_position(store, slug, int(position))
+            _category_order_selection.pop(key, None)
+            if moved:
                 save_data(data, chat_ids=[chat_id])
                 schedule_quick_backup(
                     chat_id,
@@ -17504,6 +18601,7 @@ def on_callback(call):
                 bot.delete_message(chat_id, call.message.message_id)
             except Exception:
                 pass
+            unregister_open_window(chat_id, call.message.message_id)
             return
     
         if data_str.startswith("rep:"):
@@ -17853,6 +18951,10 @@ def on_callback(call):
 
             kb = build_calendar_keyboard(center_dt, chat_id)
             safe_edit(bot, call, calendar_window_text(center_dt), reply_markup=kb)
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="calendar", day_key=center_dt.strftime("%Y-%m-%d"),
+                params={"view_action": "calendar", "center_day": center_dt.strftime("%Y-%m-%d")},
+            )
             return
         if data_str.startswith("fc:"):
             if not is_owner_chat(chat_id):
@@ -17869,6 +18971,10 @@ def on_callback(call):
                 f"📅 Выберите день: {html.escape(get_chat_display_name(target_chat_id))}\n{russian_month_name(center_dt.month)} {center_dt.year}",
                 reply_markup=build_fin_calendar_keyboard(target_chat_id, center_dt, owner_day_key),
                 parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "fin_view", code="fv:calendar", day_key=center_dt.strftime("%Y-%m-%d"),
+                params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": "calendar", "center_day": center_dt.strftime("%Y-%m-%d")},
             )
             return
         if data_str == "articles_desc":
@@ -18022,6 +19128,10 @@ def on_callback(call):
             except Exception:
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            try:
+                finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day") or today_key(), reason="main_articles_toggle", delay=0.03)
+            except Exception:
+                pass
             return
         if data_str == "main_financial_values_toggle":
             if not version_mode_feature("financial_value_buttons"):
@@ -18032,6 +19142,10 @@ def on_callback(call):
             except Exception:
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            try:
+                finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day") or today_key(), reason="main_financial_values_toggle", delay=0.03)
+            except Exception:
+                pass
             return
         if data_str == "version_menu":
             if not is_owner_chat(chat_id):
@@ -18163,6 +19277,19 @@ def on_callback(call):
                 return
             target_store = get_chat_store(target_chat_id)
             target_store["current_view_day"] = view_day
+
+            # Фактически открытое окно владельца регистрируем как зависимое от target_chat_id.
+            # При следующем изменении данных target-чата оно будет автоматически перерисовано.
+            registry_action = action
+            if action == "clear_delete_back":
+                registry_action = "open"
+            elif action.startswith("del_toggle_") or action == "del_selected":
+                registry_action = "edit_list"
+            if registry_action in {"open", "back_main", "menu", "calendar", "report", "total", "info", "edit_list", "csv_menu"}:
+                register_open_window(
+                    chat_id, call.message.message_id, "fin_view", code=f"fv:{registry_action}", day_key=view_day,
+                    params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": registry_action},
+                )
 
             if action == "clear_delete_back":
                 clear_edit_delete_selection(target_chat_id, view_day)
@@ -18333,12 +19460,28 @@ def on_callback(call):
                     parse_mode="HTML"
                 )
                 return
-            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu", "xlsx_all", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu"}:
-                file_type = "xlsx" if action.startswith("xlsx_") else "csv"
-                mode = action.replace("csv_", "").replace("xlsx_", "")
+            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu", "xlsx_all", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsxstat_all", "xlsxstat_day", "xlsxstat_week", "xlsxstat_month", "xlsxstat_wedthu"}:
+                if action.startswith("xlsxstat_"):
+                    file_type = "xlsxstat"
+                    mode = action.replace("xlsxstat_", "", 1)
+                else:
+                    file_type = "xlsx" if action.startswith("xlsx_") else "csv"
+                    mode = action.replace("csv_", "").replace("xlsx_", "")
                 send_export_for_chat_to(chat_id, target_chat_id, mode, view_day, file_type)
                 return
             return
+
+        if data_str.startswith("exp_"):
+            # Точный экспорт временно превращает Ф47 в последовательность экранов выбора.
+            # Помечаем фактическое состояние, чтобы автообновление финансов не вернуло окно в О1/Ф47 посреди выбора.
+            try:
+                register_static_open_view(
+                    chat_id, call.message.message_id, code=data_str.split(":", 1)[0],
+                    day_key=get_chat_store(chat_id).get("current_view_day") or today_key(),
+                    params={"source": "exact_export"},
+                )
+            except Exception:
+                pass
 
         if data_str.startswith("exp_pick_start:"):
             try:
@@ -18511,7 +19654,11 @@ def on_callback(call):
             return
         if cmd == "prev":
             base_day_key = store.get("current_view_day") or day_key
-            d = datetime.strptime(base_day_key, "%Y-%m-%d") - timedelta(days=1)
+            if usd_transactions_view_enabled(chat_id):
+                _base = datetime.strptime(base_day_key, "%Y-%m-%d").replace(day=1)
+                d = (_base - timedelta(days=1)).replace(day=1)
+            else:
+                d = datetime.strptime(base_day_key, "%Y-%m-%d") - timedelta(days=1)
             nd = d.strftime("%Y-%m-%d")
             store["current_view_day"] = nd
             if is_owner_chat(chat_id):
@@ -18525,7 +19672,11 @@ def on_callback(call):
             return
         if cmd == "next":
             base_day_key = store.get("current_view_day") or day_key
-            d = datetime.strptime(base_day_key, "%Y-%m-%d") + timedelta(days=1)
+            if usd_transactions_view_enabled(chat_id):
+                _base = datetime.strptime(base_day_key, "%Y-%m-%d").replace(day=28) + timedelta(days=4)
+                d = _base.replace(day=1)
+            else:
+                d = datetime.strptime(base_day_key, "%Y-%m-%d") + timedelta(days=1)
             nd = d.strftime("%Y-%m-%d")
             store["current_view_day"] = nd
             if is_owner_chat(chat_id):
@@ -18549,6 +19700,16 @@ def on_callback(call):
                 set_active_window_id(chat_id, nd, call.message.message_id)
                 schedule_balance_panel_refresh(chat_id, 0.1)
             return
+        if cmd == "usd_tx_toggle":
+            enabled = toggle_usd_transactions_view(chat_id)
+            store["current_view_day"] = day_key
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(bot, call, txt, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode="HTML")
+            try:
+                bot.answer_callback_query(call.id, "USD операции" if enabled else "ARS операции", show_alert=False)
+            except Exception:
+                pass
+            return
         if cmd == "calendar":
             try:
                 cdt = datetime.strptime(day_key, "%Y-%m-%d")
@@ -18556,8 +19717,16 @@ def on_callback(call):
                 cdt = now_local()
             kb = build_calendar_keyboard(cdt, chat_id)
             safe_edit(bot, call, calendar_window_text(cdt), reply_markup=kb)
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="calendar", day_key=day_key,
+                params={"view_action": "calendar", "center_day": cdt.strftime("%Y-%m-%d")},
+            )
             return
         if cmd == "report":
+            if usd_transactions_view_enabled(chat_id):
+                txt, _ = render_usd_month_window(chat_id, day_key)
+                safe_edit(bot, call, txt, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode="HTML")
+                return
             try:
                 month_key = datetime.strptime(day_key, "%Y-%m-%d").strftime("%Y-%m")
             except Exception:
@@ -18565,16 +19734,36 @@ def on_callback(call):
             if chat_buttons_current_window_enabled(chat_id):
                 report_html, _ = build_month_report_text(chat_id, month_key)
                 safe_edit(bot, call, report_html, reply_markup=build_report_keyboard(month_key), parse_mode="HTML")
+                register_open_window(
+                    chat_id, call.message.message_id, "local_fin_view", code="report", day_key=day_key,
+                    params={"view_action": "report", "month_key": month_key},
+                )
             else:
                 open_report_window(chat_id, month_key)
             return
         if cmd == "total":
+            if usd_transactions_view_enabled(chat_id):
+                month_key = str(day_key)[:7]
+                rows = usd_records_for_month(chat_id, month_key)
+                inc = sum(float(r.get("usd_amount", 0) or 0) for r in rows if float(r.get("usd_amount", 0) or 0) > 0)
+                exp = sum(abs(float(r.get("usd_amount", 0) or 0)) for r in rows if float(r.get("usd_amount", 0) or 0) < 0)
+                bal = usd_balance_for_chat(chat_id)
+                text = wm_common(
+                    f"💵 USD итог\n\nПриход за месяц: +${fmt_num_plain(inc)}\nРасход за месяц: -${fmt_num_plain(exp)}\nИтог месяца: {('+' if inc-exp >= 0 else '-')}${fmt_num_plain(abs(inc-exp))}\nUSD остаток по чату: {('+' if bal >= 0 else '-')}${fmt_num_plain(abs(bal))}",
+                    4,
+                )
+                safe_edit(bot, call, text, reply_markup=build_main_keyboard(day_key, chat_id))
+                return
             chat_bal = store.get("balance", 0)
 
             if not is_owner_chat(chat_id):
                 text = wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
                 if chat_buttons_current_window_enabled(chat_id):
                     safe_edit(bot, call, text, parse_mode="HTML")
+                    register_open_window(
+                        chat_id, call.message.message_id, "local_fin_view", code="total", day_key=day_key,
+                        params={"view_action": "total", "depends_on_all": False},
+                    )
                     return
                 final_id = send_or_edit_stored_window(
                     chat_id,
@@ -18619,6 +19808,10 @@ def on_callback(call):
             text = "\n".join(lines)
             if chat_buttons_current_window_enabled(chat_id):
                 safe_edit(bot, call, wm_common(text, 4), parse_mode="HTML")
+                register_open_window(
+                    chat_id, call.message.message_id, "local_fin_view", code="total", day_key=day_key,
+                    params={"view_action": "total", "depends_on_all": True},
+                )
                 return
             final_id = send_or_edit_stored_window(
                 chat_id,
@@ -18638,6 +19831,10 @@ def on_callback(call):
                     call,
                     wm_common(build_info_text(chat_id), 9),
                     reply_markup=build_info_keyboard(chat_id),
+                )
+                register_open_window(
+                    chat_id, call.message.message_id, "local_fin_view", code="info", day_key=day_key,
+                    params={"view_action": "info"},
                 )
             else:
                 open_info_window(chat_id)
@@ -18765,6 +19962,10 @@ def on_callback(call):
                 reply_markup=kb,
                 parse_mode="HTML"
             )
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="csv_menu", day_key=day_key,
+                params={"view_action": "csv_menu"},
+            )
             return
         if cmd in {"bk_chat", "bk_channel", "bk_mega"}:
             if not is_owner_chat(chat_id):
@@ -18779,9 +19980,13 @@ def on_callback(call):
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
             return
-        if cmd in {"csv_day", "csv_week", "csv_month", "csv_wedthu", "csv_all_real", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsx_all"}:
-            file_type = "xlsx" if cmd.startswith("xlsx_") else "csv"
-            mode = cmd.replace("csv_", "").replace("xlsx_", "")
+        if cmd in {"csv_day", "csv_week", "csv_month", "csv_wedthu", "csv_all_real", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsx_all", "xlsxstat_day", "xlsxstat_week", "xlsxstat_month", "xlsxstat_wedthu", "xlsxstat_all"}:
+            if cmd.startswith("xlsxstat_"):
+                file_type = "xlsxstat"
+                mode = cmd.replace("xlsxstat_", "", 1)
+            else:
+                file_type = "xlsx" if cmd.startswith("xlsx_") else "csv"
+                mode = cmd.replace("csv_", "").replace("xlsx_", "")
             if mode == "all_real":
                 mode = "all"
             send_export_for_chat_to(chat_id, chat_id, mode, day_key, file_type)
@@ -18793,6 +19998,14 @@ def on_callback(call):
             return
 
         if cmd == "edit_list":
+            if usd_transactions_view_enabled(chat_id):
+                rows = usd_records_for_month(chat_id, str(day_key)[:7])
+                if not rows:
+                    send_and_auto_delete(chat_id, "Нет USD-записей за этот месяц.")
+                    return
+                txt, _ = render_usd_month_window(chat_id, day_key)
+                safe_edit(bot, call, txt, reply_markup=build_usd_edit_records_keyboard(day_key, chat_id), parse_mode="HTML")
+                return
             day_recs = store.get("daily_records", {}).get(day_key, [])
             if not day_recs:
                 send_and_auto_delete(chat_id, "Нет записей за этот день.")
@@ -18804,6 +20017,10 @@ def on_callback(call):
                 txt,
                 reply_markup=build_edit_records_keyboard(day_key, chat_id),
                 parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key,
+                params={"view_action": "edit_list"},
             )
             return
 
@@ -18824,11 +20041,13 @@ def on_callback(call):
             toggle_edit_delete_selection(chat_id, day_key, rid)
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(bot, call, txt, reply_markup=build_edit_records_keyboard(day_key, chat_id), parse_mode="HTML")
+            register_open_window(chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key, params={"view_action": "edit_list"})
             return
         if cmd == "del_selected":
             count = delete_selected_records(chat_id, day_key)
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(bot, call, txt, reply_markup=build_edit_records_keyboard(day_key, chat_id), parse_mode="HTML")
+            register_open_window(chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key, params={"view_action": "edit_list"})
             send_and_auto_delete(chat_id, f"🗑 Удалено записей: {count}", 8)
             return
 
@@ -18905,6 +20124,10 @@ def on_callback(call):
                 render_fin_window_text(tgt, view_day),
                 reply_markup=build_fin_window_view_keyboard(tgt, view_day, day_key),
                 parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "fin_view", code="fv:open", day_key=view_day,
+                params={"target_chat_id": tgt, "owner_day_key": day_key, "view_action": "open"},
             )
             return
         if cmd.startswith("qb_cfg_"):
@@ -19007,6 +20230,10 @@ def on_callback(call):
                 render_fin_window_text(tgt, view_day),
                 reply_markup=build_fin_window_view_keyboard(tgt, view_day, day_key),
                 parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "fin_view", code="fv:open", day_key=view_day,
+                params={"target_chat_id": tgt, "owner_day_key": day_key, "view_action": "open"},
             )
             return
         if cmd.startswith("fw_finmode_pick_"):
@@ -19185,7 +20412,11 @@ def add_record_to_chat(
     note: str,
     owner: int,
     source_msg=None,
-    day_key=None
+    day_key=None,
+    usd_amount=None,
+    usd_note: str = "",
+    usd_only: bool = False,
+    source_finance_text: str = "",
 ):
     bot_journal("record_add_start", chat_id, f"amount={amount} note={note}")
     with locked_chat(chat_id):
@@ -19215,6 +20446,12 @@ def add_record_to_chat(
             "origin_msg_id": source_msg_id,
             "day_key": day_key,
         }
+        if usd_amount is not None:
+            rec["usd_amount"] = float(usd_amount or 0)
+            rec["usd_note"] = str(usd_note or note or "")
+            rec["usd_only"] = bool(usd_only)
+        if source_finance_text:
+            rec["source_finance_text"] = str(source_finance_text)
 
         store.setdefault("records", []).append(rec)
         normalize_chat_records(chat_id)
@@ -19223,6 +20460,7 @@ def add_record_to_chat(
 
         rebuild_month_short_ids(chat_id)
         rebuild_global_records()
+        return rec
 
 def delete_record_in_chat(chat_id: int, rid: int):
     with locked_chat(chat_id):
@@ -20585,15 +21823,25 @@ def rebuild_month_short_ids(chat_id: int):
     store = get_chat_store(chat_id)
     daily = store.get("daily_records", {}) or {}
     month_counters = {}
+    usd_month_counters = {}
 
     for dk in sorted(daily.keys()):
         month_key = dk[:7]
         month_counters.setdefault(month_key, 1)
+        usd_month_counters.setdefault(month_key, 1)
         recs = sorted(daily.get(dk, []) or [], key=record_sort_key)
         daily[dk] = recs
         for r in recs:
-            r["short_id"] = f"R{month_counters[month_key]}"
-            month_counters[month_key] += 1
+            has_usd = bool(float(r.get("usd_amount", 0) or 0))
+            usd_only = bool(r.get("usd_only", False))
+            if not usd_only:
+                r["short_id"] = f"R{month_counters[month_key]}"
+                month_counters[month_key] += 1
+            elif has_usd:
+                r["short_id"] = f"U{usd_month_counters[month_key]}"
+            if has_usd:
+                r["usd_short_id"] = f"U{usd_month_counters[month_key]}"
+                usd_month_counters[month_key] += 1
 
     store["records"] = [r for dk in sorted(daily.keys()) for r in daily.get(dk, [])]
 
@@ -20903,15 +22151,17 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
                 trace.step("обновляет окно дня")
                 _safe_stabilize("day_window", lambda: update_or_send_day_window(chat_id, day_key))
 
-            trace.step("обновляет зарегистрированные открытые окна")
-            _safe_stabilize("open_windows_registry", lambda: refresh_registered_financial_windows(chat_id))
-
             trace.step("обновляет общий итог")
             _safe_stabilize("refresh_total", lambda: refresh_total_message_if_any(chat_id))
 
             trace.step("обновляет быстрый остаток")
             _safe_stabilize("quick_balance_now", lambda: refresh_balance_panel_now(chat_id))
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
+
+        # Реестр обновляем даже для скрытого финрежима: сам скрытый чат может не показывать финансы,
+        # но открытое у владельца окно этого чата обязано синхронизироваться.
+        trace.step("обновляет зарегистрированные открытые окна")
+        _safe_stabilize("open_windows_registry", lambda: refresh_registered_financial_windows(chat_id))
 
         trace.step("ставит бэкап в отдельную очередь")
         _safe_stabilize("full_backup_queue", lambda: schedule_full_backup_only(chat_id, BACKUP_MIN_DELAY_SECONDS))
@@ -21564,6 +22814,37 @@ def cmd_mega_status(msg):
     send_and_auto_delete(chat_id, mega_status_text(), 90)
 
 
+@bot.message_handler(commands=["mega_restore_now"])
+def cmd_mega_restore_now(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    try:
+        send_and_auto_delete(chat_id, "☁️ Запускаю полное восстановление из MEGA…", 20)
+        ok, detail = mega_restore_full_from_cloud(force=True)
+        if ok:
+            try:
+                refresh_registered_financial_windows(chat_id)
+            except Exception:
+                pass
+            try:
+                schedule_startup_main_windows(delay=0.5)
+            except Exception:
+                pass
+            send_and_auto_delete(chat_id, "✅ " + detail, 120)
+        else:
+            send_and_auto_delete(chat_id, "❌ " + detail, 120)
+    except Exception as e:
+        log_error(f"cmd_mega_restore_now: {e}")
+        send_and_auto_delete(chat_id, "❌ Ошибка восстановления из MEGA: " + str(e)[:500], 120)
+
+
 @bot.message_handler(commands=["mega_backup_now"])
 def cmd_mega_backup_now(msg):
     try:
@@ -22002,3 +23283,4 @@ def main():
     app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 if __name__ == "__main__":
     main()
+# bot_v97_usd_transactions_forward_edit
