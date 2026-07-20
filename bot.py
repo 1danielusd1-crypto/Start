@@ -1,7 +1,9 @@
+# bot_v97_usd_transactions_forward_edit
 import os
 import io
 import json
 import csv
+import copy
 import re
 import html
 import logging
@@ -368,7 +370,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v93_usd_transactions_forward_edit"
+VERSION = "bot_v97_usd_transactions_forward_edit"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -752,6 +754,25 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v97_current": {
+        "title": "v97 Все правки чата / USD v93 сохранён",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "forward_copy_edit": True,
+        "usd_transactions": True,
+        "description": "v93 USD-транзакции + все исправления из текущего чата до отдельной команды восстановления USD-кнопки.",
+    },
     "v93_current": {
         "title": "v93 USD / 💰Перес редактирование",
         "ui_edit_interval": 0.03,
@@ -961,7 +982,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v93_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v97_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -1185,20 +1206,39 @@ def financial_value_records_for_day(chat_id: int, day_key: str) -> list[dict]:
         return []
 
 
-def buttons_current_window_enabled() -> bool:
-    """Глобальный режим владельца: кнопочные переходы стараются открываться в текущем окне."""
+def _owner_setting_value(key: str, default=False, chat_id: int | None = None):
+    """Настройка owner scope; для старых данных сохраняет fallback на глобальное значение."""
     try:
-        gs = (data or {}).setdefault("_global_settings", {})
-        return bool(gs.get("buttons_current_window", False))
+        cid = int(chat_id) if chat_id is not None else current_state_chat_id()
+        if cid is not None:
+            scoped = owner_scoped_settings(cid)
+            if key in scoped:
+                return scoped.get(key)
+        return (data or {}).setdefault("_global_settings", {}).get(key, default)
     except Exception:
-        return False
+        return default
+
+
+def _set_owner_setting_value(key: str, value, chat_id: int | None = None):
+    cid = int(chat_id) if chat_id is not None else current_state_chat_id()
+    if cid is not None:
+        owner_scoped_settings(cid)[key] = value
+        save_data(data, chat_ids=[cid])
+        schedule_config_backup_for_chats(cid, delay=0.3)
+    else:
+        data.setdefault("_global_settings", {})[key] = value
+        save_data(data)
+
+
+def buttons_current_window_enabled(chat_id: int | None = None) -> bool:
+    return bool(_owner_setting_value("buttons_current_window", False, chat_id))
 
 
 def chat_buttons_current_window_enabled(chat_id: int) -> bool:
     try:
         store = get_chat_store(int(chat_id))
         local = bool(store.setdefault("settings", {}).get("buttons_current_window", False))
-        return local or (is_owner_chat(chat_id) and buttons_current_window_enabled())
+        return local or buttons_current_window_enabled(chat_id)
     except Exception:
         return False
 
@@ -1208,111 +1248,101 @@ def toggle_chat_buttons_current_window(chat_id: int) -> bool:
     settings = store.setdefault("settings", {})
     new_value = not bool(settings.get("buttons_current_window", False))
     settings["buttons_current_window"] = new_value
-    save_data(data)
+    save_data(data, chat_ids=[int(chat_id)])
     return new_value
 
 
-def set_buttons_current_window_enabled(enabled: bool):
+def set_buttons_current_window_enabled(enabled: bool, chat_id: int | None = None):
     try:
-        data.setdefault("_global_settings", {})["buttons_current_window"] = bool(enabled)
-        save_data(data)
+        _set_owner_setting_value("buttons_current_window", bool(enabled), chat_id)
     except Exception as e:
         log_error(f"set_buttons_current_window_enabled: {e}")
 
 
-def toggle_buttons_current_window() -> bool:
-    new_value = not buttons_current_window_enabled()
-    set_buttons_current_window_enabled(new_value)
+def toggle_buttons_current_window(chat_id: int | None = None) -> bool:
+    new_value = not buttons_current_window_enabled(chat_id)
+    set_buttons_current_window_enabled(new_value, chat_id)
     return new_value
 
 
-def buttons_current_window_label() -> str:
-    return "✅ В текущем окне" if buttons_current_window_enabled() else "❌ В текущем окне"
+def buttons_current_window_label(chat_id: int | None = None) -> str:
+    return "✅ В текущем окне" if buttons_current_window_enabled(chat_id) else "❌ В текущем окне"
 
 
+def forward_menu_new_style_enabled(chat_id: int | None = None) -> bool:
+    return bool(_owner_setting_value("forward_menu_new_style", False, chat_id))
 
 
-def forward_menu_new_style_enabled() -> bool:
-    """Глобальный режим владельца для В22: старое меню или новое визуальное меню пары A/B."""
+def set_forward_menu_new_style_enabled(enabled: bool, chat_id: int | None = None):
     try:
-        gs = (data or {}).setdefault("_global_settings", {})
-        return bool(gs.get("forward_menu_new_style", False))
-    except Exception:
-        return False
-
-
-def set_forward_menu_new_style_enabled(enabled: bool):
-    try:
-        data.setdefault("_global_settings", {})["forward_menu_new_style"] = bool(enabled)
-        save_data(data)
+        _set_owner_setting_value("forward_menu_new_style", bool(enabled), chat_id)
     except Exception as e:
         log_error(f"set_forward_menu_new_style_enabled: {e}")
 
 
-def toggle_forward_menu_new_style() -> bool:
-    new_value = not forward_menu_new_style_enabled()
-    set_forward_menu_new_style_enabled(new_value)
+def toggle_forward_menu_new_style(chat_id: int | None = None) -> bool:
+    new_value = not forward_menu_new_style_enabled(chat_id)
+    set_forward_menu_new_style_enabled(new_value, chat_id)
     return new_value
 
 
-def forward_menu_style_label() -> str:
-    return "🧩 Пересылка: по-новому" if forward_menu_new_style_enabled() else "🔁 Пересылка: обычно"
+def forward_menu_style_label(chat_id: int | None = None) -> str:
+    return "🧩 Пересылка: по-новому" if forward_menu_new_style_enabled(chat_id) else "🔁 Пересылка: обычно"
 
 
-# ─────────────────────────────────────────────────────────────
-# Короткие подписи inline-кнопок: режим переключается владельцем командой /buttons.
-# Имена чатов не трогаем: сокращаются только известные служебные подписи.
-# ─────────────────────────────────────────────────────────────
-def icon_button_mode_enabled() -> bool:
+def icon_button_mode_enabled(chat_id: int | None = None) -> bool:
+    return bool(_owner_setting_value("icon_button_mode", True, chat_id))
+
+
+def set_icon_button_mode_enabled(enabled: bool, chat_id: int | None = None):
     try:
-        gs = (data or {}).setdefault("_global_settings", {})
-        return bool(gs.get("icon_button_mode", True))
-    except Exception:
-        return False
-
-
-def set_icon_button_mode_enabled(enabled: bool):
-    try:
-        data.setdefault("_global_settings", {})["icon_button_mode"] = bool(enabled)
-        save_data(data)
+        _set_owner_setting_value("icon_button_mode", bool(enabled), chat_id)
     except Exception as e:
         log_error(f"set_icon_button_mode_enabled: {e}")
 
 
-def toggle_icon_button_mode() -> bool:
-    new_value = not icon_button_mode_enabled()
-    set_icon_button_mode_enabled(new_value)
+def toggle_icon_button_mode(chat_id: int | None = None) -> bool:
+    new_value = not icon_button_mode_enabled(chat_id)
+    set_icon_button_mode_enabled(new_value, chat_id)
     return new_value
 
 
-def icon_button_mode_label() -> str:
-    return "🔣 Кнопки: значки" if icon_button_mode_enabled() else "🔤 Кнопки: текст"
+def icon_button_mode_label(chat_id: int | None = None) -> str:
+    return "🔣 Кнопки: значки" if icon_button_mode_enabled(chat_id) else "🔤 Кнопки: текст"
 
-
-def total_secret_mask_enabled() -> bool:
+def total_secret_mask_enabled(chat_id: int | None = None) -> bool:
     try:
+        if chat_id is not None:
+            scoped = owner_scoped_settings(int(chat_id))
+            if "total_secret_mask_enabled" in scoped:
+                return bool(scoped.get("total_secret_mask_enabled"))
         gs = (data or {}).setdefault("_global_settings", {})
         return bool(gs.get("total_secret_mask_enabled", False))
     except Exception:
         return False
 
 
-def set_total_secret_mask_enabled(enabled: bool):
+def set_total_secret_mask_enabled(enabled: bool, chat_id: int | None = None):
     try:
-        data.setdefault("_global_settings", {})["total_secret_mask_enabled"] = bool(enabled)
-        save_data(data)
+        if chat_id is not None:
+            owner_scoped_settings(int(chat_id))["total_secret_mask_enabled"] = bool(enabled)
+            save_data(data, chat_ids=[int(chat_id)])
+            schedule_config_backup_for_chats(int(chat_id), delay=0.3)
+        else:
+            data.setdefault("_global_settings", {})["total_secret_mask_enabled"] = bool(enabled)
+            save_data(data)
     except Exception as e:
         log_error(f"set_total_secret_mask_enabled: {e}")
 
 
-def toggle_total_secret_mask() -> bool:
-    new_value = not total_secret_mask_enabled()
-    set_total_secret_mask_enabled(new_value)
+def toggle_total_secret_mask(chat_id: int | None = None) -> bool:
+    new_value = not total_secret_mask_enabled(chat_id)
+    set_total_secret_mask_enabled(new_value, chat_id)
     return new_value
 
 
-def total_secret_mask_label() -> str:
-    return "🪷 Маска: ВКЛ" if total_secret_mask_enabled() else "🪷 Маска: ВЫКЛ"
+def total_secret_mask_label(chat_id: int | None = None) -> str:
+    return "🪷 Маска: ВКЛ" if total_secret_mask_enabled(chat_id) else "🪷 Маска: ВЫКЛ"
 
 def verbose_process_journal_enabled() -> bool:
     """Подробный PROCESS-журнал нужен только для диагностики. По умолчанию выключен, чтобы не тормозить бот."""
@@ -2510,25 +2540,20 @@ def day_key_from_message(msg=None) -> str:
     return today_key()
 
 
-def finance_day_start_5am_enabled() -> bool:
-    """Режим финучёта: новые сутки начинаются в 05:00, а не в 00:00."""
-    try:
-        return bool((data or {}).setdefault("_global_settings", {}).get("finance_day_start_5am", False))
-    except Exception:
-        return False
+def finance_day_start_5am_enabled(chat_id: int | None = None) -> bool:
+    """Режим финансовых суток хранится отдельно в owner scope."""
+    return bool(_owner_setting_value("finance_day_start_5am", False, chat_id))
 
 
-def toggle_finance_day_start_5am() -> bool:
-    gs = data.setdefault("_global_settings", {})
-    new_value = not bool(gs.get("finance_day_start_5am", False))
-    gs["finance_day_start_5am"] = new_value
-    save_data(data)
+def toggle_finance_day_start_5am(chat_id: int | None = None) -> bool:
+    new_value = not finance_day_start_5am_enabled(chat_id)
+    _set_owner_setting_value("finance_day_start_5am", new_value, chat_id)
     return new_value
 
 
-def finance_day_key_from_datetime(dt: datetime) -> str:
+def finance_day_key_from_datetime(dt: datetime, chat_id: int | None = None) -> str:
     try:
-        if finance_day_start_5am_enabled():
+        if finance_day_start_5am_enabled(chat_id):
             dt = dt - timedelta(hours=5)
         return dt.strftime("%Y-%m-%d")
     except Exception:
@@ -2541,17 +2566,18 @@ def finance_day_key_from_message(msg=None) -> str:
             dt = datetime.fromtimestamp(int(msg.date), tz=get_tz())
         else:
             dt = now_local()
-        return finance_day_key_from_datetime(dt)
+        cid = getattr(getattr(msg, "chat", None), "id", None) if msg is not None else current_state_chat_id()
+        return finance_day_key_from_datetime(dt, cid)
     except Exception:
         return day_key_from_message(msg)
 
 
-def finance_today_key() -> str:
-    return finance_day_key_from_datetime(now_local())
+def finance_today_key(chat_id: int | None = None) -> str:
+    return finance_day_key_from_datetime(now_local(), chat_id if chat_id is not None else current_state_chat_id())
 
 
-def finance_day_start_label() -> str:
-    return "05:00" if finance_day_start_5am_enabled() else "00:00"
+def finance_day_start_label(chat_id: int | None = None) -> str:
+    return "05:00" if finance_day_start_5am_enabled(chat_id) else "00:00"
 
 
 RU_MONTH_NAMES = (
@@ -2565,6 +2591,11 @@ def russian_month_name(month: int) -> str:
         return RU_MONTH_NAMES[int(month) - 1]
     except Exception:
         return str(month)
+
+
+def calendar_window_text(center_day: datetime, marker: bool = True) -> str:
+    text = f"📅 Выберите день:\n{russian_month_name(center_day.month)} {center_day.year}"
+    return wm_common(text, 2) if marker else text
 
 
 def fmt_date_ddmmyy(day_key: str) -> str:
@@ -2910,31 +2941,25 @@ def is_finance_output_suppressed(chat_id: int) -> bool:
         return False
 
 
-def mega_backup_priority_enabled() -> bool:
-    """True: сначала быстро фиксируем JSON в MEGA, затем выполняем обычные бэкапы."""
-    try:
-        return bool((data or {}).setdefault("_global_settings", {}).get("mega_backup_priority", False))
-    except Exception:
-        return False
+def mega_backup_priority_enabled(chat_id: int | None = None) -> bool:
+    """Приоритет MEGA — настройка owner scope; без контекста сохраняется legacy fallback."""
+    return bool(_owner_setting_value("mega_backup_priority", False, chat_id))
 
 
-def set_mega_backup_priority_enabled(enabled: bool):
-    data.setdefault("_global_settings", {})["mega_backup_priority"] = bool(enabled)
-    save_data(data, full=True)
-    # Само изменение режима немедленно фиксируем универсальным снимком.
+def set_mega_backup_priority_enabled(enabled: bool, chat_id: int | None = None):
+    _set_owner_setting_value("mega_backup_priority", bool(enabled), chat_id)
     if mega_is_configured():
         _schedule_global_mega_snapshot(1.0)
 
 
-def toggle_mega_backup_priority() -> bool:
-    new_value = not mega_backup_priority_enabled()
-    set_mega_backup_priority_enabled(new_value)
+def toggle_mega_backup_priority(chat_id: int | None = None) -> bool:
+    new_value = not mega_backup_priority_enabled(chat_id)
+    set_mega_backup_priority_enabled(new_value, chat_id)
     return new_value
 
 
-def mega_backup_priority_label() -> str:
-    return "☁️ Сразу в MEGA" if mega_backup_priority_enabled() else "🕓 MEGA как обычно"
-
+def mega_backup_priority_label(chat_id: int | None = None) -> str:
+    return "☁️ Сразу в MEGA" if mega_backup_priority_enabled(chat_id) else "🕓 MEGA как обычно"
 
 def backup_excel_all_enabled() -> bool:
     try:
@@ -3526,6 +3551,8 @@ def _clear_stored_window(chat_id: int, store_key: str, message_id: int | None = 
         if message_id is not None and int(current) != int(message_id):
             return
         store[store_key] = None
+        if current:
+            unregister_open_window(chat_id, int(current))
         save_data(data)
     except Exception as e:
         log_error(f"_clear_stored_window({chat_id},{store_key}): {e}")
@@ -3546,6 +3573,7 @@ def schedule_stored_window_delete(chat_id: int, store_key: str, delay: int = AUX
                 pass
             if store.get(store_key) == message_id:
                 store[store_key] = None
+                unregister_open_window(chat_id, int(message_id))
                 save_data(data)
         except Exception as e:
             log_error(f"schedule_stored_window_delete({chat_id},{store_key}): {e}")
@@ -3565,6 +3593,463 @@ def default_window_nav_keyboard(chat_id: int):
         IB("❌ Закрыть", callback_data="aux_close"),
     )
     return kb
+
+
+def _open_window_registry() -> dict:
+    return data.setdefault("open_window_registry", {})
+
+
+def register_open_window(chat_id: int, message_id: int, window_type: str, code: str = "", day_key: str | None = None, params: dict | None = None):
+    try:
+        chat_id = int(chat_id)
+        message_id = int(message_id)
+        key = f"{owner_scope_id(chat_id)}:{chat_id}:{message_id}"
+        params = params or {}
+        currency_chat_id = chat_id
+        try:
+            if params.get("target_chat_id") is not None:
+                currency_chat_id = int(params.get("target_chat_id"))
+        except Exception:
+            currency_chat_id = chat_id
+        _open_window_registry()[key] = {
+            "owner_id": owner_scope_id(chat_id),
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "window_type": str(window_type or ""),
+            "code": str(code or ""),
+            "currency_mode": currency_mode(currency_chat_id) if "currency_mode" in globals() else "ars",
+            "day_key": day_key,
+            "params": params,
+            "updated_at": now_local().isoformat(timespec="seconds"),
+        }
+        # Реестр должен переживать перезапуск, поэтому фиксируем root SQLite сразу.
+        save_data(data, root_only=True)
+    except Exception as e:
+        log_error(f"register_open_window: {e}")
+
+
+def unregister_open_window(chat_id: int, message_id: int):
+    try:
+        chat_id = int(chat_id); message_id = int(message_id)
+        reg = _open_window_registry()
+        changed = False
+        for key, item in list(reg.items()):
+            if int(item.get("chat_id", 0) or 0) == chat_id and int(item.get("message_id", 0) or 0) == message_id:
+                reg.pop(key, None)
+                changed = True
+        if changed:
+            save_data(data, root_only=True)
+    except Exception:
+        pass
+
+
+def get_registered_open_window(chat_id: int, message_id: int) -> dict | None:
+    """Возвращает фактическое последнее состояние конкретного Telegram-сообщения."""
+    try:
+        chat_id = int(chat_id); message_id = int(message_id)
+        best = None
+        for item in (_open_window_registry() or {}).values():
+            if int((item or {}).get("chat_id", 0) or 0) != chat_id:
+                continue
+            if int((item or {}).get("message_id", 0) or 0) != message_id:
+                continue
+            best = item
+        return best
+    except Exception:
+        return None
+
+
+def register_static_open_view(chat_id: int, message_id: int, code: str = "", day_key: str | None = None, params: dict | None = None):
+    """Помечает открытое меню как фактически открытое, чтобы фин-синхронизация не превращала его обратно в О1."""
+    register_open_window(chat_id, message_id, "static_view", code=code, day_key=day_key, params=params or {})
+
+
+def _message_missing_error(exc) -> bool:
+    text = str(exc or "").lower()
+    return any(x in text for x in (
+        "message to edit not found", "message not found", "message_id_invalid",
+        "message can't be edited", "chat not found", "bot was blocked", "forbidden",
+    ))
+
+
+def _markup_callback_values(reply_markup) -> list[str]:
+    out = []
+    try:
+        for row in getattr(reply_markup, "keyboard", None) or getattr(reply_markup, "inline_keyboard", None) or []:
+            for btn in row:
+                cb = getattr(btn, "callback_data", None)
+                if cb:
+                    out.append(str(cb))
+    except Exception:
+        pass
+    return out
+
+
+def _refresh_categories_window_from_state(chat_id: int) -> bool:
+    """Перерисовывает основные зависимые окна статей по сохранённому состоянию."""
+    store = get_chat_store(chat_id)
+    mid = store.get("categories_msg_id")
+    state = store.get("categories_refresh_state") or {}
+    if not mid or not state:
+        return False
+    marker = str(state.get("marker_action") or "")
+    callbacks = [str(x) for x in (state.get("callbacks") or [])]
+    try:
+        if marker.startswith("cat_range_records"):
+            cb = next((x for x in callbacks if x.startswith("cat_show_records:")), None)
+            if cb:
+                _, start_key, start_rid, end_key, end_rid, _slug = cb.split(":", 5)
+                text, _ = summarize_categories_record_range(store, start_key, int(start_rid), end_key, int(end_rid))
+                kb = build_categories_record_summary_keyboard(start_key, int(start_rid), end_key, int(end_rid), store)
+                send_or_edit_categories_window(chat_id, text, reply_markup=kb, preferred_message_id=int(mid), marker_action="cat_range_records:*")
+                return True
+        if marker.startswith(("cat_order_open_sum", "cat_order_move_sum", "cat_order_select_sum", "cat_order_position_sum")):
+            cb = next((x for x in callbacks if x.startswith("cat_order_select_sum:")), None)
+            if cb:
+                _, _slug, mode, start, end = cb.split(":", 4)
+                send_or_edit_categories_window(
+                    chat_id, build_category_layout_text(store, "sum"),
+                    reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
+                    preferred_message_id=int(mid), marker_action="cat_order_open_sum:*",
+                )
+                return True
+        if marker.startswith(("cat_order_open_exact", "cat_order_move_exact", "cat_order_select_exact", "cat_order_position_exact")):
+            cb = next((x for x in callbacks if x.startswith("cat_order_select_exact:")), None)
+            if cb:
+                _, _slug, start_key, start_rid, end_key, end_rid = cb.split(":", 5)
+                params = (start_key, int(start_rid), end_key, int(end_rid))
+                send_or_edit_categories_window(
+                    chat_id, build_category_layout_text(store, "exact"),
+                    reply_markup=build_category_layout_keyboard(store, "exact", params, chat_id=chat_id),
+                    preferred_message_id=int(mid), marker_action="cat_order_open_exact:*",
+                )
+                return True
+    except Exception as e:
+        if _message_missing_error(e):
+            unregister_open_window(chat_id, int(mid))
+            store["categories_msg_id"] = None
+            store["categories_refresh_state"] = None
+        else:
+            log_error(f"_refresh_categories_window_from_state({chat_id}): {e}")
+    return False
+
+
+def _refresh_registered_fin_view(item: dict, changed_chat_id: int) -> bool:
+    """Перерисовывает окно владельца, которое показывает финансы другого чата."""
+    params = item.get("params") or {}
+    try:
+        target_chat_id = int(params.get("target_chat_id") or 0)
+        host_chat_id = int(item.get("chat_id") or 0)
+        message_id = int(item.get("message_id") or 0)
+    except Exception:
+        return False
+    if target_chat_id != int(changed_chat_id) or not host_chat_id or not message_id:
+        return False
+    view_day = str(item.get("day_key") or params.get("view_day") or get_chat_store(target_chat_id).get("current_view_day") or today_key())
+    owner_day_key = str(params.get("owner_day_key") or get_chat_store(host_chat_id).get("current_view_day") or today_key())
+    action = str(params.get("view_action") or "open")
+    target_store = get_chat_store(target_chat_id)
+    try:
+        if action in {"open", "back_main", "menu", "clear_delete_back"}:
+            text = render_fin_window_text(target_chat_id, view_day)
+            kb = build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=kb, parse_mode="HTML")
+        elif action in {"edit_list", "del_toggle"}:
+            text = render_fin_window_text(target_chat_id, view_day)
+            kb = build_edit_records_keyboard(view_day, target_chat_id, prefix="fv", owner_day_key=owner_day_key)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=kb, parse_mode="HTML")
+        elif action == "calendar":
+            try:
+                cdt = datetime.strptime(str(params.get("center_day") or view_day), "%Y-%m-%d")
+            except Exception:
+                cdt = now_local()
+            bot.edit_message_text(
+                f"📅 Календарь: {html.escape(get_chat_display_name(target_chat_id))}",
+                chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_fin_calendar_keyboard(target_chat_id, cdt, owner_day_key), parse_mode="HTML",
+            )
+        elif action == "report":
+            try:
+                month_key = datetime.strptime(view_day, "%Y-%m-%d").strftime("%Y-%m")
+            except Exception:
+                month_key = now_local().strftime("%Y-%m")
+            report_html, _ = build_month_report_text(target_chat_id, month_key)
+            bot.edit_message_text(
+                f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + report_html,
+                chat_id=host_chat_id, message_id=message_id,
+                reply_markup=_one_button_keyboard("🔙 Назад", f"fv:{target_chat_id}:{view_day}:open:{owner_day_key}"),
+                parse_mode="HTML",
+            )
+        elif action == "total":
+            text = f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n\n💰 Общий итог по чату: {format_chat_amount(target_chat_id, target_store.get('balance', 0), True)}"
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key), parse_mode="HTML")
+        elif action == "info":
+            text = build_info_text(target_chat_id) + "\n\n" + build_articles_description_text(target_chat_id)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=build_fin_window_view_keyboard(target_chat_id, view_day, owner_day_key))
+        elif action == "csv_menu":
+            text = wm_common(f"📂 CSV / Excel: {html.escape(get_chat_display_name(target_chat_id))}\nВыберите период:", 5)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=build_fin_window_csv_menu(target_chat_id, view_day, owner_day_key), parse_mode="HTML")
+        else:
+            return False
+        register_open_window(
+            host_chat_id, message_id, "fin_view", code=f"fv:{action}", day_key=view_day,
+            params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": action},
+        )
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        if _message_missing_error(e):
+            unregister_open_window(host_chat_id, message_id)
+            return False
+        log_error(f"_refresh_registered_fin_view({host_chat_id},{message_id}->{target_chat_id}): {e}")
+        return False
+
+
+def _build_total_window_text_for_registry(chat_id: int) -> str:
+    """Тот же итог, что показывает кнопка «💰 Общий итог», но пригодный для автообновления реестра."""
+    chat_id = int(chat_id)
+    store = get_chat_store(chat_id)
+    chat_bal = store.get("balance", 0)
+    if not is_owner_chat(chat_id):
+        return wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
+    lines = [
+        "💰 Общий итог (для владельца)",
+        "",
+        f"• Этот чат ({get_chat_display_name(chat_id)}): {format_chat_amount(chat_id, chat_bal, True)}",
+    ]
+    total_all = 0
+    other_lines = []
+    for cid, st in (data.get("chats", {}) or {}).items():
+        try:
+            cid_int = int(cid)
+        except Exception:
+            continue
+        bal = st.get("balance", 0)
+        total_all += bal
+        if cid_int == chat_id:
+            continue
+        other_lines.append(f"   • {get_chat_display_name(cid_int)}: {format_chat_amount(chat_id, bal, True)}")
+    if other_lines:
+        lines.extend(["", "• Другие чаты:"])
+        lines.extend(other_lines)
+    lines.extend(["", f"• Всего по всем чатам: {format_chat_amount(chat_id, total_all, True)}"])
+    return wm_common("\n".join(lines), 4)
+
+
+def _refresh_registered_local_fin_view(item: dict, changed_chat_id: int) -> bool:
+    """Сохраняет фактически открытый локальный финансовый экран, а не возвращает сообщение принудительно в О1."""
+    params = item.get("params") or {}
+    try:
+        host_chat_id = int(item.get("chat_id") or 0)
+        message_id = int(item.get("message_id") or 0)
+    except Exception:
+        return False
+    if not host_chat_id or not message_id:
+        return False
+    action = str(params.get("view_action") or item.get("code") or "")
+    depends_on_all = bool(params.get("depends_on_all"))
+    if host_chat_id != int(changed_chat_id) and not depends_on_all:
+        return False
+    view_day = str(item.get("day_key") or params.get("view_day") or get_chat_store(host_chat_id).get("current_view_day") or today_key())
+    try:
+        if action == "calendar":
+            center_s = str(params.get("center_day") or view_day)
+            try:
+                center_dt = datetime.strptime(center_s, "%Y-%m-%d")
+            except Exception:
+                center_dt = now_local()
+            bot.edit_message_text(
+                calendar_window_text(center_dt), chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_calendar_keyboard(center_dt, host_chat_id),
+            )
+        elif action == "report":
+            month_key = str(params.get("month_key") or view_day[:7])
+            report_html, _ = build_month_report_text(host_chat_id, month_key)
+            bot.edit_message_text(
+                report_html, chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_report_keyboard(month_key), parse_mode="HTML",
+            )
+        elif action == "total":
+            bot.edit_message_text(
+                _build_total_window_text_for_registry(host_chat_id),
+                chat_id=host_chat_id, message_id=message_id, parse_mode="HTML",
+            )
+        elif action == "info":
+            bot.edit_message_text(
+                wm_common(build_info_text(host_chat_id), 9),
+                chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_info_keyboard(host_chat_id),
+            )
+        elif action == "csv_menu":
+            txt, _ = render_day_window(host_chat_id, view_day)
+            bot.edit_message_text(
+                txt, chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_csv_menu(view_day, host_chat_id), parse_mode="HTML",
+            )
+        elif action == "edit_list":
+            txt, _ = render_day_window(host_chat_id, view_day)
+            bot.edit_message_text(
+                txt, chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_edit_records_keyboard(view_day, host_chat_id), parse_mode="HTML",
+            )
+        else:
+            return False
+        register_open_window(
+            host_chat_id, message_id, "local_fin_view", code=action, day_key=view_day,
+            params={**params, "view_action": action},
+        )
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        if _message_missing_error(e):
+            unregister_open_window(host_chat_id, message_id)
+            return False
+        log_error(f"_refresh_registered_local_fin_view({host_chat_id},{message_id},{action}): {e}")
+        return False
+
+
+def _refresh_registered_fin_categories_view(item: dict, changed_chat_id: int) -> bool:
+    """Автообновление открытых у владельца окон статей чужого/связанного чата."""
+    params = item.get("params") or {}
+    try:
+        host_chat_id = int(item.get("chat_id") or 0)
+        message_id = int(item.get("message_id") or 0)
+        target_chat_id = int(params.get("target_chat_id") or 0)
+    except Exception:
+        return False
+    if target_chat_id != int(changed_chat_id) or not host_chat_id or not message_id:
+        return False
+    action = str(params.get("view_action") or "")
+    owner_day_key = str(params.get("owner_day_key") or today_key())
+    store = get_chat_store(target_chat_id)
+    try:
+        if action == "wthu":
+            ref = str(params.get("ref") or today_key())
+            start_key = week_start_thursday(ref)
+            start, end = week_bounds_thu_wed(start_key)
+            label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)} (Чт–Ср)"
+            text, _ = summarize_categories(store, start, end, label)
+            text = f"👁 {get_chat_display_name(target_chat_id)}\n" + text
+            kb = build_fin_categories_summary_keyboard(target_chat_id, "wthu", start, end, owner_day_key)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=kb)
+        elif action == "show":
+            start = str(params.get("start") or today_key())
+            end = str(params.get("end") or start)
+            slug = str(params.get("slug") or "")
+            category = get_category_by_slug(slug, store)
+            if not category:
+                return False
+            label = f"{fmt_date_ddmmyy(start)} — {fmt_date_ddmmyy(end)}"
+            text = f"👁 {get_chat_display_name(target_chat_id)}\n" + build_category_detail_text(store, start, end, category, label)
+            kb = build_fin_categories_summary_keyboard(target_chat_id, "detail", start, end, owner_day_key)
+            kb.row(IB("🔙 Назад", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}")))
+            kb.row(IB("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=kb)
+        else:
+            return False
+        register_open_window(
+            host_chat_id, message_id, "fin_categories_view", code=f"fvcat:{action}", day_key=item.get("day_key"),
+            params=params,
+        )
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        if _message_missing_error(e):
+            unregister_open_window(host_chat_id, message_id)
+            return False
+        log_error(f"_refresh_registered_fin_categories_view({host_chat_id},{message_id}->{target_chat_id},{action}): {e}")
+        return False
+
+
+def _refresh_registered_stored_window(item: dict, changed_chat_id: int) -> bool:
+    """Перерисовывает известные отдельные окна текущего чата, зависящие от финансов/настроек."""
+    try:
+        host_chat_id = int(item.get("chat_id") or 0)
+        message_id = int(item.get("message_id") or 0)
+    except Exception:
+        return False
+    if host_chat_id != int(changed_chat_id) or not message_id:
+        return False
+    code = str(item.get("code") or "")
+    store = get_chat_store(host_chat_id)
+    try:
+        if code == "info_msg_id":
+            bot.edit_message_text(build_info_text(host_chat_id), chat_id=host_chat_id, message_id=message_id, reply_markup=build_info_keyboard(host_chat_id))
+            return True
+        if code == "report_window_id":
+            month_key = str(store.get("report_month") or now_local().strftime("%Y-%m"))
+            text, _ = build_month_report_text(host_chat_id, month_key)
+            bot.edit_message_text(text, chat_id=host_chat_id, message_id=message_id, reply_markup=build_report_keyboard(month_key), parse_mode="HTML")
+            return True
+        # remaining_msg_id обновляется отдельным специализированным блоком ниже.
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        if _message_missing_error(e):
+            unregister_open_window(host_chat_id, message_id)
+            if store.get(code) == message_id:
+                store[code] = None
+                save_data(data, chat_ids=[host_chat_id])
+            return False
+        log_error(f"_refresh_registered_stored_window({host_chat_id},{message_id},{code}): {e}")
+    return False
+
+
+def refresh_registered_financial_windows(chat_id: int):
+    """Обновляет известные открытые окна текущего owner scope после изменения финансов."""
+    chat_id = int(chat_id)
+    store = get_chat_store(chat_id)
+    # Все фактически известные основные окна по дням, а не только current_view_day.
+    for day_key, mid in list((get_or_create_active_windows(chat_id) or {}).items()):
+        try:
+            # Одно и то же Telegram-сообщение может быть превращено кнопками из О1
+            # в Ф47/календарь/редактирование/другое меню. Не возвращаем его насильно в О1.
+            actual = get_registered_open_window(chat_id, int(mid))
+            if actual and str(actual.get("window_type") or "") not in {"", "main_day"}:
+                continue
+            text, _ = render_day_window(chat_id, day_key)
+            bot.edit_message_text(text, chat_id=chat_id, message_id=int(mid), reply_markup=build_main_keyboard(day_key, chat_id))
+            register_open_window(chat_id, int(mid), "main_day", code="О1", day_key=day_key)
+        except Exception as e:
+            if "message is not modified" in str(e).lower():
+                continue
+            if _message_missing_error(e):
+                clear_active_window_id(chat_id, day_key)
+                unregister_open_window(chat_id, int(mid))
+    # Окно «с ост».
+    mid = store.get("remaining_msg_id")
+    if mid:
+        day_key = store.get("current_view_day") or today_key()
+        try:
+            bot.edit_message_text(
+                build_remaining_text(chat_id, day_key), chat_id=chat_id, message_id=int(mid),
+                reply_markup=build_remaining_keyboard(chat_id, day_key), parse_mode="HTML",
+            )
+            register_open_window(chat_id, int(mid), "remaining", code="Ф91", day_key=day_key)
+        except Exception as e:
+            if _message_missing_error(e):
+                store["remaining_msg_id"] = None
+                unregister_open_window(chat_id, int(mid))
+    _refresh_categories_window_from_state(chat_id)
+
+    # Полный реестр: окна могут физически находиться в другом чате владельца,
+    # но показывать данные изменившегося target_chat_id (Ф110/фин-окна).
+    for _key, item in list((_open_window_registry() or {}).items()):
+        try:
+            wtype = str((item or {}).get("window_type") or "")
+            if wtype == "fin_view":
+                _refresh_registered_fin_view(item, chat_id)
+            elif wtype == "local_fin_view":
+                _refresh_registered_local_fin_view(item, chat_id)
+            elif wtype == "fin_categories_view":
+                _refresh_registered_fin_categories_view(item, chat_id)
+            elif wtype == "stored":
+                _refresh_registered_stored_window(item, chat_id)
+        except Exception as e:
+            log_error(f"refresh_registered_financial_windows registry item: {e}")
 
 
 def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_markup=None, parse_mode=None, delay: int = AUX_WINDOW_DELETE_DELAY):
@@ -3594,10 +4079,12 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
                 reply_markup=reply_markup,
                 parse_mode=parse_mode
             )
+            register_open_window(chat_id, message_id, "stored", code=store_key, day_key=store.get("current_view_day"))
             schedule_stored_window_delete(chat_id, store_key, delay)
             return message_id
         except Exception as e:
             if "message is not modified" in str(e).lower():
+                register_open_window(chat_id, message_id, "stored", code=store_key, day_key=store.get("current_view_day"))
                 schedule_stored_window_delete(chat_id, store_key, delay)
                 return message_id
             try:
@@ -3608,17 +4095,20 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
                     reply_markup=reply_markup,
                     parse_mode=parse_mode
                 )
+                register_open_window(chat_id, message_id, "stored", code=store_key, day_key=store.get("current_view_day"))
                 schedule_stored_window_delete(chat_id, store_key, delay)
                 return message_id
             except Exception as e2:
                 if "message is not modified" in str(e2).lower():
                     schedule_stored_window_delete(chat_id, store_key, delay)
                     return message_id
+                unregister_open_window(chat_id, message_id)
                 store[store_key] = None
                 save_data(data)
 
     sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
     store[store_key] = sent.message_id
+    register_open_window(chat_id, sent.message_id, "stored", code=store_key, day_key=store.get("current_view_day"))
     save_data(data)
     schedule_stored_window_delete(chat_id, store_key, delay)
     return sent.message_id
@@ -3642,7 +4132,9 @@ def set_additional_owner(user_id: int, enabled: bool):
     if enabled:
         owners.add(user_id)
         finance_active_chats.add(user_id)
-        get_chat_store(user_id)
+        store = get_chat_store(user_id)
+        store.setdefault("settings", {})["owner_scope_id"] = int(user_id)
+        store.setdefault("settings", {}).setdefault("owner_scope_settings", {})
     else:
         owners.discard(user_id)
     data.setdefault("_global_settings", {})["additional_owner_ids"] = sorted(owners)
@@ -3655,6 +4147,41 @@ def is_owner_chat(chat_id: int) -> bool:
         return is_primary_owner(chat_id) or int(chat_id) in get_additional_owner_ids()
     except Exception:
         return is_primary_owner(chat_id)
+
+
+def owner_scope_id(chat_id: int | None = None) -> int:
+    """Logical owner namespace. Each additional owner keeps an independent settings world."""
+    try:
+        cid = int(chat_id) if chat_id is not None else int(OWNER_ID or 0)
+    except Exception:
+        cid = int(OWNER_ID or 0)
+    if cid and is_owner_chat(cid):
+        return cid
+    try:
+        store = get_chat_store(cid) if cid else {}
+        scoped = int((store.get("settings") or {}).get("owner_scope_id") or 0)
+        if scoped and is_owner_chat(scoped):
+            return scoped
+    except Exception:
+        pass
+    return int(OWNER_ID or cid or 0)
+
+
+def owner_scoped_settings(chat_id: int | None = None) -> dict:
+    scope = owner_scope_id(chat_id)
+    if not scope:
+        return data.setdefault("_global_settings", {})
+    store = get_chat_store(scope)
+    settings = store.setdefault("settings", {})
+    return settings.setdefault("owner_scope_settings", {})
+
+
+def bind_chat_to_owner_scope(chat_id: int, scope_id: int):
+    try:
+        get_chat_store(int(chat_id)).setdefault("settings", {})["owner_scope_id"] = int(scope_id)
+        save_data(data, chat_ids=[int(chat_id)])
+    except Exception as e:
+        log_error(f"bind_chat_to_owner_scope({chat_id},{scope_id}): {e}")
 
 
 def is_backup_channel_chat(chat_id: int) -> bool:
@@ -3763,30 +4290,79 @@ def build_help_text(chat_id: int) -> str:
 
 
 def build_info_text(chat_id: int) -> str:
-    state = "ВКЛ" if chat_buttons_current_window_enabled(chat_id) else "ВЫКЛ"
+    """Компактный INFO: одна функция показывается один раз, без дублей команд и кнопок."""
     layout = version_mode_layout()
-    text = build_help_text(chat_id) + f"\n/windows — открывать действия в текущем окне: {state}"
+    lines = [
+        "ℹ️ INFO",
+        "",
+        f"Финансы: {'ВКЛ' if is_finance_mode(chat_id) else 'ВЫКЛ'}",
+        f"Текущее окно: {'ВКЛ' if chat_buttons_current_window_enabled(chat_id) else 'ВЫКЛ'}",
+        f"Журнал чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}",
+    ]
     if layout in {"v84", "v85", "v86", "v87"}:
-        text += f"\nФинансовые значения-кнопки: {'ВКЛ' if main_financial_value_buttons_enabled(chat_id) else 'ВЫКЛ'}"
-        text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
-        if layout in {"v86", "v87"}:
-            text += f"\nВалюта финансовых окон: {currency_mode(chat_id).upper().replace('_', '-')}"
-            text += f"\n/ost — слово «ост:»: {'ВКЛ' if remaining_ost_label_enabled(chat_id) else 'ВЫКЛ'}"
-    elif layout == "v83":
-        text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
-        text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
+        lines.append(f"Финансы-кнопки: {'ВКЛ' if main_financial_value_buttons_enabled(chat_id) else 'ВЫКЛ'}")
+    if layout in {"v86", "v87"}:
+        lines.append(f"Валюта: {currency_mode(chat_id).upper().replace('_', '-')}")
+        lines.append(f"Подпись «ост:»: {'ВКЛ' if remaining_ost_label_enabled(chat_id) else 'ВЫКЛ'}")
     if version_mode_feature("forward_copy_edit"):
-        text += f"\n💰Перес: {forward_copy_edit_mode(chat_id).replace('normal', 'обычно').replace('button', 'кнопка').replace('slash', 'слеш')}"
+        lines.append(f"💰Перес: {forward_copy_edit_mode(chat_id).replace('normal', 'обычно').replace('button', 'кнопка').replace('slash', 'слеш')}")
     if is_owner_chat(chat_id):
-        text += f"\n/buttons — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
-        text += f"\n/mask — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
+        lines.extend([
+            f"Кнопки интерфейса: {'значки' if icon_button_mode_enabled(chat_id) else 'текст'}",
+            f"Маска секрета: {'ВКЛ' if total_secret_mask_enabled(chat_id) else 'ВЫКЛ'}",
+            f"Финансовые сутки: с {finance_day_start_label(chat_id)}",
+        ])
         if version_mode_feature("mega_priority"):
-            text += f"\n/MEGA — режим: {'сначала MEGA' if mega_backup_priority_enabled() else 'как обычно'}"
-        text += f"\nАктивная версия: {active_bot_behavior_profile_info().get('title')}"
-        if version_mode_feature("keepalive_menu"):
-            text += f"\nKeep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}, каждые {KEEP_ALIVE_INTERVAL_SECONDS} сек."
-    return text
-
+            lines.append(f"MEGA: {'приоритетный' if mega_backup_priority_enabled(chat_id) else 'обычный'} режим")
+        lines.append(f"Версия: {active_bot_behavior_profile_info().get('title')}")
+    lines.extend(["", "Слеш-команды:"])
+    commands = [
+        "/ok — включить финансовый режим",
+        "/start — открыть окно сегодняшнего дня",
+        "/prev — предыдущий день",
+        "/next — следующий день",
+        "/balance — баланс по текущему чату",
+        "/report — краткий отчёт",
+        "/csv — CSV текущего чата",
+        "/xlsx — Excel текущего чата",
+        "/tabl_lsx — Excel-таблица по периоду Чт–Ср",
+        "/json — JSON текущего чата",
+        "/ost — включить/выключить подпись «ост:»",
+        "/restore — включить режим восстановления",
+        "/restore_off — выключить режим восстановления",
+        "/dozvon — открыть дозвон по связанным чатам",
+        "/reset — обнулить данные чата с подтверждением",
+        "/ping — проверить работу бота",
+        "/help — полная справка",
+    ]
+    if is_owner_chat(chat_id):
+        commands.extend([
+            "/stopforward — полностью отключить пересылку",
+            "/backup_channel_on — включить бэкап в канал",
+            "/backup_channel_off — выключить бэкап в канал",
+            "/diag — диагностика бота",
+            "/errors — последние ошибки",
+            "/journal — скачать журнал действий",
+            "/articles — описание статей и ключевых слов",
+            "/mega_status — статус MEGA",
+            "/mega_backup_now — запустить безопасный бэкап MEGA",
+            "/restore_guard — статус защиты восстановления",
+            "/buttons — переключить вид кнопок",
+            "/mask — переключить маскировку тотального секрета",
+            "/day5 — начало финансовых суток 00:00 / 05:00",
+            "/off_on_backup_excel — Excel-бэкап всех чатов ВКЛ/ВЫКЛ",
+            "/queues — состояние очередей и нагрузки",
+        ])
+    # Защита от случайных дублей: команда (до первого пробела) выводится только один раз.
+    seen_commands = set()
+    for row in commands:
+        cmd = row.split(" — ", 1)[0].strip().casefold()
+        if cmd in seen_commands:
+            continue
+        seen_commands.add(cmd)
+        lines.append(row)
+    lines.extend(["", "Нажмите нужную кнопку ниже. Полное описание — «📘 Инструкция»."])
+    return "\n".join(lines)
 
 def get_connected_chat_ids(chat_id: int):
     connected = set()
@@ -6573,10 +7149,19 @@ def _xlsx_xml_escape(value) -> str:
 def _xlsx_cell_xml(row_idx: int, col_idx: int, value, style: int | None = None) -> str:
     ref = f"{_xlsx_col_name(col_idx)}{row_idx}"
     s_attr = f' s="{int(style)}"' if style is not None else ""
+    if isinstance(value, dict) and value.get("formula"):
+        formula = _xlsx_xml_escape(str(value.get("formula") or "").lstrip("="))
+        cached = value.get("value", 0)
+        try:
+            cached = float(cached)
+            if cached.is_integer():
+                cached = int(cached)
+        except Exception:
+            cached = 0
+        return f'<c r="{ref}"{s_attr}><f>{formula}</f><v>{cached}</v></c>'
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return f'<c r="{ref}"{s_attr}><v>{value}</v></c>'
     return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(value)}</t></is></c>'
-
 
 def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данные") -> None:
     """Минимальный XLSX без внешних библиотек: дата / сумма / заметка."""
@@ -6598,6 +7183,7 @@ def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данн�
     workbook_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets><sheet name="{_xlsx_xml_escape(sheet_name)[:31]}" sheetId="1" r:id="rId1"/></sheets>
+<calcPr calcId="191029" fullCalcOnLoad="1" forceFullCalc="1"/>
 </workbook>"""
 
     rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -7608,6 +8194,32 @@ def move_expense_category_order(store: dict, slug: str, direction: str) -> bool:
     return True
 
 
+_category_order_selection = {}
+
+
+def _category_order_selection_key(chat_id: int, params: tuple) -> tuple:
+    return (int(chat_id),) + tuple(str(x) for x in params)
+
+
+def move_expense_category_to_position(store: dict, slug: str, position: int) -> bool:
+    """Вставка статьи в новую позицию со сдвигом промежуточных статей."""
+    order = get_expense_category_order_slugs(store)
+    slug = str(slug or "")
+    if slug not in order or not order:
+        return False
+    try:
+        target_idx = max(0, min(len(order) - 1, int(position) - 1))
+    except Exception:
+        return False
+    old_idx = order.index(slug)
+    if old_idx == target_idx:
+        return True
+    order.pop(old_idx)
+    order.insert(target_idx, slug)
+    store.setdefault("settings", {})["expense_category_order_slugs"] = order
+    return True
+
+
 def get_expense_category_slug(category: str, store: dict | None = None) -> str | None:
     category = _clean_category_display_name(str(category or "")).upper()
     for item in _base_category_items(store):
@@ -8143,45 +8755,63 @@ def build_categories_summary_keyboard(mode: str, start: str, end: str, store: di
     return kb
 
 
-def build_category_layout_text(store: dict) -> str:
-    lines = ["↕️ Расположение статей", "", "Меняйте порядок стрелками. Этот порядок используется сверху вниз в окнах статей.", ""]
+def build_category_layout_text(store: dict, context: str = "exact") -> str:
+    if context == "exact":
+        lines = [
+            "↕️ Расположение статей",
+            "",
+            "Слева выберите статью — возле неё появится ✅. Затем справа нажмите номер новой позиции.",
+            "Статья будет вставлена в выбранное место, остальные автоматически сдвинутся.",
+            "",
+        ]
+    else:
+        lines = [
+            "↕️ Расположение статей",
+            "",
+            "Слева выберите статью — возле неё появится ✅. Затем справа нажмите номер новой позиции.",
+            "Статья будет вставлена в выбранное место, остальные автоматически сдвинутся.",
+            "",
+        ]
     for idx, name in enumerate(get_expense_category_order(store), 1):
         lines.append(f"{idx}. {_clean_category_display_name(name)}")
     return wm_common("\n".join(lines), 7)
 
 
-def build_category_layout_keyboard(store: dict, context: str, params: tuple) -> object:
-    kb = types.InlineKeyboardMarkup(row_width=3)
+def build_category_layout_keyboard(store: dict, context: str, params: tuple, chat_id: int | None = None) -> object:
     slugs = get_expense_category_order_slugs(store)
-    for idx, slug in enumerate(slugs):
-        name = _clean_category_display_name(get_category_by_slug(slug, store) or slug)
-        if context == "sum":
-            mode, start, end = params
-            up_cb = cat_callback(f"cat_order_move_sum:{slug}:up:{mode}:{start}:{end}")
-            down_cb = cat_callback(f"cat_order_move_sum:{slug}:down:{mode}:{start}:{end}")
-        else:
-            start_key, start_rid, end_key, end_rid = params
-            up_cb = cat_callback(f"cat_order_move_exact:{slug}:up:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
-            down_cb = cat_callback(f"cat_order_move_exact:{slug}:down:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
-        kb.row(
-            IB("⬆️" if idx > 0 else "·", callback_data=up_cb if idx > 0 else "none"),
-            IB(name[:36], callback_data="none"),
-            IB("⬇️" if idx < len(slugs) - 1 else "·", callback_data=down_cb if idx < len(slugs) - 1 else "none"),
-        )
-    if context == "sum":
-        mode, start, end = params
-        if mode == "wthu":
-            back_cb = cat_callback(f"cat_wthu:{start}")
-        elif mode == "wk":
-            back_cb = cat_callback(f"cat_wk:{start}")
-        else:
-            back_cb = cat_callback(f"cat_range_custom2:{start}:{end}")
-    else:
+    if context == "exact":
+        kb = types.InlineKeyboardMarkup(row_width=2)
         start_key, start_rid, end_key, end_rid = params
+        selection_key = _category_order_selection_key(int(chat_id or 0), params)
+        selected = _category_order_selection.get(selection_key)
+        for idx, slug in enumerate(slugs, 1):
+            name = _clean_category_display_name(get_category_by_slug(slug, store) or slug)
+            left = f"✅ {name}" if slug == selected else name
+            select_cb = cat_callback(f"cat_order_select_exact:{slug}:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+            pos_cb = cat_callback(f"cat_order_position_exact:{idx}:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+            kb.row(IB(left[:36], callback_data=select_cb), IB(str(idx), callback_data=pos_cb))
         back_cb = cat_callback(f"cat_range_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")
+        kb.row(IB("⬅️ Назад", callback_data=back_cb), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
+        return kb
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    mode, start, end = params
+    selection_key = _category_order_selection_key(int(chat_id or 0), ("sum", mode, start, end))
+    selected = _category_order_selection.get(selection_key)
+    for idx, slug in enumerate(slugs, 1):
+        name = _clean_category_display_name(get_category_by_slug(slug, store) or slug)
+        left = f"✅ {name}" if slug == selected else name
+        select_cb = cat_callback(f"cat_order_select_sum:{slug}:{mode}:{start}:{end}")
+        pos_cb = cat_callback(f"cat_order_position_sum:{idx}:{mode}:{start}:{end}")
+        kb.row(IB(left[:36], callback_data=select_cb), IB(str(idx), callback_data=pos_cb))
+    if mode == "wthu":
+        back_cb = cat_callback(f"cat_wthu:{start}")
+    elif mode == "wk":
+        back_cb = cat_callback(f"cat_wk:{start}")
+    else:
+        back_cb = cat_callback(f"cat_range_custom2:{start}:{end}")
     kb.row(IB("⬅️ Назад", callback_data=back_cb), IB("❌ Закрыть", callback_data=cat_callback("cat_close")))
     return kb
-
 
 def build_category_detail_text(store: dict, start: str, end: str, category: str, label: str):
     """Детализация статьи в режимах ARS / ARS-USD / USD."""
@@ -9055,6 +9685,70 @@ def save_secret_message(chat_id: int, msg, cleaned_text: str | None = None) -> d
     return record
 
 
+def save_secret_bot_copy(chat_id: int, copied_message_id: int, source_msg) -> dict | None:
+    """Store a message created by the bot itself in a total-secret destination chat.
+
+    Telegram does not send the bot an update for its own copy_message/send_* result,
+    so forwarded bot-copies must be captured explicitly here.
+    """
+    chat_id = int(chat_id)
+    copied_message_id = int(copied_message_id)
+    try:
+        for existing in _secret_records(chat_id):
+            if int(existing.get("source_msg_id") or 0) == copied_message_id and existing.get("is_bot_copy"):
+                return existing
+    except Exception:
+        pass
+    user = getattr(source_msg, "from_user", None)
+    content_type = str(getattr(source_msg, "content_type", "text") or "text")
+    record = {
+        "id": int(time.time() * 1000),
+        "day_key": day_key_from_message(source_msg),
+        "timestamp": message_timestamp_iso(source_msg),
+        "text": _secret_message_text(source_msg),
+        "content_type": content_type,
+        "file_id": _secret_file_id(source_msg),
+        "content": _secret_content_payload(source_msg),
+        "source_msg_id": copied_message_id,
+        "forward_source_msg_id": int(getattr(source_msg, "message_id", 0) or 0),
+        "forward_source_chat_id": int(getattr(getattr(source_msg, "chat", None), "id", 0) or 0),
+        "user_id": int(getattr(user, "id", 0) or 0),
+        "user_name": getattr(user, "username", None) or getattr(user, "first_name", None) or "",
+        "is_bot_copy": True,
+    }
+    if content_type != "text":
+        record["media_number"] = _next_secret_media_number(chat_id)
+    _secret_records(chat_id).append(record)
+    settings = get_chat_store(chat_id).setdefault("settings", {})
+    settings["auto_backup_to_mega_enabled"] = True
+    save_data(data, chat_ids=[chat_id])
+    schedule_config_backup_for_chats(chat_id, delay=0.2)
+    schedule_secret_mega_upload(chat_id)
+    refresh_secret_windows(chat_id)
+    return record
+
+
+def capture_forwarded_bot_copy_as_secret(chat_id: int, copied_message_id: int, source_msg) -> bool:
+    """Apply total-secret behavior to a bot-created forwarded copy."""
+    if not is_total_secret_mode(int(chat_id)):
+        return False
+    try:
+        save_secret_bot_copy(int(chat_id), int(copied_message_id), source_msg)
+    except Exception as e:
+        log_error(f"save bot-copy secret {chat_id}:{copied_message_id}: {e}")
+        return False
+    try:
+        bot.delete_message(int(chat_id), int(copied_message_id))
+    except Exception as e:
+        log_error(f"delete bot-copy secret {chat_id}:{copied_message_id}: {e}")
+        DELAYED_SCHEDULER.schedule(
+            f"secret-bot-copy-delete:{int(chat_id)}:{int(copied_message_id)}",
+            1.0,
+            lambda: bot.delete_message(int(chat_id), int(copied_message_id)),
+        )
+    return True
+
+
 def delete_secret_source_message(msg):
     try:
         bot.delete_message(msg.chat.id, msg.message_id)
@@ -9114,7 +9808,7 @@ def total_secret_decoy_text(msg) -> str:
 
 def maybe_send_total_secret_decoy(msg):
     try:
-        if not total_secret_mask_enabled():
+        if not total_secret_mask_enabled(msg.chat.id):
             return
         if not is_total_secret_mode(msg.chat.id):
             return
@@ -10372,7 +11066,7 @@ def cmd_toggle_icon_buttons(msg):
     if not is_owner_chat(msg.chat.id):
         send_and_auto_delete(msg.chat.id, "Эта команда только для владельца.", 8)
         return
-    new_state = toggle_icon_button_mode()
+    new_state = toggle_icon_button_mode(msg.chat.id)
     send_and_auto_delete(msg.chat.id, "🔣 Кнопки: значки" if new_state else "🔤 Кнопки: текст", 10)
     try:
         open_info_window(msg.chat.id)
@@ -10386,7 +11080,7 @@ def cmd_toggle_total_secret_mask(msg):
     if not is_owner_chat(msg.chat.id):
         send_and_auto_delete(msg.chat.id, "Эта команда только для владельца.", 8)
         return
-    new_state = toggle_total_secret_mask()
+    new_state = toggle_total_secret_mask(msg.chat.id)
     send_and_auto_delete(msg.chat.id, "🪷 Маскировка тотального секрета ВКЛ" if new_state else "🪷 Маскировка тотального секрета ВЫКЛ", 10)
     try:
         open_info_window(msg.chat.id)
@@ -10400,7 +11094,7 @@ def cmd_toggle_finance_day5(msg):
     if not is_owner_chat(msg.chat.id):
         send_and_auto_delete(msg.chat.id, "Эта команда только для владельца.", 8)
         return
-    new_state = toggle_finance_day_start_5am()
+    new_state = toggle_finance_day_start_5am(msg.chat.id)
     send_and_auto_delete(msg.chat.id, f"🕔 Финансовые сутки теперь с {'05:00' if new_state else '00:00'}", 10)
     try:
         open_info_window(msg.chat.id)
@@ -10411,16 +11105,26 @@ def cmd_toggle_finance_day5(msg):
 @bot.message_handler(func=lambda m: bool(getattr(m, "text", None) and re.fullmatch(r"/(?:ost|остаток)(?:@\w+)?", m.text.strip(), re.I)))
 def cmd_toggle_remaining_ost_label(msg):
     schedule_command_delete(msg)
-    new_state = toggle_remaining_ost_label(msg.chat.id)
+    chat_id = int(msg.chat.id)
+    new_state = toggle_remaining_ost_label(chat_id)
     send_and_auto_delete(
-        msg.chat.id,
-        f"{'✅' if new_state else '❌'} Слово «ост:» в окне остатка: {'ВКЛ' if new_state else 'ВЫКЛ'}",
+        chat_id,
+        f"{'✅' if new_state else '❌'} \"ост:\" {'включено' if new_state else 'выключено'}",
         10,
     )
     try:
-        open_info_window(msg.chat.id)
-    except Exception:
-        pass
+        store = get_chat_store(chat_id)
+        day_key = store.get("current_view_day") or today_key()
+        remaining_mid = store.get("remaining_msg_id")
+        if remaining_mid:
+            fast_ui_edit_message_text(
+                chat_id, int(remaining_mid), build_remaining_text(chat_id, day_key),
+                reply_markup=build_remaining_keyboard(chat_id, day_key), parse_mode="HTML", purpose="ost_toggle",
+            )
+        finance_changed(chat_id, day_key, reason="ost_toggle", delay=0.03)
+        open_info_window(chat_id)
+    except Exception as e:
+        log_error(f"cmd_toggle_remaining_ost_label({chat_id}): {e}")
 
 
 @bot.message_handler(func=lambda m: bool(
@@ -10747,6 +11451,96 @@ def on_any_message(msg):
             log_error(f"handle_finance_text error: {e}")
 
     schedule_forward_any_message(chat_id, msg)
+def _parse_explicit_usd_operations(text: str) -> list[dict]:
+    """Извлекает явные суммы вида 300 USD / +1700 USD / USD 500 / US$ 500."""
+    raw = str(text or "")
+    patterns = [
+        re.compile(r"(?P<num>[+-]?(?:\d{1,3}(?:[ .]\d{3})+|\d+)(?:[.,]\d+)?)\s*(?P<cur>USD|U\$S|US\$)", re.I),
+        re.compile(r"(?P<cur>USD|U\$S|US\$)\s*(?P<num>[+-]?(?:\d{1,3}(?:[ .]\d{3})+|\d+)(?:[.,]\d+)?)", re.I),
+    ]
+    found = []
+    occupied = []
+    for pat in patterns:
+        for m in pat.finditer(raw):
+            span = m.span()
+            if any(not (span[1] <= a or span[0] >= b) for a, b in occupied):
+                continue
+            try:
+                amount = parse_amount(m.group("num"))
+            except Exception:
+                continue
+            # parse_amount уже делает сумму без знака расходом.
+            found.append({"amount": float(amount), "span": span, "raw": m.group(0)})
+            occupied.append(span)
+    found.sort(key=lambda x: x["span"][0])
+    return found
+
+
+def _text_without_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    chars = list(str(text or ""))
+    for a, b in spans:
+        for i in range(max(0, a), min(len(chars), b)):
+            chars[i] = " "
+    return re.sub(r"\s+", " ", "".join(chars)).strip()
+
+
+def _add_record_to_currency_ledger(
+    chat_id: int,
+    ledger: str,
+    amount: float,
+    note: str,
+    owner: int,
+    source_msg=None,
+    day_key: str | None = None,
+):
+    """Добавляет запись в ARS или USD, даже если этот контур сейчас не открыт на экране."""
+    chat_id = int(chat_id)
+    ledger = "usd" if str(ledger).lower() == "usd" else "ars"
+    store = get_chat_store(chat_id)
+    active = _ensure_currency_ledgers(store)
+    if active == ledger:
+        add_record_to_chat(chat_id, amount, note, owner, source_msg=source_msg, day_key=day_key)
+        return
+    if not day_key:
+        day_key = day_key_from_message(source_msg)
+    records_key = f"{ledger}_records"
+    daily_key = f"{ledger}_daily_records"
+    next_key = f"{ledger}_next_id"
+    balance_key = f"{ledger}_balance"
+    records = store.setdefault(records_key, [])
+    daily = store.setdefault(daily_key, {})
+    rid = int(store.get(next_key, 1) or 1)
+    source_msg_id = getattr(source_msg, "message_id", None) if source_msg else None
+    source_order_msg_id = (
+        getattr(source_msg, "source_order_msg_id", None)
+        or getattr(source_msg, "forward_source_msg_id", None)
+        or source_msg_id
+    )
+    rec = {
+        "id": rid,
+        "short_id": "",
+        "timestamp": message_timestamp_iso(source_msg),
+        "amount": float(amount),
+        "note": str(note or "").strip().lower(),
+        "source_msg_id": source_msg_id,
+        "source_order_msg_id": source_order_msg_id,
+        "owner": owner,
+        "msg_id": source_msg_id,
+        "origin_msg_id": source_msg_id,
+        "day_key": day_key,
+        "currency": ledger.upper(),
+    }
+    records.append(rec)
+    records.sort(key=record_sort_key)
+    # ID в неактивном контуре остаётся стабильным; месячные short_id перестроятся при открытии USD.
+    store[next_key] = max([int(r.get("id", 0) or 0) for r in records] + [0]) + 1
+    rebuilt = {}
+    for r in records:
+        rebuilt.setdefault(_record_day_key(r), []).append(r)
+    store[daily_key] = rebuilt
+    store[balance_key] = sum(float(r.get("amount", 0) or 0) for r in records)
+
+
 def handle_finance_text(msg):
     """
     Обработка обычного ввода для финучёта.
@@ -11359,53 +12153,41 @@ FORWARD_COPY_EDIT_COMMAND_RE = re.compile(r"(?:^|\s)/izm_([RU]\d+)\s*$", re.I)
 
 
 def forward_copy_edit_mode(chat_id: int | None = None) -> str:
-    """Глобальный режим элементов редактирования на всех финансовых бот-копиях.
-
-    v92 fix2: раньше режим сохранялся в settings конкретного чата, где открыли INFO,
-    а пересылка читала settings исходного чата A. Из-за этого в INFO было
-    «💰Перес: кнопка/слеш», но копии из другого чата видели normal.
-    Теперь источник истины один: _global_settings.forward_copy_edit_mode.
-    Для совместимости при первом запуске подхватываем старое значение владельца/чата.
-    """
+    """Per-owner mode for edit controls on forwarded bot copies."""
     try:
-        gs = (data or {}).setdefault("_global_settings", {})
-        mode = str(gs.get("forward_copy_edit_mode") or "").strip().lower()
+        scope = owner_scope_id(chat_id)
+        settings = owner_scoped_settings(scope)
+        mode = str(settings.get("forward_copy_edit_mode") or "").strip().lower()
         if mode not in FORWARD_COPY_EDIT_MODES:
-            legacy = ""
-            try:
-                if OWNER_ID:
-                    legacy = str(get_chat_store(int(OWNER_ID)).setdefault("settings", {}).get("forward_copy_edit_mode") or "").strip().lower()
-            except Exception:
-                legacy = ""
-            if legacy not in FORWARD_COPY_EDIT_MODES and chat_id is not None:
+            # One-time compatibility import from v92 global / chat-local values.
+            legacy = str((data or {}).setdefault("_global_settings", {}).get("forward_copy_edit_mode") or "").strip().lower()
+            if legacy not in FORWARD_COPY_EDIT_MODES:
                 try:
-                    legacy = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("forward_copy_edit_mode") or "").strip().lower()
+                    legacy = str(get_chat_store(scope).setdefault("settings", {}).get("forward_copy_edit_mode") or "").strip().lower()
                 except Exception:
                     legacy = ""
             mode = legacy if legacy in FORWARD_COPY_EDIT_MODES else "normal"
+            settings["forward_copy_edit_mode"] = mode
     except Exception:
         mode = "normal"
-    if mode not in FORWARD_COPY_EDIT_MODES:
-        mode = "normal"
-    if not version_mode_feature("forward_copy_edit"):
+    if mode not in FORWARD_COPY_EDIT_MODES or not version_mode_feature("forward_copy_edit"):
         return "normal"
     return mode
-
 
 def set_forward_copy_edit_mode(chat_id: int, mode: str):
     mode = str(mode or "normal").strip().lower()
     if mode not in FORWARD_COPY_EDIT_MODES:
         mode = "normal"
-    data.setdefault("_global_settings", {})["forward_copy_edit_mode"] = mode
-    # Оставляем копию в текущем чате только для совместимости со старыми backup.
+    scope = owner_scope_id(int(chat_id))
+    owner_scoped_settings(scope)["forward_copy_edit_mode"] = mode
+    # Compatibility mirror only inside this owner's own chat, not globally.
     try:
-        get_chat_store(int(chat_id)).setdefault("settings", {})["forward_copy_edit_mode"] = mode
+        get_chat_store(scope).setdefault("settings", {})["forward_copy_edit_mode"] = mode
     except Exception:
         pass
-    save_data(data, chat_ids=[int(chat_id)])
-    schedule_config_backup_for_chats(int(chat_id))
+    save_data(data, chat_ids=[scope])
+    schedule_config_backup_for_chats(scope)
     return mode
-
 
 def cycle_forward_copy_edit_mode(chat_id: int) -> str:
     current = forward_copy_edit_mode(int(chat_id))
@@ -11423,6 +12205,55 @@ def forward_copy_edit_mode_label(chat_id: int) -> str:
         "button": "💰Перес: кнопка",
         "slash": "💰Перес: слеш",
     }.get(mode, "💰Перес: обычно")
+
+
+def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None) -> int:
+    """Update existing bot copies from owner's open day through today, without touching originals."""
+    owner_chat_id = int(owner_chat_id)
+    scope = owner_scope_id(owner_chat_id)
+    mode = mode or forward_copy_edit_mode(scope)
+    start_key = str(get_chat_store(owner_chat_id).get("current_view_day") or today_key())[:10]
+    end_key = today_key()
+    if start_key > end_key:
+        start_key, end_key = end_key, start_key
+    changed = 0
+    for cid in collect_all_known_chat_ids(include_owner=True):
+        store = get_chat_store(int(cid))
+        for rec in list(store.get("records", []) or []):
+            src = rec.get("forward_source_chat_id")
+            if src is None:
+                continue
+            try:
+                if owner_scope_id(int(src)) != scope:
+                    continue
+                day_key = str(rec.get("day_key") or "")[:10]
+                if not (start_key <= day_key <= end_key):
+                    continue
+                msg_id = int(rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or 0)
+                if not msg_id:
+                    continue
+                base_text = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+                display_text = _forward_copy_display_text(base_text, rec, mode)
+                markup = _forward_copy_edit_keyboard(mode)
+                ct = str(rec.get("forward_copy_content_type") or "text")
+                if ct == "text":
+                    _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_text")
+                elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
+                    _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_caption")
+                else:
+                    _tg_call_retry(bot.edit_message_reply_markup, int(cid), msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_markup")
+                changed += 1
+            except Exception as e:
+                err = str(e).lower()
+                if "message is not modified" in err:
+                    changed += 1
+                elif "message to edit not found" in err or "message_id_invalid" in err or "message not found" in err:
+                    # Stale copy: keep the financial record but remove impossible Telegram binding.
+                    rec["forward_copy_deleted"] = True
+                else:
+                    log_error(f"refresh_existing_forward_copy_ui {cid}:{rec.get('id')}: {e}")
+    save_data(data)
+    return changed
 
 
 def _strip_forward_copy_edit_command(text: str) -> str:
@@ -11485,14 +12316,10 @@ def _set_forward_record_metadata(dst_chat_id: int, dst_msg_id: int, source_chat_
 
 
 def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id: int, source_msg, rec: dict | None = None) -> bool:
-    """Добавляет кнопку или /izm_R… непосредственно в бот-копию в чате Б.
-
-    v92 fix: запись можно передать напрямую из sync_forwarded_finance_message(),
-    чтобы оформление копии не зависело от повторного поиска записи сразу после её создания.
-    """
+    """Apply current owner's normal/button/slash UI to a forwarded bot copy."""
     if not version_mode_feature("forward_copy_edit"):
         return False
-    mode = forward_copy_edit_mode()
+    mode = forward_copy_edit_mode(int(source_chat_id))
     if rec is None:
         rec = find_record_by_message_id(int(dst_chat_id), int(dst_msg_id))
     if rec:
@@ -11508,57 +12335,27 @@ def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id
         except Exception as e:
             log_error(f"apply_forward_copy_edit_ui metadata {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
     else:
-        # Последний fallback на старую функцию поиска/привязки.
         rec = _set_forward_record_metadata(dst_chat_id, dst_msg_id, source_chat_id, source_msg)
     if not rec:
         log_error(f"[FWD COPY UI] record not found: {source_chat_id}->{dst_chat_id}:{dst_msg_id} mode={mode}")
         return False
     try:
-        bot_journal("forward_copy_edit_apply", int(source_chat_id), f"mode={mode} global=1 dst={dst_chat_id}:{dst_msg_id} rec={rec.get('short_id') or rec.get('id')}")
-    except Exception:
-        pass
-    try:
-        if mode == "normal":
-            try:
-                _tg_call_retry(
-                    bot.edit_message_reply_markup,
-                    int(dst_chat_id),
-                    int(dst_msg_id),
-                    reply_markup=None,
-                    attempts=1,
-                    purpose="forward_copy_edit_clear_markup",
-                )
-            except Exception:
-                pass
-            return True
-        if mode == "button":
-            _tg_call_retry(
-                bot.edit_message_reply_markup,
-                int(dst_chat_id),
-                int(dst_msg_id),
-                reply_markup=_forward_copy_edit_keyboard(mode),
-                attempts=3,
-                purpose="forward_copy_edit_button",
-            )
-            return True
-        base_text = _message_text_for_finance(source_msg)
+        base_text = _message_text_for_finance(source_msg) or compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
         display_text = _forward_copy_display_text(base_text, rec, mode)
-        ct = str(getattr(source_msg, "content_type", "text") or "text")
+        reply_markup = _forward_copy_edit_keyboard(mode)
+        ct = str(getattr(source_msg, "content_type", None) or rec.get("forward_copy_content_type") or "text")
         if ct == "text":
-            _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), attempts=3, purpose="forward_copy_edit_slash")
-            return True
+            _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), reply_markup=reply_markup, attempts=3, purpose="forward_copy_edit_apply_text")
         elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
-            _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), attempts=3, purpose="forward_copy_edit_slash")
-            return True
-        log_error(f"[FWD COPY UI] unsupported content type: {ct} dst={dst_chat_id}:{dst_msg_id}")
-        return False
+            _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), reply_markup=reply_markup, attempts=3, purpose="forward_copy_edit_apply_caption")
+        else:
+            _tg_call_retry(bot.edit_message_reply_markup, int(dst_chat_id), int(dst_msg_id), reply_markup=reply_markup, attempts=2, purpose="forward_copy_edit_apply_markup")
+        return True
     except Exception as e:
-        err = str(e).lower()
-        if "message is not modified" in err:
+        if "message is not modified" in str(e).lower():
             return True
         log_error(f"apply_forward_copy_edit_ui {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
         return False
-
 
 def schedule_forward_copy_edit_ui_retry(source_chat_id: int, dst_chat_id: int, dst_msg_id: int, source_msg, rec: dict | None = None, delay: float = 0.8):
     """Одна отложенная повторная попытка, если Telegram ещё не дал изменить свежую copyMessage."""
@@ -11598,14 +12395,18 @@ def clear_forward_copy_edit_wait(chat_id: int, delete_prompt: bool = True):
     store = get_chat_store(int(chat_id))
     wait = store.get("forward_copy_edit_wait") or {}
     prompt_id = wait.get("prompt_msg_id")
+    force_reply_msg_id = wait.get("force_reply_msg_id")
     DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
     store["forward_copy_edit_wait"] = None
     save_data(data, chat_ids=[int(chat_id)])
-    if delete_prompt and prompt_id:
-        try:
-            bot.delete_message(int(chat_id), int(prompt_id))
-        except Exception:
-            pass
+    if delete_prompt:
+        for _mid in (prompt_id, force_reply_msg_id):
+            if not _mid:
+                continue
+            try:
+                bot.delete_message(int(chat_id), int(_mid))
+            except Exception:
+                pass
 
 
 def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int, delay: float = 40.0):
@@ -11620,7 +12421,6 @@ def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int,
             log_error(f"schedule_forward_copy_edit_wait_cancel({chat_id}): {e}")
     DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
     DELAYED_SCHEDULER.schedule(_forward_copy_edit_wait_scheduler_key(int(chat_id)), float(delay), _job)
-
 
 def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
     rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
@@ -11637,24 +12437,50 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
             current = compose_edit_input_value(rec.get("usd_amount"), rec.get("usd_note") or rec.get("note", ""))
         else:
             current = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+
     kb = types.InlineKeyboardMarkup()
-    kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + current)[:256]))
+    kb.row(make_copy_or_inline_button("✍️ Вставить текст", current))
     kb.row(IB("❌ Отмена", callback_data="fwdcopy_edit_cancel"))
     prompt = (
-        f"✏️ Изменение бот-копии {rec.get('short_id') or 'R' + str(rec.get('id'))}\n\n"
-        "Нажмите «✍️ Вставить текст» — текущий текст появится в поле ввода Telegram.\n"
-        "Измените его и отправьте одним сообщением.\n\n"
-        f"Сейчас: {current}\n\n"
-        "Будет изменена сама бот-копия и связанная финансовая запись.\n"
+        "✏️ изменение копии бота\n\n"
+        f"Запись: {rec.get('short_id') or 'R' + str(rec.get('id'))}\n"
+        f"Текущее значение: {current}\n\n"
+        "Нажмите «Вставить текст» или отправьте новые данные одним сообщением.\n"
+        "Будет изменена именно эта бот-копия и связанная финансовая запись.\n\n"
         "⏳ Режим автоматически отменится через 40 секунд."
     )
     sent = _tg_call_retry(bot.send_message, int(chat_id), prompt, reply_markup=kb, purpose="forward_copy_edit_prompt")
+
+    # Telegram Bot API не позволяет без действия пользователя физически заполнить compose-поле.
+    # ForceReply сразу открывает режим ответа, а сообщение ниже даёт готовую строку @бот + значение.
+    try:
+        username = get_bot_username_cached()
+        force_text = (
+            f"@{username} {current}" if username
+            else str(current)
+        )
+        try:
+            force_reply = types.ForceReply(selective=True, input_field_placeholder=str(current)[:64])
+        except TypeError:
+            force_reply = types.ForceReply(selective=True)
+        force_msg = _tg_call_retry(
+            bot.send_message, int(chat_id), force_text,
+            reply_markup=force_reply,
+            reply_to_message_id=int(sent.message_id),
+            purpose="forward_copy_edit_force_reply",
+        )
+        force_msg_id = int(getattr(force_msg, "message_id", 0) or 0)
+    except Exception as e:
+        log_error(f"forward_copy_edit force reply {chat_id}: {e}")
+        force_msg_id = 0
+
     get_chat_store(int(chat_id))["forward_copy_edit_wait"] = {
         "type": "forward_copy_edit",
         "dst_msg_id": int(dst_msg_id),
         "rid": int(rec.get("id")),
         "source_chat_id": int(source_chat_id),
         "prompt_msg_id": int(sent.message_id),
+        "force_reply_msg_id": int(force_msg_id or 0),
         "insert_text": current,
         "countdown_base_text": prompt,
         "expires_at": time.time() + 40,
@@ -11662,7 +12488,6 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
     save_data(data, chat_ids=[int(chat_id)])
     schedule_forward_copy_edit_wait_cancel(int(chat_id), int(sent.message_id), 40)
     return True
-
 
 def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -> bool:
     clean_text = sanitize_telegram_inserted_text(str(new_text or "").strip())
@@ -11968,7 +12793,7 @@ def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_m
     ct = getattr(msg, "content_type", None)
     owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
     rec = find_record_by_message_id(dst_chat_id, dst_msg_id) if finance_enabled else None
-    edit_mode = forward_copy_edit_mode() if finance_enabled else "normal"
+    edit_mode = forward_copy_edit_mode(source_chat_id) if finance_enabled else "normal"
     display_text = _forward_copy_display_text(text, rec, edit_mode) if rec else text
     edit_markup = _forward_copy_edit_keyboard(edit_mode) if finance_enabled else None
 
@@ -12149,7 +12974,7 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
     # и не зависела от последующего edit_message_reply_markup.
     pre_copy_markup = None
     try:
-        if finance_enabled and forward_copy_edit_mode() == "button":
+        if finance_enabled and forward_copy_edit_mode(source_chat_id) == "button":
             pre_copy_markup = _forward_copy_edit_keyboard("button")
     except Exception:
         pre_copy_markup = None
@@ -12211,12 +13036,18 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             if ok_fin:
                 _rec = ok_fin if isinstance(ok_fin, dict) else None
                 _ui_ok = apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec)
-                if not _ui_ok and forward_copy_edit_mode() != "normal":
+                if not _ui_ok and forward_copy_edit_mode(source_chat_id) != "normal":
                     schedule_forward_copy_edit_ui_retry(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec, delay=0.8)
             elif text_has_any_digit(text_for_finance):
                 log_error(f"[FWD FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
         except Exception as e:
             log_error(f"_forward_single_to_target finance sync {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
+
+    # Bot-created copies do not generate incoming Telegram updates; capture them explicitly.
+    try:
+        capture_forwarded_bot_copy_as_secret(dst_chat_id, dst_msg_id, msg)
+    except Exception as e:
+        log_error(f"forward secret capture {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
 
     trace.finish("пересылка завершена")
     return dst_msg_id
@@ -12288,12 +13119,16 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                         if ok_fin:
                             _rec = ok_fin if isinstance(ok_fin, dict) else None
                             _ui_ok = apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, src_msg, rec=_rec)
-                            if not _ui_ok and forward_copy_edit_mode() != "normal":
+                            if not _ui_ok and forward_copy_edit_mode(source_chat_id) != "normal":
                                 schedule_forward_copy_edit_ui_retry(source_chat_id, dst_chat_id, dst_msg_id, src_msg, rec=_rec, delay=0.8)
                         elif text_has_any_digit(text_for_finance):
                             log_error(f"[FWD MEDIA FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{src_msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
                     except Exception as e:
                         log_error(f"_flush_media_group_forward finance sync {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
+                try:
+                    capture_forwarded_bot_copy_as_secret(dst_chat_id, dst_msg_id, src_msg)
+                except Exception as e:
+                    log_error(f"media-group secret capture {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
             continue
 
         for src_msg in messages:
@@ -12431,14 +13266,78 @@ def gomonk_info_label(chat_id: int) -> str:
     return "🧳 Гомонковые ВКЛ" if gomonk_enabled(chat_id) else "🧳 Гомонковые ВЫКЛ"
 
 
-def currency_mode(chat_id: int) -> str:
-    """Режим отображения сумм одного чата: ars, ars_usd или usd."""
+def _ensure_currency_ledgers(store: dict) -> str:
+    """Инициализирует независимые ARS/USD контуры без потери старых данных."""
+    settings = store.setdefault("settings", {})
+    active = str(settings.get("_active_currency_ledger") or "").lower()
+    if active not in {"ars", "usd"}:
+        # Все старые версии хранили основной учёт в ARS.
+        active = "ars"
+        settings["_active_currency_ledger"] = active
+        store.setdefault("ars_records", copy.deepcopy(store.get("records", []) or []))
+        store.setdefault("ars_daily_records", copy.deepcopy(store.get("daily_records", {}) or {}))
+        store.setdefault("ars_balance", float(store.get("balance", 0) or 0))
+        store.setdefault("ars_next_id", int(store.get("next_id", 1) or 1))
+    store.setdefault("usd_records", [])
+    store.setdefault("usd_daily_records", {})
+    store.setdefault("usd_balance", 0.0)
+    store.setdefault("usd_next_id", 1)
+    return active
+
+
+def _snapshot_active_currency_ledger(store: dict, ledger: str | None = None) -> None:
+    ledger = ledger or _ensure_currency_ledgers(store)
+    if ledger not in {"ars", "usd"}:
+        return
+    store[f"{ledger}_records"] = copy.deepcopy(store.get("records", []) or [])
+    store[f"{ledger}_daily_records"] = copy.deepcopy(store.get("daily_records", {}) or {})
+    store[f"{ledger}_balance"] = float(store.get("balance", 0) or 0)
+    store[f"{ledger}_next_id"] = int(store.get("next_id", 1) or 1)
+
+
+def _load_currency_ledger(store: dict, ledger: str) -> None:
+    ledger = "usd" if str(ledger).lower() == "usd" else "ars"
+    store["records"] = copy.deepcopy(store.get(f"{ledger}_records", []) or [])
+    store["daily_records"] = copy.deepcopy(store.get(f"{ledger}_daily_records", {}) or {})
+    store["balance"] = float(store.get(f"{ledger}_balance", 0) or 0)
+    store["next_id"] = int(store.get(f"{ledger}_next_id", 1) or 1)
+    store.setdefault("settings", {})["_active_currency_ledger"] = ledger
+
+
+def active_currency_ledger_from_store(store: dict | None) -> str:
     try:
-        settings = get_chat_store(int(chat_id)).setdefault("settings", {})
+        return _ensure_currency_ledgers(store or {})
+    except Exception:
+        return "ars"
+
+
+def active_currency_ledger(chat_id: int) -> str:
+    return active_currency_ledger_from_store(get_chat_store(int(chat_id)))
+
+
+def _switch_currency_ledger(chat_id: int, target: str) -> bool:
+    """Переключает основной рабочий набор records/daily_records на выбранную валюту."""
+    store = get_chat_store(int(chat_id))
+    current = _ensure_currency_ledgers(store)
+    target = "usd" if str(target).lower() == "usd" else "ars"
+    if current == target:
+        return False
+    _snapshot_active_currency_ledger(store, current)
+    _load_currency_ledger(store, target)
+    return True
+
+
+def currency_mode(chat_id: int) -> str:
+    """Режим финансовых окон: ARS, ARS-USD (ARS с эквивалентом), либо отдельный USD-контур."""
+    try:
+        store = get_chat_store(int(chat_id))
+        settings = store.setdefault("settings", {})
         mode = str(settings.get("currency_mode") or "").strip().lower()
         if mode not in {"ars", "ars_usd", "usd"}:
             mode = "ars_usd" if bool(settings.get("usd_display_enabled", False)) else "ars"
             settings["currency_mode"] = mode
+        # На старте после рестарта рабочий набор уже соответствует сохранённому active ledger.
+        _ensure_currency_ledgers(store)
         return mode
     except Exception:
         return "ars"
@@ -12459,16 +13358,20 @@ def set_currency_mode(chat_id: int, mode: str):
     mode = str(mode or "ars").strip().lower()
     if mode not in {"ars", "ars_usd", "usd"}:
         mode = "ars"
-    store = get_chat_store(int(chat_id))
+    chat_id = int(chat_id)
+    store = get_chat_store(chat_id)
+    # ARS и ARS-USD используют один песовый реестр; USD — полностью отдельный.
+    target_ledger = "usd" if mode == "usd" else "ars"
+    _switch_currency_ledger(chat_id, target_ledger)
     settings = store.setdefault("settings", {})
     settings["currency_mode"] = mode
-    # Совместимость со снимками v86 и старым переключателем.
     settings["usd_display_enabled"] = mode != "ars"
-    save_data(data, chat_ids=[int(chat_id)])
-    schedule_config_backup_for_chats(int(chat_id))
-    if mode != "ars":
+    # Снимок активного контура нужен, чтобы backup всегда содержал актуальную валюту и после рестарта.
+    _snapshot_active_currency_ledger(store, target_ledger)
+    save_data(data, chat_ids=[chat_id])
+    schedule_config_backup_for_chats(chat_id)
+    if mode == "ars_usd":
         GENERAL_TASK_POOL.submit("usd-rate-refresh", usd_rate_cached, False)
-
 
 def currency_mode_label(chat_id: int) -> str:
     labels = {"ars": "ARS", "ars_usd": "ARS-USD", "usd": "USD"}
@@ -12540,7 +13443,7 @@ def toggle_remaining_ost_label(chat_id: int) -> bool:
 
 
 def fmt_usd_compact(amount: float, rate_info: dict | None, signed: bool = True, absolute: bool = False) -> str:
-    """USD во всех финансовых окнах v91 округляется до целых долларов."""
+    """Конвертация ARS→USD для режима ARS-USD."""
     if not rate_info or not rate_info.get("rate"):
         return "$—"
     amount = float(amount or 0)
@@ -12552,40 +13455,51 @@ def fmt_usd_compact(amount: float, rate_info: dict | None, signed: bool = True, 
     return f"{sign}${value:,}".replace(",", " ")
 
 
+def fmt_usd_native(amount: float, signed: bool = True, absolute: bool = False) -> str:
+    """Формат суммы, которая уже хранится в отдельном USD-контуре."""
+    amount = float(amount or 0)
+    value = abs(amount)
+    if abs(value - round(value)) < 1e-9:
+        body = f"{int(round(value)):,}".replace(",", " ")
+    else:
+        body = f"{value:,.2f}".replace(",", " ").rstrip("0").rstrip(".")
+    sign = "" if (absolute or not signed) else ("+" if amount >= 0 else "-")
+    return f"{sign}${body}"
+
+
 def format_chat_amount(chat_id: int, amount: float, mixed_space: bool = False) -> str:
-    """Единый формат ARS / ARS-USD / USD для финансовых окон."""
+    """Единый формат: ARS, ARS-USD либо нативные суммы отдельного USD-контура."""
     mode = currency_mode(int(chat_id))
     if mode == "ars":
         return fmt_num(amount)
-    rate_info = usd_rate_cached(force=False)
     if mode == "usd":
-        return fmt_usd_compact(amount, rate_info, signed=True)
+        return fmt_usd_native(amount, signed=True)
+    rate_info = usd_rate_cached(force=False)
     spacer = " " if mixed_space else ""
     return f"{fmt_num(amount)}{spacer}({fmt_usd_compact(amount, rate_info, signed=False, absolute=True)})"
 
 
 def format_store_amount(store: dict, amount: float, mixed_space: bool = False, ars_plain: bool = False) -> str:
-    """Вариант без chat_id для окон статей, где передаётся store."""
     mode = currency_mode_from_store(store)
     if mode == "ars":
         return fmt_num_plain(amount) if ars_plain else fmt_num(amount)
-    rate_info = usd_rate_cached(force=False)
     if mode == "usd":
-        return fmt_usd_compact(amount, rate_info, signed=not ars_plain, absolute=ars_plain)
+        return fmt_usd_native(amount, signed=not ars_plain, absolute=ars_plain)
+    rate_info = usd_rate_cached(force=False)
     ars = fmt_num_plain(amount) if ars_plain else fmt_num(amount)
     spacer = " " if mixed_space else ""
     return f"{ars}{spacer}({fmt_usd_compact(amount, rate_info, signed=False, absolute=True)})"
 
+
 def format_category_amount(store: dict, amount: float, category_mixed: bool = False) -> str:
     mode = currency_mode_from_store(store)
-    rate_info = usd_rate_cached(force=False) if (mode != "ars" or category_mixed) else None
     if mode == "usd":
-        return fmt_usd_compact(amount, rate_info, signed=False, absolute=True)
+        return fmt_usd_native(amount, signed=False, absolute=True)
+    rate_info = usd_rate_cached(force=False) if (mode == "ars_usd" or category_mixed) else None
     ars = fmt_num_plain(amount)
     if mode == "ars_usd" or category_mixed:
         return f"{ars} ({fmt_usd_compact(amount, rate_info, signed=False, absolute=True)})"
     return ars
-
 
 def gomonk_summary_lines(chat_id: int) -> list[str]:
     if not (_v85_enabled("gomonk_wallets") and gomonk_enabled(chat_id)):
@@ -13345,7 +14259,7 @@ def build_month_report_text(chat_id: int, month_key: str = None):
     return wm_common("<pre>" + html.escape("\n".join(lines)) + "</pre>", 3, html_mode=True), month_key
 
 def build_calendar_keyboard(center_day: datetime, chat_id=None):
-    """Месячный финансовый календарь с привычной сеткой Пн–Вс."""
+    """Monthly financial calendar with explicit month/year and separate year navigation."""
     kb = types.InlineKeyboardMarkup(row_width=7)
     daily = {}
     back_day_key = today_key()
@@ -13363,54 +14277,38 @@ def build_calendar_keyboard(center_day: datetime, chat_id=None):
                 continue
             key = f"{center_day.year:04d}-{center_day.month:02d}-{day_num:02d}"
             label = f"📝{day_num}" if daily.get(key) else str(day_num)
-            if daily.get(key):
-                label = f"📝{day_num}"
-            row.append(
-                IB(
-                    label,
-                    callback_data=f"d:{key}:open"
-                )
-            )
+            row.append(IB(label, callback_data=f"d:{key}:open"))
         kb.row(*row)
 
     prev_month = (center_day.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (center_day.replace(day=28) + timedelta(days=4)).replace(day=1)
-
     kb.row(
-        IB(
-            "⬅️ Месяц",
-            callback_data=f"c:{prev_month.strftime('%Y-%m-%d')}"
-        ),
-        IB(
-            "➡️ Месяц",
-            callback_data=f"c:{next_month.strftime('%Y-%m-%d')}"
-        )
+        IB("⬅️ Месяц", callback_data=f"c:{prev_month.strftime('%Y-%m-%d')}"),
+        IB(f"{russian_month_name(center_day.month)} {center_day.year}", callback_data="none"),
+        IB("Месяц ➡️", callback_data=f"c:{next_month.strftime('%Y-%m-%d')}"),
+    )
+    try:
+        prev_year = center_day.replace(year=center_day.year - 1, day=1)
+    except ValueError:
+        prev_year = center_day.replace(year=center_day.year - 1, month=2, day=28)
+    try:
+        next_year = center_day.replace(year=center_day.year + 1, day=1)
+    except ValueError:
+        next_year = center_day.replace(year=center_day.year + 1, month=2, day=28)
+    kb.row(
+        IB("◀️ Год", callback_data=f"c:{prev_year.strftime('%Y-%m-%d')}"),
+        IB(str(center_day.year), callback_data="none"),
+        IB("Год ▶️", callback_data=f"c:{next_year.strftime('%Y-%m-%d')}"),
     )
 
     current_month = now_local().strftime("%Y-%m")
     shown_month = center_day.strftime("%Y-%m")
     bottom_row = []
     if shown_month != current_month:
-        bottom_row.append(
-            IB(
-                "📅 Сегодня",
-                callback_data=f"c:{now_local().strftime('%Y-%m-%d')}"
-            )
-        )
+        bottom_row.append(IB("📅 Сегодня", callback_data=f"c:{now_local().strftime('%Y-%m-%d')}"))
     elif back_day_key != today_key():
-        bottom_row.append(
-            IB(
-                "📅 Сегодня",
-                callback_data=f"d:{today_key()}:open"
-            )
-        )
-
-    bottom_row.append(
-        IB(
-            "🔙 Назад",
-            callback_data=f"d:{back_day_key}:back_main"
-        )
-    )
+        bottom_row.append(IB("📅 Сегодня", callback_data=f"d:{today_key()}:open"))
+    bottom_row.append(IB("🔙 Назад", callback_data=f"d:{back_day_key}:back_main"))
     kb.row(*bottom_row)
     return kb
 
@@ -13420,7 +14318,7 @@ def _backup_toggle_label(chat_id: int, target: str, label: str) -> str:
 
 
 def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | None = None, target_chat_id: int | None = None):
-    """Ряды: слева период, справа CSV и Excel."""
+    """Ф47: пять строк периодов и четыре колонки: период / CSV / Excel / Excel статьи."""
     periods = [
         ("📅 День", "day"),
         ("🗓 Неделя", "week"),
@@ -13432,15 +14330,19 @@ def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | 
         if prefix == "fv":
             csv_cb = f"fv:{target_chat_id}:{day_key}:csv_{mode}:{owner_day_key}"
             xlsx_cb = f"fv:{target_chat_id}:{day_key}:xlsx_{mode}:{owner_day_key}"
+            xlsxstat_cb = f"fv:{target_chat_id}:{day_key}:xlsxstat_{mode}:{owner_day_key}"
         else:
             csv_action = "csv_all_real" if mode == "all" else f"csv_{mode}"
             xlsx_action = "xlsx_all" if mode == "all" else f"xlsx_{mode}"
+            xlsxstat_action = f"xlsxstat_{mode}"
             csv_cb = f"d:{day_key}:{csv_action}"
             xlsx_cb = f"d:{day_key}:{xlsx_action}"
+            xlsxstat_cb = f"d:{day_key}:{xlsxstat_action}"
         kb.row(
             IB(label, callback_data="none"),
             IB("CSV", callback_data=csv_cb),
             IB("Excel", callback_data=xlsx_cb),
+            IB("Excel статьи", callback_data=xlsxstat_cb),
         )
 
 
@@ -13460,6 +14362,11 @@ def _export_calendar_start_keyboard(view_year: int, view_month: int, return_day_
         IB("⬅️ Месяц", callback_data=export_callback(f"exp_pick_start:{prev_y}:{prev_m}:{return_day_key}")),
         IB(f"{russian_month_name(view_month)} {view_year}", callback_data="none"),
         IB("Месяц ➡️", callback_data=export_callback(f"exp_pick_start:{next_y}:{next_m}:{return_day_key}")),
+    )
+    kb.row(
+        IB("◀️ Год", callback_data=export_callback(f"exp_pick_start:{view_year-1}:{view_month}:{return_day_key}")),
+        IB(str(view_year), callback_data="none"),
+        IB("Год ▶️", callback_data=export_callback(f"exp_pick_start:{view_year+1}:{view_month}:{return_day_key}")),
     )
     kb.row(IB("🔙 Назад в CSV / Excel", callback_data=f"d:{return_day_key}:csv_all"))
     return kb
@@ -13508,6 +14415,11 @@ def _export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int
         f"exp_pick_end:{start_key}:{int(start_rid)}:{next_y}:{next_m}:{return_day_key}"
     )))
     kb.row(*nav)
+    kb.row(
+        IB("◀️ Год", callback_data=export_callback(f"exp_pick_end:{start_key}:{int(start_rid)}:{view_year-1}:{view_month}:{return_day_key}")),
+        IB(str(view_year), callback_data="none"),
+        IB("Год ▶️", callback_data=export_callback(f"exp_pick_end:{start_key}:{int(start_rid)}:{view_year+1}:{view_month}:{return_day_key}")),
+    )
     kb.row(IB("🔙 Изменить начало", callback_data=export_callback(
         f"exp_pick_set_start:{datetime.strptime(start_key, '%Y-%m-%d').year}:{datetime.strptime(start_key, '%Y-%m-%d').month}:{datetime.strptime(start_key, '%Y-%m-%d').day}:{return_day_key}"
     )))
@@ -13570,7 +14482,7 @@ def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: st
 
 
 def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
-    """Excel стат: Дата | Описание | Приход | статьи расходов."""
+    """Excel стат по пользовательскому образцу с настоящими Excel-формулами."""
     store = get_chat_store(target_chat_id)
     records = exact_record_range(store, start_key, start_rid, end_key, end_rid)
     cats_map = calc_categories_for_record_range(store, start_key, start_rid, end_key, end_rid)
@@ -13593,23 +14505,41 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
         row = [fmt_date_table(day_key), str(rec.get("note") or ""), ""] + [""] * len(categories)
         if amount >= 0:
             income_total += amount
-            row[2] = int(round(amount))
+            row[2] = int(round(amount)) if float(amount).is_integer() else amount
         else:
             value = abs(amount)
             expense_total += value
             category = resolve_expense_category_for_record(rec, store)
             if category in cat_totals:
                 cat_totals[category] += value
-                row[3 + categories.index(category)] = int(round(value))
+                idx = categories.index(category)
+                row[3 + idx] = int(round(value)) if float(value).is_integer() else value
         rows.append(row)
-    rows.append([])
-    rows.append(["", "Сумма", int(round(income_total))] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in categories])
-    rows.append([])
-    rows.append(["", "Расход", int(round(expense_total))] + [""] * len(categories))
-    rows.append(["", "Приход", int(round(income_total))] + [""] * len(categories))
-    rows.append(["", "Остаток", int(round(income_total - expense_total))] + [""] * len(categories))
-    return rows
 
+    # Data ends before the separator preceding totals. Blank day separators are intentionally included in SUM ranges.
+    data_last_row = max(2, len(rows))
+    rows.append([])
+    sum_row_num = len(rows) + 1
+    sum_row = ["", "Сумма по статьям", {"formula": f"SUM(C2:C{data_last_row})", "value": income_total}]
+    for idx, cat in enumerate(categories, start=4):
+        col = _xlsx_col_name(idx)
+        sum_row.append({"formula": f"SUM({col}2:{col}{data_last_row})", "value": cat_totals.get(cat, 0.0)})
+    rows.append(sum_row)
+    rows.append([])
+
+    expense_row_num = len(rows) + 1
+    if categories:
+        first_cat = _xlsx_col_name(4)
+        last_cat = _xlsx_col_name(3 + len(categories))
+        expense_formula = f"SUM({first_cat}{sum_row_num}:{last_cat}{sum_row_num})"
+    else:
+        expense_formula = "0"
+    rows.append(["", "Расход", {"formula": expense_formula, "value": expense_total}] + [""] * len(categories))
+    income_row_num = len(rows) + 1
+    rows.append(["", "Приход", {"formula": f"C{sum_row_num}", "value": income_total}] + [""] * len(categories))
+    balance_row_num = len(rows) + 1
+    rows.append(["", "Остаток на руках", {"formula": f"C{income_row_num}-C{expense_row_num}", "value": income_total - expense_total}] + [""] * len(categories))
+    return rows
 
 def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str):
     """Фоновый экспорт между двумя точными границами включительно."""
@@ -13682,7 +14612,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
 
 
 def build_csv_menu(day_key: str, chat_id: int | None = None):
-    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb = types.InlineKeyboardMarkup(row_width=4)
     _add_export_period_rows(kb, day_key, "d")
     try:
         ref_dt = datetime.strptime(day_key, "%Y-%m-%d")
@@ -14790,11 +15720,14 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
     try:
         trace.step("читает режим периода")
         file_type = str(file_type or "csv").lower().lstrip(".")
-        mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
+        raw_mode = str(mode or "all")
+        if raw_mode.startswith("xlsxstat_"):
+            raw_mode = raw_mode[len("xlsxstat_"):]
+        mode = raw_mode.replace("csv_", "").replace("xlsx_", "")
         if mode == "all_real":
             mode = "all"
 
-        if mode == "all":
+        if mode == "all" and file_type in {"csv", "xlsx"}:
             trace.step("экспорт за всё время — обновляет локальные файлы")
             save_chat_json(target_chat_id)
             path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
@@ -14815,7 +15748,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
 
         trace.step("собирает строки за выбранный период")
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
-        ext = "xlsx" if file_type == "xlsx" else "csv"
+        ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         if not rows and ext != "xlsx":
             trace.step("строк нет — отправляет уведомление")
             send_info(recipient_chat_id, f"Нет данных {label}.")
@@ -14824,8 +15757,36 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         if not rows and ext == "xlsx":
             trace.step("строк нет — создаёт пустой Excel с заголовками")
         tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}")
-        display_name = export_display_filename(target_chat_id, mode, day_key, ext)
-        if ext == "xlsx":
+        if file_type == "xlsxstat":
+            safe_chat = mega_safe_name(get_chat_display_name(target_chat_id), "chat")
+            display_name = f"{safe_chat}_{mode}_{day_key}_excel_статьи.xlsx"
+        else:
+            display_name = export_display_filename(target_chat_id, mode, day_key, ext)
+        if file_type == "xlsxstat":
+            trace.step("создаёт Excel по статьям с формулами")
+            store = get_chat_store(target_chat_id)
+            base = datetime.strptime(day_key, "%Y-%m-%d")
+            if mode == "day":
+                start_key = end_key = day_key
+            elif mode == "week":
+                start_key = (base - timedelta(days=6)).strftime("%Y-%m-%d")
+                end_key = day_key
+            elif mode == "month":
+                start_key = base.replace(day=1).strftime("%Y-%m-%d")
+                end_key = day_key
+            elif mode == "wedthu":
+                start_dt = base
+                while start_dt.weekday() != 2:
+                    start_dt -= timedelta(days=1)
+                start_key = start_dt.strftime("%Y-%m-%d")
+                end_key = (start_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                keys = sorted((store.get("daily_records", {}) or {}).keys())
+                start_key = keys[0] if keys else day_key
+                end_key = keys[-1] if keys else day_key
+            xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
+            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Статьи")
+        elif ext == "xlsx":
             trace.step("создаёт временный Excel файл")
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
             for date_v, amount_v, note_v in rows:
@@ -14850,7 +15811,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
-                caption=f"📂 {'Excel' if ext == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                caption=f"📂 {'Excel статьи' if file_type == 'xlsxstat' else ('Excel' if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
                 purpose="export_send_document"
             )
         trace.step("удаляет временный файл")
@@ -14935,6 +15896,16 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
     except Exception:
         return True
     store = get_chat_store(target_chat_id)
+    # Любой экран статей заменяет на этом message_id прежнее фин-окно. Сразу фиксируем это,
+    # чтобы реестр не перерисовал его обратно; финансово-зависимые wthu/show ниже станут динамическими.
+    try:
+        register_static_open_view(
+            owner_chat_id, call.message.message_id, code=action,
+            day_key=parts[2] if len(parts) > 2 else None,
+            params={"target_chat_id": target_chat_id, "view_action": action},
+        )
+    except Exception:
+        pass
     if action == "fvcat_today":
         owner_day_key = parts[2] if len(parts) > 2 else today_key()
         return handle_finwindow_categories_callback(call, f"fvcat_wthu:{target_chat_id}:{today_key()}:{owner_day_key}")
@@ -15050,6 +16021,10 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
         text, _ = summarize_categories(store, start, end, label)
         text = f"👁 {get_chat_display_name(target_chat_id)}\n" + text
         safe_edit(bot, call, text, reply_markup=build_fin_categories_summary_keyboard(target_chat_id, "wthu", start, end, owner_day_key), parse_mode=None)
+        register_open_window(
+            owner_chat_id, call.message.message_id, "fin_categories_view", code="fvcat:wthu", day_key=ref,
+            params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": "wthu", "ref": ref},
+        )
         return True
     if action == "fvcat_show":
         try:
@@ -15066,6 +16041,10 @@ def handle_finwindow_categories_callback(call, data_str: str) -> bool:
         kb.row(IB("🔙 Назад", callback_data=fvcat_callback(f"fvcat_wthu:{target_chat_id}:{start}:{owner_day_key}")))
         kb.row(IB("🔙 К окну чата", callback_data=f"fv:{target_chat_id}:{start}:open:{owner_day_key}"))
         safe_edit(bot, call, text, reply_markup=kb, parse_mode=None)
+        register_open_window(
+            owner_chat_id, call.message.message_id, "fin_categories_view", code="fvcat:show", day_key=start,
+            params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": "show", "start": start, "end": end, "slug": slug},
+        )
         return True
     return True
 
@@ -15079,7 +16058,6 @@ def build_fin_calendar_keyboard(target_chat_id: int, center_day: datetime, owner
     kb = types.InlineKeyboardMarkup(row_width=7)
     store = get_chat_store(target_chat_id)
     daily = store.get("daily_records", {})
-
     kb.row(*[IB(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
     for week in calendar.Calendar(firstweekday=0).monthdayscalendar(center_day.year, center_day.month):
         row = []
@@ -15091,12 +16069,19 @@ def build_fin_calendar_keyboard(target_chat_id: int, center_day: datetime, owner
             label = f"📝{day_num}" if daily.get(key) else str(day_num)
             row.append(IB(label, callback_data=f"fv:{target_chat_id}:{key}:open:{owner_day_key}"))
         kb.row(*row)
-
     prev_month = (center_day.replace(day=1) - timedelta(days=1)).replace(day=1)
     next_month = (center_day.replace(day=28) + timedelta(days=4)).replace(day=1)
     kb.row(
         IB("⬅️ Месяц", callback_data=f"fc:{target_chat_id}:{prev_month.strftime('%Y-%m-%d')}:{owner_day_key}"),
-        IB("➡️ Месяц", callback_data=f"fc:{target_chat_id}:{next_month.strftime('%Y-%m-%d')}:{owner_day_key}")
+        IB(f"{russian_month_name(center_day.month)} {center_day.year}", callback_data="none"),
+        IB("Месяц ➡️", callback_data=f"fc:{target_chat_id}:{next_month.strftime('%Y-%m-%d')}:{owner_day_key}"),
+    )
+    prev_year = center_day.replace(year=center_day.year - 1, day=1)
+    next_year = center_day.replace(year=center_day.year + 1, day=1)
+    kb.row(
+        IB("◀️ Год", callback_data=f"fc:{target_chat_id}:{prev_year.strftime('%Y-%m-%d')}:{owner_day_key}"),
+        IB(str(center_day.year), callback_data="none"),
+        IB("Год ▶️", callback_data=f"fc:{target_chat_id}:{next_year.strftime('%Y-%m-%d')}:{owner_day_key}"),
     )
     row = []
     if center_day.strftime("%Y-%m") != now_local().strftime("%Y-%m"):
@@ -15104,7 +16089,6 @@ def build_fin_calendar_keyboard(target_chat_id: int, center_day: datetime, owner
     row.append(IB("🔙 Назад", callback_data=f"fv:{target_chat_id}:{store.get('current_view_day', today_key())}:open:{owner_day_key}"))
     kb.row(*row)
     return kb
-
 
 def build_forward_mode_menu(A: int, B: int):
     """
@@ -15406,6 +16390,10 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
     except Exception:
         pass
     store = get_chat_store(chat_id)
+    store["categories_refresh_state"] = {
+        "marker_action": marker_action or "",
+        "callbacks": _markup_callback_values(reply_markup),
+    }
     mid = store.get("categories_msg_id")
 
     candidates = []
@@ -15435,20 +16423,24 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
                 parse_mode=parse_mode
             )
             store["categories_msg_id"] = target_id
+            register_open_window(chat_id, target_id, "categories", code=marker_action or "")
             save_data(data)
             return target_id
         except Exception as e:
             if "message is not modified" in str(e).lower():
                 store["categories_msg_id"] = target_id
+                register_open_window(chat_id, target_id, "categories", code=marker_action or "")
                 save_data(data)
                 return target_id
             log_error(f"send_or_edit_categories_window edit failed {chat_id}:{target_id}: {e}")
             if store.get("categories_msg_id") == target_id:
+                unregister_open_window(chat_id, target_id)
                 store["categories_msg_id"] = None
                 save_data(data)
 
     sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
     store["categories_msg_id"] = sent.message_id
+    register_open_window(chat_id, sent.message_id, "categories", code=marker_action or "")
     save_data(data)
     return sent.message_id
 
@@ -15478,19 +16470,32 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
 
 def build_owner_instruction_text() -> str:
     return (
-        "📘 Инструкция владельца\n\n"
-        "1. Webhook сразу кладёт update в очередь и отвечает Telegram. Один чат обрабатывается по порядку, разные чаты — параллельно.\n"
-        "2. Финансы: сумма без знака = расход; слово «приход» = поступление. Режим /day5 переносит границу суток на 05:00.\n"
-        "3. Пересылка: порядок сохраняется внутри исходного чата. Несколько разных чатов пересылаются параллельно.\n"
-        "4. Секрет: сообщение сначала пересылается, если включена пересылка, затем сохраняется и удаляется из исходного чата.\n"
-        "5. SQLite сохраняется сразу. В обычной операции точечно обновляется только изменившийся чат.\n"
-        "6. Быстрый MEGA: через 1 сек. в приоритетном режиме или примерно через 8 сек. обычно загружается маленький immutable delta нескольких чатов. Старые delta не заменяются.\n"
-        "7. Полный файл чата: примерно через 120 секунд тишины именно в этом чате. MEGA обновляется безопасно: candidate → history → active, без предварительного удаления.\n"
-        "8. Полный global: после 3 минут общей тишины, но не реже одного раза за 15 минут непрерывных изменений. Между full snapshot восстановление выполняется как global + delta.\n"
-        "9. Очереди ограничены. При перегрузке webhook вернёт 503, и Telegram повторит доставку вместо потери update.\n"
-        "10. /queues показывает размер очередей, работников, отказы и ожидание. /diag показывает общее состояние."
+        "📘 Инструкция по кнопкам\n\n"
+        "🏠 Основное финансовое окно\n"
+        "⬅️ День / День ➡️ — перейти на соседний день. 📅 Сегодня — вернуться к текущей дате.\n"
+        "📅 Дата — открыть календарь; в календаре можно менять месяц и год.\n"
+        "📊 Отчёт — месячный отчёт. 🧮 Итог — общий итог. 🏦 с ост — остаток после каждого расхода.\n"
+        "✏️ Изменить / 🗑 Удалить — работа с финансовыми записями. 📦 Статьи — расходы по категориям.\n"
+        "📄 CSV — окно Ф47: пять периодов; в каждой строке Период / CSV / Excel / Excel статьи. Точный период открывается отдельной кнопкой ниже.\n\n"
+        "💱 Валюта\n"
+        "ARS — отдельный учёт в песо. ARS-USD — тот же ARS с эквивалентом по курсу. USD — отдельный долларовый учёт со всеми финансовыми функциями.\n"
+        "/ost — включает или выключает подпись «ост:» в окне остатка.\n\n"
+        "💰Перес\n"
+        "Обычно — бот-копия без кнопки и без /izm_R. Кнопка — под копией появляется ✏️ Изменить. Слеш — в текст копии добавляется /izm_R. При переключении обновляются существующие копии от открытой даты до сегодня.\n\n"
+        "🔐 Секрет\n"
+        "Секрет у выбранного чата — включает тотальный секрет именно для этого чата. В секрет участвуют и созданные ботом копии. 🪷 Маска — показывает нейтральное сообщение вместо удалённого секретного сообщения.\n\n"
+        "📦 Статьи\n"
+        "Ф110 — точный диапазон операций; 💵 USD включает долларовое отображение статей. ↕️ Расположение открывает Ф152: сначала выберите статью, затем номер новой позиции.\n"
+        "📚 Описание статей — ключевые слова категорий. ➕/✏️/🗑 — добавить, изменить или удалить пользовательскую статью.\n\n"
+        "ℹ️ INFO\n"
+        "📓 Журнал / 🗂 Журналы чатов — журналы действий. Кнопки в текущем окне — режим обновления интерфейса. Финансы — настройка финансового режима.\n"
+        "💵 Доллар — выбор ARS / ARS-USD / USD. 💰Перес — оформление бот-копий. Финансы-кнопки — записи как inline-кнопки.\n"
+        "☁️ MEGA — приоритет резервного копирования. 📘 Инструкция — это окно. 🚦 Очереди — состояние рабочих очередей.\n\n"
+        "📤 Пересылка\n"
+        "Меню пересылки задаёт связанные чаты и финансовую обработку копий. Режим «как у владельца» создаёт отдельный owner scope: настройки такого владельца сохраняются независимо.\n\n"
+        "💾 Сохранение\n"
+        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup."
     )
-
 
 def build_owner_instruction_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
@@ -15640,24 +16645,24 @@ def build_info_keyboard(chat_id: int):
                 IB(chat_journal_toggle_label(chat_id), callback_data=f"journal_chat_toggle:{chat_id}:0"),
             )
         kb.row(
-            IB(buttons_current_window_label(), callback_data="buttons_current_toggle"),
+            IB(buttons_current_window_label(chat_id), callback_data="buttons_current_toggle"),
             IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
         )
         if version_mode_feature("forward_copy_edit"):
             kb.row(IB(forward_copy_edit_mode_label(chat_id), callback_data="forward_copy_edit_mode_toggle"))
         kb.row(
-            IB(forward_menu_style_label(), callback_data="forward_menu_style_toggle"),
-            IB(icon_button_mode_label(), callback_data="icon_buttons_toggle"),
+            IB(forward_menu_style_label(chat_id), callback_data="forward_menu_style_toggle"),
+            IB(icon_button_mode_label(chat_id), callback_data="icon_buttons_toggle"),
         )
         kb.row(
-            IB(total_secret_mask_label(), callback_data="total_secret_mask_toggle"),
-            IB(f"🕔 {finance_day_start_label()}", callback_data="finance_day5_toggle"),
+            IB(total_secret_mask_label(chat_id), callback_data="total_secret_mask_toggle"),
+            IB(f"🕔 {finance_day_start_label(chat_id)}", callback_data="finance_day5_toggle"),
         )
         if version_mode_feature("mega_priority") and layout in {"v82", "v83"}:
-            kb.row(IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"))
+            kb.row(IB(mega_backup_priority_label(chat_id), callback_data="mega_priority_toggle"))
         elif version_mode_feature("mega_priority") and layout in {"v84", "v85", "v86", "v87"}:
             kb.row(
-                IB(mega_backup_priority_label(), callback_data="mega_priority_toggle"),
+                IB(mega_backup_priority_label(chat_id), callback_data="mega_priority_toggle"),
                 IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"),
             )
         if layout in {"v85", "v86", "v87"}:
@@ -15859,9 +16864,9 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
         if slug:
             buttons.append(IB(_clean_category_display_name(category), callback_data=cat_callback(f"cat_show_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{slug}")))
     add_buttons_in_rows(kb, buttons, 3)
-    if _v85_enabled("usd_categories") and currency_mode_from_store(store) == "ars":
+    if _v85_enabled("usd_categories"):
         usd_on = bool(store.setdefault("settings", {}).get("category_usd_enabled", False))
-        kb.row(IB("💵 USD ВЫКЛ" if usd_on else "💵 USD ВКЛ", callback_data=cat_callback(f"cat_usd_toggle_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
+        kb.row(IB("💵 USD: ВКЛ" if usd_on else "💵 USD: ВЫКЛ", callback_data=cat_callback(f"cat_usd_toggle_records:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     kb.row(IB("↕️ Расположение", callback_data=cat_callback(f"cat_order_open_exact:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}")))
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
     end_dt = datetime.strptime(end_key, "%Y-%m-%d")
@@ -16198,7 +17203,10 @@ def handle_categories_callback(call, data_str: str) -> bool:
                 bot.delete_message(chat_id, mid)
             except Exception:
                 pass
+        if mid:
+            unregister_open_window(chat_id, int(mid))
         store["categories_msg_id"] = None
+        store["categories_refresh_state"] = None
         save_data(data)
         return True
 
@@ -16376,12 +17384,58 @@ def handle_categories_callback(call, data_str: str) -> bool:
         try:
             _, mode, start, end = data_str.split(":", 3)
             send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store),
-                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end)),
+                chat_id, build_category_layout_text(store, "sum"),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
                 preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
             )
         except Exception as e:
             log_error(f"cat_order_open_sum: {e}")
+        return True
+
+    if data_str.startswith("cat_order_select_sum:"):
+        try:
+            _, slug, mode, start, end = data_str.split(":", 4)
+            params = ("sum", mode, start, end)
+            key = _category_order_selection_key(chat_id, params)
+            _category_order_selection[key] = slug
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store, "sum"),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_select_sum: {e}")
+        return True
+
+    if data_str.startswith("cat_order_position_sum:"):
+        try:
+            _, position, mode, start, end = data_str.split(":", 4)
+            params = ("sum", mode, start, end)
+            key = _category_order_selection_key(chat_id, params)
+            slug = _category_order_selection.get(key)
+            if not slug:
+                try:
+                    bot.answer_callback_query(call.id, "Сначала выберите статью")
+                except Exception:
+                    pass
+                return True
+            moved = move_expense_category_to_position(store, slug, int(position))
+            _category_order_selection.pop(key, None)
+            if moved:
+                save_data(data, chat_ids=[chat_id])
+                schedule_quick_backup(
+                    chat_id,
+                    MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
+                )
+                schedule_config_backup_for_chats(chat_id, delay=0.4)
+                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="category_order_position_f36", delay=0.03)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store, "sum"),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_position_sum: {e}")
         return True
 
     if data_str.startswith("cat_order_move_sum:"):
@@ -16391,8 +17445,8 @@ def handle_categories_callback(call, data_str: str) -> bool:
                 save_data(data, chat_ids=[chat_id])
                 schedule_config_backup_for_chats(chat_id)
             send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store),
-                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end)),
+                chat_id, build_category_layout_text(store, "sum"),
+                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
                 preferred_message_id=call.message.message_id, marker_action="cat_order_move_sum:*",
             )
         except Exception as e:
@@ -16403,12 +17457,58 @@ def handle_categories_callback(call, data_str: str) -> bool:
         try:
             _, start_key, start_rid, end_key, end_rid = data_str.split(":")
             send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store),
-                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid))),
+                chat_id, build_category_layout_text(store, "exact"),
+                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid)), chat_id=chat_id),
                 preferred_message_id=call.message.message_id, marker_action="cat_order_open_exact:*",
             )
         except Exception as e:
             log_error(f"cat_order_open_exact: {e}")
+        return True
+
+    if data_str.startswith("cat_order_select_exact:"):
+        try:
+            _, slug, start_key, start_rid, end_key, end_rid = data_str.split(":", 5)
+            params = (start_key, int(start_rid), end_key, int(end_rid))
+            key = _category_order_selection_key(chat_id, params)
+            _category_order_selection[key] = slug
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store, "exact"),
+                reply_markup=build_category_layout_keyboard(store, "exact", params, chat_id=chat_id),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_exact:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_select_exact: {e}")
+        return True
+
+    if data_str.startswith("cat_order_position_exact:"):
+        try:
+            _, position, start_key, start_rid, end_key, end_rid = data_str.split(":", 5)
+            params = (start_key, int(start_rid), end_key, int(end_rid))
+            key = _category_order_selection_key(chat_id, params)
+            slug = _category_order_selection.get(key)
+            if not slug:
+                try:
+                    bot.answer_callback_query(call.id, "Сначала выберите статью")
+                except Exception:
+                    pass
+                return True
+            moved = move_expense_category_to_position(store, slug, int(position))
+            _category_order_selection.pop(key, None)
+            if moved:
+                save_data(data, chat_ids=[chat_id])
+                schedule_quick_backup(
+                    chat_id,
+                    MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
+                )
+                schedule_config_backup_for_chats(chat_id, delay=0.4)
+                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="category_order_position", delay=0.03)
+            send_or_edit_categories_window(
+                chat_id, build_category_layout_text(store, "exact"),
+                reply_markup=build_category_layout_keyboard(store, "exact", params, chat_id=chat_id),
+                preferred_message_id=call.message.message_id, marker_action="cat_order_open_exact:*",
+            )
+        except Exception as e:
+            log_error(f"cat_order_position_exact: {e}")
         return True
 
     if data_str.startswith("cat_order_move_exact:"):
@@ -16418,8 +17518,8 @@ def handle_categories_callback(call, data_str: str) -> bool:
                 save_data(data, chat_ids=[chat_id])
                 schedule_config_backup_for_chats(chat_id)
             send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store),
-                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid))),
+                chat_id, build_category_layout_text(store, "exact"),
+                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid)), chat_id=chat_id),
                 preferred_message_id=call.message.message_id, marker_action="cat_order_move_exact:*",
             )
         except Exception as e:
@@ -17282,6 +18382,8 @@ def on_callback(call):
             except Exception:
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            if not GENERAL_TASK_POOL.submit(f"fwdcopy-retro:{owner_scope_id(chat_id)}", refresh_existing_forward_copy_ui, chat_id, new_mode):
+                refresh_existing_forward_copy_ui(chat_id, new_mode)
             bot_journal("forward_copy_edit_mode", chat_id, f"mode={new_mode}")
             return
 
@@ -17360,6 +18462,7 @@ def on_callback(call):
                 bot.delete_message(chat_id, call.message.message_id)
             except Exception:
                 pass
+            unregister_open_window(chat_id, call.message.message_id)
             return
     
         if data_str.startswith("rep:"):
@@ -17708,7 +18811,11 @@ def on_callback(call):
                 center_dt = now_local()
 
             kb = build_calendar_keyboard(center_dt, chat_id)
-            safe_edit(bot, call, wm_common("📅 Выберите день:", 2), reply_markup=kb)
+            safe_edit(bot, call, calendar_window_text(center_dt), reply_markup=kb)
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="calendar", day_key=center_dt.strftime("%Y-%m-%d"),
+                params={"view_action": "calendar", "center_day": center_dt.strftime("%Y-%m-%d")},
+            )
             return
         if data_str.startswith("fc:"):
             if not is_owner_chat(chat_id):
@@ -17722,9 +18829,13 @@ def on_callback(call):
             safe_edit(
                 bot,
                 call,
-                f"📅 Календарь: {html.escape(get_chat_display_name(target_chat_id))}",
+                f"📅 Выберите день: {html.escape(get_chat_display_name(target_chat_id))}\n{russian_month_name(center_dt.month)} {center_dt.year}",
                 reply_markup=build_fin_calendar_keyboard(target_chat_id, center_dt, owner_day_key),
                 parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "fin_view", code="fv:calendar", day_key=center_dt.strftime("%Y-%m-%d"),
+                params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": "calendar", "center_day": center_dt.strftime("%Y-%m-%d")},
             )
             return
         if data_str == "articles_desc":
@@ -17878,6 +18989,10 @@ def on_callback(call):
             except Exception:
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            try:
+                finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day") or today_key(), reason="main_articles_toggle", delay=0.03)
+            except Exception:
+                pass
             return
         if data_str == "main_financial_values_toggle":
             if not version_mode_feature("financial_value_buttons"):
@@ -17888,6 +19003,10 @@ def on_callback(call):
             except Exception:
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            try:
+                finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day") or today_key(), reason="main_financial_values_toggle", delay=0.03)
+            except Exception:
+                pass
             return
         if data_str == "version_menu":
             if not is_owner_chat(chat_id):
@@ -17921,37 +19040,37 @@ def on_callback(call):
         if data_str == "forward_menu_style_toggle":
             if not is_owner_chat(chat_id):
                 return
-            new_state = toggle_forward_menu_new_style()
+            new_state = toggle_forward_menu_new_style(chat_id)
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nМеню пересылки: {'по-новому' if new_state else 'как обычно'}", reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "buttons_current_toggle":
             if not is_owner_chat(chat_id):
                 return
-            new_state = toggle_buttons_current_window()
+            new_state = toggle_buttons_current_window(chat_id)
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nРежим кнопок в текущем окне: {'ВКЛ' if new_state else 'ВЫКЛ'}", reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "icon_buttons_toggle":
             if not is_owner_chat(chat_id):
                 return
-            new_state = toggle_icon_button_mode()
+            new_state = toggle_icon_button_mode(chat_id)
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nКнопки: {'значки' if new_state else 'текст'}", reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "total_secret_mask_toggle":
             if not is_owner_chat(chat_id):
                 return
-            new_state = toggle_total_secret_mask()
+            new_state = toggle_total_secret_mask(chat_id)
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nМаскировка тотального секрета: {'ВКЛ' if new_state else 'ВЫКЛ'}", reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "finance_day5_toggle":
             if not is_owner_chat(chat_id):
                 return
-            new_state = toggle_finance_day_start_5am()
+            new_state = toggle_finance_day_start_5am(chat_id)
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nФинансовые сутки: с {'05:00' if new_state else '00:00'}", reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "mega_priority_toggle":
             if not is_owner_chat(chat_id):
                 return
-            new_state = toggle_mega_backup_priority()
+            new_state = toggle_mega_backup_priority(chat_id)
             mode_text = "сначала и сразу в MEGA" if new_state else "как обычно"
             bot_journal("mega_priority_toggle", chat_id, f"enabled={new_state}")
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nБэкап MEGA: {mode_text}", reply_markup=build_info_keyboard(chat_id))
@@ -18019,6 +19138,19 @@ def on_callback(call):
                 return
             target_store = get_chat_store(target_chat_id)
             target_store["current_view_day"] = view_day
+
+            # Фактически открытое окно владельца регистрируем как зависимое от target_chat_id.
+            # При следующем изменении данных target-чата оно будет автоматически перерисовано.
+            registry_action = action
+            if action == "clear_delete_back":
+                registry_action = "open"
+            elif action.startswith("del_toggle_") or action == "del_selected":
+                registry_action = "edit_list"
+            if registry_action in {"open", "back_main", "menu", "calendar", "report", "total", "info", "edit_list", "csv_menu"}:
+                register_open_window(
+                    chat_id, call.message.message_id, "fin_view", code=f"fv:{registry_action}", day_key=view_day,
+                    params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": registry_action},
+                )
 
             if action == "clear_delete_back":
                 clear_edit_delete_selection(target_chat_id, view_day)
@@ -18189,12 +19321,28 @@ def on_callback(call):
                     parse_mode="HTML"
                 )
                 return
-            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu", "xlsx_all", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu"}:
-                file_type = "xlsx" if action.startswith("xlsx_") else "csv"
-                mode = action.replace("csv_", "").replace("xlsx_", "")
+            if action in {"csv_all", "csv_day", "csv_week", "csv_month", "csv_wedthu", "xlsx_all", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsxstat_all", "xlsxstat_day", "xlsxstat_week", "xlsxstat_month", "xlsxstat_wedthu"}:
+                if action.startswith("xlsxstat_"):
+                    file_type = "xlsxstat"
+                    mode = action.replace("xlsxstat_", "", 1)
+                else:
+                    file_type = "xlsx" if action.startswith("xlsx_") else "csv"
+                    mode = action.replace("csv_", "").replace("xlsx_", "")
                 send_export_for_chat_to(chat_id, target_chat_id, mode, view_day, file_type)
                 return
             return
+
+        if data_str.startswith("exp_"):
+            # Точный экспорт временно превращает Ф47 в последовательность экранов выбора.
+            # Помечаем фактическое состояние, чтобы автообновление финансов не вернуло окно в О1/Ф47 посреди выбора.
+            try:
+                register_static_open_view(
+                    chat_id, call.message.message_id, code=data_str.split(":", 1)[0],
+                    day_key=get_chat_store(chat_id).get("current_view_day") or today_key(),
+                    params={"source": "exact_export"},
+                )
+            except Exception:
+                pass
 
         if data_str.startswith("exp_pick_start:"):
             try:
@@ -18429,7 +19577,11 @@ def on_callback(call):
             except Exception:
                 cdt = now_local()
             kb = build_calendar_keyboard(cdt, chat_id)
-            safe_edit(bot, call, wm_common("📅 Выберите день:", 2), reply_markup=kb)
+            safe_edit(bot, call, calendar_window_text(cdt), reply_markup=kb)
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="calendar", day_key=day_key,
+                params={"view_action": "calendar", "center_day": cdt.strftime("%Y-%m-%d")},
+            )
             return
         if cmd == "report":
             if usd_transactions_view_enabled(chat_id):
@@ -18443,6 +19595,10 @@ def on_callback(call):
             if chat_buttons_current_window_enabled(chat_id):
                 report_html, _ = build_month_report_text(chat_id, month_key)
                 safe_edit(bot, call, report_html, reply_markup=build_report_keyboard(month_key), parse_mode="HTML")
+                register_open_window(
+                    chat_id, call.message.message_id, "local_fin_view", code="report", day_key=day_key,
+                    params={"view_action": "report", "month_key": month_key},
+                )
             else:
                 open_report_window(chat_id, month_key)
             return
@@ -18465,6 +19621,10 @@ def on_callback(call):
                 text = wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
                 if chat_buttons_current_window_enabled(chat_id):
                     safe_edit(bot, call, text, parse_mode="HTML")
+                    register_open_window(
+                        chat_id, call.message.message_id, "local_fin_view", code="total", day_key=day_key,
+                        params={"view_action": "total", "depends_on_all": False},
+                    )
                     return
                 final_id = send_or_edit_stored_window(
                     chat_id,
@@ -18509,6 +19669,10 @@ def on_callback(call):
             text = "\n".join(lines)
             if chat_buttons_current_window_enabled(chat_id):
                 safe_edit(bot, call, wm_common(text, 4), parse_mode="HTML")
+                register_open_window(
+                    chat_id, call.message.message_id, "local_fin_view", code="total", day_key=day_key,
+                    params={"view_action": "total", "depends_on_all": True},
+                )
                 return
             final_id = send_or_edit_stored_window(
                 chat_id,
@@ -18528,6 +19692,10 @@ def on_callback(call):
                     call,
                     wm_common(build_info_text(chat_id), 9),
                     reply_markup=build_info_keyboard(chat_id),
+                )
+                register_open_window(
+                    chat_id, call.message.message_id, "local_fin_view", code="info", day_key=day_key,
+                    params={"view_action": "info"},
                 )
             else:
                 open_info_window(chat_id)
@@ -18655,6 +19823,10 @@ def on_callback(call):
                 reply_markup=kb,
                 parse_mode="HTML"
             )
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="csv_menu", day_key=day_key,
+                params={"view_action": "csv_menu"},
+            )
             return
         if cmd in {"bk_chat", "bk_channel", "bk_mega"}:
             if not is_owner_chat(chat_id):
@@ -18669,9 +19841,13 @@ def on_callback(call):
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
             return
-        if cmd in {"csv_day", "csv_week", "csv_month", "csv_wedthu", "csv_all_real", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsx_all"}:
-            file_type = "xlsx" if cmd.startswith("xlsx_") else "csv"
-            mode = cmd.replace("csv_", "").replace("xlsx_", "")
+        if cmd in {"csv_day", "csv_week", "csv_month", "csv_wedthu", "csv_all_real", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsx_all", "xlsxstat_day", "xlsxstat_week", "xlsxstat_month", "xlsxstat_wedthu", "xlsxstat_all"}:
+            if cmd.startswith("xlsxstat_"):
+                file_type = "xlsxstat"
+                mode = cmd.replace("xlsxstat_", "", 1)
+            else:
+                file_type = "xlsx" if cmd.startswith("xlsx_") else "csv"
+                mode = cmd.replace("csv_", "").replace("xlsx_", "")
             if mode == "all_real":
                 mode = "all"
             send_export_for_chat_to(chat_id, chat_id, mode, day_key, file_type)
@@ -18703,6 +19879,10 @@ def on_callback(call):
                 reply_markup=build_edit_records_keyboard(day_key, chat_id),
                 parse_mode="HTML"
             )
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key,
+                params={"view_action": "edit_list"},
+            )
             return
 
         if cmd.startswith("value_rec_"):
@@ -18722,11 +19902,13 @@ def on_callback(call):
             toggle_edit_delete_selection(chat_id, day_key, rid)
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(bot, call, txt, reply_markup=build_edit_records_keyboard(day_key, chat_id), parse_mode="HTML")
+            register_open_window(chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key, params={"view_action": "edit_list"})
             return
         if cmd == "del_selected":
             count = delete_selected_records(chat_id, day_key)
             txt, _ = render_day_window(chat_id, day_key)
             safe_edit(bot, call, txt, reply_markup=build_edit_records_keyboard(day_key, chat_id), parse_mode="HTML")
+            register_open_window(chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key, params={"view_action": "edit_list"})
             send_and_auto_delete(chat_id, f"🗑 Удалено записей: {count}", 8)
             return
 
@@ -18803,6 +19985,10 @@ def on_callback(call):
                 render_fin_window_text(tgt, view_day),
                 reply_markup=build_fin_window_view_keyboard(tgt, view_day, day_key),
                 parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "fin_view", code="fv:open", day_key=view_day,
+                params={"target_chat_id": tgt, "owner_day_key": day_key, "view_action": "open"},
             )
             return
         if cmd.startswith("qb_cfg_"):
@@ -18906,6 +20092,10 @@ def on_callback(call):
                 reply_markup=build_fin_window_view_keyboard(tgt, view_day, day_key),
                 parse_mode="HTML"
             )
+            register_open_window(
+                chat_id, call.message.message_id, "fin_view", code="fv:open", day_key=view_day,
+                params={"target_chat_id": tgt, "owner_day_key": day_key, "view_action": "open"},
+            )
             return
         if cmd.startswith("fw_finmode_pick_"):
             tgt = int(cmd.split("_")[-1])
@@ -18961,7 +20151,7 @@ def on_callback(call):
                 cdt = datetime.strptime(day_key, "%Y-%m-%d")
             except Exception:
                 cdt = now_local()
-            safe_edit(bot, call, "📅 Выберите день:", reply_markup=build_calendar_keyboard(cdt, chat_id))
+            safe_edit(bot, call, calendar_window_text(cdt, marker=False), reply_markup=build_calendar_keyboard(cdt, chat_id))
             return
         if cmd == "cancel_edit":
             clear_edit_wait_state(chat_id, call.message.message_id, delete_prompt=True)
@@ -19173,6 +20363,7 @@ def get_or_create_active_windows(chat_id: int) -> dict:
 def set_active_window_id(chat_id: int, day_key: str, message_id: int):
     aw = get_or_create_active_windows(chat_id)
     aw[day_key] = message_id
+    register_open_window(chat_id, message_id, "main_day", code="О1", day_key=day_key)
     save_data(data)
 def get_active_window_id(chat_id: int, day_key: str):
     aw = get_or_create_active_windows(chat_id)
@@ -19182,7 +20373,9 @@ def clear_active_window_id(chat_id: int, day_key: str):
     try:
         aw = get_or_create_active_windows(chat_id)
         if str(day_key) in aw:
-            aw.pop(str(day_key), None)
+            old_mid = aw.pop(str(day_key), None)
+            if old_mid:
+                unregister_open_window(chat_id, old_mid)
             save_data(data)
     except Exception as e:
         log_error(f"clear_active_window_id({chat_id},{day_key}): {e}")
@@ -20793,6 +21986,7 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
 
             trace.step("записывает финрежимы в общий словарь")
             trace.step("сохраняет SQLite/data")
+            _safe_stabilize("currency_ledger_snapshot", lambda: _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store)))
             _safe_stabilize("save_data", lambda: save_data(data, chat_ids=[chat_id]))
 
             trace.step("проверяет скрытый финрежим")
@@ -20824,6 +22018,11 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             trace.step("обновляет быстрый остаток")
             _safe_stabilize("quick_balance_now", lambda: refresh_balance_panel_now(chat_id))
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
+
+        # Реестр обновляем даже для скрытого финрежима: сам скрытый чат может не показывать финансы,
+        # но открытое у владельца окно этого чата обязано синхронизироваться.
+        trace.step("обновляет зарегистрированные открытые окна")
+        _safe_stabilize("open_windows_registry", lambda: refresh_registered_financial_windows(chat_id))
 
         trace.step("ставит бэкап в отдельную очередь")
         _safe_stabilize("full_backup_queue", lambda: schedule_full_backup_only(chat_id, BACKUP_MIN_DELAY_SECONDS))
@@ -21914,3 +23113,4 @@ def main():
     app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 if __name__ == "__main__":
     main()
+# bot_v97_usd_transactions_forward_edit
