@@ -4278,6 +4278,7 @@ def build_help_text(chat_id: int) -> str:
             "/articles — описание статей: статья = ключевые слова",
             "/mega_status — статус MEGA/MEGAcmd",
             "/mega_backup_now — безопасно загрузить latest_global.json в MEGA",
+            "/mega_restore_now — принудительно полностью восстановить данные из MEGA",
             "/restore_guard — статус аварийной защиты восстановления",
             "/buttons — переключить кнопки: text/icons",
             "/mask — переключить маскировку тотального секрета",
@@ -6459,58 +6460,186 @@ def _parse_iso_timestamp(value: str | None) -> float:
         return 0.0
 
 
+def _local_restore_stats(d: dict) -> dict:
+    """Статистика локальной базы без создания нового backup timestamp."""
+    chats = (d or {}).get("chats", {}) if isinstance(d, dict) else {}
+    if not isinstance(chats, dict):
+        chats = {}
+    records = 0
+    nonempty = 0
+    secrets = 0
+    for store in chats.values():
+        if not isinstance(store, dict):
+            continue
+        recs = store.get("records") or []
+        if isinstance(recs, list):
+            records += len(recs)
+            if recs:
+                nonempty += 1
+        secrets += len(store.get("secret_messages") or []) if isinstance(store.get("secret_messages") or [], list) else 0
+    return {
+        "chat_count": len(chats),
+        "nonempty_chats": nonempty,
+        "record_count": records,
+        "secret_count": secrets,
+        "forward_rules_count": sum(len(v or {}) for v in ((d or {}).get("forward_rules", {}) or {}).values()),
+        "forward_index_count": len((d or {}).get("forward_index", {}) or {}),
+        "last_saved_at": str(((d or {}).get("_state_meta") or {}).get("last_saved_at") or ""),
+    }
+
+
+def _mega_discover_global_candidates(limit: int = 60) -> list[str]:
+    """Ищет полноценные global JSON во всём каталоге MEGA, а не только exact latest/history.
+
+    Это восстанавливает ситуацию, когда latest_global.json был временно перемещён в history,
+    остался candidate_global_*.json после прерванной ротации или файл лежит глубже в каталоге.
+    """
+    if not mega_is_configured() or shutil.which("mega-find") is None:
+        return []
+    rows = []
+    try:
+        mega_login_if_needed()
+        for pattern in (MEGA_LATEST_GLOBAL_NAME, "global_*.json", "candidate_global_*.json", "*global*.json"):
+            res = _mega_run(
+                "mega-find",
+                [MEGA_BACKUP_DIR, f"--pattern={pattern}", "--type=f"],
+                check=False,
+                timeout=90,
+            )
+            rows.extend(x.strip() for x in (res.stdout or "").splitlines() if x.strip().lower().endswith(".json"))
+    except Exception as e:
+        log_error(f"_mega_discover_global_candidates: {e}")
+    # latest первым, затем более новые имена; дубли убираем.
+    latest_path = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
+    uniq = []
+    seen = set()
+    for path in [latest_path] + sorted(set(rows), reverse=True):
+        if path and path not in seen:
+            seen.add(path)
+            uniq.append(path)
+    return uniq[:max(1, int(limit))]
+
+
+def _mega_select_best_global_candidate(limit: int = 60) -> tuple[str | None, dict, str]:
+    """Скачивает доступные global snapshots и выбирает лучший валидный полный снимок."""
+    best_path = None
+    best_stats = {}
+    best_label = ""
+    candidates = _mega_discover_global_candidates(limit=limit)
+    # На старых установках mega-find может не вернуть exact latest — пробуем его напрямую.
+    direct_latest = mega_download_latest_global_backup()
+    local_candidates = []
+    if direct_latest:
+        local_candidates.append(("latest", direct_latest))
+    for remote_path in candidates:
+        if remote_path == mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME) and direct_latest:
+            continue
+        local_candidates.append((remote_path, None))
+
+    for label, local_path in local_candidates:
+        try:
+            if local_path is None:
+                local_path = _mega_download_remote_path(label)
+            if not local_path:
+                continue
+            payload = _load_json(local_path, {}) or {}
+            if not _global_payload_is_structurally_valid(payload):
+                log_error(f"[MEGA RESTORE] invalid global candidate: {label}")
+                continue
+            stats = _global_payload_stats(payload, local_path)
+            if stats.get("record_count", 0) == 0 and not ALLOW_EMPTY_MEGA_RESTORE:
+                continue
+            score = (
+                _parse_iso_timestamp(stats.get("created_at")),
+                int(stats.get("record_count", 0) or 0),
+                int(stats.get("chat_count", 0) or 0),
+                int(stats.get("size_bytes", 0) or 0),
+            )
+            best_score = (
+                _parse_iso_timestamp(best_stats.get("created_at")),
+                int(best_stats.get("record_count", 0) or 0),
+                int(best_stats.get("chat_count", 0) or 0),
+                int(best_stats.get("size_bytes", 0) or 0),
+            ) if best_stats else (-1, -1, -1, -1)
+            if score > best_score:
+                best_path, best_stats, best_label = local_path, stats, label
+        except Exception as e:
+            log_error(f"[MEGA RESTORE] candidate scan error {label}: {e}")
+    return best_path, best_stats, best_label
+
+
+def mega_restore_full_from_cloud(force: bool = False) -> tuple[bool, str]:
+    """Полное восстановление из лучшего global snapshot + всех последующих delta.
+
+    Восстанавливает весь state целиком: chats, records, settings, owners, forwarding,
+    forward_index, secret_messages и прочие поля универсального backup.
+    """
+    global data
+    if not mega_is_configured():
+        return False, "MEGA не настроена"
+
+    local_empty = is_data_effectively_empty_for_restore(data)
+    local_stats = _local_restore_stats(data)
+    base_path, base_stats, label = _mega_select_best_global_candidate(limit=80)
+    if not base_path:
+        if local_empty:
+            _set_restore_guard("local database is empty; no valid full global snapshot found in MEGA")
+        return False, "В MEGA не найден валидный полный global JSON"
+
+    try:
+        merged_path, applied_delta_count = merge_global_snapshot_with_mega_deltas(base_path)
+        remote_payload = _load_json(merged_path, {}) or {}
+        if not _global_payload_is_structurally_valid(remote_payload):
+            return False, "Найденный global JSON повреждён после объединения delta"
+        remote_stats = _global_payload_stats(remote_payload, merged_path)
+        remote_stats["applied_deltas"] = applied_delta_count
+
+        remote_created = str(remote_stats.get("created_at") or "")
+        local_saved = str(local_stats.get("last_saved_at") or "")
+        remote_newer = _parse_iso_timestamp(remote_created) > _parse_iso_timestamp(local_saved) + 1
+        materially_richer = (
+            int(remote_stats.get("record_count", 0) or 0) > int(local_stats.get("record_count", 0) or 0)
+            or int(remote_stats.get("chat_count", 0) or 0) > int(local_stats.get("chat_count", 0) or 0)
+        )
+        local_suspicious = (
+            local_empty
+            or (int(local_stats.get("record_count", 0) or 0) == 0 and int(remote_stats.get("record_count", 0) or 0) > 0)
+            or (int(local_stats.get("chat_count", 0) or 0) <= 1 and int(remote_stats.get("chat_count", 0) or 0) > 1)
+        )
+
+        if not force and not (local_suspicious or remote_newer or materially_richer):
+            _clear_restore_guard()
+            return False, f"Локальная база не хуже MEGA; восстановление не требуется. local={local_stats}, mega={remote_stats}"
+
+        restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
+        restore_from_json(restore_chat_id, merged_path)
+        _restore_runtime_state_from_data(data)
+        initialize_delta_baseline(data)
+        _clear_restore_guard()
+        msg = (
+            f"Полное восстановление OK из {label or 'MEGA'}: "
+            f"чатов={remote_stats.get('chat_count', 0)}, записей={remote_stats.get('record_count', 0)}, "
+            f"delta={applied_delta_count}"
+        )
+        log_info("[MEGA RESTORE FULL] " + msg)
+        return True, msg
+    except Exception as e:
+        log_error(f"[MEGA RESTORE FULL ERROR] {e}")
+        if local_empty:
+            _set_restore_guard("MEGA full restore failed: " + str(e)[:500])
+        return False, "Ошибка полного восстановления: " + str(e)[:500]
+
+
 def mega_autorestore_if_needed() -> bool:
-    """При пустом локальном диске ищет последний содержательный global snapshot; иначе включает аварийную блокировку."""
+    """Надёжное авто-восстановление: всегда проверяет MEGA и умеет восстановить частичную/старую SQLite."""
     global data
     if not MEGA_AUTORESTORE or not mega_is_configured():
         if is_data_effectively_empty_for_restore(data):
             _set_restore_guard("local database is empty and MEGA autorestore is unavailable")
         return False
-
-    local_empty = is_data_effectively_empty_for_restore(data)
-    candidates: list[tuple[str, str | None]] = [("latest", mega_download_latest_global_backup())]
-    if local_empty:
-        for remote_path in _mega_history_candidates(limit=20):
-            candidates.append((remote_path, None))
-
-    for label, local_path in candidates:
-        try:
-            if local_path is None and label != "latest":
-                local_path = _mega_download_remote_path(label)
-            if not local_path:
-                continue
-            remote_raw = _load_json(local_path, {}) or {}
-            if not _global_payload_is_structurally_valid(remote_raw):
-                log_error(f"[MEGA] restore candidate invalid: {label}")
-                continue
-            # v90: full snapshot + все маленькие delta, появившиеся после него.
-            local_path, applied_delta_count = merge_global_snapshot_with_mega_deltas(local_path)
-            remote_raw = _load_json(local_path, {}) or {}
-            stats = _global_payload_stats(remote_raw, local_path)
-            stats["applied_deltas"] = applied_delta_count
-            if local_empty and stats.get("record_count", 0) == 0 and not ALLOW_EMPTY_MEGA_RESTORE:
-                log_error(f"[MEGA] empty restore candidate rejected: {label}, stats={stats}")
-                continue
-
-            universal = remote_raw.get("_universal_backup") or {}
-            remote_created = universal.get("created_at") or (remote_raw.get("_backup_meta") or {}).get("created_at") or ""
-            local_saved = ((data or {}).get("_state_meta") or {}).get("last_saved_at") or ""
-            if not local_empty and _parse_iso_timestamp(remote_created) <= _parse_iso_timestamp(local_saved):
-                log_info("[MEGA] autorestore skipped: local state is not older than universal backup")
-                _clear_restore_guard()
-                return False
-
-            restore_chat_id = int(OWNER_ID) if OWNER_ID else 0
-            restore_from_json(restore_chat_id, local_path)
-            _clear_restore_guard()
-            log_info(f"[MEGA] autorestore completed from {label}: stats={stats}")
-            return True
-        except Exception as e:
-            log_error(f"[MEGA AUTORESTORE CANDIDATE ERROR] {label}: {e}")
-
-    if local_empty:
-        _set_restore_guard("local database is empty; no non-empty valid MEGA snapshot found. Automatic backups are blocked.")
-    return False
+    ok, detail = mega_restore_full_from_cloud(force=False)
+    log_info(f"[MEGA AUTORESTORE] ok={ok}; {detail}")
+    return bool(ok)
 
 def mega_status_text() -> str:
     lines = ["☁️ MEGA.nz / MEGAcmd"]
@@ -22673,6 +22802,37 @@ def cmd_mega_status(msg):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     send_and_auto_delete(chat_id, mega_status_text(), 90)
+
+
+@bot.message_handler(commands=["mega_restore_now"])
+def cmd_mega_restore_now(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    try:
+        send_and_auto_delete(chat_id, "☁️ Запускаю полное восстановление из MEGA…", 20)
+        ok, detail = mega_restore_full_from_cloud(force=True)
+        if ok:
+            try:
+                refresh_registered_financial_windows(chat_id)
+            except Exception:
+                pass
+            try:
+                schedule_startup_main_windows(delay=0.5)
+            except Exception:
+                pass
+            send_and_auto_delete(chat_id, "✅ " + detail, 120)
+        else:
+            send_and_auto_delete(chat_id, "❌ " + detail, 120)
+    except Exception as e:
+        log_error(f"cmd_mega_restore_now: {e}")
+        send_and_auto_delete(chat_id, "❌ Ошибка восстановления из MEGA: " + str(e)[:500], 120)
 
 
 @bot.message_handler(commands=["mega_backup_now"])
