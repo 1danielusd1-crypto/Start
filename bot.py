@@ -370,7 +370,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v97_usd_transactions_forward_edit"
+VERSION = "bot_v98_buttons_restore_guard_mega_backup"
+BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -1291,6 +1292,15 @@ def forward_menu_style_label(chat_id: int | None = None) -> str:
 
 
 def icon_button_mode_enabled(chat_id: int | None = None) -> bool:
+    # IB() не получает chat_id. Вне state_chat_context используем primary owner scope,
+    # чтобы /buttons и кнопка INFO реально меняли подписи создаваемых inline-кнопок.
+    if chat_id is None:
+        chat_id = current_state_chat_id()
+        if chat_id is None and OWNER_ID:
+            try:
+                chat_id = int(OWNER_ID)
+            except Exception:
+                chat_id = None
     return bool(_owner_setting_value("icon_button_mode", True, chat_id))
 
 
@@ -2197,6 +2207,7 @@ WINDOW_MARKER_CONSTANTS = {
     'fvcat_': 'Ф82',
     'fvcatx:*': 'Ф83',
     'icon_buttons_toggle': 'Ф84',
+    'restore_guard_toggle': 'Ф165',
     'info_close': 'Ф85',
     'info_finance_off': 'Ф86',
     'journal_back': 'Ф87',
@@ -4280,6 +4291,8 @@ def build_help_text(chat_id: int) -> str:
             "/mega_backup_now — безопасно загрузить latest_global.json в MEGA",
             "/mega_restore_now — принудительно полностью восстановить данные из MEGA",
             "/restore_guard — статус аварийной защиты восстановления",
+            "/restore_guard_off — отключить guard и разрешить MEGA автобэкап",
+            "/restore_guard_on — вернуть автоматическую защиту guard",
             "/buttons — переключить кнопки: text/icons",
             "/mask — переключить маскировку тотального секрета",
             "/day5 — финсутки: 00:00 / 05:00",
@@ -4293,7 +4306,9 @@ def build_help_text(chat_id: int) -> str:
 def build_info_text(chat_id: int) -> str:
     """Компактный INFO: одна функция показывается один раз, без дублей команд и кнопок."""
     layout = version_mode_layout()
+    identity = f"🤖 {BOT_DISPLAY_NAME} | {version_animal_badge()} | {VERSION}"
     lines = [
+        identity,
         "ℹ️ INFO",
         "",
         f"Финансы: {'ВКЛ' if is_finance_mode(chat_id) else 'ВЫКЛ'}",
@@ -4312,6 +4327,9 @@ def build_info_text(chat_id: int) -> str:
     if is_owner_chat(chat_id):
         lines.extend([
             f"Кнопки интерфейса: {'значки' if icon_button_mode_enabled(chat_id) else 'текст'}",
+            f"Restore guard: {'ВКЛ' if RESTORE_GUARD_ACTIVE else 'ВЫКЛ'}",
+            f"Guard override: {'ВКЛ' if restore_guard_manual_override_enabled() else 'ВЫКЛ'}",
+            f"Автобэкап MEGA: {'РАЗРЕШЁН' if not RESTORE_GUARD_ACTIVE else 'ЗАБЛОКИРОВАН'}",
             f"Маска секрета: {'ВКЛ' if total_secret_mask_enabled(chat_id) else 'ВЫКЛ'}",
             f"Финансовые сутки: с {finance_day_start_label(chat_id)}",
         ])
@@ -4364,7 +4382,7 @@ def build_info_text(chat_id: int) -> str:
             continue
         seen_commands.add(cmd)
         lines.append(row)
-    lines.extend(["", "Нажмите нужную кнопку ниже. Полное описание — «📘 Инструкция»."])
+    lines.extend(["", "Нажмите нужную кнопку ниже. Полное описание — «📘 Инструкция».", "", identity])
     return "\n".join(lines)
 
 def get_connected_chat_ids(chat_id: int):
@@ -6276,8 +6294,63 @@ def _global_candidate_rejection(candidate: dict, current: dict | None = None) ->
     return ""
 
 
+def restore_guard_manual_override_enabled() -> bool:
+    """Постоянный owner override: разрешить работу/автобэкапы даже без restore snapshot."""
+    try:
+        return bool(SQLITE.get_meta("safety", "restore_guard_manual_override", False))
+    except Exception:
+        return False
+
+
+def set_restore_guard_manual_override(enabled: bool):
+    try:
+        SQLITE.set_meta("safety", "restore_guard_manual_override", bool(enabled))
+    except Exception as e:
+        log_error(f"set_restore_guard_manual_override: {e}")
+
+
+def restore_guard_status_text() -> str:
+    return (
+        f"🛡 Restore guard: {'ВКЛ' if RESTORE_GUARD_ACTIVE else 'ВЫКЛ'}\n"
+        f"Ручное отключение: {'ВКЛ' if restore_guard_manual_override_enabled() else 'ВЫКЛ'}\n"
+        f"Причина: {RESTORE_GUARD_REASON or '-'}\n"
+        f"Автобэкапы: {'заблокированы' if RESTORE_GUARD_ACTIVE else 'разрешены'}\n"
+        f"MEGA настроена: {'ДА' if mega_is_configured() else 'НЕТ'}"
+    )
+
+
+def disable_restore_guard_and_enable_mega_backups() -> int:
+    """Явное решение владельца: снять аварийный guard и включить MEGA auto-backup во всех известных чатах."""
+    set_restore_guard_manual_override(True)
+    _clear_restore_guard()
+    count = 0
+    for cid in collect_all_known_chat_ids(include_owner=True):
+        try:
+            settings = _ensure_backup_settings(int(cid))
+            settings["auto_backup_to_mega_enabled"] = True
+            settings["auto_backup_enabled"] = True
+            count += 1
+        except Exception:
+            pass
+    try:
+        save_data(data, full=True)
+    except Exception as e:
+        log_error(f"disable_restore_guard_and_enable_mega_backups save: {e}")
+    for cid in collect_all_known_chat_ids(include_owner=True):
+        try:
+            schedule_backup_flush(int(cid), delay=BACKUP_MIN_DELAY_SECONDS)
+        except Exception:
+            pass
+    return count
+
+
 def _set_restore_guard(reason: str):
     global RESTORE_GUARD_ACTIVE, RESTORE_GUARD_REASON
+    if restore_guard_manual_override_enabled():
+        RESTORE_GUARD_ACTIVE = False
+        RESTORE_GUARD_REASON = ""
+        log_info(f"[RESTORE GUARD BYPASSED BY OWNER] {str(reason or '')[:500]}")
+        return
     RESTORE_GUARD_ACTIVE = True
     RESTORE_GUARD_REASON = str(reason or "restore not confirmed")[:1000]
     log_error(f"[RESTORE GUARD ON] {RESTORE_GUARD_REASON}")
@@ -16793,6 +16866,10 @@ def build_info_keyboard(chat_id: int):
             IB(forward_menu_style_label(chat_id), callback_data="forward_menu_style_toggle"),
             IB(icon_button_mode_label(chat_id), callback_data="icon_buttons_toggle"),
         )
+        kb.row(IB(
+            "🛡 Guard: ВКЛ — нажать отключить" if RESTORE_GUARD_ACTIVE else "🛡 Guard: ВЫКЛ — автобэкапы разрешены",
+            callback_data="restore_guard_toggle",
+        ))
         kb.row(
             IB(total_secret_mask_label(chat_id), callback_data="total_secret_mask_toggle"),
             IB(f"🕔 {finance_day_start_label(chat_id)}", callback_data="finance_day5_toggle"),
@@ -19193,6 +19270,17 @@ def on_callback(call):
                 return
             new_state = toggle_icon_button_mode(chat_id)
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nКнопки: {'значки' if new_state else 'текст'}", reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "restore_guard_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            if RESTORE_GUARD_ACTIVE or not restore_guard_manual_override_enabled():
+                count = disable_restore_guard_and_enable_mega_backups()
+                note = f"Restore guard отключён вручную. MEGA autobackup включён для {count} чатов."
+            else:
+                set_restore_guard_manual_override(False)
+                note = "Ручной override отключён. Guard снова сможет включиться при следующей аварийной проверке/перезапуске."
+            safe_edit(bot, call, build_info_text(chat_id) + "\n\n" + note, reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "total_secret_mask_toggle":
             if not is_owner_chat(chat_id):
@@ -22769,6 +22857,24 @@ def on_edited_message(msg):
         log_error(f"[EDIT-FWD] schedule failed: {e}")
                                             
 
+@bot.message_handler(commands=["buttons"])
+def cmd_buttons(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        return
+    new_state = toggle_icon_button_mode(chat_id)
+    send_and_auto_delete(chat_id, f"✅ Кнопки переключены: {'значки' if new_state else 'текст'}", 30)
+    try:
+        refresh_registered_financial_windows(chat_id)
+    except Exception:
+        pass
+
+
 @bot.message_handler(commands=["restore_guard"])
 def cmd_restore_guard(msg):
     try:
@@ -22779,13 +22885,39 @@ def cmd_restore_guard(msg):
     chat_id = msg.chat.id
     if not is_owner_chat(chat_id):
         return
-    state = "ВКЛ" if RESTORE_GUARD_ACTIVE else "ВЫКЛ"
+    send_and_auto_delete(chat_id, restore_guard_status_text(), 120)
+
+
+@bot.message_handler(commands=["restore_guard_off"])
+def cmd_restore_guard_off(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        return
+    count = disable_restore_guard_and_enable_mega_backups()
     send_and_auto_delete(
         chat_id,
-        f"🛡 Restore guard: {state}\nПричина: {RESTORE_GUARD_REASON or '-'}\n"
-        f"Автобэкапы: {'заблокированы' if RESTORE_GUARD_ACTIVE else 'разрешены'}",
+        restore_guard_status_text() + f"\n\n✅ Guard отключён владельцем. MEGA autobackup включён для {count} чатов.",
         120,
     )
+
+
+@bot.message_handler(commands=["restore_guard_on"])
+def cmd_restore_guard_on(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        return
+    set_restore_guard_manual_override(False)
+    send_and_auto_delete(chat_id, "🛡 Ручное отключение Restore guard снято. При следующей аварийной проверке guard снова сможет включиться.", 90)
 
 
 @bot.message_handler(commands=["delta_status"])
