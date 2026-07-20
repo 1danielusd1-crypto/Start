@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v94_startup_hotfix"
+VERSION = "bot_v95_button_audit_fix"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -2246,6 +2246,12 @@ WINDOW_MARKER_CONSTANTS = {
     'fwdcopy_edit': 'Ф162',
     'fwdcopy_edit_cancel': 'Ф163',
     'd:*:usd_tx_toggle': 'Ф164',
+    'd:*:csv_day': 'Ф165',
+    'd:*:xlsx_day': 'Ф166',
+    'd:*:xlsxstat_day': 'Ф167',
+    'd:*:usdvalue_rec_*': 'Ф168',
+    'd:*:usd_del_rec_*': 'Ф169',
+    'stored:*': 'Ф170',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -18352,8 +18358,27 @@ def on_callback(call):
             return
 
         if not data_str.startswith("d:"):
+            # Любая нарисованная, но не подключённая callback-кнопка больше не
+            # «молчит»: журнал сразу покажет её callback_data, а пользователь
+            # увидит понятное сообщение. Это также страхует старые окна после деплоя.
+            try:
+                bot_journal("callback_unhandled", chat_id, str(data_str)[:500], "ERROR")
+            except Exception:
+                pass
+            try:
+                bot.answer_callback_query(call.id, "Кнопка устарела или ещё не подключена. Откройте окно заново.", show_alert=True)
+            except Exception:
+                pass
             return
-        _, day_key, cmd = data_str.split(":", 2)
+        try:
+            _, day_key, cmd = data_str.split(":", 2)
+        except Exception:
+            try:
+                bot_journal("callback_bad_d_format", chat_id, str(data_str)[:500], "ERROR")
+                bot.answer_callback_query(call.id, "Некорректная кнопка. Откройте окно заново.", show_alert=True)
+            except Exception:
+                pass
+            return
         store = get_chat_store(chat_id)
         if cmd.startswith("removed_"):
             try:
@@ -18996,6 +19021,14 @@ def on_callback(call):
             return
     except Exception as e:
         log_error(f"on_callback error: {e}")
+        try:
+            bot_journal("callback_exception", getattr(getattr(call, "message", None), "chat", None).id if getattr(getattr(call, "message", None), "chat", None) else None, f"{getattr(call, 'data', '')}: {e}", "ERROR")
+        except Exception:
+            pass
+        try:
+            bot.answer_callback_query(call.id, "Ошибка выполнения кнопки. Откройте окно заново и повторите.", show_alert=True)
+        except Exception:
+            pass
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -22574,7 +22607,13 @@ def build_categories_record_summary_keyboard(start_key: str, start_rid: int, end
 
 # --- ТЗ 19: F152 two columns / select article then destination number ----------------
 def _cat_order_selection(store: dict) -> str:
-    return str(store.get("category_order_selected_exact") or "")
+    # Храним выбор в settings: finance_view_store() в USD-режиме возвращает clone,
+    # но settings у него общие с реальным store. Поэтому выбор статьи не теряется
+    # между первым кликом по статье и вторым кликом по номеру позиции.
+    try:
+        return str((store or {}).setdefault("settings", {}).get("category_order_selected_exact") or "")
+    except Exception:
+        return ""
 
 
 def move_expense_category_to_position(store: dict, slug: str, position: int) -> bool:
@@ -22619,14 +22658,14 @@ def handle_categories_callback(call, data_str: str) -> bool:
             chat_id=int(call.message.chat.id); store=finance_view_store(chat_id)
             _,slug,direction,start_key,start_rid,end_key,end_rid=str(data_str).split(":",6)
             if direction=="select":
-                store["category_order_selected_exact"]=slug
-                save_data(data,chat_ids=[chat_id])
+                store.setdefault("settings", {})["category_order_selected_exact"] = slug
+                save_data(data, chat_ids=[chat_id])
             elif direction=="position" and slug.startswith("__pos"):
                 m=re.search(r"\d+",slug); pos=int(m.group()) if m else 1
                 chosen=_cat_order_selection(store)
                 if chosen:
                     move_expense_category_to_position(store,chosen,pos)
-                    store["category_order_selected_exact"]=""
+                    store.setdefault("settings", {})["category_order_selected_exact"] = ""
                     commit_settings_fast(chat_id,"category_order")
             send_or_edit_categories_window(chat_id,build_category_layout_text(store),reply_markup=build_category_layout_keyboard(store,"exact",(start_key,int(start_rid),end_key,int(end_rid))),preferred_message_id=call.message.message_id,marker_action="cat_order_open_exact:*")
             return True
@@ -22712,8 +22751,8 @@ def delete_usd_record_component(chat_id: int, rid: int) -> bool:
         except Exception: continue
         rec["usd_amount"]=0.0; rec["usd_note"]=""; rec["usd_short_id"]=""
         if bool(rec.get("usd_only")) and abs(float(rec.get("amount",0) or 0))<1e-12:
-            try: remove_record(chat_id,int(rid))
-            except Exception: pass
+            try: delete_record_in_chat(int(chat_id), int(rid))
+            except Exception as e: log_error(f"delete_usd_record_component full delete: {e}")
         save_data(data,chat_ids=[int(chat_id)])
         try: schedule_quick_backup(int(chat_id),0.25)
         except Exception: pass
@@ -22732,6 +22771,39 @@ def build_usd_edit_records_keyboard(day_key: str, chat_id: int):
         kb.row(IB(label,callback_data="none"),make_direct_edit_insert_button("✏️",insert_text),IB("🗑",callback_data=f"d:{day_key}:usd_del_rec_{rid}"))
     kb.row(IB("🔙 Назад",callback_data=f"d:{day_key}:back_main"))
     return kb
+
+
+
+def audit_button_callback_wiring() -> dict:
+    """Быстрый внутренний аудит callback-кнопок текущего файла.
+
+    Проверяет наиболее важные callback-префиксы новых режимов. Полный статический
+    аудит дополнительно выполняется при сборке версии, но этот runtime-check даёт
+    понятную запись в лог Render при старте.
+    """
+    required = {
+        "forward_copy_edit_mode_toggle": "forward_copy_edit_mode_toggle",
+        "fwdcopy_edit": "fwdcopy_edit",
+        "usd_tx_toggle": 'cmd == "usd_tx_toggle"',
+        "usd_value": 'cmd.startswith("usdvalue_rec_")',
+        "usd_delete": 'cmd.startswith("usd_del_rec_")',
+        "f47_csv": '"csv_day"',
+        "f47_excel": '"xlsx_day"',
+        "f47_stats": '"xlsxstat_day"',
+        "f152_move": 'cat_order_move_exact:',
+        "secret_toggle": 'sectoggle:',
+        "ost_command": '/(?:ost|остаток)',
+    }
+    try:
+        src = open(__file__, "r", encoding="utf-8").read()
+    except Exception:
+        try:
+            with open(__file__, "r", encoding="utf-8") as f:
+                src = f.read()
+        except Exception:
+            return {"ok": False, "missing": ["source_unavailable"]}
+    missing = [name for name, token in required.items() if token not in src]
+    return {"ok": not missing, "missing": missing, "checked": len(required)}
 
 
 # Load previous heartbeat timestamp so a process restart can report a real wake gap.
@@ -22847,6 +22919,11 @@ def main():
         except Exception:
             pass
     log_info(f"Данные загружены из SQLite ({DB_FILE}). Версия бота: {VERSION}")
+    try:
+        _button_audit = audit_button_callback_wiring()
+        log_info(f"Аудит кнопок: {_button_audit}")
+    except Exception as e:
+        log_error(f"Аудит кнопок startup: {e}")
     set_webhook()
     start_keep_alive_thread()
     owner_id = None
