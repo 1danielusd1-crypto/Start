@@ -370,7 +370,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v98_buttons_restore_guard_mega_backup"
+VERSION = "bot_v99_manual_mega_restore_menu"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -2208,6 +2208,7 @@ WINDOW_MARKER_CONSTANTS = {
     'fvcatx:*': 'Ф83',
     'icon_buttons_toggle': 'Ф84',
     'restore_guard_toggle': 'Ф165',
+    'mega_manual_restore': 'Ф166',
     'info_close': 'Ф85',
     'info_finance_off': 'Ф86',
     'journal_back': 'Ф87',
@@ -4367,6 +4368,7 @@ def build_info_text(chat_id: int) -> str:
             "/articles — описание статей и ключевых слов",
             "/mega_status — статус MEGA",
             "/mega_backup_now — запустить безопасный бэкап MEGA",
+            "/mega_restore_now — вручную полностью обновить данные из MEGA",
             "/restore_guard — статус защиты восстановления",
             "/buttons — переключить вид кнопок",
             "/mask — переключить маскировку тотального секрета",
@@ -16870,6 +16872,10 @@ def build_info_keyboard(chat_id: int):
             "🛡 Guard: ВКЛ — нажать отключить" if RESTORE_GUARD_ACTIVE else "🛡 Guard: ВЫКЛ — автобэкапы разрешены",
             callback_data="restore_guard_toggle",
         ))
+        kb.row(IB(
+            "☁️ Обновить JSON из MEGA",
+            callback_data="mega_manual_restore",
+        ))
         kb.row(
             IB(total_secret_mask_label(chat_id), callback_data="total_secret_mask_toggle"),
             IB(f"🕔 {finance_day_start_label(chat_id)}", callback_data="finance_day5_toggle"),
@@ -19281,6 +19287,17 @@ def on_callback(call):
                 set_restore_guard_manual_override(False)
                 note = "Ручной override отключён. Guard снова сможет включиться при следующей аварийной проверке/перезапуске."
             safe_edit(bot, call, build_info_text(chat_id) + "\n\n" + note, reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "mega_manual_restore":
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                bot.answer_callback_query(call.id, "Запускаю восстановление из MEGA…")
+            except Exception:
+                pass
+            # Запускаем в очереди, чтобы кнопка/Telegram callback не зависали на mega-get и разборе JSON.
+            if not GENERAL_TASK_POOL.submit(f"manual-mega-restore:{chat_id}", run_manual_mega_restore, chat_id):
+                send_and_auto_delete(chat_id, "⛔ Очередь восстановления переполнена. Попробуйте позже.", 20)
             return
         if data_str == "total_secret_mask_toggle":
             if not is_owner_chat(chat_id):
@@ -22946,6 +22963,34 @@ def cmd_mega_status(msg):
     send_and_auto_delete(chat_id, mega_status_text(), 90)
 
 
+def run_manual_mega_restore(chat_id: int):
+    """Ручное полное восстановление из MEGA тем же движком, что используется при автопроверке после деплоя.
+
+    force=True нужен именно для ручного режима: пользователь осознанно просит перечитать
+    лучший полный global snapshot и применить последующие delta, даже если локальная база
+    по времени выглядит не хуже облачной.
+    """
+    chat_id = int(chat_id)
+    try:
+        send_and_auto_delete(chat_id, "☁️ Ручное восстановление: читаю полный JSON и delta из MEGA…", 30)
+        ok, detail = mega_restore_full_from_cloud(force=True)
+        if ok:
+            try:
+                refresh_registered_financial_windows(chat_id)
+            except Exception:
+                pass
+            try:
+                schedule_startup_main_windows(delay=0.5)
+            except Exception:
+                pass
+            send_and_auto_delete(chat_id, "✅ MEGA → бот обновлён. " + detail, 180)
+        else:
+            send_and_auto_delete(chat_id, "❌ MEGA restore: " + detail, 180)
+    except Exception as e:
+        log_error(f"run_manual_mega_restore: {e}")
+        send_and_auto_delete(chat_id, "❌ Ошибка ручного восстановления из MEGA: " + str(e)[:500], 180)
+
+
 @bot.message_handler(commands=["mega_restore_now"])
 def cmd_mega_restore_now(msg):
     try:
@@ -22957,24 +23002,8 @@ def cmd_mega_restore_now(msg):
     if not is_owner_chat(chat_id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
-    try:
-        send_and_auto_delete(chat_id, "☁️ Запускаю полное восстановление из MEGA…", 20)
-        ok, detail = mega_restore_full_from_cloud(force=True)
-        if ok:
-            try:
-                refresh_registered_financial_windows(chat_id)
-            except Exception:
-                pass
-            try:
-                schedule_startup_main_windows(delay=0.5)
-            except Exception:
-                pass
-            send_and_auto_delete(chat_id, "✅ " + detail, 120)
-        else:
-            send_and_auto_delete(chat_id, "❌ " + detail, 120)
-    except Exception as e:
-        log_error(f"cmd_mega_restore_now: {e}")
-        send_and_auto_delete(chat_id, "❌ Ошибка восстановления из MEGA: " + str(e)[:500], 120)
+    if not GENERAL_TASK_POOL.submit(f"manual-mega-restore:{chat_id}", run_manual_mega_restore, chat_id):
+        send_and_auto_delete(chat_id, "⛔ Очередь восстановления переполнена. Попробуйте позже.", 20)
 
 
 @bot.message_handler(commands=["mega_backup_now"])
@@ -23415,4 +23444,4 @@ def main():
     app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 if __name__ == "__main__":
     main()
-# bot_v97_usd_transactions_forward_edit
+# bot_v99usd_transactions_forward_edit
