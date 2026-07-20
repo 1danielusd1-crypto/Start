@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v93_19_tz_integrated"
+VERSION = "bot_v94_startup_hotfix"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -21932,7 +21932,7 @@ def set_mega_backup_priority_enabled(enabled: bool):
 
 
 # --- ТЗ 7/8/18: wake-state + registry of open windows -------------------------------
-_RUNTIME_STATE_FILE = os.path.join(os.path.dirname(DB_PATH) if DB_PATH else ".", "bot_runtime_state.json")
+_RUNTIME_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(DB_FILE)), "bot_runtime_state.json")
 _RUNTIME_LOCK = threading.RLock()
 _RUNTIME_LAST_SEEN = time.time()
 _RUNTIME_LAST_WAKE_GAP = 0.0
