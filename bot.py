@@ -368,7 +368,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v91_articles_excel_history"
+VERSION = "bot_v92_forward_copy_edit"
 
 
 def version_animal_badge(version: str | None = None) -> str:
@@ -752,6 +752,24 @@ def journal_should_record(chat_id=None) -> bool:
 
 
 BOT_BEHAVIOR_PROFILES = {
+    "v92_current": {
+        "title": "v92 💰Перес / редактирование копий",
+        "ui_edit_interval": 0.03,
+        "fast_tg_gap": 0.01,
+        "info_layout": "v87",
+        "per_chat_journal": True,
+        "mega_priority": True,
+        "keepalive_menu": True,
+        "article_buttons": False,
+        "financial_value_buttons": True,
+        "financial_buttons_per_row": 1,
+        "gomonk_wallets": True,
+        "remaining_window": True,
+        "usd_categories": True,
+        "daily_usd": True,
+        "forward_copy_edit": True,
+        "description": "v91 + режим 💰Перес: обычно / кнопка / слеш для редактирования бот-копии и связанной финансовой записи.",
+    },
     "v91_current": {
         "title": "v91 Статьи / Excel стат",
         "ui_edit_interval": 0.03,
@@ -923,7 +941,7 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v91_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v92_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -951,7 +969,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
         "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
         "category_usd_enabled", "expense_category_order_slugs",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
-        "process_trace_enabled",
+        "process_trace_enabled", "forward_copy_edit_mode",
     )
     return global_fields, chat_fields
 
@@ -1135,7 +1153,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
-    if active_bot_behavior_profile() in {"v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
+    if active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
         label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
     return label
 
@@ -2204,6 +2222,9 @@ WINDOW_MARKER_CONSTANTS = {
     'cat_other_sort_target:*': 'Ф158',
     'cat_pick_today_end:*': 'Ф159',
     'exp_send:*:xlsxstat:*': 'Ф160',
+    'forward_copy_edit_mode_toggle': 'Ф161',
+    'fwdcopy_edit': 'Ф162',
+    'fwdcopy_edit_cancel': 'Ф163',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -3733,6 +3754,8 @@ def build_info_text(chat_id: int) -> str:
     elif layout == "v83":
         text += f"\nСтатьи-кнопки в основном окне: {'ВКЛ' if main_article_buttons_enabled(chat_id) else 'ВЫКЛ'}"
         text += f"\nЖурнал этого чата: {'ВКЛ' if is_chat_journal_enabled(chat_id) else 'ВЫКЛ'}"
+    if version_mode_feature("forward_copy_edit"):
+        text += f"\n💰Перес: {forward_copy_edit_mode(chat_id).replace('normal', 'обычно').replace('button', 'кнопка').replace('slash', 'слеш')}"
     if is_owner_chat(chat_id):
         text += f"\n/buttons — сейчас: {'значки' if icon_button_mode_enabled() else 'текст'}"
         text += f"\n/mask — сейчас: {'ВКЛ' if total_secret_mask_enabled() else 'ВЫКЛ'}"
@@ -10224,12 +10247,33 @@ def cmd_toggle_remaining_ost_label(msg):
     and m.text.startswith("/")
     and is_total_secret_mode(m.chat.id)
     and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/ost", "/остаток", "/off_on_backup_excel", "/queues", "/queue_status"}
+    and not m.text.split()[0].split("@")[0].casefold().startswith("/izm_r")
 ))
 def cmd_total_secret_capture(msg):
     forward_secret_message_now(msg)
     save_secret_message(msg.chat.id, msg)
     delete_secret_source_message(msg)
     maybe_send_total_secret_decoy(msg)
+
+
+@bot.message_handler(func=lambda m: bool(
+    getattr(m, "text", None)
+    and re.match(r"^/izm_R\d+(?:@[A-Za-z0-9_]+)?(?:\s*)$", m.text.strip(), flags=re.I)
+))
+def cmd_forward_copy_edit(msg):
+    try:
+        token = (msg.text or "").strip().split()[0].split("@")[0]
+        short_id = token[len("/izm_"):].upper()
+        rec = _find_forward_copy_record_by_short_id(msg.chat.id, short_id)
+        if not rec:
+            send_and_auto_delete(msg.chat.id, f"❌ Бот-копия {short_id} не найдена.", 8)
+            delete_message_later(msg.chat.id, msg.message_id, 1)
+            return
+        dst_msg_id = int(rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id"))
+        start_forward_copy_edit(msg.chat.id, dst_msg_id)
+        delete_message_later(msg.chat.id, msg.message_id, 1)
+    except Exception as e:
+        log_error(f"cmd_forward_copy_edit: {e}")
 
 
 @bot.message_handler(
@@ -10386,6 +10430,25 @@ def on_any_message(msg):
 
     if restore_mode is not None and restore_mode == chat_id:
         return
+    if msg.content_type == "text":
+        try:
+            store = get_chat_store(chat_id)
+            fwd_wait = store.get("forward_copy_edit_wait") or {}
+            if fwd_wait.get("type") == "forward_copy_edit":
+                dst_msg_id = int(fwd_wait.get("dst_msg_id"))
+                text = (msg.text or "").strip()
+                if not edit_forward_copy_and_record(chat_id, dst_msg_id, text):
+                    send_and_auto_delete(chat_id, "❌ Неверный формат или бот-копия не найдена. Пример: 1500 продукты", 10)
+                    return
+                clear_forward_copy_edit_wait(chat_id, delete_prompt=True)
+                try:
+                    bot.delete_message(chat_id, msg.message_id)
+                except Exception:
+                    pass
+                send_and_auto_delete(chat_id, "✅ Бот-копия и финансовая запись изменены.", 8)
+                return
+        except Exception as e:
+            log_error(f"forward_copy_edit_wait handler error: {e}")
     if msg.content_type == "text":
         try:
             store = get_chat_store(chat_id)
@@ -11073,6 +11136,288 @@ def get_forward_finance(src_chat_id: int, dst_chat_id: int) -> bool:
     ff = data.setdefault("forward_finance", {})
     return bool(ff.get(str(src_chat_id), {}).get(str(dst_chat_id), False))
 
+
+FORWARD_COPY_EDIT_MODES = ("normal", "button", "slash")
+FORWARD_COPY_EDIT_COMMAND_RE = re.compile(r"(?:^|\s)/izm_(R\d+)\s*$", re.I)
+
+
+def forward_copy_edit_mode(chat_id: int) -> str:
+    """Режим элементов редактирования на бот-копиях, исходящих из этого чата."""
+    try:
+        mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("forward_copy_edit_mode") or "normal").strip().lower()
+    except Exception:
+        mode = "normal"
+    if mode not in FORWARD_COPY_EDIT_MODES:
+        mode = "normal"
+    if not version_mode_feature("forward_copy_edit"):
+        return "normal"
+    return mode
+
+
+def set_forward_copy_edit_mode(chat_id: int, mode: str):
+    mode = str(mode or "normal").strip().lower()
+    if mode not in FORWARD_COPY_EDIT_MODES:
+        mode = "normal"
+    store = get_chat_store(int(chat_id))
+    store.setdefault("settings", {})["forward_copy_edit_mode"] = mode
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_config_backup_for_chats(int(chat_id))
+    return mode
+
+
+def cycle_forward_copy_edit_mode(chat_id: int) -> str:
+    current = forward_copy_edit_mode(int(chat_id))
+    try:
+        idx = FORWARD_COPY_EDIT_MODES.index(current)
+    except ValueError:
+        idx = 0
+    return set_forward_copy_edit_mode(int(chat_id), FORWARD_COPY_EDIT_MODES[(idx + 1) % len(FORWARD_COPY_EDIT_MODES)])
+
+
+def forward_copy_edit_mode_label(chat_id: int) -> str:
+    mode = forward_copy_edit_mode(int(chat_id))
+    return {
+        "normal": "💰Перес: обычно",
+        "button": "💰Перес: кнопка",
+        "slash": "💰Перес: слеш",
+    }.get(mode, "💰Перес: обычно")
+
+
+def _strip_forward_copy_edit_command(text: str) -> str:
+    raw = str(text or "").rstrip()
+    return re.sub(r"(?:\n|\s)+/izm_R\d+\s*$", "", raw, flags=re.I).rstrip()
+
+
+def _forward_copy_record_command(rec: dict) -> str:
+    sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}").strip()
+    if not sid.upper().startswith("R"):
+        sid = "R" + sid
+    return f"/izm_{sid}"
+
+
+def _forward_copy_display_text(base_text: str, rec: dict | None, mode: str) -> str:
+    base = _strip_forward_copy_edit_command(base_text)
+    if mode == "slash" and rec:
+        return (base + "\n" + _forward_copy_record_command(rec)).strip()
+    return base
+
+
+def _forward_copy_edit_keyboard(mode: str):
+    if mode != "button":
+        return None
+    kb = types.InlineKeyboardMarkup()
+    kb.row(IB("✏️ Изменить", callback_data="fwdcopy_edit"))
+    return kb
+
+
+def _forward_copy_origin_source_chat(dst_chat_id: int, dst_msg_id: int, rec: dict | None = None):
+    try:
+        if rec and rec.get("forward_source_chat_id") is not None:
+            return int(rec.get("forward_source_chat_id"))
+    except Exception:
+        pass
+    try:
+        src_chat_id, _src_msg_id = _find_forward_origin_by_copied_message(int(dst_chat_id), int(dst_msg_id))
+        return int(src_chat_id) if src_chat_id is not None else None
+    except Exception:
+        return None
+
+
+def _set_forward_record_metadata(dst_chat_id: int, dst_msg_id: int, source_chat_id: int, source_msg):
+    try:
+        rec = find_record_by_message_id(int(dst_chat_id), int(dst_msg_id))
+        if not rec:
+            return None
+        rec["forward_source_chat_id"] = int(source_chat_id)
+        rec["forward_source_msg_id"] = int(getattr(source_msg, "message_id", 0) or 0)
+        rec["forward_copy_content_type"] = str(getattr(source_msg, "content_type", "text") or "text")
+        for _dk, arr in (get_chat_store(int(dst_chat_id)).get("daily_records", {}) or {}).items():
+            for item in arr:
+                if int(item.get("id", -1)) == int(rec.get("id", -2)):
+                    item.update(rec)
+        save_data(data, chat_ids=[int(dst_chat_id)])
+        return rec
+    except Exception as e:
+        log_error(f"_set_forward_record_metadata({dst_chat_id},{dst_msg_id}): {e}")
+        return None
+
+
+def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id: int, source_msg):
+    """Добавляет кнопку или /izm_R… непосредственно в бот-копию в чате Б."""
+    if not version_mode_feature("forward_copy_edit"):
+        return
+    mode = forward_copy_edit_mode(int(source_chat_id))
+    rec = _set_forward_record_metadata(dst_chat_id, dst_msg_id, source_chat_id, source_msg)
+    if not rec:
+        return
+    try:
+        if mode == "normal":
+            # Нормальный режим: никаких элементов на копии. Это также очищает старую
+            # кнопку, если режим сменили и затем исходное сообщение было отредактировано.
+            try:
+                _tg_call_retry(
+                    bot.edit_message_reply_markup,
+                    int(dst_chat_id),
+                    int(dst_msg_id),
+                    reply_markup=None,
+                    attempts=1,
+                    purpose="forward_copy_edit_clear_markup",
+                )
+            except Exception:
+                pass
+            return
+        if mode == "button":
+            _tg_call_retry(
+                bot.edit_message_reply_markup,
+                int(dst_chat_id),
+                int(dst_msg_id),
+                reply_markup=_forward_copy_edit_keyboard(mode),
+                purpose="forward_copy_edit_button",
+            )
+            return
+        base_text = _message_text_for_finance(source_msg)
+        display_text = _forward_copy_display_text(base_text, rec, mode)
+        ct = str(getattr(source_msg, "content_type", "text") or "text")
+        if ct == "text":
+            _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), purpose="forward_copy_edit_slash")
+        elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
+            _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), purpose="forward_copy_edit_slash")
+    except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" not in err:
+            log_error(f"apply_forward_copy_edit_ui {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
+
+
+def _find_forward_copy_record_by_short_id(chat_id: int, short_id: str):
+    sid = str(short_id or "").strip().upper()
+    rows = []
+    for rec in get_chat_store(int(chat_id)).get("records", []) or []:
+        if str(rec.get("short_id") or "").strip().upper() != sid:
+            continue
+        msg_id = rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id")
+        try:
+            msg_id = int(msg_id)
+        except Exception:
+            continue
+        if rec.get("forward_source_chat_id") is not None or _find_forward_origin_by_copied_message(int(chat_id), msg_id)[0] is not None:
+            rows.append(rec)
+    rows.sort(key=record_sort_key, reverse=True)
+    return rows[0] if rows else None
+
+
+def _forward_copy_edit_wait_scheduler_key(chat_id: int) -> str:
+    return f"forward-copy-edit-wait:{int(chat_id)}"
+
+
+def clear_forward_copy_edit_wait(chat_id: int, delete_prompt: bool = True):
+    store = get_chat_store(int(chat_id))
+    wait = store.get("forward_copy_edit_wait") or {}
+    prompt_id = wait.get("prompt_msg_id")
+    DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
+    store["forward_copy_edit_wait"] = None
+    save_data(data, chat_ids=[int(chat_id)])
+    if delete_prompt and prompt_id:
+        try:
+            bot.delete_message(int(chat_id), int(prompt_id))
+        except Exception:
+            pass
+
+
+def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int, delay: float = 40.0):
+    def _job():
+        try:
+            wait = get_chat_store(int(chat_id)).get("forward_copy_edit_wait") or {}
+            if int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
+                return
+            clear_forward_copy_edit_wait(int(chat_id), delete_prompt=True)
+        except Exception as e:
+            log_error(f"schedule_forward_copy_edit_wait_cancel({chat_id}): {e}")
+    DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
+    DELAYED_SCHEDULER.schedule(_forward_copy_edit_wait_scheduler_key(int(chat_id)), float(delay), _job)
+
+
+def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
+    rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
+    if not rec:
+        send_and_auto_delete(int(chat_id), "❌ Связанная финансовая запись не найдена.", 8)
+        return False
+    source_chat_id = _forward_copy_origin_source_chat(int(chat_id), int(dst_msg_id), rec)
+    if source_chat_id is None:
+        send_and_auto_delete(int(chat_id), "❌ Это сообщение не связано с бот-копией пересылки.", 8)
+        return False
+    current = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+    kb = types.InlineKeyboardMarkup()
+    kb.row(IB("❌ Отмена", callback_data="fwdcopy_edit_cancel"))
+    prompt = (
+        f"✏️ Изменение бот-копии {rec.get('short_id') or 'R' + str(rec.get('id'))}\n\n"
+        f"Текущее значение: {current}\n"
+        "Отправьте новые данные одним сообщением.\n"
+        "Будет изменена сама бот-копия в этом чате и связанная финансовая запись."
+    )
+    sent = _tg_call_retry(bot.send_message, int(chat_id), prompt, reply_markup=kb, purpose="forward_copy_edit_prompt")
+    get_chat_store(int(chat_id))["forward_copy_edit_wait"] = {
+        "type": "forward_copy_edit",
+        "dst_msg_id": int(dst_msg_id),
+        "rid": int(rec.get("id")),
+        "source_chat_id": int(source_chat_id),
+        "prompt_msg_id": int(sent.message_id),
+        "expires_at": time.time() + 40,
+    }
+    save_data(data, chat_ids=[int(chat_id)])
+    schedule_forward_copy_edit_wait_cancel(int(chat_id), int(sent.message_id), 40)
+    return True
+
+
+def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -> bool:
+    clean_text = sanitize_telegram_inserted_text(str(new_text or "").strip())
+    try:
+        amount, note = split_amount_and_note(clean_text)
+    except Exception:
+        return False
+    rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
+    if not rec:
+        return False
+    rid = int(rec.get("id"))
+    day_key = rec.get("day_key") or today_key()
+    source_chat_id = _forward_copy_origin_source_chat(int(chat_id), int(dst_msg_id), rec)
+    if source_chat_id is None:
+        return False
+    with locked_chat(int(chat_id)):
+        if not update_record_in_chat(int(chat_id), rid, amount, note):
+            return False
+        rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
+    mode = forward_copy_edit_mode(int(source_chat_id))
+    display_text = _forward_copy_display_text(clean_text, rec, mode)
+    reply_markup = _forward_copy_edit_keyboard(mode)
+    ct = str((rec or {}).get("forward_copy_content_type") or "text")
+    try:
+        if ct == "text":
+            _tg_call_retry(
+                bot.edit_message_text,
+                display_text,
+                chat_id=int(chat_id),
+                message_id=int(dst_msg_id),
+                reply_markup=reply_markup,
+                purpose="forward_copy_manual_edit",
+            )
+        elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
+            _tg_call_retry(
+                bot.edit_message_caption,
+                caption=display_text,
+                chat_id=int(chat_id),
+                message_id=int(dst_msg_id),
+                reply_markup=reply_markup,
+                purpose="forward_copy_manual_edit",
+            )
+        else:
+            return False
+    except Exception as e:
+        if "message is not modified" not in str(e).lower():
+            log_error(f"edit_forward_copy_and_record({chat_id},{dst_msg_id}): {e}")
+            return False
+    finance_changed(int(chat_id), day_key, reason="forward_copy_manual_edit", delay=0.1)
+    return True
+
 def _has_visible_fin_mode_selected(chat_id: int) -> bool:
     """True если включён один из трёх видимых режимов В24: как обычно / 3️⃣ / 🥇."""
     try:
@@ -11313,11 +11658,15 @@ def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_m
     text = _message_text_for_finance(msg)
     ct = getattr(msg, "content_type", None)
     owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
+    rec = find_record_by_message_id(dst_chat_id, dst_msg_id) if finance_enabled else None
+    edit_mode = forward_copy_edit_mode(source_chat_id) if finance_enabled else "normal"
+    display_text = _forward_copy_display_text(text, rec, edit_mode) if rec else text
+    edit_markup = _forward_copy_edit_keyboard(edit_mode) if finance_enabled else None
 
     try:
         if ct == "text":
             try:
-                bot.edit_message_text(text, chat_id=dst_chat_id, message_id=dst_msg_id)
+                bot.edit_message_text(display_text, chat_id=dst_chat_id, message_id=dst_msg_id, reply_markup=edit_markup)
             except Exception as e:
                 err = str(e).lower()
                 if "message is not modified" not in err:
@@ -11334,7 +11683,7 @@ def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_m
                     raise
         elif getattr(msg, "caption", None):
             try:
-                bot.edit_message_caption(caption=msg.caption, chat_id=dst_chat_id, message_id=dst_msg_id)
+                bot.edit_message_caption(caption=display_text, chat_id=dst_chat_id, message_id=dst_msg_id, reply_markup=edit_markup)
             except Exception as e:
                 err = str(e).lower()
                 if "message is not modified" not in err:
@@ -11344,6 +11693,7 @@ def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_m
 
         if finance_enabled and text and is_finance_mode(dst_chat_id):
             sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text, owner_id, source_msg=msg)
+            apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg)
         return dst_msg_id
 
     except Exception as e:
@@ -11537,7 +11887,9 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
         try:
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
             ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=msg)
-            if not ok_fin and text_has_any_digit(text_for_finance):
+            if ok_fin:
+                apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg)
+            elif text_has_any_digit(text_for_finance):
                 log_error(f"[FWD FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
         except Exception as e:
             log_error(f"_forward_single_to_target finance sync {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
@@ -11609,7 +11961,9 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                     try:
                         owner_id = src_msg.from_user.id if getattr(src_msg, "from_user", None) else 0
                         ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=src_msg)
-                        if not ok_fin and text_has_any_digit(text_for_finance):
+                        if ok_fin:
+                            apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, src_msg)
+                        elif text_has_any_digit(text_for_finance):
                             log_error(f"[FWD MEDIA FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{src_msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
                     except Exception as e:
                         log_error(f"_flush_media_group_forward finance sync {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
@@ -11669,7 +12023,7 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    return bool(active_bot_behavior_profile() in {"v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
+    return bool(active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current", "v85_current"} and version_mode_feature(feature))
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -14749,6 +15103,8 @@ def build_info_keyboard(chat_id: int):
             IB(buttons_current_window_label(), callback_data="buttons_current_toggle"),
             IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"),
         )
+        if version_mode_feature("forward_copy_edit"):
+            kb.row(IB(forward_copy_edit_mode_label(chat_id), callback_data="forward_copy_edit_mode_toggle"))
         kb.row(
             IB(forward_menu_style_label(), callback_data="forward_menu_style_toggle"),
             IB(icon_button_mode_label(), callback_data="icon_buttons_toggle"),
@@ -14791,12 +15147,14 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
-        if active_bot_behavior_profile() in {"v91_current", "v90_current"}:
+        if active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
             kb.row(IB("👥 /owners", callback_data="additional_owners"))
     else:
         kb.row(IB(info_finance_toggle_label(chat_id), callback_data="info_finance_off"))
+        if version_mode_feature("forward_copy_edit"):
+            kb.row(IB(forward_copy_edit_mode_label(chat_id), callback_data="forward_copy_edit_mode_toggle"))
         if layout in {"v84", "v85", "v86", "v87"}:
             kb.row(IB(main_financial_value_buttons_label(chat_id), callback_data="main_financial_values_toggle"))
         if layout in {"v85", "v86", "v87"}:
@@ -16367,6 +16725,25 @@ def on_callback(call):
         if data_str == "cat_months" or data_str.startswith("cat_"):
             if handle_categories_callback(call, data_str):
                 return
+
+        # 💰Перес работает и в скрытом финрежиме принимающего чата, поэтому до guard.
+        if data_str == "fwdcopy_edit":
+            start_forward_copy_edit(chat_id, call.message.message_id)
+            return
+        if data_str == "fwdcopy_edit_cancel":
+            clear_forward_copy_edit_wait(chat_id, delete_prompt=True)
+            return
+        if data_str == "forward_copy_edit_mode_toggle":
+            if not version_mode_feature("forward_copy_edit"):
+                return
+            new_mode = cycle_forward_copy_edit_mode(chat_id)
+            try:
+                bot.answer_callback_query(call.id, forward_copy_edit_mode_label(chat_id), show_alert=False)
+            except Exception:
+                pass
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            bot_journal("forward_copy_edit_mode", chat_id, f"mode={new_mode}")
+            return
 
         if guard_non_owner_finance_for_callback(chat_id, data_str):
             return
@@ -18412,6 +18789,10 @@ def refresh_owner_after_chat_change(source_chat_id: int):
 def cancel_pending_window_commands(chat_id: int, delete_prompt: bool = False):
     """Назад в основное окно отменяет режимы ожидания предыдущих окон и их таймеры."""
     try:
+        clear_forward_copy_edit_wait(chat_id, delete_prompt=delete_prompt)
+    except Exception:
+        pass
+    try:
         clear_edit_wait_state(chat_id, delete_prompt=delete_prompt)
     except Exception:
         pass
@@ -19941,6 +20322,51 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
         )
         set_active_window_id(chat_id, day_key, sent.message_id)
 
+def cancel_auto_delete_for_message(chat_id: int, message_id: int):
+    """Если окно с автоудалением превращается кнопкой «Назад» в основное — его старый таймер больше не должен удалить О1."""
+    chat_id = int(chat_id)
+    message_id = int(message_id)
+    try:
+        _cancel_v98_auto_close(chat_id, message_id)
+    except Exception:
+        pass
+    for key in (
+        f"auto-delete:{chat_id}:{message_id}",
+        f"auto-delete-html:{chat_id}:{message_id}",
+        f"delete-later:{chat_id}:{message_id}",
+    ):
+        try:
+            DELAYED_SCHEDULER.cancel(key)
+        except Exception:
+            pass
+    try:
+        store = get_chat_store(chat_id)
+        was_total_window = int(store.get("total_msg_id") or 0) == message_id
+        # Отменяем только реальные stored-window таймеры этого чата, а не перебираем
+        # все числовые поля store (id записи/флаги не должны случайно очищаться).
+        for timer_key in list(_aux_window_timers.keys()):
+            try:
+                timer_chat_id, store_key = timer_key
+                if int(timer_chat_id) != chat_id:
+                    continue
+                if int(store.get(str(store_key)) or 0) != message_id:
+                    continue
+            except Exception:
+                continue
+            DELAYED_SCHEDULER.cancel(f"stored-window-delete:{chat_id}:{store_key}")
+            _aux_window_timers.pop(timer_key, None)
+            store[str(store_key)] = None
+
+        if was_total_window:
+            DELAYED_SCHEDULER.cancel(f"owner-total-delete:{chat_id}")
+            _total_message_timers.pop(chat_id, None)
+            store["total_msg_id"] = None
+        # Сохранение сделает уже существующая фоновая очистка back_main; здесь важно
+        # не задерживать мгновенное возвращение в основное окно.
+    except Exception as e:
+        log_error(f"cancel_auto_delete_for_message({chat_id},{message_id}): {e}")
+
+
 def recreate_main_window_now(chat_id: int, day_key: str):
     """Удаляет старое о1, если возможно, и создаёт новое основное окно."""
     try:
@@ -19979,7 +20405,7 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
 
     try:
         if current_message_id is not None:
-            _cancel_v98_auto_close(chat_id, current_message_id)
+            cancel_auto_delete_for_message(chat_id, current_message_id)
             cancel_fast_ui_edit(chat_id, current_message_id)
     except Exception:
         pass
@@ -20793,6 +21219,10 @@ def main():
             if str(gs.get("bot_behavior_profile") or "") == "v90_current":
                 gs["bot_behavior_profile"] = "v91_current"
             gs["version_mode_v91_migrated"] = True
+        if not bool(gs.get("version_mode_v92_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v91_current":
+                gs["bot_behavior_profile"] = "v92_current"
+            gs["version_mode_v92_migrated"] = True
         # Одноразово очищаем сохранённые имена статей от @username бота.
         if not bool(gs.get("category_names_clean_v88_applied", False)):
             for _cid, _store in (data.get("chats", {}) or {}).items():
