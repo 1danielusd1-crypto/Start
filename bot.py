@@ -1,6 +1,6 @@
-# BOT FILE: bot_v100_factory_defaults_file_identity_f9998.py
-# BOT VERSION: bot_v100_factory_defaults_file_identity_f9998
-# PURPOSE: Telegram finance bot — factory defaults / MEGA restore / file identity / F9998 autoclose
+# BOT FILE: bot_v101_mega_restore_forward_finance_durable.py
+# BOT VERSION: bot_v101_mega_restore_forward_finance_durable
+# PURPOSE: Telegram finance bot — MEGA restore retry / durable forwarded finance / forward-index recovery
 # ─────────────────────────────────────────────────────────────
 import os
 import io
@@ -373,8 +373,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v100_factory_defaults_file_identity_f9998"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v100_factory_defaults_file_identity_f9998.py"
+VERSION = "bot_v101_mega_restore_forward_finance_durable"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v101_mega_restore_forward_finance_durable.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -468,10 +468,19 @@ try:
 except Exception:
     MEGA_GLOBAL_MAX_RECORD_DROP = 0.30
 ALLOW_EMPTY_MEGA_RESTORE = _env_bool("ALLOW_EMPTY_MEGA_RESTORE", "0")
+try:
+    MEGA_RESTORE_DISCOVERY_RETRIES = max(1, min(6, int(os.getenv("MEGA_RESTORE_DISCOVERY_RETRIES", "3") or "3")))
+except Exception:
+    MEGA_RESTORE_DISCOVERY_RETRIES = 3
+try:
+    MEGA_RESTORE_DISCOVERY_RETRY_SECONDS = max(0.5, float(os.getenv("MEGA_RESTORE_DISCOVERY_RETRY_SECONDS", "3") or "3"))
+except Exception:
+    MEGA_RESTORE_DISCOVERY_RETRY_SECONDS = 3.0
 RESTORE_GUARD_ACTIVE = False
 RESTORE_GUARD_REASON = ""
 MEGA_GLOBAL_BACKUP_LOCK = threading.RLock()
 MEGA_COMMAND_LOCK = threading.RLock()
+CRITICAL_DELTA_LOCK = threading.RLock()
 forward_map = {}
 backup_flags = {
     "channel": True,
@@ -6041,6 +6050,32 @@ def schedule_delta_backup(chat_id: int | None, delay: float | None = None, reaso
     return True
 
 
+def persist_critical_delta_now(chat_id: int) -> bool:
+    """Синхронно грузит маленький delta для критической операции.
+
+    Используется после финансовой бот-пересылки: сообщение уже отправлено в Telegram,
+    поэтому перед возвратом из обработчика состояние должно оказаться не только в
+    локальной SQLite, но и в MEGA. Это защищает даже от deploy через секунду.
+    """
+    global _delta_generation
+    if RESTORE_GUARD_ACTIVE or not mega_is_configured():
+        return False
+    cid = int(chat_id)
+    with CRITICAL_DELTA_LOCK:
+        with _delta_state_lock:
+            _delta_generation += 1
+            _delta_pending_chats.add(cid)
+            _delta_chat_generation[cid] = _delta_generation
+        try:
+            DELAYED_SCHEDULER.cancel("mega-delta-batch-v90")
+        except Exception:
+            pass
+        ok = bool(_run_delta_batch())
+        if not ok:
+            log_error(f"[CRITICAL DELTA] immediate MEGA persistence failed for chat={cid}")
+        return ok
+
+
 def _apply_delta_payload_to_state(state: dict, delta: dict) -> dict:
     if not isinstance(state, dict) or not isinstance(delta, dict):
         return state
@@ -6662,6 +6697,25 @@ def _mega_select_best_global_candidate(limit: int = 60) -> tuple[str | None, dic
     return best_path, best_stats, best_label
 
 
+def _mega_select_best_global_candidate_with_retry(limit: int = 80) -> tuple[str | None, dict, str]:
+    """Повторяет поиск full snapshot после холодного deploy, прежде чем включать guard."""
+    last = (None, {}, "")
+    for attempt in range(1, int(MEGA_RESTORE_DISCOVERY_RETRIES) + 1):
+        try:
+            last = _mega_select_best_global_candidate(limit=limit)
+            if last[0]:
+                if attempt > 1:
+                    log_info(f"[MEGA RESTORE] global snapshot found on retry {attempt}: {last[2]}")
+                return last
+        except Exception as e:
+            log_error(f"[MEGA RESTORE] discovery attempt {attempt}/{MEGA_RESTORE_DISCOVERY_RETRIES}: {e}")
+        if attempt < int(MEGA_RESTORE_DISCOVERY_RETRIES):
+            delay = float(MEGA_RESTORE_DISCOVERY_RETRY_SECONDS) * attempt
+            log_info(f"[MEGA RESTORE] snapshot not available yet; retry in {delay:g}s ({attempt}/{MEGA_RESTORE_DISCOVERY_RETRIES})")
+            time.sleep(delay)
+    return last
+
+
 def mega_restore_full_from_cloud(force: bool = False) -> tuple[bool, str]:
     """Полное восстановление из лучшего global snapshot + всех последующих delta.
 
@@ -6674,7 +6728,7 @@ def mega_restore_full_from_cloud(force: bool = False) -> tuple[bool, str]:
 
     local_empty = is_data_effectively_empty_for_restore(data)
     local_stats = _local_restore_stats(data)
-    base_path, base_stats, label = _mega_select_best_global_candidate(limit=80)
+    base_path, base_stats, label = _mega_select_best_global_candidate_with_retry(limit=80)
     if not base_path:
         if local_empty:
             _set_restore_guard("local database is empty; no valid full global snapshot found in MEGA")
@@ -7091,6 +7145,7 @@ def load_data():
 
     try:
         _load_forward_index_from_data(d)
+        _rebuild_forward_index_from_finance_records(d)
     except Exception as e:
         log_error(f"load_data forward_index: {e}")
 
@@ -7882,6 +7937,7 @@ def _restore_runtime_state_from_data(restored: dict):
     # Критически важно: сначала восстановить forward_map. Иначе save_data() запишет
     # пустой индекс поверх загруженного JSON, и правки старых сообщений не найдут копии.
     _load_forward_index_from_data(restored)
+    _rebuild_forward_index_from_finance_records(restored)
 
 
 def restore_from_json(chat_id: int, path: str):
@@ -12910,6 +12966,78 @@ def _store_forward_link(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst
     _schedule_persist_forward_state()
 
 
+def _persist_forward_finance_delivery_now(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst_msg_id: int, rec: dict | None = None):
+    """Сразу фиксирует Telegram-копию + финансовую запись в SQLite и forward_index."""
+    try:
+        if isinstance(rec, dict):
+            tags = {
+                "forwarded_by_bot": True,
+                "forward_source_chat_id": int(src_chat_id),
+                "forward_source_msg_id": int(src_msg_id),
+                "forward_dst_chat_id": int(dst_chat_id),
+                "forward_dst_msg_id": int(dst_msg_id),
+            }
+            rec.update(tags)
+            store = get_chat_store(int(dst_chat_id))
+            rid = rec.get("id")
+            for arr in (store.get("daily_records", {}) or {}).values():
+                for rr in arr or []:
+                    if isinstance(rr, dict) and rr.get("id") == rid:
+                        rr.update(tags)
+        _persist_forward_index_in_data(data)
+        save_data(data, chat_ids=[int(dst_chat_id)])
+        # Для пересланной финансовой записи недостаточно debounce: deploy мог начаться сразу
+        # после появления Telegram-сообщения. Ждём подтверждения immutable delta в MEGA.
+        mega_ok = False
+        try:
+            mega_ok = persist_critical_delta_now(int(dst_chat_id))
+        except Exception as e:
+            log_error(f"[FWD FINANCE DURABLE] critical delta: {e}")
+        if not mega_ok:
+            # Не теряем обычный retry-механизм, если синхронная загрузка временно не прошла.
+            try:
+                schedule_quick_backup(int(dst_chat_id), MEGA_DELTA_PRIORITY_DELAY_SECONDS)
+            except Exception as e:
+                log_error(f"[FWD FINANCE DURABLE] delta retry schedule: {e}")
+        log_info(f"[FWD FINANCE DURABLE] persisted local+mega={mega_ok} {src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}")
+        return True
+    except Exception as e:
+        log_error(f"[FWD FINANCE DURABLE ERROR] {src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}: {e}")
+        return False
+
+
+def _rebuild_forward_index_from_finance_records(d: dict) -> int:
+    """После restore восстанавливает forward_index из provenance сохранённых финзаписей."""
+    added = 0
+    try:
+        with forward_map_lock:
+            for cid, store in ((d or {}).get("chats", {}) or {}).items():
+                if not isinstance(store, dict):
+                    continue
+                for rec in store.get("records", []) or []:
+                    if not isinstance(rec, dict) or not rec.get("forwarded_by_bot"):
+                        continue
+                    try:
+                        src_chat = int(rec.get("forward_source_chat_id"))
+                        src_msg = int(rec.get("forward_source_msg_id"))
+                        dst_chat = int(rec.get("forward_dst_chat_id") or cid)
+                        dst_msg = int(rec.get("forward_dst_msg_id") or rec.get("source_msg_id") or rec.get("msg_id"))
+                    except Exception:
+                        continue
+                    key = (src_chat, src_msg); pair = (dst_chat, dst_msg)
+                    rows = forward_map.setdefault(key, [])
+                    if pair not in rows:
+                        rows.append(pair); added += 1
+            if added:
+                _persist_forward_index_in_data(d)
+        if added:
+            log_info(f"[FORWARD INDEX RECOVERY] rebuilt {added} links from finance records")
+        return added
+    except Exception as e:
+        log_error(f"_rebuild_forward_index_from_finance_records: {e}")
+        return 0
+
+
 def get_forward_links(src_chat_id: int, src_msg_id: int):
     with forward_map_lock:
         return list(forward_map.get((int(src_chat_id), int(src_msg_id)), []))
@@ -13251,6 +13379,12 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
 
     trace.step("сохраняет связь оригинал → копия")
     _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
+    # После успешной Telegram-доставки индекс фиксируем сразу, не ждём debounce 0.25с.
+    try:
+        _persist_forward_index_in_data(data)
+        save_data(data, root_only=True)
+    except Exception as e:
+        log_error(f"[FORWARD LINK DURABLE] {source_chat_id}:{msg.message_id}->{dst_chat_id}:{dst_msg_id}: {e}")
     trace.step("обновляет счётчик быстрого остатка целевого чата")
     bump_quick_balance_recreate_counter(dst_chat_id)
 
@@ -13261,7 +13395,9 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
             ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=msg)
             if ok_fin:
-                _rec = ok_fin if isinstance(ok_fin, dict) else None
+                _rec = ok_fin if isinstance(ok_fin, dict) else find_record_by_message_id(dst_chat_id, dst_msg_id)
+                # Сначала durable SQLite + индекс, только затем кнопки/слеш/UI.
+                _persist_forward_finance_delivery_now(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id, _rec)
                 _ui_ok = apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec)
                 if not _ui_ok and forward_copy_edit_mode(source_chat_id) != "normal":
                     schedule_forward_copy_edit_ui_retry(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec, delay=0.8)
@@ -23494,14 +23630,14 @@ def main():
     app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 if __name__ == "__main__":
     main()
-# BOT FILE: bot_v100_factory_defaults_file_identity_f9998.py
-# BOT VERSION: bot_v100_factory_defaults_file_identity_f9998
-# PURPOSE: Telegram finance bot — factory defaults / MEGA restore / file identity / F9998 autoclose
+# BOT FILE: bot_v101_mega_restore_forward_finance_durable.py
+# BOT VERSION: bot_v101_mega_restore_forward_finance_durable
+# PURPOSE: Telegram finance bot — MEGA restore retry / durable forwarded finance / forward-index recovery
 # ─────────────────────────────────────────────────────────────
 
 
 # ─────────────────────────────────────────────────────────────
-# BOT FILE: bot_v100_factory_defaults_file_identity_f9998.py
-# BOT VERSION: bot_v100_factory_defaults_file_identity_f9998
+# BOT FILE: bot_v101_mega_restore_forward_finance_durable.py
+# BOT VERSION: bot_v101_mega_restore_forward_finance_durable
 # END OF BOT FILE
 # ─────────────────────────────────────────────────────────────
