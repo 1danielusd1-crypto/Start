@@ -1,4 +1,7 @@
-#  bot_v99_usd_transactions_forward_edit
+# BOT FILE: bot_v100_factory_defaults_file_identity_f9998.py
+# BOT VERSION: bot_v100_factory_defaults_file_identity_f9998
+# PURPOSE: Telegram finance bot — factory defaults / MEGA restore / file identity / F9998 autoclose
+# ─────────────────────────────────────────────────────────────
 import os
 import io
 import json
@@ -370,7 +373,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v99_manual_mega_restore_menu"
+VERSION = "bot_v100_factory_defaults_file_identity_f9998"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v100_factory_defaults_file_identity_f9998.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -2511,7 +2515,7 @@ def _schedule_v98_auto_close(chat_id: int, message_id: int, delay: int = 60):
 def _touch_v98_auto_close_for_callback(chat_id: int, message_id: int, data_str: str):
     try:
         code = window_code_for_callback(data_str, owner_chat=is_owner_chat(chat_id))
-        if code in {"о98", "в98"}:
+        if code in {"о98", "в98", "Ф9998"}:
             _schedule_v98_auto_close(chat_id, message_id, 60)
         else:
             _cancel_v98_auto_close(chat_id, message_id)
@@ -2567,6 +2571,13 @@ def finance_day_key_from_datetime(dt: datetime, chat_id: int | None = None) -> s
     try:
         if finance_day_start_5am_enabled(chat_id):
             dt = dt - timedelta(hours=5)
+        else:
+            # Заводская граница суток: 00:05. События 00:00–00:04 относятся к предыдущему финансовому дню.
+            try:
+                minute = int(_owner_setting_value("finance_day_start_minute", 5, chat_id) or 5)
+            except Exception:
+                minute = 5
+            dt = dt - timedelta(minutes=max(0, min(59, minute)))
         return dt.strftime("%Y-%m-%d")
     except Exception:
         return today_key()
@@ -2589,7 +2600,13 @@ def finance_today_key(chat_id: int | None = None) -> str:
 
 
 def finance_day_start_label(chat_id: int | None = None) -> str:
-    return "05:00" if finance_day_start_5am_enabled(chat_id) else "00:00"
+    if finance_day_start_5am_enabled(chat_id):
+        return "05:00"
+    try:
+        minute = int(_owner_setting_value("finance_day_start_minute", 5, chat_id) or 5)
+    except Exception:
+        minute = 5
+    return f"00:{max(0, min(59, minute)):02d}"
 
 
 RU_MONTH_NAMES = (
@@ -6299,7 +6316,7 @@ def _global_candidate_rejection(candidate: dict, current: dict | None = None) ->
 def restore_guard_manual_override_enabled() -> bool:
     """Постоянный owner override: разрешить работу/автобэкапы даже без restore snapshot."""
     try:
-        return bool(SQLITE.get_meta("safety", "restore_guard_manual_override", False))
+        return bool(SQLITE.get_meta("safety", "restore_guard_manual_override", True))
     except Exception:
         return False
 
@@ -6947,7 +6964,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": False, "forward_menu_new_style": False, "icon_button_mode": True, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "backup_excel_all_enabled": True, "mega_backup_priority": False, "bot_behavior_profile": "v87_current", "journal_default_off_v83_applied": True},
+        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": True, "forward_menu_new_style": True, "icon_button_mode": False, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "finance_day_start_minute": 5, "backup_excel_all_enabled": True, "mega_backup_priority": True, "bot_behavior_profile": "v97_current", "journal_default_off_v83_applied": True},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -7171,7 +7188,9 @@ def get_chat_store(chat_id: int) -> dict:
                     "auto_backup_to_chat_enabled": True,
                     "auto_backup_to_channel_enabled": True,
                     "auto_backup_to_mega_enabled": True,
-                    "journal_enabled": False,
+                    "journal_enabled": True,
+                    "buttons_current_window": True,
+                    "forward_copy_edit_mode": "slash",
                     "main_article_buttons_enabled": False,
                     "main_financial_value_buttons_enabled": False,
                     "gomonk_enabled": False,
@@ -7194,7 +7213,7 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("auto_backup_to_chat_enabled", legacy_backup_enabled)
         store.setdefault("settings", {}).setdefault("auto_backup_to_channel_enabled", legacy_backup_enabled)
         store.setdefault("settings", {}).setdefault("auto_backup_to_mega_enabled", legacy_backup_enabled)
-        store.setdefault("settings", {}).setdefault("journal_enabled", False)
+        store.setdefault("settings", {}).setdefault("journal_enabled", True)
         store.setdefault("settings", {}).setdefault("main_article_buttons_enabled", False)
         store.setdefault("settings", {}).setdefault("main_financial_value_buttons_enabled", False)
         store.setdefault("settings", {}).setdefault("gomonk_enabled", False)
@@ -7204,6 +7223,8 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("currency_mode", "ars_usd" if store.setdefault("settings", {}).get("usd_display_enabled", False) else "ars")
         store.setdefault("settings", {}).setdefault("remaining_show_ost_label", True)
         store.setdefault("settings", {}).setdefault("category_usd_enabled", False)
+        store.setdefault("settings", {}).setdefault("buttons_current_window", True)
+        store.setdefault("settings", {}).setdefault("forward_copy_edit_mode", "slash")
         store.setdefault("finance_mode", False)
 
         if is_owner_chat(chat_id):
@@ -14667,7 +14688,7 @@ def _export_end_record_keyboard(chat_id: int, start_key: str, start_rid: int, en
 
 
 def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, return_day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb = types.InlineKeyboardMarkup(row_width=3)
     kb.row(
         IB("📄 CSV", callback_data=export_callback(
             f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:csv:{return_day_key}"
@@ -14675,10 +14696,10 @@ def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_ri
         IB("📊 Excel", callback_data=export_callback(
             f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsx:{return_day_key}"
         )),
+        IB("📊 Excel стат", callback_data=export_callback(
+            f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsxstat:{return_day_key}"
+        )),
     )
-    kb.row(IB("📊 Excel стат", callback_data=export_callback(
-        f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsxstat:{return_day_key}"
-    )))
     end_dt = datetime.strptime(end_key, "%Y-%m-%d")
     kb.row(IB("🔙 Изменить конец", callback_data=export_callback(
         f"exp_pick_set_end:{start_key}:{int(start_rid)}:{end_dt.year}:{end_dt.month}:{end_dt.day}:{return_day_key}"
@@ -16801,10 +16822,38 @@ def build_chat_journal_menu_keyboard(page: int = 0):
     return kb
 
 
+def current_bot_sender_name() -> str:
+    """Имя Telegram-бота, который прислал меню. Кэшируем, чтобы не дергать API на каждую кнопку."""
+    try:
+        global _BOT_DISPLAY_NAME_CACHE
+    except Exception:
+        pass
+    try:
+        cached = globals().get("_BOT_DISPLAY_NAME_CACHE")
+        if cached:
+            return str(cached)
+        me = bot.get_me()
+        first = str(getattr(me, "first_name", "") or "").strip()
+        username = str(getattr(me, "username", "") or "").strip().lstrip("@")
+        value = first or (f"@{username}" if username else "Telegram bot")
+        if username and first:
+            value = f"{first} (@{username})"
+        globals()["_BOT_DISPLAY_NAME_CACHE"] = value
+        return value
+    except Exception:
+        username = get_bot_username_cached() if "get_bot_username_cached" in globals() else ""
+        return f"@{username}" if username else "Telegram bot"
+
+
+def bot_file_identity_lines() -> list[str]:
+    return [f"🤖 Бот: {current_bot_sender_name()}", f"📄 Файл: {BOT_FILE_NAME}", f"🏷 Версия: {VERSION}"]
+
+
 def build_version_menu_text() -> str:
     active = active_bot_behavior_profile()
     lines = [
         "🧩 Полное переключение версий",
+        *bot_file_identity_lines(),
         "",
         "Выбор меняет структуру меню, доступные кнопки, интервалы интерфейса и совместимое поведение выбранной версии. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
         "",
@@ -16815,6 +16864,7 @@ def build_version_menu_text() -> str:
         mark = "✅" if key == active else "▫️"
         lines.append(f"{mark} {cfg['title']} — {cfg['description']}")
         lines.append(f"   Интервал UI: {cfg['ui_edit_interval']:.2f} сек.; меню: {cfg.get('info_layout', key)}")
+    lines.extend(["", "──────────", *bot_file_identity_lines()])
     return wm_owner("\n".join(lines), 9)
 
 
@@ -23444,4 +23494,14 @@ def main():
     app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 if __name__ == "__main__":
     main()
-# bot_v99usd_transactions_forward_edit
+# BOT FILE: bot_v100_factory_defaults_file_identity_f9998.py
+# BOT VERSION: bot_v100_factory_defaults_file_identity_f9998
+# PURPOSE: Telegram finance bot — factory defaults / MEGA restore / file identity / F9998 autoclose
+# ─────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────
+# BOT FILE: bot_v100_factory_defaults_file_identity_f9998.py
+# BOT VERSION: bot_v100_factory_defaults_file_identity_f9998
+# END OF BOT FILE
+# ─────────────────────────────────────────────────────────────
