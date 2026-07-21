@@ -1,5 +1,5 @@
-# BOT FILE: bot_v101_mega_restore_forward_finance_durable.py
-# BOT VERSION: bot_v101_mega_restore_forward_finance_durable
+# BOT FILE: bot_v102_supergroup_migration_forward_retry.py
+# BOT VERSION: bot_v102_supergroup_migration_forward_retry
 # PURPOSE: Telegram finance bot — MEGA restore retry / durable forwarded finance / forward-index recovery
 # ─────────────────────────────────────────────────────────────
 import os
@@ -373,8 +373,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v101_mega_restore_forward_finance_durable"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v101_mega_restore_forward_finance_durable.py"
+VERSION = "bot_v102_supergroup_migration_forward_retry"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v102_supergroup_migration_forward_retry.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -13236,6 +13236,220 @@ def _cleanup_forward_storage_for_chat(chat_id: int):
 
 
 
+
+def _telegram_migrate_to_chat_id(err: Exception):
+    """Возвращает новый chat_id, когда Telegram сообщает migration group -> supergroup."""
+    try:
+        result_json = getattr(err, "result_json", None) or {}
+        params = result_json.get("parameters") or {}
+        value = params.get("migrate_to_chat_id")
+        if value is not None:
+            return int(value)
+    except Exception:
+        pass
+    text = str(err or "")
+    # Некоторые версии библиотеки не пробрасывают parameters, но текст/JSON может их содержать.
+    for pat in (
+        r'"migrate_to_chat_id"\s*:\s*(-?\d+)',
+        r"migrate_to_chat_id\s*[=:]\s*(-?\d+)",
+    ):
+        m = re.search(pat, text, re.I)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                pass
+    return None
+
+
+def _merge_chat_store_for_migration(old_id: int, new_id: int):
+    chats = data.setdefault("chats", {})
+    old_key, new_key = str(int(old_id)), str(int(new_id))
+    old_store = chats.get(old_key)
+    new_store = chats.get(new_key)
+    if not isinstance(old_store, dict):
+        return
+    if not isinstance(new_store, dict):
+        chats[new_key] = old_store
+    else:
+        # Новый store приоритетнее только там, где уже есть реальные данные.
+        for k, v in old_store.items():
+            if k not in new_store or new_store.get(k) in (None, "", [], {}):
+                new_store[k] = v
+        # Финансовые записи объединяем по id/source_msg_id, чтобы миграция не удаляла историю.
+        for list_key in ("records", "ars_records", "usd_records"):
+            old_rows = old_store.get(list_key) or []
+            new_rows = new_store.setdefault(list_key, [])
+            seen = {(r.get("id"), r.get("source_msg_id"), r.get("origin_msg_id")) for r in new_rows if isinstance(r, dict)}
+            for r in old_rows:
+                if not isinstance(r, dict):
+                    continue
+                sig = (r.get("id"), r.get("source_msg_id"), r.get("origin_msg_id"))
+                if sig not in seen:
+                    new_rows.append(r)
+                    seen.add(sig)
+        for daily_key in ("daily_records", "ars_daily_records", "usd_daily_records"):
+            od = old_store.get(daily_key) or {}
+            nd = new_store.setdefault(daily_key, {})
+            for day, rows in od.items():
+                dest = nd.setdefault(day, [])
+                seen = {(r.get("id"), r.get("source_msg_id"), r.get("origin_msg_id")) for r in dest if isinstance(r, dict)}
+                for r in rows or []:
+                    if not isinstance(r, dict):
+                        continue
+                    sig=(r.get("id"), r.get("source_msg_id"), r.get("origin_msg_id"))
+                    if sig not in seen:
+                        dest.append(r); seen.add(sig)
+    chats.pop(old_key, None)
+
+
+def migrate_chat_id_everywhere(old_chat_id: int, new_chat_id: int, reason: str = "telegram supergroup migration") -> bool:
+    """Атомарно переносит известный chat_id старой group на новый supergroup chat_id."""
+    old_chat_id, new_chat_id = int(old_chat_id), int(new_chat_id)
+    if old_chat_id == new_chat_id:
+        return True
+    try:
+        with data_lock:
+            _merge_chat_store_for_migration(old_chat_id, new_chat_id)
+
+            # forward_rules / forward_finance: переносим и source-ключ, и destination-ключи.
+            for root_key in ("forward_rules", "forward_finance"):
+                root = data.setdefault(root_key, {})
+                oldk, newk = str(old_chat_id), str(new_chat_id)
+                if oldk in root:
+                    src_payload = root.pop(oldk) or {}
+                    dst_payload = root.setdefault(newk, {})
+                    if isinstance(src_payload, dict) and isinstance(dst_payload, dict):
+                        dst_payload.update(src_payload)
+                    elif src_payload:
+                        root[newk] = src_payload
+                for src, dsts in list(root.items()):
+                    if not isinstance(dsts, dict):
+                        continue
+                    if oldk in dsts:
+                        val = dsts.pop(oldk)
+                        # Не затираем уже существующую более новую связь.
+                        if newk not in dsts:
+                            dsts[newk] = val
+
+            # owner known_chats.
+            try:
+                for _cid, st in (data.get("chats", {}) or {}).items():
+                    if not isinstance(st, dict):
+                        continue
+                    kc = st.get("known_chats")
+                    if isinstance(kc, dict) and str(old_chat_id) in kc:
+                        info = kc.pop(str(old_chat_id))
+                        kc.setdefault(str(new_chat_id), info)
+            except Exception:
+                pass
+
+            # Некоторые root-карты индексированы по chat_id.
+            for root_key in ("active_messages",):
+                root = data.get(root_key)
+                if isinstance(root, dict) and str(old_chat_id) in root:
+                    oldv = root.pop(str(old_chat_id))
+                    root.setdefault(str(new_chat_id), oldv)
+
+            # Реестр окон: host chat и target chat.
+            reg = data.get("open_window_registry") or {}
+            if isinstance(reg, dict):
+                for item in reg.values():
+                    if not isinstance(item, dict):
+                        continue
+                    if int(item.get("chat_id", 0) or 0) == old_chat_id:
+                        item["chat_id"] = new_chat_id
+                    params = item.get("params") or {}
+                    if isinstance(params, dict):
+                        for k in ("target_chat_id", "source_chat_id", "dst_chat_id"):
+                            try:
+                                if int(params.get(k, 0) or 0) == old_chat_id:
+                                    params[k] = new_chat_id
+                            except Exception:
+                                pass
+
+            # Финансовые metadata, которые запомнили source/destination chat id.
+            for _cid, st in (data.get("chats", {}) or {}).items():
+                if not isinstance(st, dict):
+                    continue
+                pools = [st.get("records") or [], st.get("ars_records") or [], st.get("usd_records") or []]
+                for daily_key in ("daily_records", "ars_daily_records", "usd_daily_records"):
+                    for rows in (st.get(daily_key) or {}).values():
+                        pools.append(rows or [])
+                for rows in pools:
+                    for rec in rows:
+                        if not isinstance(rec, dict):
+                            continue
+                        for k in ("forward_source_chat_id", "forward_dst_chat_id"):
+                            try:
+                                if int(rec.get(k, 0) or 0) == old_chat_id:
+                                    rec[k] = new_chat_id
+                            except Exception:
+                                pass
+
+            # finance_active_chats runtime + persisted list/set if present.
+            try:
+                if old_chat_id in finance_active_chats:
+                    finance_active_chats.discard(old_chat_id)
+                    finance_active_chats.add(new_chat_id)
+            except Exception:
+                pass
+            fac = data.get("finance_active_chats")
+            if isinstance(fac, list):
+                data["finance_active_chats"] = [new_chat_id if int(x)==old_chat_id else x for x in fac]
+
+            # forward_map runtime: source keys и destination pairs.
+            with forward_map_lock:
+                rebuilt = {}
+                for (src, mid), pairs in list(forward_map.items()):
+                    nsrc = new_chat_id if int(src) == old_chat_id else int(src)
+                    npairs = []
+                    for dcid, dmid in pairs:
+                        ndcid = new_chat_id if int(dcid) == old_chat_id else int(dcid)
+                        pair = (ndcid, int(dmid))
+                        if pair not in npairs:
+                            npairs.append(pair)
+                    key = (nsrc, int(mid))
+                    rebuilt.setdefault(key, [])
+                    for pair in npairs:
+                        if pair not in rebuilt[key]:
+                            rebuilt[key].append(pair)
+                forward_map.clear(); forward_map.update(rebuilt)
+                _persist_forward_index_in_data(data)
+
+            # Сохраняем миграцию синхронно: следующий update уже должен видеть новый ID.
+            save_data(data, full=True)
+            persist_forward_rules_to_owner()
+            try:
+                schedule_config_backup_for_chats(new_chat_id, delay=0.1)
+                if OWNER_ID:
+                    schedule_config_backup_for_chats(int(OWNER_ID), delay=0.1)
+            except Exception:
+                pass
+            try:
+                schedule_delta_backup(new_chat_id, delay=0.5, reason="chat_id_migration")
+            except Exception:
+                pass
+
+        log_info(f"[CHAT MIGRATION] {old_chat_id} -> {new_chat_id}: {reason}")
+        try:
+            bot_journal("chat_id_migration", new_chat_id, f"{old_chat_id} -> {new_chat_id}; {reason}")
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        log_error(f"migrate_chat_id_everywhere({old_chat_id}->{new_chat_id}): {e}")
+        return False
+
+
+def _handle_supergroup_migration_error(old_chat_id: int, err: Exception):
+    new_id = _telegram_migrate_to_chat_id(err)
+    if new_id is None:
+        return None
+    if migrate_chat_id_everywhere(int(old_chat_id), int(new_id), reason=str(err)[:300]):
+        return int(new_id)
+    return None
+
 def _notify_forward_failure(source_chat_id: int, msg_id: int, dst_chat_id: int, err: Exception):
     if _is_bot_removed_error(err):
         set_chat_bot_removed(dst_chat_id, True, str(err)[:240])
@@ -13308,7 +13522,7 @@ def _fallback_send_single(dst_chat_id: int, msg, reply_to_message_id=None):
     raise RuntimeError(f"Unsupported fallback content_type={ct}")
 
 
-def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool):
+def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool, _migration_retry: bool = False):
     trace_chat_id = int(source_chat_id) if is_process_trace_enabled(source_chat_id) else (int(dst_chat_id) if is_process_trace_enabled(dst_chat_id) else int(source_chat_id))
     trace = ProcessTrace(trace_chat_id, f"Пересылка: {get_chat_display_name(source_chat_id)} → {get_chat_display_name(dst_chat_id)}").start()
     trace.step(f"получено сообщение {getattr(msg, 'message_id', '?')} type={getattr(msg, 'content_type', '?')}")
@@ -13373,6 +13587,15 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             dst_msg_id = sent_msg.message_id
             trace.step(f"fallback-доставка успешна message_id={dst_msg_id}")
         except Exception as e_send:
+            # Telegram group -> supergroup: переносим ID во всех настройках и повторяем ровно один раз.
+            migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_send)
+            if migrated_id is not None:
+                trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
+                try:
+                    trace.finish("старый chat_id заменён на supergroup")
+                except Exception:
+                    pass
+                return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
             trace.fail(e_send)
             _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e_send)
             return None
@@ -13468,6 +13691,12 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                     sent_group = _tg_call_retry(bot.send_media_group, dst_chat_id, media, purpose="forward_media_group")
                 sent_ids = [m.message_id for m in sent_group]
             except Exception as e:
+                migrated_id = _handle_supergroup_migration_error(dst_chat_id, e)
+                if migrated_id is not None:
+                    log_info(f"[MEDIA GROUP MIGRATION RETRY] {dst_chat_id} -> {migrated_id}")
+                    for src_msg in messages:
+                        _forward_single_to_target(source_chat_id, src_msg, migrated_id, finance_enabled, _migration_retry=True)
+                    continue
                 log_error(f"_flush_media_group_forward send_media_group failed {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
 
         if len(sent_ids) == len(messages):
@@ -23641,3 +23870,7 @@ if __name__ == "__main__":
 # BOT VERSION: bot_v101_mega_restore_forward_finance_durable
 # END OF BOT FILE
 # ─────────────────────────────────────────────────────────────
+
+
+# BOT FILE: bot_v102_supergroup_migration_forward_retry.py
+# BOT VERSION: bot_v102_supergroup_migration_forward_retry
