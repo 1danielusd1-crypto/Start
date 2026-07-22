@@ -1,6 +1,6 @@
-# BOT FILE: bot_v105_mega_durable_tasks.py
-# BOT VERSION: bot_v105_mega_durable_tasks
-# PURPOSE: Telegram finance bot — MEGA-persisted critical task witness + durable dispatcher + unified timers
+# BOT FILE: bot_v107_all_forwarding_durable.py
+# BOT VERSION: bot_v107_all_forwarding_durable
+# PURPOSE: Telegram finance bot — deploy-safe MEGA task witness for albums/forward/finance/secret + durable dispatcher
 # ─────────────────────────────────────────────────────────────
 import os
 import io
@@ -561,8 +561,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v105_mega_durable_tasks"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v105_mega_durable_tasks.py"
+VERSION = "bot_v107_all_forwarding_durable"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v107_all_forwarding_durable.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -5906,13 +5906,233 @@ def mark_durable_update_processed(update_id, chat_id=None, update_type: str = "o
 
 
 
-def wait_durable_subtasks(chat_id, timeout: float = 20.0) -> bool:
-    """Drain state-changing child queues already spawned by the current content update.
+def _durable_raw_content_type(raw: dict | None) -> str:
+    """Best-effort Telegram content classifier for durable forwarding diagnostics.
 
-    Forwarding is the important one: the message handler intentionally delegates it to
-    FORWARD_TASK_POOL, so declaring the MEGA task done before that worker finishes would
-    recreate the exact deploy-loss window v105 is meant to close.
+    Raw Bot API updates do not carry a `content_type` field.  We only use this label
+    for task metadata/logging; delivery itself is always attempted by source message_id.
     """
+    if not isinstance(raw, dict):
+        return "unknown"
+    for key in (
+        "text", "photo", "video", "animation", "audio", "voice", "video_note",
+        "document", "sticker", "location", "venue", "contact", "dice", "poll",
+        "game", "story", "paid_media", "invoice", "web_app_data"
+    ):
+        if key in raw and raw.get(key) is not None:
+            return key
+    # Service/novel Bot API payloads are still witnessed; copy/forward by message_id
+    # gets the first chance and Telegram itself decides whether the type is forwardable.
+    ignored = {
+        "message_id", "message_thread_id", "direct_messages_topic", "from", "sender_chat",
+        "sender_boost_count", "sender_business_bot", "date", "business_connection_id",
+        "chat", "forward_origin", "is_topic_message", "is_automatic_forward",
+        "reply_to_message", "external_reply", "quote", "reply_to_story", "reply_to_checklist_task_id",
+        "via_bot", "edit_date", "has_protected_content", "is_from_offline", "media_group_id",
+        "author_signature", "paid_star_count", "effect_id", "show_caption_above_media",
+        "has_media_spoiler", "reply_markup"
+    }
+    for key in raw.keys():
+        if key not in ignored:
+            return str(key)
+    return "unknown"
+
+
+def _durable_payload_message(payload: dict):
+    """Return (raw_message_dict, source_chat_id, source_msg_id, media_group_id)."""
+    if not isinstance(payload, dict):
+        return None, None, None, None
+    for name in ("message", "edited_message", "channel_post", "edited_channel_post"):
+        msg = payload.get(name)
+        if not isinstance(msg, dict):
+            continue
+        try:
+            chat_id = int(((msg.get("chat") or {}).get("id")))
+        except Exception:
+            chat_id = None
+        try:
+            msg_id = int(msg.get("message_id") or 0) or None
+        except Exception:
+            msg_id = None
+        group_id = str(msg.get("media_group_id") or "").strip() or None
+        return msg, chat_id, msg_id, group_id
+    return None, None, None, None
+
+
+def _durable_forward_targets(source_chat_id: int | None) -> list[tuple]:
+    if source_chat_id is None:
+        return []
+    try:
+        return list(resolve_forward_targets(int(source_chat_id)) or [])
+    except Exception as e:
+        log_error(f"DURABLE resolve targets {source_chat_id}: {e}")
+        return []
+
+
+def _durable_forward_effect_complete(payload: dict) -> bool:
+    """True only when every configured forwarding direction has a persisted link.
+
+    For finance-enabled directions, if the source carries a numeric finance text/caption,
+    the destination finance record must exist too. This prevents a deploy from turning
+    a Telegram copy into a falsely-completed task while finance sync is still missing.
+    """
+    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
+    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
+        return True
+    targets = _durable_forward_targets(source_chat_id)
+    if not targets:
+        return True
+    links = {}
+    try:
+        for dst_chat_id, dst_msg_id in get_forward_links(source_chat_id, source_msg_id):
+            links[int(dst_chat_id)] = int(dst_msg_id)
+    except Exception:
+        links = {}
+    text = str(raw.get("text") or raw.get("caption") or "").strip()
+    needs_finance_text = bool(text and text_has_any_digit(text))
+    for dst_chat_id, _mode, finance_enabled in targets:
+        dst = int(dst_chat_id)
+        dst_msg_id = links.get(dst)
+        if not dst_msg_id:
+            return False
+        if finance_enabled and needs_finance_text:
+            try:
+                rec = find_record_by_message_id(dst, dst_msg_id)
+                if not isinstance(rec, dict):
+                    return False
+                if int(rec.get("forward_source_chat_id") or source_chat_id) != int(source_chat_id):
+                    return False
+                if int(rec.get("forward_source_msg_id") or source_msg_id) != int(source_msg_id):
+                    return False
+            except Exception:
+                return False
+        # Bot-created copies do not generate incoming updates. In total-secret destinations
+        # the forwarding task itself must prove that save_secret_bot_copy() ran before done.
+        try:
+            if is_total_secret_mode(dst):
+                secret_ok = any(
+                    isinstance(r, dict)
+                    and int(r.get("source_msg_id") or 0) == int(dst_msg_id)
+                    and int(r.get("forward_source_msg_id") or source_msg_id) == int(source_msg_id)
+                    for r in _secret_records(dst)
+                )
+                if not secret_ok:
+                    return False
+        except Exception:
+            return False
+    return True
+
+
+def _durable_secret_effect_complete(payload: dict) -> bool:
+    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
+    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
+        return True
+    text = str(raw.get("text") or raw.get("caption") or "")
+    secret_expected = False
+    try:
+        secret_expected = bool(is_total_secret_mode(source_chat_id))
+    except Exception:
+        pass
+    if not secret_expected:
+        try:
+            marked, _cleaned = _extract_secret_codeword(text)
+            secret_expected = bool(marked)
+        except Exception:
+            secret_expected = False
+    if not secret_expected:
+        return True
+    try:
+        return any(int(r.get("source_msg_id") or 0) == int(source_msg_id) for r in _secret_records(source_chat_id) if isinstance(r, dict))
+    except Exception:
+        return False
+
+
+def _durable_direct_finance_effect_complete(payload: dict) -> bool:
+    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
+    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
+        return True
+    # Forwarding has its own destination-finance verification above.
+    try:
+        if not is_finance_mode(source_chat_id):
+            return True
+    except Exception:
+        return True
+    text = str(raw.get("text") or "").strip()
+    if not text or not text_has_any_digit(text):
+        return True
+    try:
+        return find_record_by_message_id(source_chat_id, source_msg_id) is not None
+    except Exception:
+        return False
+
+
+def _durable_media_group_in_memory(payload: dict) -> bool:
+    _raw, source_chat_id, _source_msg_id, group_id = _durable_payload_message(payload)
+    if source_chat_id is None or not group_id:
+        return False
+    key = (int(source_chat_id), str(group_id))
+    try:
+        if key in _media_group_cache or key in _media_group_timers:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _durable_payload_to_message(payload: dict):
+    """Recreate the Telegram Message object from the persisted raw update."""
+    try:
+        update = telebot.types.Update.de_json(payload)
+        for attr in ("message", "edited_message", "channel_post", "edited_channel_post"):
+            msg = getattr(update, attr, None)
+            if msg is not None:
+                return msg
+    except Exception as e:
+        log_error(f"DURABLE payload->message: {e}")
+    return None
+
+
+def _repair_missing_durable_forward(payload: dict) -> bool:
+    """Best-effort repair of missing forwarding directions without duplicating delivered ones.
+
+    Albums are normally sent together by the 0.8s collector. If that collector vanished because
+    Render deployed, each persisted album part can be resent individually to only the missing
+    destinations. The important invariant is no lost message; already-linked destinations are skipped.
+    """
+    raw, source_chat_id, source_msg_id, group_id = _durable_payload_message(payload)
+    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
+        return True
+    targets = _durable_forward_targets(source_chat_id)
+    if not targets:
+        return True
+    # While the normal album collector still exists, let it preserve the album grouping.
+    if group_id and _durable_media_group_in_memory(payload):
+        return False
+    links = {}
+    try:
+        links = {int(dst): int(mid) for dst, mid in get_forward_links(source_chat_id, source_msg_id)}
+    except Exception:
+        links = {}
+    missing = [(int(dst), mode, bool(fin)) for dst, mode, fin in targets if int(dst) not in links]
+    if not missing:
+        return True
+    msg = _durable_payload_to_message(payload)
+    if msg is None:
+        return False
+    all_ok = True
+    for dst_chat_id, _mode, finance_enabled in missing:
+        try:
+            result = _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
+            if not result:
+                all_ok = False
+        except Exception as e:
+            all_ok = False
+            log_error(f"DURABLE FORWARD REPAIR {source_chat_id}:{source_msg_id}->{dst_chat_id}: {e}")
+    return bool(all_ok and _durable_forward_effect_complete(payload))
+
+
+def wait_durable_subtasks(chat_id, timeout: float = 20.0) -> bool:
+    """Drain state-changing child queues already spawned by the current content update."""
     if chat_id is None:
         return True
     key = int(chat_id)
@@ -5927,42 +6147,88 @@ def wait_durable_subtasks(chat_id, timeout: float = 20.0) -> bool:
     return True
 
 
-def finalize_durable_task_after_business(update_id, chat_id, update_type: str = "other") -> bool:
-    """Business is already complete: persist marker+all changes in one critical delta, then mark task done."""
+def finalize_durable_task_after_business(update_id, chat_id, update_type: str = "other", payload: dict | None = None) -> bool:
+    """Commit only after child queues and externally-visible effects are complete.
+
+    v107 deliberately does NOT block the first album part waiting for the rest of the album:
+    if media_group delivery is not complete yet, the task remains `running` in MEGA and a
+    finalize retry checks it later. This lets subsequent album parts enter the per-chat queue.
+    """
     key = _mega_task_id(update_id)
     if not wait_durable_subtasks(chat_id, timeout=20.0):
         return False
+    if isinstance(payload, dict):
+        _raw, _src, _mid, group_id = _durable_payload_message(payload)
+        if not _durable_forward_effect_complete(payload):
+            if group_id:
+                return False
+            # Non-album forwarding normally completed synchronously through its child pool.
+            # One immediate targeted repair closes transient queue/delivery gaps.
+            _repair_missing_durable_forward(payload)
+            if not _durable_forward_effect_complete(payload):
+                return False
+        if not _durable_direct_finance_effect_complete(payload):
+            return False
+        if not _durable_secret_effect_complete(payload):
+            return False
     try:
         mark_durable_update_processed(key, chat_id, update_type)
     except Exception as e:
         log_error(f"DURABLE MARKER FAILED update={key}: {e}")
         return False
     try:
+        critical_chats = set()
         if chat_id is None:
-            # Persist root marker via a full delta pass over owner/current chat when possible.
-            cid = int(OWNER_ID) if OWNER_ID else None
+            if OWNER_ID:
+                critical_chats.add(int(OWNER_ID))
         else:
-            cid = int(chat_id)
-        if cid is None or not persist_critical_delta_now(cid):
-            log_error(f"DURABLE CRITICAL DELTA FAILED update={key} chat={chat_id}")
+            critical_chats.add(int(chat_id))
+        # Forwarding may change destination finance and destination secret data as well.
+        # Persist those destination chats before the source task is allowed to become done.
+        if isinstance(payload, dict):
+            _raw, source_chat_id, _source_msg_id, _group_id = _durable_payload_message(payload)
+            for dst_chat_id, _mode, _finance_enabled in _durable_forward_targets(source_chat_id):
+                critical_chats.add(int(dst_chat_id))
+        if not critical_chats:
+            log_error(f"DURABLE CRITICAL DELTA FAILED update={key}: no chat scope")
             return False
+        for cid in sorted(critical_chats):
+            if not persist_critical_delta_now(cid):
+                log_error(f"DURABLE CRITICAL DELTA FAILED update={key} chat={cid}")
+                return False
     except Exception as e:
         log_error(f"DURABLE CRITICAL DELTA ERROR update={key}: {e}")
         return False
     return mega_task_finish(key, True)
 
 
-def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = "other", delay: float = 5.0):
+def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = "other", delay: float = 5.0, payload: dict | None = None):
     key = _mega_task_id(update_id)
+    payload_copy = _delta_json_clone(payload or {}) if isinstance(payload, dict) else None
+    attempts = {"n": 0}
     def _job():
         if mega_task_known_state(key) == "done":
             return
-        if not finalize_durable_task_after_business(key, chat_id, update_type):
-            # Keep retry bounded in frequency; the task remains running in MEGA and will also be
-            # checked after deploy. Re-scheduling is harmless because the business is NOT rerun here.
+        attempts["n"] += 1
+        # After the normal album collector had enough time, repair only still-missing directions.
+        if payload_copy and attempts["n"] >= 2 and not _durable_forward_effect_complete(payload_copy):
+            try:
+                _repair_missing_durable_forward(payload_copy)
+            except Exception as e:
+                log_error(f"DURABLE FORWARD REPAIR RETRY update={key}: {e}")
+        if not finalize_durable_task_after_business(key, chat_id, update_type, payload=payload_copy):
+            if attempts["n"] >= 12:
+                reason = "durable effects incomplete after 12 finalize/repair attempts"
+                mega_task_finish(key, False, reason)
+                try:
+                    if OWNER_ID:
+                        bot.send_message(int(OWNER_ID), f"⚠️ Задача {key} сохранена в MEGA/failed: {reason}")
+                except Exception:
+                    pass
+                return
             DELAYED_SCHEDULER.schedule(
                 f"mega-task-finalize:{key}",
-                15.0,
+                5.0 if payload_copy else 15.0,
                 _job,
             )
     DELAYED_SCHEDULER.cancel(f"mega-task-finalize:{key}")
@@ -5985,10 +6251,10 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
         msg = payload.get(key)
         if not isinstance(msg, dict):
             continue
-        if msg.get("media_group_id"):
-            # Albums have their own delayed collector; keep their existing Telegram retry semantics
-            # rather than falsely marking one album part done before the collector fires.
-            return False, f"{key}:media_group_webhook_retry"
+        media_group_id = str(msg.get("media_group_id") or "").strip()
+        # v106: albums are NOT allowed to live only in the 0.8s RAM collector.
+        # Classification continues below; when the chat has forwarding/finance/secret/wait state,
+        # each album part gets its own MEGA task before Telegram receives 2xx.
         text = str(msg.get("text") or msg.get("caption") or "").strip()
         first = text.split(maxsplit=1)[0].lower() if text else ""
         read_only_commands = {
@@ -6029,22 +6295,25 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
                     for k, v in (store or {}).items()
                 )
                 if waiting:
-                    return True, f"{key}:input_wait"
+                    return True, f"{key}:input_wait" + (":media_group" if media_group_id else "")
             except Exception:
                 pass
             try:
                 if is_finance_mode(chat_id):
-                    return True, f"{key}:finance"
+                    return True, f"{key}:finance" + (":media_group" if media_group_id else "")
             except Exception:
                 pass
             try:
                 if resolve_forward_targets(chat_id):
-                    return True, f"{key}:forward"
+                    ctype = _durable_raw_content_type(msg)
+                    # v107: every content-bearing update in a forwarding source gets a MEGA witness
+                    # before execution, irrespective of photo/video/audio/location/etc.
+                    return True, f"{key}:forward_all:{ctype}" + (":media_group" if media_group_id else "")
             except Exception:
                 pass
             try:
                 if is_total_secret_mode(chat_id):
-                    return True, f"{key}:secret"
+                    return True, f"{key}:secret" + (":media_group" if media_group_id else "")
             except Exception:
                 pass
 
@@ -6078,7 +6347,7 @@ def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type
             log_error(f"MEGA TASK context capture update={key}: {e}")
     return {
         "kind": "telegram_bot_durable_task",
-        "schema_version": 2,
+        "schema_version": 3,
         "bot_version": VERSION,
         "task_id": key,
         "update_id": int(update_id) if str(update_id).lstrip("-").isdigit() else str(update_id),
@@ -6086,6 +6355,15 @@ def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type
         "chat_id": chat_id,
         "update_type": str(update_type or "other"),
         "reason": str(reason or "critical_update"),
+        "source_message_id": (_durable_payload_message(payload)[2] if isinstance(payload, dict) else None),
+        "media_group_id": (_durable_payload_message(payload)[3] if isinstance(payload, dict) else None),
+        "content_type": _durable_raw_content_type(_durable_payload_message(payload)[0] if isinstance(payload, dict) else None),
+        # Diagnostic snapshot: lets us see exactly which directions existed when Telegram update arrived.
+        # Runtime completion still validates current persisted links, so old task files stay compatible.
+        "forward_targets": [
+            {"dst_chat_id": int(dst), "mode": str(mode), "finance_enabled": bool(fin)}
+            for dst, mode, fin in _durable_forward_targets(_durable_payload_message(payload)[1] if isinstance(payload, dict) else None)
+        ],
         "context": context,
         "payload": _delta_json_clone(payload or {}),
     }
@@ -6338,35 +6616,37 @@ def mega_task_refresh_registry() -> dict:
 
 
 def _mega_task_effect_exists(payload: dict) -> bool:
-    """Conservative duplicate guard for the most dangerous case: finance/forward message replay."""
+    """Conservative duplicate guard used for recovered `running` tasks.
+
+    v107 requires all current forwarding directions (and forwarded-finance records where needed),
+    not merely one old finance/link record. Secret and direct-finance effects are checked too.
+    """
     try:
-        msg = None
-        for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
-            if isinstance((payload or {}).get(key), dict):
-                msg = payload[key]
-                break
-        if not isinstance(msg, dict):
+        raw, source_chat, source_msg, _group_id = _durable_payload_message(payload)
+        if not isinstance(raw, dict) or source_chat is None or source_msg is None:
             return False
-        source_chat = int(((msg.get("chat") or {}).get("id")))
-        source_msg = int(msg.get("message_id") or 0)
-        if not source_msg:
-            return False
-        for cid_s, store in ((data or {}).get("chats", {}) or {}).items():
-            if not isinstance(store, dict):
-                continue
-            for rec in (store.get("records", []) or []):
-                if not isinstance(rec, dict):
-                    continue
-                if int(rec.get("forward_source_chat_id") or 0) == source_chat and int(rec.get("forward_source_msg_id") or 0) == source_msg:
-                    return True
-                # direct finance message in its own chat
-                try:
-                    cid = int(cid_s)
-                except Exception:
-                    cid = 0
-                if cid == source_chat and int(rec.get("source_msg_id") or 0) == source_msg:
-                    return True
-        return False
+        targets = _durable_forward_targets(source_chat)
+        expected_any = False
+        if targets:
+            expected_any = True
+            if not _durable_forward_effect_complete(payload):
+                return False
+        try:
+            if is_total_secret_mode(source_chat):
+                expected_any = True
+                if not _durable_secret_effect_complete(payload):
+                    return False
+        except Exception:
+            pass
+        text = str(raw.get("text") or raw.get("caption") or "").strip()
+        try:
+            if is_finance_mode(source_chat) and text and text_has_any_digit(text):
+                expected_any = True
+                if not _durable_direct_finance_effect_complete(payload):
+                    return False
+        except Exception:
+            pass
+        return bool(expected_any)
     except Exception:
         return False
 
@@ -6412,16 +6692,16 @@ def _mega_task_recover_one(update_id, state: str, remote_path: str):
         # Older/in-between running tasks may predate the marker. Finance/forward records have
         # enough evidence to prove the effect exists; persist a marker before declaring done.
         if state == "running" and _mega_task_effect_exists(payload):
-            if finalize_durable_task_after_business(key, chat_id, update_type):
+            if finalize_durable_task_after_business(key, chat_id, update_type, payload=payload):
                 with _MEGA_TASK_LOCK:
                     _mega_task_counters["skipped_done"] += 1
             else:
-                schedule_durable_task_finalize_retry(key, chat_id, update_type, 5.0)
+                schedule_durable_task_finalize_retry(key, chat_id, update_type, 1.5 if _durable_payload_message(payload)[3] else 5.0, payload=payload)
             return
         _execute_telegram_payload(payload, key, chat_id, update_type)
-        finalized = finalize_durable_task_after_business(key, chat_id, update_type)
+        finalized = finalize_durable_task_after_business(key, chat_id, update_type, payload=payload)
         if not finalized:
-            schedule_durable_task_finalize_retry(key, chat_id, update_type, 5.0)
+            schedule_durable_task_finalize_retry(key, chat_id, update_type, 1.5 if _durable_payload_message(payload)[3] else 5.0, payload=payload)
         with _MEGA_TASK_LOCK:
             _mega_task_counters["recovered"] += 1
         bot_journal("mega_task_recovered", chat_id, f"update_id={key} state={state} finalized={finalized}")
@@ -6473,6 +6753,27 @@ def mega_task_requeue_failed(limit: int = 20) -> int:
         schedule_mega_task_recovery(0.3)
     return moved
 
+
+
+def schedule_restored_secret_media_recovery(delay: float = 3.0):
+    """After deploy, resume secret-media uploads whose record survived but MEGA media did not."""
+    def _job():
+        try:
+            for cid in secret_chats():
+                try:
+                    pending_media = any(
+                        isinstance(r, dict) and r.get("file_id") and not r.get("mega_media_path")
+                        for r in _secret_records(cid)
+                    )
+                    if pending_media:
+                        if not BACKUP_TASK_POOL.submit(f"secret-media-recover:{cid}", upload_chat_secrets_to_mega, cid):
+                            schedule_secret_mega_upload(cid, BACKUP_BUSY_RETRY_SECONDS)
+                except Exception as e:
+                    log_error(f"SECRET MEDIA RECOVERY chat={cid}: {e}")
+        except Exception as e:
+            log_error(f"schedule_restored_secret_media_recovery: {e}")
+    DELAYED_SCHEDULER.cancel("secret-media-startup-recovery")
+    DELAYED_SCHEDULER.schedule("secret-media-startup-recovery", max(0.5, float(delay)), _job)
 
 def current_month_key() -> str:
     return now_local().strftime("%Y-%m")
@@ -12560,7 +12861,9 @@ def cmd_forward_copy_edit(msg):
         "text", "photo", "video", "animation",
         "audio", "voice", "video_note",
         "sticker", "location", "venue", "contact",
-        "dice", "poll"
+        "dice", "poll",
+        # v107: additional Telegram content which can still be copied/forwarded by message_id.
+        "game", "story", "paid_media", "invoice"
     ]
 )
 def on_any_message(msg):
@@ -14694,15 +14997,34 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, reply_markup=pre_copy_markup, purpose="forward_copy_message")
         dst_msg_id = sent.message_id
         trace.step(f"доставлено в целевой чат message_id={dst_msg_id}")
-    except Exception:
-        trace.step("copy_message не сработал — пробует fallback send")
+    except Exception as e_copy:
+        # If Telegram changed a basic group into a supergroup, do not lose the migration hint
+        # behind a later unsupported manual fallback.
+        migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_copy)
+        if migrated_id is not None:
+            trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
+            try:
+                trace.finish("старый chat_id заменён на supergroup")
+            except Exception:
+                pass
+            return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
+
+        # v107: forward_message is a broad Bot API fallback for content classes for which
+        # copy_message or our hand-written send_* fallback may not exist yet.  It may show
+        # Telegram's original-forward attribution, but it is preferable to silently losing data.
+        trace.step("copy_message не сработал — пробует Telegram forward_message")
         try:
-            sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=reply_to_target_id)
-            dst_msg_id = sent_msg.message_id
-            trace.step(f"fallback-доставка успешна message_id={dst_msg_id}")
-        except Exception as e_send:
-            # Telegram group -> supergroup: переносим ID во всех настройках и повторяем ровно один раз.
-            migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_send)
+            sent_forward = _tg_call_retry(
+                bot.forward_message,
+                dst_chat_id,
+                source_chat_id,
+                msg.message_id,
+                purpose="forward_message_fallback"
+            )
+            dst_msg_id = sent_forward.message_id
+            trace.step(f"forward_message-доставка успешна message_id={dst_msg_id}")
+        except Exception as e_forward:
+            migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_forward)
             if migrated_id is not None:
                 trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
                 try:
@@ -14710,9 +15032,27 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                 except Exception:
                     pass
                 return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
-            trace.fail(e_send)
-            _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e_send)
-            return None
+
+            trace.step("forward_message не сработал — пробует ручной send_* fallback")
+            try:
+                sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=reply_to_target_id)
+                dst_msg_id = sent_msg.message_id
+                trace.step(f"ручная fallback-доставка успешна message_id={dst_msg_id}")
+            except Exception as e_send:
+                migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_send)
+                if migrated_id is not None:
+                    trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
+                    try:
+                        trace.finish("старый chat_id заменён на supergroup")
+                    except Exception:
+                        pass
+                    return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
+                # Preserve the most useful Telegram error in diagnostics when manual fallback merely
+                # says "unsupported content_type".
+                final_error = e_forward if "Unsupported fallback content_type" in str(e_send) else e_send
+                trace.fail(final_error)
+                _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, final_error)
+                return None
 
     trace.step("сохраняет связь оригинал → копия")
     _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
@@ -18208,7 +18548,7 @@ def build_owner_instruction_text() -> str:
         "📤 Пересылка\n"
         "Меню пересылки задаёт связанные чаты и финансовую обработку копий. Режим «как у владельца» создаёт отдельный owner scope: настройки такого владельца сохраняются независимо.\n\n"
         "💾 Сохранение\n"
-        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup. В v105 содержательные message/edited_message сначала фиксируются маленьким task-файлом в MEGA, затем выполняются; перед статусом done итог и idempotency-marker синхронно попадают в delta. Callback-кнопки остаются быстрыми и защищаются Telegram webhook retry без лишней MEGA-задержки."
+        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup. В v106 содержательные message/edited_message, включая части Telegram-альбомов, сначала фиксируются маленьким task-файлом в MEGA. Задача пересылки не получает done, пока для исходного сообщения не подтверждены все требуемые направления и, при включённом финучёте, финансовая запись назначения. При deploy pending/running поднимаются из MEGA; потерянный RAM-коллектор альбома ремонтируется по сохранённому update. Callback-кнопки навигации остаются быстрыми."
     )
 
 def build_owner_instruction_keyboard(chat_id: int):
@@ -24446,7 +24786,9 @@ def keep_alive_task():
 @bot.channel_post_handler(content_types=[
     "text", "photo", "video", "animation", "audio",
     "voice", "video_note", "document",
-    "sticker", "location", "venue", "contact", "dice", "poll"
+    "sticker", "location", "venue", "contact", "dice", "poll",
+    # v107: keep forwarding coverage aligned with ordinary messages.
+    "game", "story", "paid_media", "invoice"
 ])
 def on_any_channel_post(msg):
     try:
@@ -25078,12 +25420,12 @@ def telegram_webhook():
                     _execute_telegram_payload(payload, update_id, update_chat_id, update_type)
                     success = True
                     if durable_cloud:
-                        finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type)
+                        finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type, payload=payload)
                         if not finalized:
                             # Бизнес уже выполнен, но облачный commit ещё не подтверждён.
                             # Не повторяем бизнес; отдельный retry только допишет marker/delta и running->done.
-                            schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 5.0)
-                            log_error(f"MEGA TASK FINALIZE DEFERRED update={update_id}; business already completed")
+                            schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 1.5 if _durable_payload_message(payload)[3] else 5.0, payload=payload)
+                            log_error(f"MEGA TASK FINALIZE DEFERRED update={update_id}; durable effects still pending")
                 except Exception as exc:
                     error_text = str(exc)
                     if durable_cloud and durable_started:
@@ -25249,6 +25591,9 @@ def main():
     set_webhook()
     if mega_tasks_active():
         schedule_mega_task_recovery(MEGA_TASK_RECOVERY_DELAY_SECONDS)
+    # v106: restored secret records may still point only to Telegram file_id if deploy happened
+    # before the old 45s secret-media debounce. Resume those uploads automatically.
+    schedule_restored_secret_media_recovery(3.0)
     start_keep_alive_thread()
     owner_id = None
     if OWNER_ID:
