@@ -1,6 +1,6 @@
-# BOT FILE: bot_v102_supergroup_migration_forward_retry.py
-# BOT VERSION: bot_v102_supergroup_migration_forward_retry
-# PURPOSE: Telegram finance bot — MEGA restore retry / durable forwarded finance / forward-index recovery
+# BOT FILE: bot_v103_compact_mega_delta_safe.py
+# BOT VERSION: bot_v103_compact_mega_delta_safe
+# PURPOSE: Telegram finance bot — compact safe MEGA deltas without changing other bot functions
 # ─────────────────────────────────────────────────────────────
 import os
 import io
@@ -373,8 +373,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v102_supergroup_migration_forward_retry"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v102_supergroup_migration_forward_retry.py"
+VERSION = "bot_v103_compact_mega_delta_safe"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v103_compact_mega_delta_safe.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -5690,8 +5690,22 @@ _DELTA_VOLATILE_CHAT_KEYS = {
     "info_msg_id", "command_window_id", "total_msg_id", "balance_panel_id", "secret_wait",
     "main_window_msg_count", "balance_panel_msg_count", "current_view_day",
 }
-_DELTA_VOLATILE_ROOT_KEYS = {"chats", "records", "active_messages", "bot_errors", "_state_meta"}
+# Производные/дублирующие массивы никогда не должны попадать в delta целиком.
+# Источник истины для финансовых изменений: chat_changes.upserts/deletes.
+_DELTA_DERIVED_CHAT_KEYS = {
+    "records", "daily_records", "daily_records_by_date",
+    "ars_records", "ars_daily_records", "ars_daily_records_by_date",
+    "usd_records", "usd_daily_records", "usd_daily_records_by_date",
+}
+# Временные UI-окна и тяжёлые служебные снимки не нужны для аварийного восстановления финансов.
+_DELTA_VOLATILE_ROOT_KEYS = {
+    "chats", "records", "active_messages", "bot_errors", "_state_meta",
+    "open_window_registry",
+}
 _DELTA_ROOT_MAP_KEYS = {"forward_index", "forward_rules", "forward_finance", "finance_active_chats", "_global_settings", "csv_meta", "chat_backup_meta", "backup_flags"}
+_DELTA_GLOBAL_SETTINGS_EXCLUDE = {
+    "version_mode_snapshots",  # хранится в полном global/config backup, а не в каждой финансовой delta
+}
 
 
 def mega_delta_remote_root() -> str:
@@ -5726,20 +5740,30 @@ def _delta_record_key(rec: dict) -> str:
 
 
 def _delta_chat_meta(store: dict) -> dict:
+    """Только компактные метаданные чата; финансовые массивы идут через upserts/deletes."""
     return {
         str(k): _delta_json_clone(v)
         for k, v in (store or {}).items()
-        if k not in _DELTA_VOLATILE_CHAT_KEYS and k not in {"records", "daily_records", "daily_records_by_date"}
+        if k not in _DELTA_VOLATILE_CHAT_KEYS
+        and k not in _DELTA_DERIVED_CHAT_KEYS
     }
 
 
 def _delta_root_patch(payload: dict) -> dict:
-    return {
+    """Компактный root для delta без UI-реестра и архивов профилей версий."""
+    out = {
         str(k): _delta_json_clone(v)
         for k, v in (payload or {}).items()
         if k not in _DELTA_VOLATILE_ROOT_KEYS
         and k not in {"_universal_backup", "_backup_meta", "_runtime_snapshot", "_delta_restore_meta"}
     }
+    gs = out.get("_global_settings")
+    if isinstance(gs, dict):
+        out["_global_settings"] = {
+            str(k): v for k, v in gs.items()
+            if str(k) not in _DELTA_GLOBAL_SETTINGS_EXCLUDE
+        }
+    return out
 
 
 def _delta_root_signature_state(root: dict) -> dict:
@@ -5917,6 +5941,16 @@ def _commit_delta_baseline(baseline: dict):
 def _delta_upload_payload(payload: dict) -> tuple[bool, str]:
     if not payload or not mega_is_configured():
         return False, ""
+    # Защита от регрессии: обычная delta не должна внезапно содержать мегабайты истории.
+    # 512 КБ оставляет большой запас для массовых реальных изменений, но блокирует случайный full-in-delta.
+    try:
+        encoded_size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+        if encoded_size > 512 * 1024:
+            log_error(f"[MEGA DELTA BLOCKED] oversized compact delta: {encoded_size} bytes; full snapshot scheduled")
+            _mark_global_snapshot_pending()
+            return False, ""
+    except Exception as e:
+        log_error(f"[MEGA DELTA SIZE CHECK] {e}")
     day_dir = mega_delta_remote_day_dir(str(payload.get("created_at") or today_key())[:10])
     os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
     name = f"delta_{payload.get('delta_id')}.json"
@@ -23874,3 +23908,10 @@ if __name__ == "__main__":
 
 # BOT FILE: bot_v102_supergroup_migration_forward_retry.py
 # BOT VERSION: bot_v102_supergroup_migration_forward_retry
+
+
+# ─────────────────────────────────────────────────────────────
+# BOT FILE: bot_v103_compact_mega_delta_safe.py
+# BOT VERSION: bot_v103_compact_mega_delta_safe
+# END OF BOT FILE
+# ─────────────────────────────────────────────────────────────
