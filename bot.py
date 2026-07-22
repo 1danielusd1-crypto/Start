@@ -1,6 +1,6 @@
-# BOT FILE: bot_v103_compact_mega_delta_safe.py
-# BOT VERSION: bot_v103_compact_mega_delta_safe
-# PURPOSE: Telegram finance bot — compact safe MEGA deltas without changing other bot functions
+# BOT FILE: bot_v104_durable_dispatcher_timers.py
+# BOT VERSION: bot_v104_durable_dispatcher_timers
+# PURPOSE: Telegram finance bot — durable webhook dispatcher + unified non-secret timers
 # ─────────────────────────────────────────────────────────────
 import os
 import io
@@ -290,6 +290,176 @@ DOZVON_TASK_POOL = KeyedTaskPool(
 )
 DELAYED_SCHEDULER = DelayedTaskScheduler(DELAYED_TASK_POOL)
 
+
+# ─────────────────────────────────────────────────────────────
+# v104: Диспетчер-свидетель входящих Telegram update
+# ─────────────────────────────────────────────────────────────
+# Важно для Render: pending-задачи НЕ считаются сохранёнными в локальной SQLite.
+# Надёжность здесь обеспечивает сам Telegram: webhook получает 2xx только после того,
+# как update реально прошёл через обработчик. Если задача ещё ждёт/процесс перезапустился,
+# возвращаем 503 и Telegram повторит update. Это не требует постоянной локальной очереди.
+try:
+    WEBHOOK_ACK_WAIT_SECONDS = max(2.0, min(25.0, float(os.getenv("WEBHOOK_ACK_WAIT_SECONDS", "8") or "8")))
+except Exception:
+    WEBHOOK_ACK_WAIT_SECONDS = 8.0
+try:
+    WEBHOOK_STUCK_WARN_SECONDS = max(5.0, min(300.0, float(os.getenv("WEBHOOK_STUCK_WARN_SECONDS", "20") or "20")))
+except Exception:
+    WEBHOOK_STUCK_WARN_SECONDS = 20.0
+try:
+    WEBHOOK_DONE_TTL_SECONDS = max(60.0, min(3600.0, float(os.getenv("WEBHOOK_DONE_TTL_SECONDS", "600") or "600")))
+except Exception:
+    WEBHOOK_DONE_TTL_SECONDS = 600.0
+
+
+class DurableUpdateDispatcher:
+    """
+    Независимый наблюдатель за входящими update.
+
+    Он не выполняет бизнес-логику и не нарушает порядок операций одного чата.
+    Его задача — не позволить webhook молча подтвердить Telegram update, который
+    ещё только лежит в RAM-очереди. При timeout Telegram остаётся внешней
+    долговечной очередью и повторяет update после рестарта/deploy.
+    """
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._tickets = {}
+        self._received = 0
+        self._duplicates = 0
+        self._completed = 0
+        self._failed = 0
+        self._timeouts = 0
+        self._retries = 0
+        self._last_error = ""
+        self._last_warn = {}
+        threading.Thread(target=self._watchdog, name="update-dispatcher-watchdog", daemon=True).start()
+
+    def claim(self, update_id, chat_id=None, update_type="other"):
+        key = str(update_id)
+        now = time.time()
+        with self._lock:
+            self._received += 1
+            item = self._tickets.get(key)
+            if item:
+                state = item.get("state")
+                if state == "done":
+                    self._duplicates += 1
+                    return "done", item
+                if state in {"queued", "running"}:
+                    self._duplicates += 1
+                    return "pending", item
+                # failed update разрешаем Telegram повторить как новую попытку
+                self._retries += 1
+                attempts = int(item.get("attempts", 1)) + 1
+            else:
+                attempts = 1
+            event = threading.Event()
+            item = {
+                "update_id": key,
+                "chat_id": chat_id,
+                "type": str(update_type or "other"),
+                "state": "queued",
+                "created_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "attempts": attempts,
+                "event": event,
+                "error": "",
+            }
+            self._tickets[key] = item
+            return "new", item
+
+    def mark_started(self, update_id):
+        with self._lock:
+            item = self._tickets.get(str(update_id))
+            if item:
+                item["state"] = "running"
+                item["started_at"] = time.time()
+
+    def finish(self, update_id, success=True, error=""):
+        with self._lock:
+            item = self._tickets.get(str(update_id))
+            if not item:
+                return
+            item["state"] = "done" if success else "failed"
+            item["finished_at"] = time.time()
+            item["error"] = str(error or "")[:500]
+            if success:
+                self._completed += 1
+            else:
+                self._failed += 1
+                self._last_error = item["error"]
+            event = item.get("event")
+        if event:
+            event.set()
+
+    def release_failed_enqueue(self, update_id, error="queue_full"):
+        self.finish(update_id, False, error)
+
+    def wait_result(self, item, timeout):
+        event = item.get("event")
+        if event and not event.wait(max(0.1, float(timeout))):
+            with self._lock:
+                self._timeouts += 1
+            return "timeout", ""
+        with self._lock:
+            state = str(item.get("state") or "")
+            return state, str(item.get("error") or "")
+
+    def stats(self):
+        now = time.time()
+        with self._lock:
+            pending = [x for x in self._tickets.values() if x.get("state") in {"queued", "running"}]
+            oldest = max([now - float(x.get("created_at", now)) for x in pending] or [0.0])
+            return {
+                "pending": len(pending),
+                "oldest": round(oldest, 2),
+                "received": self._received,
+                "duplicates": self._duplicates,
+                "completed": self._completed,
+                "failed": self._failed,
+                "timeouts": self._timeouts,
+                "retries": self._retries,
+                "last_error": self._last_error,
+                "ack_wait": WEBHOOK_ACK_WAIT_SECONDS,
+            }
+
+    def _watchdog(self):
+        while True:
+            try:
+                time.sleep(2.0)
+                now = time.time()
+                stale_keys = []
+                warnings = []
+                with self._lock:
+                    for key, item in list(self._tickets.items()):
+                        state = item.get("state")
+                        age = now - float(item.get("created_at", now))
+                        if state in {"done", "failed"}:
+                            finished = float(item.get("finished_at") or item.get("created_at") or now)
+                            if now - finished > WEBHOOK_DONE_TTL_SECONDS:
+                                stale_keys.append(key)
+                            continue
+                        if age >= WEBHOOK_STUCK_WARN_SECONDS:
+                            last = float(self._last_warn.get(key, 0) or 0)
+                            if now - last >= WEBHOOK_STUCK_WARN_SECONDS:
+                                self._last_warn[key] = now
+                                warnings.append((key, item.get("chat_id"), item.get("type"), age, state))
+                    for key in stale_keys:
+                        self._tickets.pop(key, None)
+                        self._last_warn.pop(key, None)
+                for key, chat_id, typ, age, state in warnings:
+                    try:
+                        log_error(f"DISPATCHER STUCK: update={key} chat={chat_id} type={typ} state={state} age={age:.1f}s; Telegram will retry until 2xx")
+                    except Exception:
+                        pass
+            except Exception:
+                time.sleep(2.0)
+
+
+UPDATE_DISPATCHER = DurableUpdateDispatcher()
+
+
 chat_locks = defaultdict(threading.RLock)
 data_lock = threading.RLock()
 forward_map_lock = threading.RLock()
@@ -373,8 +543,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v104_observer_durable_timers"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v104_observer_durable_timers.py"
+VERSION = "bot_v104_durable_dispatcher_timers"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v104_durable_dispatcher_timers.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -499,7 +669,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 BOT_ERROR_LOG = deque(maxlen=200)
 error_log_lock = threading.RLock()
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None, threaded=False)  # v104: handlers run inside our durable dispatcher/task pools
 app = Flask(__name__)
 data = {}
 finance_active_chats = set()
@@ -2498,23 +2668,26 @@ def _cancel_v98_auto_close(chat_id: int, message_id: int):
     DELAYED_SCHEDULER.cancel(_v98_scheduler_key(chat_id, message_id))
 
 
-def _schedule_v98_auto_close(chat_id: int, message_id: int, delay: int = 60):
-    """Окна о98/в98 закрываются через минуту бездействия. Любая новая кнопка на этом же окне сбрасывает таймер."""
+def _schedule_v98_auto_close(chat_id: int, message_id: int, delay: int | float | None = None):
+    """Обычные o98/v98 окна по таймеру возвращаются в основное окно; секретные режимы сюда не входят."""
     chat_id = int(chat_id)
     message_id = int(message_id)
+    if delay is None:
+        delay = internal_timer_seconds("window_auto_return", 120)
     _cancel_v98_auto_close(chat_id, message_id)
 
     def _job():
         with _v98_auto_close_lock:
             _v98_auto_close_timers.pop((chat_id, message_id), None)
         try:
-            bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
+            day_key = get_chat_store(chat_id).get("current_view_day") or today_key()
+            return_to_main_window_closing_previous(chat_id, day_key, message_id)
+        except Exception as e:
+            log_error(f"v98 auto return({chat_id},{message_id}): {e}")
 
     deadline = DELAYED_SCHEDULER.schedule(
         _v98_scheduler_key(chat_id, message_id),
-        int(delay),
+        float(delay),
         _job,
     )
     with _v98_auto_close_lock:
@@ -2525,7 +2698,7 @@ def _touch_v98_auto_close_for_callback(chat_id: int, message_id: int, data_str: 
     try:
         code = window_code_for_callback(data_str, owner_chat=is_owner_chat(chat_id))
         if code in {"о98", "в98", "Ф9998"}:
-            _schedule_v98_auto_close(chat_id, message_id, internal_timer_seconds("v98_window"))
+            _schedule_v98_auto_close(chat_id, message_id, None)
         else:
             _cancel_v98_auto_close(chat_id, message_id)
     except Exception:
@@ -2543,6 +2716,153 @@ DOZVON_BURST_SECONDS = 10
 DOZVON_PAUSE_SECONDS = 5
 OWNER_TOTAL_WINDOW_DELETE_DELAY = 60
 AUX_WINDOW_DELETE_DELAY = 120
+
+# v104: единые пользовательские таймеры для обычных (НЕ секретных) режимов.
+# Значения глобальные: изменение одного таймера действует во всех окнах/режимах,
+# где используется соответствующая функция. Секретные таймеры намеренно отдельные.
+INTERNAL_TIMER_DEFS = {
+    "input_wait": {"label": "✏️ Ожидание ввода / редактирования", "default": 40, "min": 5, "max": 3600},
+    "window_auto_return": {"label": "🪟 Автовозврат обычных окон", "default": 120, "min": 5, "max": 7200},
+    "command_cleanup": {"label": "🧹 Удаление команд пользователя", "default": 30, "min": 1, "max": 3600},
+    "balance_collapse": {"label": "🏦 Сворачивание быстрого остатка", "default": 90, "min": 5, "max": 3600},
+}
+_timer_input_sessions = {}
+_timer_input_lock = threading.RLock()
+
+
+def _format_duration_short(seconds: int | float) -> str:
+    seconds = max(0, int(round(float(seconds or 0))))
+    minutes, sec = divmod(seconds, 60)
+    if minutes and sec:
+        return f"{minutes}м {sec}с"
+    if minutes:
+        return f"{minutes}м"
+    return f"{sec}с"
+
+
+def internal_timer_seconds(key: str, fallback=None) -> float:
+    cfg = INTERNAL_TIMER_DEFS.get(str(key)) or {}
+    default = float(cfg.get("default", fallback if fallback is not None else 30) or 30)
+    try:
+        gs = data.setdefault("_global_settings", {})
+        values = gs.setdefault("internal_timers", {})
+        value = float(values.get(str(key), default) or default)
+    except Exception:
+        value = default
+    low = float(cfg.get("min", 1) or 1)
+    high = float(cfg.get("max", 86400) or 86400)
+    return max(low, min(high, value))
+
+
+def set_internal_timer_seconds(key: str, seconds: int | float) -> float:
+    key = str(key)
+    cfg = INTERNAL_TIMER_DEFS.get(key)
+    if not cfg:
+        raise KeyError(key)
+    value = max(float(cfg.get("min", 1)), min(float(cfg.get("max", 86400)), float(seconds)))
+    data.setdefault("_global_settings", {}).setdefault("internal_timers", {})[key] = value
+    save_data(data, root_only=True)
+    # Настройка должна пережить Render deploy: маленькая root-delta отправляется быстро в MEGA.
+    try:
+        if OWNER_ID:
+            schedule_quick_backup(int(OWNER_ID), 0.5)
+        _mark_global_snapshot_pending()
+    except Exception as e:
+        try:
+            log_error(f"set_internal_timer_seconds backup: {e}")
+        except Exception:
+            pass
+    return value
+
+
+def build_internal_timers_text() -> str:
+    lines = [
+        "⏱ Внутренние таймеры",
+        "",
+        "Настройки общие для всех обычных режимов бота.",
+        "Секретный режим имеет собственные таймеры и здесь не меняется.",
+        "",
+    ]
+    for key, cfg in INTERNAL_TIMER_DEFS.items():
+        lines.append(f"{cfg['label']}: {_format_duration_short(internal_timer_seconds(key))}")
+    lines.extend(["", "Выберите таймер для изменения."])
+    return wm_owner("\n".join(lines), 9)
+
+
+def build_internal_timers_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for key, cfg in INTERNAL_TIMER_DEFS.items():
+        kb.row(IB(f"{cfg['label']} — {_format_duration_short(internal_timer_seconds(key))}", callback_data=f"itmr_pick:{key}"))
+    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+    kb.row(IB("🔙 Назад в Инфо", callback_data="itmr_back_info"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day}:back_main"), IB("❌ Закрыть", callback_data="info_close"))
+    return kb
+
+
+def _timer_input_session(chat_id: int):
+    with _timer_input_lock:
+        return _timer_input_sessions.setdefault(int(chat_id), {"key": None, "buffer": "", "minutes": None, "seconds": None})
+
+
+def _reset_timer_input_session(chat_id: int, key: str | None = None):
+    with _timer_input_lock:
+        _timer_input_sessions[int(chat_id)] = {"key": key, "buffer": "", "minutes": None, "seconds": None}
+        return _timer_input_sessions[int(chat_id)]
+
+
+def _timer_input_total_preview(session: dict) -> int:
+    minutes = int(session.get("minutes") or 0)
+    seconds = int(session.get("seconds") or 0)
+    buf = str(session.get("buffer") or "")
+    if buf:
+        # После выбранных минут оставшийся буфер трактуем как секунды; без единицы — секунды.
+        if session.get("minutes") is not None:
+            seconds = int(buf)
+        elif session.get("seconds") is not None:
+            seconds = int(buf)
+        else:
+            seconds = int(buf)
+    return minutes * 60 + seconds
+
+
+def build_internal_timer_input_text(chat_id: int) -> str:
+    session = _timer_input_session(chat_id)
+    key = session.get("key")
+    cfg = INTERNAL_TIMER_DEFS.get(str(key)) or {"label": "Таймер"}
+    buf = str(session.get("buffer") or "") or "—"
+    mins = "—" if session.get("minutes") is None else str(session.get("minutes"))
+    secs = "—" if session.get("seconds") is None else str(session.get("seconds"))
+    preview = _timer_input_total_preview(session)
+    return wm_owner(
+        f"⏱ {cfg.get('label')}\n\n"
+        f"Сейчас: {_format_duration_short(internal_timer_seconds(str(key)))}\n"
+        f"Минуты: {mins}\nСекунды: {secs}\nНабор: {buf}\n"
+        f"Итого сейчас: {_format_duration_short(preview)}\n\n"
+        "Наберите число и нажмите «м» или «с». Можно задать, например: 1 → м → 30 → с. "
+        "Если единицу не нажимать, число считается секундами. Затем нажмите «✅ Выбрать».",
+        9,
+    )
+
+
+def build_internal_timer_input_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    for row in (("1","2","3"),("4","5","6"),("7","8","9"),("м","0","с")):
+        buttons = []
+        for value in row:
+            if value == "м":
+                buttons.append(IB("м", callback_data="itmr_unit:m"))
+            elif value == "с":
+                buttons.append(IB("с", callback_data="itmr_unit:s"))
+            else:
+                buttons.append(IB(value, callback_data=f"itmr_digit:{value}"))
+        kb.row(*buttons)
+    kb.row(IB("⌫", callback_data="itmr_backspace"), IB("🧹 Очистить", callback_data="itmr_clear"))
+    kb.row(IB("✅ Выбрать", callback_data="itmr_apply"))
+    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+    kb.row(IB("🔙 К списку таймеров", callback_data="internal_timers"))
+    kb.row(IB("ℹ️ Инфо", callback_data="itmr_back_info"), IB("⬅️ Осн. окно", callback_data=f"d:{day}:back_main"), IB("❌ Закрыть", callback_data="info_close"))
+    return kb
+
 try:
     BACKUP_MIN_DELAY_SECONDS = max(30.0, float(os.getenv("BACKUP_MIN_DELAY_SECONDS", "120") or "120"))
 except Exception:
@@ -3555,26 +3875,22 @@ def _set_panel_open_state(chat_id: int, message_id: int):
     save_data(data)
     schedule_balance_panel_collapse(chat_id)
 
-def schedule_owner_total_window_delete(chat_id: int, message_id: int, delay: int = OWNER_TOTAL_WINDOW_DELETE_DELAY):
+def schedule_owner_total_window_delete(chat_id: int, message_id: int, delay: int | float | None = None):
+    """
+    v104 compatibility shim. Окно «Общий итог» больше не удаляется по отдельному
+    таймеру: как и остальные обычные окна, по единому глобальному таймеру оно
+    возвращается в основное окно. Секретные режимы этой логикой не затрагиваются.
+    """
     key = int(chat_id)
-
-    def _job():
-        try:
-            bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-        try:
-            store = get_chat_store(chat_id)
-            if store.get("total_msg_id") == message_id:
-                store["total_msg_id"] = None
-                save_data(data)
-        except Exception as e:
-            log_error(f"schedule_owner_total_window_delete({chat_id}): {e}")
-
-    scheduler_key = f"owner-total-delete:{key}"
-    DELAYED_SCHEDULER.cancel(scheduler_key)
-    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
-    _total_message_timers[key] = deadline
+    if delay is None:
+        delay = internal_timer_seconds("window_auto_return", 120)
+    try:
+        # Старый отдельный scheduler-key мог остаться в памяти после обновления кода.
+        DELAYED_SCHEDULER.cancel(f"owner-total-delete:{key}")
+    except Exception:
+        pass
+    schedule_stored_window_delete(chat_id, "total_msg_id", float(delay))
+    _total_message_timers[key] = _aux_window_timers.get((key, "total_msg_id"))
 
 
 _aux_window_timers = {}
@@ -3596,8 +3912,10 @@ def _clear_stored_window(chat_id: int, store_key: str, message_id: int | None = 
         log_error(f"_clear_stored_window({chat_id},{store_key}): {e}")
 
 
-def schedule_stored_window_delete(chat_id: int, store_key: str, delay: int = AUX_WINDOW_DELETE_DELAY):
+def schedule_stored_window_delete(chat_id: int, store_key: str, delay: int | float | None = None):
     key = (int(chat_id), str(store_key))
+    if delay is None:
+        delay = internal_timer_seconds("window_auto_return", 120)
 
     def _job():
         try:
@@ -3605,20 +3923,19 @@ def schedule_stored_window_delete(chat_id: int, store_key: str, delay: int = AUX
             message_id = store.get(store_key)
             if not message_id:
                 return
-            try:
-                bot.delete_message(chat_id, message_id)
-            except Exception:
-                pass
             if store.get(store_key) == message_id:
                 store[store_key] = None
                 unregister_open_window(chat_id, int(message_id))
+                _aux_window_timers.pop(key, None)
                 save_data(data)
+            day_key = store.get("current_view_day") or today_key()
+            return_to_main_window_closing_previous(chat_id, day_key, int(message_id))
         except Exception as e:
             log_error(f"schedule_stored_window_delete({chat_id},{store_key}): {e}")
 
     scheduler_key = f"stored-window-delete:{int(chat_id)}:{str(store_key)}"
     DELAYED_SCHEDULER.cancel(scheduler_key)
-    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, delay, _job)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
     _aux_window_timers[key] = deadline
 
 
@@ -4090,7 +4407,7 @@ def refresh_registered_financial_windows(chat_id: int):
             log_error(f"refresh_registered_financial_windows registry item: {e}")
 
 
-def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_markup=None, parse_mode=None, delay: int = AUX_WINDOW_DELETE_DELAY):
+def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_markup=None, parse_mode=None, delay: int | float | None = None):
     store = get_chat_store(chat_id)
     if reply_markup is None:
         try:
@@ -4238,7 +4555,7 @@ def schedule_command_delete(msg):
     except Exception:
         pass
     try:
-        delete_message_later(msg.chat.id, msg.message_id, COMMAND_DELETE_DELAY)
+        delete_message_later(msg.chat.id, msg.message_id, internal_timer_seconds("command_cleanup", COMMAND_DELETE_DELAY))
     except Exception:
         pass
 
@@ -4359,6 +4676,8 @@ def build_info_text(chat_id: int) -> str:
             f"Автобэкап MEGA: {'РАЗРЕШЁН' if not RESTORE_GUARD_ACTIVE else 'ЗАБЛОКИРОВАН'}",
             f"Маска секрета: {'ВКЛ' if total_secret_mask_enabled(chat_id) else 'ВЫКЛ'}",
             f"Финансовые сутки: с {finance_day_start_label(chat_id)}",
+            f"Диспетчер: pending {UPDATE_DISPATCHER.stats().get('pending', 0)}",
+            f"Таймер ввода: {_format_duration_short(internal_timer_seconds('input_wait'))}; окна: {_format_duration_short(internal_timer_seconds('window_auto_return'))}",
         ])
         if version_mode_feature("mega_priority"):
             lines.append(f"MEGA: {'приоритетный' if mega_backup_priority_enabled(chat_id) else 'обычный'} режим")
@@ -4896,7 +5215,9 @@ def collapse_balance_panel(chat_id: int):
             log_error(f"collapse_balance_panel({chat_id}): {e}")
 
 
-def schedule_balance_panel_collapse(chat_id: int, delay: float = BALANCE_PANEL_COLLAPSE_DELAY):
+def schedule_balance_panel_collapse(chat_id: int, delay: float | None = None):
+    if delay is None:
+        delay = internal_timer_seconds("balance_collapse", BALANCE_PANEL_COLLAPSE_DELAY)
     def _job():
         try:
             collapse_balance_panel(chat_id)
@@ -9213,164 +9534,6 @@ def describe_msg_for_log(msg) -> str:
         return "msg=?"
 
 
-
-# ─────────────────────────────────────────────────────────────
-# v104 durable observer / witness queue
-# Render local SQLite is ephemeral, therefore every accepted critical task is
-# immediately included in a compact MEGA delta before execution.
-# ─────────────────────────────────────────────────────────────
-_OBSERVER_LOCK = threading.RLock()
-_OBSERVER_RUNNING = set()
-_OBSERVER_MAX_HISTORY = 500
-
-
-def _observer_store() -> dict:
-    root = data.setdefault("observer_tasks", {})
-    if not isinstance(root, dict):
-        root = {}
-        data["observer_tasks"] = root
-    return root
-
-
-def _observer_trim():
-    tasks = _observer_store()
-    if len(tasks) <= _OBSERVER_MAX_HISTORY:
-        return
-    ordered = sorted(tasks.items(), key=lambda kv: str((kv[1] or {}).get("created_at") or ""))
-    removable = [k for k,v in ordered if str((v or {}).get("status")) in {"done","cancelled","failed"}]
-    for key in removable[:max(0, len(tasks)-_OBSERVER_MAX_HISTORY)]:
-        tasks.pop(key, None)
-
-
-def observer_accept(task_type: str, chat_id: int, payload: dict, *, dedupe_key: str | None = None, priority: int = 10) -> str:
-    """Fix a task locally and in MEGA before its worker may execute it."""
-    with _OBSERVER_LOCK:
-        tasks = _observer_store()
-        if dedupe_key:
-            for tid,item in tasks.items():
-                if str((item or {}).get("dedupe_key") or "") == str(dedupe_key) and str((item or {}).get("status")) in {"pending","running","done"}:
-                    return str(tid)
-        tid = f"T{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
-        tasks[tid] = {
-            "task_id": tid,
-            "task_type": str(task_type),
-            "priority": int(priority),
-            "status": "pending",
-            "chat_id": int(chat_id),
-            "payload": _delta_json_clone(payload or {}),
-            "dedupe_key": str(dedupe_key or ""),
-            "created_at": now_local().isoformat(timespec="milliseconds"),
-            "started_at": None,
-            "finished_at": None,
-            "attempts": 0,
-            "max_attempts": 5,
-            "last_error": "",
-            "cloud_confirmed": False,
-        }
-        _observer_trim()
-        save_data(data)
-    # Critical witness: do not rely on Render disk. Persist the pending task to MEGA now.
-    try:
-        tasks[tid]["cloud_confirmed"] = bool(persist_critical_delta_now(int(chat_id)))
-        save_data(data)
-    except Exception as e:
-        tasks[tid]["last_error"] = f"witness mega: {e}"
-        save_data(data)
-        schedule_delta_backup(int(chat_id), delay=0.5, reason="observer_accept_retry")
-    return tid
-
-
-def _observer_finish(tid: str, status: str, result: dict | None = None, error: str = ""):
-    with _OBSERVER_LOCK:
-        item = _observer_store().get(str(tid))
-        if not isinstance(item, dict):
-            return
-        item["status"] = str(status)
-        item["finished_at"] = now_local().isoformat(timespec="milliseconds")
-        item["result"] = _delta_json_clone(result or {})
-        item["last_error"] = str(error or "")[:1500]
-        save_data(data)
-    try:
-        schedule_delta_backup(int(item.get("chat_id") or 0), delay=0.5, reason=f"observer_{status}")
-    except Exception:
-        pass
-
-
-def _observer_execute(tid: str):
-    with _OBSERVER_LOCK:
-        item = _observer_store().get(str(tid))
-        if not isinstance(item, dict) or str(item.get("status")) not in {"pending","retry","running"}:
-            return
-        if tid in _OBSERVER_RUNNING:
-            return
-        _OBSERVER_RUNNING.add(tid)
-        item["status"] = "running"
-        item["started_at"] = now_local().isoformat(timespec="milliseconds")
-        item["attempts"] = int(item.get("attempts") or 0) + 1
-        save_data(data)
-    try:
-        typ = str(item.get("task_type") or "")
-        pl = item.get("payload") or {}
-        if typ == "edit_expense_category":
-            target_chat_id = int(pl.get("target_chat_id"))
-            edited = update_custom_expense_category(target_chat_id, str(pl.get("slug")), str(pl.get("name")), list(pl.get("keywords") or []))
-            if not edited:
-                raise RuntimeError("article not found")
-            _observer_finish(tid, "done", {"name": edited.get("name"), "target_chat_id": target_chat_id})
-        elif typ == "add_expense_category":
-            target_chat_id = int(pl.get("target_chat_id"))
-            added = add_custom_expense_category(target_chat_id, str(pl.get("name")), list(pl.get("keywords") or []))
-            _observer_finish(tid, "done", {"name": added.get("name"), "target_chat_id": target_chat_id})
-        else:
-            raise RuntimeError(f"unknown observer task: {typ}")
-    except Exception as e:
-        with _OBSERVER_LOCK:
-            cur = _observer_store().get(str(tid)) or {}
-            attempts = int(cur.get("attempts") or 0)
-            max_attempts = int(cur.get("max_attempts") or 5)
-            if attempts < max_attempts:
-                cur["status"] = "retry"
-                cur["last_error"] = str(e)[:1500]
-                save_data(data)
-                DELAYED_SCHEDULER.schedule(f"observer-retry:{tid}", min(60, 2 ** attempts), _observer_submit, tid)
-            else:
-                _observer_finish(tid, "failed", error=str(e))
-    finally:
-        with _OBSERVER_LOCK:
-            _OBSERVER_RUNNING.discard(tid)
-
-
-def _observer_submit(tid: str) -> bool:
-    return bool(GENERAL_TASK_POOL.submit(f"observer:{tid}", _observer_execute, str(tid)))
-
-
-def resume_observer_tasks():
-    """Resume pending tasks restored from MEGA after Render deploy."""
-    count = 0
-    with _OBSERVER_LOCK:
-        for tid,item in list(_observer_store().items()):
-            if isinstance(item, dict) and str(item.get("status")) in {"pending","running","retry"}:
-                item["status"] = "pending"
-                if _observer_submit(str(tid)):
-                    count += 1
-        save_data(data)
-    log_info(f"[OBSERVER] resumed={count}")
-
-
-def observer_status_text() -> str:
-    counts = {k:0 for k in ("pending","running","retry","done","failed","cancelled")}
-    for item in _observer_store().values():
-        st = str((item or {}).get("status") or "pending")
-        counts[st] = counts.get(st,0)+1
-    return wm_owner(
-        "🧠 Наблюдатель задач\n\n"
-        f"Ожидают: {counts.get('pending',0)}\n"
-        f"Выполняются: {counts.get('running',0)}\n"
-        f"Повтор: {counts.get('retry',0)}\n"
-        f"Выполнено: {counts.get('done',0)}\n"
-        f"Ошибки: {counts.get('failed',0)}\n\n"
-        "Критическая задача сначала фиксируется в состоянии и компактной delta MEGA, затем выполняется worker. После deploy pending-задачи восстанавливаются из MEGA.", 9)
-
 def _category_add_prompt_text(target_chat_id: int) -> str:
     return wm_common((
         f"➕ Добавление статьи расходов для: {get_chat_display_name(target_chat_id)}\n\n"
@@ -9409,7 +9572,7 @@ def start_category_add_wait(owner_chat_id: int, target_chat_id: int, owner_day_k
     store["category_add_wait"]["prompt_msg_id"] = prompt_id
     store["category_add_wait"]["countdown_base_text"] = text
     save_data(data)
-    schedule_cancel_category_wait(owner_chat_id, "category_add_wait", prompt_id, internal_timer_seconds("category_wait"))
+    schedule_cancel_category_wait(owner_chat_id, "category_add_wait", prompt_id, None)
     bot_journal("category_add_wait_start", owner_chat_id, f"target={get_chat_display_name(target_chat_id)}")
 
 
@@ -9429,18 +9592,13 @@ def handle_category_add_message(msg) -> bool:
             clear_category_wait_state(chat_id, "category_add_wait", delete_prompt=True)
             send_and_auto_delete(chat_id, "❎ Добавление статьи отменено.", 10)
             return True
-        tid = observer_accept("add_expense_category", chat_id, {"target_chat_id": target_chat_id, "name": name, "keywords": keywords, "source_message_id": int(msg.message_id)}, dedupe_key=f"addcat:{chat_id}:{msg.message_id}", priority=5)
-        clear_category_wait_state(chat_id, "category_add_wait", delete_prompt=False)
-        _observer_submit(tid)
-        try:
-            day = get_chat_store(chat_id).get("current_view_day") or today_key()
-            txt, _ = render_day_window(chat_id, day)
-            prompt_id = int(wait.get("prompt_msg_id") or 0)
-            if prompt_id:
-                bot.edit_message_text(txt, chat_id=chat_id, message_id=prompt_id, reply_markup=build_main_keyboard(day, chat_id), parse_mode=None)
-        except Exception:
-            pass
-        send_and_auto_delete(chat_id, f"⏳ Задача {tid} принята наблюдателем.", 12)
+        item = add_custom_expense_category(target_chat_id, name, keywords)
+        clear_category_wait_state(chat_id, "category_add_wait", delete_prompt=True)
+        send_and_auto_delete(
+            chat_id,
+            f"✅ Статья добавлена: {item.get('name')}\nКлючи: {', '.join(item.get('keywords', []))}",
+            20
+        )
         try:
             bot.delete_message(chat_id, msg.message_id)
         except Exception:
@@ -9486,9 +9644,11 @@ def _category_countdown_text(base_text: str, remaining: int) -> str:
     return wm_common(base + f"\n\n⏳ До закрытия: {int(remaining)} сек.", 11)
 
 
-def schedule_cancel_category_wait(chat_id: int, field: str, prompt_message_id: int, delay: float = 60.0):
-    """Автоотмена ожидания статьи без ежесекундного редактирования окна."""
+def schedule_cancel_category_wait(chat_id: int, field: str, prompt_message_id: int, delay: float | None = None):
+    """Единый таймер ожидания статьи; по timeout операция отменяется и окно возвращается в основное."""
     key = _category_wait_key(chat_id, field)
+    if delay is None:
+        delay = internal_timer_seconds("input_wait", 40)
 
     def _job():
         try:
@@ -9498,12 +9658,8 @@ def schedule_cancel_category_wait(chat_id: int, field: str, prompt_message_id: i
                 return
             cleared = clear_category_wait_state(chat_id, field, prompt_message_id, delete_prompt=False)
             if cleared:
-                try:
-                    day = get_chat_store(chat_id).get("current_view_day") or today_key()
-                    txt, _ = render_day_window(chat_id, day)
-                    bot.edit_message_text(txt, chat_id=chat_id, message_id=int(prompt_message_id), reply_markup=build_main_keyboard(day, chat_id), parse_mode=None)
-                except Exception:
-                    pass
+                day_key = store.get("current_view_day") or today_key()
+                return_to_main_window_closing_previous(chat_id, day_key, int(prompt_message_id))
         except Exception as e:
             log_error(f"schedule_cancel_category_wait({chat_id},{field},{prompt_message_id}): {e}")
 
@@ -9665,7 +9821,7 @@ def start_category_edit_wait(chat_id: int, target_chat_id: int, slug: str):
         "started_at": now_local().isoformat(timespec="seconds"),
     }
     save_data(data)
-    schedule_cancel_category_wait(chat_id, "category_edit_wait", prompt_id, internal_timer_seconds("category_wait"))
+    schedule_cancel_category_wait(chat_id, "category_edit_wait", prompt_id, None)
 
 
 def handle_category_edit_message(msg) -> bool:
@@ -9685,20 +9841,12 @@ def handle_category_edit_message(msg) -> bool:
         name, keywords = parse_category_definition(text)
         if not name:
             raise ValueError("format")
-        target_chat_id = int(wait.get("target_chat_id") or chat_id)
-        slug = str(wait.get("slug"))
-        tid = observer_accept("edit_expense_category", chat_id, {"target_chat_id": target_chat_id, "slug": slug, "name": name, "keywords": keywords, "source_message_id": int(msg.message_id)}, dedupe_key=f"editcat:{chat_id}:{msg.message_id}:{slug}", priority=1)
-        prompt_id = int(wait.get("prompt_msg_id") or 0)
-        clear_category_wait_state(chat_id, "category_edit_wait", delete_prompt=False)
-        _observer_submit(tid)
-        try:
-            day = get_chat_store(chat_id).get("current_view_day") or today_key()
-            txt, _ = render_day_window(chat_id, day)
-            if prompt_id:
-                bot.edit_message_text(txt, chat_id=chat_id, message_id=prompt_id, reply_markup=build_main_keyboard(day, chat_id), parse_mode=None)
-        except Exception:
-            pass
-        send_and_auto_delete(chat_id, f"⏳ Задача {tid} принята наблюдателем.", 12)
+        item = update_custom_expense_category(int(wait.get("target_chat_id") or chat_id), str(wait.get("slug")), name, keywords)
+        clear_category_wait_state(chat_id, "category_edit_wait", delete_prompt=True)
+        if item:
+            send_and_auto_delete(chat_id, f"✅ Статья изменена: {item.get('name')}\nКлючи: {', '.join(item.get('keywords', []))}", 20)
+        else:
+            send_and_auto_delete(chat_id, "❌ Статья не найдена.", 10)
         try:
             bot.delete_message(chat_id, msg.message_id)
         except Exception:
@@ -12902,14 +13050,18 @@ def clear_forward_copy_edit_wait(chat_id: int, delete_prompt: bool = True):
                 pass
 
 
-def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int, delay: float = 40.0):
+def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int, delay: float | None = None):
+    if delay is None:
+        delay = internal_timer_seconds("input_wait", 40)
     def _job():
         try:
-            wait = get_chat_store(int(chat_id)).get("forward_copy_edit_wait") or {}
+            store = get_chat_store(int(chat_id))
+            wait = store.get("forward_copy_edit_wait") or {}
             if int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
                 return
-            clear_forward_copy_edit_wait(int(chat_id), delete_prompt=True)
-            send_and_auto_delete(int(chat_id), "⌛ Время изменения бот-копии истекло. Режим отменён.", 8)
+            clear_forward_copy_edit_wait(int(chat_id), delete_prompt=False)
+            day_key = store.get("current_view_day") or today_key()
+            return_to_main_window_closing_previous(int(chat_id), day_key, int(prompt_message_id))
         except Exception as e:
             log_error(f"schedule_forward_copy_edit_wait_cancel({chat_id}): {e}")
     DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
@@ -12979,7 +13131,7 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
         "expires_at": time.time() + 40,
     }
     save_data(data, chat_ids=[int(chat_id)])
-    schedule_forward_copy_edit_wait_cancel(int(chat_id), int(sent.message_id), 40)
+    schedule_forward_copy_edit_wait_cancel(int(chat_id), int(sent.message_id), None)
     return True
 
 def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -> bool:
@@ -14388,7 +14540,7 @@ def open_gomonk_window(chat_id: int, message_id: int | None = None):
     if message_id:
         fast_ui_edit_message_text(chat_id, message_id, build_gomonk_menu_text(chat_id), reply_markup=build_gomonk_menu_keyboard(chat_id), purpose="gomonk_window")
     else:
-        send_or_edit_stored_window(chat_id, "info_msg_id", build_gomonk_menu_text(chat_id), reply_markup=build_gomonk_menu_keyboard(chat_id), delay=AUX_WINDOW_DELETE_DELAY)
+        send_or_edit_stored_window(chat_id, "info_msg_id", build_gomonk_menu_text(chat_id), reply_markup=build_gomonk_menu_keyboard(chat_id), delay=None)
 
 
 def _opening_balance_before_day(store: dict, day_key: str) -> float:
@@ -14477,7 +14629,7 @@ def open_remaining_window(chat_id: int, day_key: str, message_id: int | None = N
     if message_id:
         fast_ui_edit_message_text(chat_id, message_id, text, reply_markup=kb, parse_mode="HTML", purpose="remaining_window")
     else:
-        send_or_edit_stored_window(chat_id, "remaining_msg_id", text, reply_markup=kb, parse_mode="HTML", delay=AUX_WINDOW_DELETE_DELAY)
+        send_or_edit_stored_window(chat_id, "remaining_msg_id", text, reply_markup=kb, parse_mode="HTML", delay=None)
 
 
 def _clean_category_display_name(value: str) -> str:
@@ -14994,7 +15146,7 @@ def start_record_edit_prompt(chat_id: int, day_key: str, rid: int) -> bool:
             "expires_at": time.time() + 40,
         }
         save_data(data, chat_ids=[chat_id])
-        schedule_cancel_edit(chat_id, prompt_id, delay=40)
+        schedule_cancel_edit(chat_id, prompt_id, delay=None)
         return True
     except Exception as e:
         log_error(f"start_record_edit_prompt({chat_id},{day_key},{rid}): {e}")
@@ -17271,7 +17423,7 @@ def open_report_window(chat_id: int, month_key: str = None, message_id: int = No
         text,
         reply_markup=kb,
         parse_mode="HTML",
-        delay=AUX_WINDOW_DELETE_DELAY
+        delay=None
     )
     store["report_window_id"] = final_id
     store["report_month"] = month_key
@@ -17300,11 +17452,11 @@ def build_owner_instruction_text() -> str:
         "ℹ️ INFO\n"
         "📓 Журнал / 🗂 Журналы чатов — журналы действий. Кнопки в текущем окне — режим обновления интерфейса. Финансы — настройка финансового режима.\n"
         "💵 Доллар — выбор ARS / ARS-USD / USD. 💰Перес — оформление бот-копий. Финансы-кнопки — записи как inline-кнопки.\n"
-        "☁️ MEGA — приоритет резервного копирования. 📘 Инструкция — это окно. 🚦 Очереди — состояние рабочих очередей.\n\n"
+        "☁️ MEGA — приоритет резервного копирования. ⏱ Внутренние таймеры — единые таймеры обычных режимов. 🚦 Очереди — очереди и диспетчер-свидетель.\n\n"
         "📤 Пересылка\n"
         "Меню пересылки задаёт связанные чаты и финансовую обработку копий. Режим «как у владельца» создаёт отдельный owner scope: настройки такого владельца сохраняются независимо.\n\n"
         "💾 Сохранение\n"
-        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup."
+        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup. Входящий Telegram update подтверждается только после фактической обработки; если он застрял или Render перезапустился, Telegram повторит его."
     )
 
 def build_owner_instruction_keyboard(chat_id: int):
@@ -17341,6 +17493,12 @@ def build_queue_status_text() -> str:
         lines.append(f"Global full pending: {'да' if _global_snapshot_pending else 'нет'}")
     ds = DELAYED_SCHEDULER.stats()
     lines.append(f"Планировщик: задач {ds['scheduled']}, отменено {ds['cancelled']}, выполнено {ds['executed']}")
+    uds = UPDATE_DISPATCHER.stats()
+    lines.append(
+        f"Диспетчер-свидетель: pending {uds['pending']}, oldest {uds['oldest']}с, "
+        f"готово {uds['completed']}, повторы {uds['duplicates']}, timeout {uds['timeouts']}, "
+        f"retry {uds['retries']}, ACK ждёт до {uds['ack_wait']}с"
+    )
     lines.append(f"Excel-бэкап всех чатов: {backup_excel_all_label()}")
     lines.append(f"Telegram общий интервал: {TELEGRAM_GLOBAL_MIN_GAP:.3f}с")
     return "\n".join(lines)
@@ -17470,77 +17628,6 @@ def keep_alive_status_text() -> str:
     return wm_owner("\n".join(lines), 9)
 
 
-
-# v104 configurable internal timers (global for all behavior profiles)
-_INTERNAL_TIMER_DEFS = {
-    "category_wait": ("Редактирование/добавление статьи", 60),
-    "aux_window": ("Вспомогательные окна", 60),
-    "v98_window": ("Окна о98/в98", 60),
-    "helper_delete": ("Служебные сообщения", 20),
-    "mega_delta": ("Delta MEGA", 1),
-}
-_TIMER_EDIT_STATE = {}
-
-
-def internal_timer_seconds(key: str) -> int:
-    cfg = data.setdefault("_global_settings", {}).setdefault("internal_timer_seconds", {})
-    default = int(_INTERNAL_TIMER_DEFS.get(str(key), (str(key), 60))[1])
-    try:
-        return max(0, min(24*3600, int(cfg.get(str(key), default))))
-    except Exception:
-        return default
-
-
-def set_internal_timer_seconds(key: str, seconds: int):
-    cfg = data.setdefault("_global_settings", {}).setdefault("internal_timer_seconds", {})
-    cfg[str(key)] = max(0, min(24*3600, int(seconds)))
-    save_data(data)
-    try:
-        persist_critical_delta_now(int(OWNER_ID or 0))
-    except Exception:
-        schedule_delta_backup(int(OWNER_ID or 0), delay=0.5, reason="timer_setting")
-
-
-def _fmt_timer_value(seconds: int) -> str:
-    m,s = divmod(max(0,int(seconds)),60)
-    return f"{m}м {s}с"
-
-
-def build_internal_timers_text() -> str:
-    lines=["⏱ Внутренние таймеры", "", "Настройка единая для всех режимов бота.", "Секретные режимы сюда не входят.", ""]
-    for key,(name,_) in _INTERNAL_TIMER_DEFS.items():
-        lines.append(f"• {name}: {_fmt_timer_value(internal_timer_seconds(key))}")
-    return wm_owner("\n".join(lines),9)
-
-
-def build_internal_timers_keyboard():
-    kb=types.InlineKeyboardMarkup(row_width=1)
-    for key,(name,_) in _INTERNAL_TIMER_DEFS.items():
-        kb.row(IB(f"{name} — {_fmt_timer_value(internal_timer_seconds(key))}", callback_data=f"timer_pick:{key}"))
-    kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
-    return kb
-
-
-def build_timer_digits_keyboard(chat_id: int, key: str):
-    state=_TIMER_EDIT_STATE.setdefault(int(chat_id), {"key":str(key),"digits":"","unit":"s"})
-    state["key"]=str(key)
-    kb=types.InlineKeyboardMarkup(row_width=3)
-    digits=[IB(str(i),callback_data=f"timer_digit:{key}:{i}") for i in range(10)]
-    for i in range(0,9,3): kb.row(*digits[i:i+3])
-    kb.row(digits[9], IB("⌫",callback_data=f"timer_backspace:{key}"), IB("Сброс",callback_data=f"timer_clear:{key}"))
-    kb.row(IB("м",callback_data=f"timer_unit:{key}:m"), IB("с",callback_data=f"timer_unit:{key}:s"))
-    kb.row(IB("✅ Выбрать",callback_data=f"timer_apply:{key}"))
-    kb.row(IB("⬅️ Назад",callback_data="internal_timers"), IB("❌ Отмена",callback_data="version_back"))
-    return kb
-
-
-def build_timer_digits_text(chat_id: int,key: str) -> str:
-    state=_TIMER_EDIT_STATE.setdefault(int(chat_id), {"key":str(key),"digits":"","unit":"s"})
-    name=_INTERNAL_TIMER_DEFS.get(str(key),(str(key),60))[0]
-    digits=state.get("digits") or "0"
-    unit="минут" if state.get("unit")=="m" else "секунд"
-    return wm_owner(f"⏱ {name}\n\nВведите число кнопками 0–9, выберите м или с и нажмите «Выбрать».\n\nСейчас набрано: {digits} {unit}\nТекущее значение: {_fmt_timer_value(internal_timer_seconds(key))}",9)
-
 def build_info_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     layout = version_mode_layout()
@@ -17606,13 +17693,10 @@ def build_info_keyboard(chat_id: int):
             )
         else:
             kb.row(IB(bot_behavior_profile_label(), callback_data="version_menu"))
+        kb.row(IB("⏱ Внутренние таймеры", callback_data="internal_timers"))
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
-        )
-        kb.row(
-            IB("🧠 Наблюдатель", callback_data="observer_status"),
-            IB("⏱ Внутренние таймеры", callback_data="internal_timers"),
         )
         if active_bot_behavior_profile() in {"v93_current", "v92_current", "v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
@@ -17654,7 +17738,7 @@ def open_info_window(chat_id: int):
         info_text,
         reply_markup=build_info_keyboard(chat_id),
         parse_mode=None,
-        delay=AUX_WINDOW_DELETE_DELAY
+        delay=None
     )
 
 
@@ -19930,6 +20014,107 @@ def on_callback(call):
             except Exception:
                 pass
             return
+        if data_str == "internal_timers":
+            if not is_owner_chat(chat_id):
+                return
+            _reset_timer_input_session(chat_id, None)
+            fast_ui_edit_message_text(
+                chat_id, call.message.message_id, build_internal_timers_text(),
+                reply_markup=build_internal_timers_keyboard(chat_id), purpose="internal_timers",
+            )
+            return
+        if data_str.startswith("itmr_pick:"):
+            if not is_owner_chat(chat_id):
+                return
+            key = data_str.split(":", 1)[1]
+            if key not in INTERNAL_TIMER_DEFS:
+                return
+            _reset_timer_input_session(chat_id, key)
+            fast_ui_edit_message_text(
+                chat_id, call.message.message_id, build_internal_timer_input_text(chat_id),
+                reply_markup=build_internal_timer_input_keyboard(chat_id), purpose="internal_timer_pick",
+            )
+            return
+        if data_str.startswith("itmr_digit:"):
+            if not is_owner_chat(chat_id):
+                return
+            digit = data_str.split(":", 1)[1]
+            if digit not in "0123456789":
+                return
+            session = _timer_input_session(chat_id)
+            if session.get("key") not in INTERNAL_TIMER_DEFS:
+                return
+            session["buffer"] = (str(session.get("buffer") or "") + digit)[-5:]
+            fast_ui_edit_message_text(chat_id, call.message.message_id, build_internal_timer_input_text(chat_id), reply_markup=build_internal_timer_input_keyboard(chat_id), purpose="internal_timer_digit")
+            return
+        if data_str.startswith("itmr_unit:"):
+            if not is_owner_chat(chat_id):
+                return
+            unit = data_str.split(":", 1)[1]
+            session = _timer_input_session(chat_id)
+            if session.get("key") not in INTERNAL_TIMER_DEFS:
+                return
+            buf = str(session.get("buffer") or "")
+            if not buf:
+                try:
+                    bot.answer_callback_query(call.id, "Сначала наберите число", show_alert=False)
+                except Exception:
+                    pass
+                return
+            value = int(buf)
+            if unit == "m":
+                session["minutes"] = value
+            elif unit == "s":
+                session["seconds"] = value
+            session["buffer"] = ""
+            fast_ui_edit_message_text(chat_id, call.message.message_id, build_internal_timer_input_text(chat_id), reply_markup=build_internal_timer_input_keyboard(chat_id), purpose="internal_timer_unit")
+            return
+        if data_str == "itmr_backspace":
+            if not is_owner_chat(chat_id):
+                return
+            session = _timer_input_session(chat_id)
+            session["buffer"] = str(session.get("buffer") or "")[:-1]
+            fast_ui_edit_message_text(chat_id, call.message.message_id, build_internal_timer_input_text(chat_id), reply_markup=build_internal_timer_input_keyboard(chat_id), purpose="internal_timer_backspace")
+            return
+        if data_str == "itmr_clear":
+            if not is_owner_chat(chat_id):
+                return
+            key = _timer_input_session(chat_id).get("key")
+            _reset_timer_input_session(chat_id, key)
+            fast_ui_edit_message_text(chat_id, call.message.message_id, build_internal_timer_input_text(chat_id), reply_markup=build_internal_timer_input_keyboard(chat_id), purpose="internal_timer_clear")
+            return
+        if data_str == "itmr_apply":
+            if not is_owner_chat(chat_id):
+                return
+            session = _timer_input_session(chat_id)
+            key = session.get("key")
+            if key not in INTERNAL_TIMER_DEFS:
+                return
+            total = _timer_input_total_preview(session)
+            cfg = INTERNAL_TIMER_DEFS[key]
+            minimum = int(cfg.get("min", 1))
+            if total < minimum:
+                try:
+                    bot.answer_callback_query(call.id, f"Минимум: {_format_duration_short(minimum)}", show_alert=True)
+                except Exception:
+                    pass
+                return
+            value = set_internal_timer_seconds(key, total)
+            bot_journal("internal_timer_changed", chat_id, f"{key}={value}")
+            _reset_timer_input_session(chat_id, None)
+            fast_ui_edit_message_text(
+                chat_id, call.message.message_id,
+                build_internal_timers_text() + f"\n\n✅ Сохранено: {cfg['label']} = {_format_duration_short(value)}",
+                reply_markup=build_internal_timers_keyboard(chat_id), purpose="internal_timer_apply",
+            )
+            return
+        if data_str == "itmr_back_info":
+            if not is_owner_chat(chat_id):
+                return
+            _reset_timer_input_session(chat_id, None)
+            fast_ui_edit_message_text(chat_id, call.message.message_id, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id), purpose="internal_timer_back_info")
+            return
+
         if data_str == "version_menu":
             if not is_owner_chat(chat_id):
                 return
@@ -20018,55 +20203,6 @@ def on_callback(call):
             mode_text = "сначала и сразу в MEGA" if new_state else "как обычно"
             bot_journal("mega_priority_toggle", chat_id, f"enabled={new_state}")
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nБэкап MEGA: {mode_text}", reply_markup=build_info_keyboard(chat_id))
-            return
-        if data_str == "observer_status":
-            if not is_owner_chat(chat_id):
-                return
-            kb = types.InlineKeyboardMarkup(row_width=1)
-            kb.row(IB("🔄 Обновить", callback_data="observer_status"))
-            kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
-            safe_edit(bot, call, observer_status_text(), reply_markup=kb)
-            return
-        if data_str == "internal_timers":
-            if not is_owner_chat(chat_id):
-                return
-            safe_edit(bot, call, build_internal_timers_text(), reply_markup=build_internal_timers_keyboard())
-            return
-        if data_str.startswith("timer_pick:"):
-            key=data_str.split(":",1)[1]
-            _TIMER_EDIT_STATE[int(chat_id)]={"key":key,"digits":"","unit":"s"}
-            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
-            return
-        if data_str.startswith("timer_digit:"):
-            _,key,digit=data_str.split(":",2)
-            st=_TIMER_EDIT_STATE.setdefault(int(chat_id),{"key":key,"digits":"","unit":"s"})
-            st["digits"]=(str(st.get("digits") or "")+digit)[-6:]
-            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
-            return
-        if data_str.startswith("timer_backspace:"):
-            key=data_str.split(":",1)[1]
-            st=_TIMER_EDIT_STATE.setdefault(int(chat_id),{"key":key,"digits":"","unit":"s"})
-            st["digits"]=str(st.get("digits") or "")[:-1]
-            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
-            return
-        if data_str.startswith("timer_clear:"):
-            key=data_str.split(":",1)[1]
-            _TIMER_EDIT_STATE[int(chat_id)]={"key":key,"digits":"","unit":"s"}
-            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
-            return
-        if data_str.startswith("timer_unit:"):
-            _,key,unit=data_str.split(":",2)
-            st=_TIMER_EDIT_STATE.setdefault(int(chat_id),{"key":key,"digits":"","unit":"s"})
-            st["unit"]=unit
-            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
-            return
-        if data_str.startswith("timer_apply:"):
-            key=data_str.split(":",1)[1]
-            st=_TIMER_EDIT_STATE.get(int(chat_id),{})
-            value=int(st.get("digits") or 0)
-            seconds=value*60 if st.get("unit")=="m" else value
-            set_internal_timer_seconds(key,seconds)
-            safe_edit(bot, call, build_internal_timers_text(), reply_markup=build_internal_timers_keyboard())
             return
         if data_str == "info_instruction":
             if not is_owner_chat(chat_id):
@@ -20292,7 +20428,7 @@ def on_callback(call):
                     "expires_at": time.time() + 40,
                 }
                 save_data(data)
-                schedule_cancel_finwin_edit(chat_id, prompt_id, delay=40)
+                schedule_cancel_finwin_edit(chat_id, prompt_id, delay=None)
                 return
             if action == "csv_menu":
                 safe_edit(
@@ -20624,7 +20760,7 @@ def on_callback(call):
                     "total_msg_id",
                     text,
                     parse_mode="HTML",
-                    delay=AUX_WINDOW_DELETE_DELAY
+                    delay=None
                 )
                 store["total_msg_id"] = final_id
                 save_data(data)
@@ -20672,7 +20808,7 @@ def on_callback(call):
                 "total_msg_id",
                 text,
                 parse_mode="HTML",
-                delay=OWNER_TOTAL_WINDOW_DELETE_DELAY
+                delay=None
             )
             store["total_msg_id"] = final_id
             save_data(data)
@@ -22214,10 +22350,12 @@ def _edit_countdown_text(base_text: str, remaining: int) -> str:
     return wm_common(base + f"\n\n⏳ До закрытия: {int(remaining)} сек.", 10)
 
 
-def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: float = 40.0):
-    """Автоотмена фин-редактирования без отдельного потока на каждое окно."""
+def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: float | None = None):
+    """Единый таймер фин-редактирования; timeout отменяет ввод и возвращает основное окно."""
     key = (int(chat_id), "finwin_edit_wait")
     scheduler_key = f"finwin-edit-wait:{int(chat_id)}"
+    if delay is None:
+        delay = internal_timer_seconds("input_wait", 40)
 
     def _job():
         try:
@@ -22225,8 +22363,10 @@ def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: flo
             wait = store.get("finwin_edit_wait") or {}
             if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
                 return
-            cleared = clear_finwin_edit_wait_state(chat_id, prompt_message_id, delete_prompt=True)
+            cleared = clear_finwin_edit_wait_state(chat_id, prompt_message_id, delete_prompt=False)
             if cleared:
+                day_key = store.get("current_view_day") or today_key()
+                return_to_main_window_closing_previous(chat_id, day_key, int(prompt_message_id))
                 log_info(f"finwin edit_wait auto-cancelled for chat {chat_id}")
         except Exception as e:
             log_error(f"schedule_cancel_finwin_edit({chat_id},{prompt_message_id}): {e}")
@@ -22236,10 +22376,12 @@ def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: flo
     _edit_cancel_timers[key] = deadline
 
 
-def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float = 40.0):
-    """Автоотмена редактирования без отдельного потока на каждое окно."""
+def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float | None = None):
+    """Единый таймер обычного редактирования; timeout отменяет ввод и возвращает основное окно."""
     key = (int(chat_id), "edit_wait")
     scheduler_key = f"edit-wait:{int(chat_id)}"
+    if delay is None:
+        delay = internal_timer_seconds("input_wait", 40)
 
     def _job():
         try:
@@ -22247,9 +22389,10 @@ def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float = 40
             wait = store.get("edit_wait") or {}
             if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
                 return
-            cleared = clear_edit_wait_state(chat_id, prompt_message_id, delete_prompt=True)
+            cleared = clear_edit_wait_state(chat_id, prompt_message_id, delete_prompt=False)
             if cleared:
-                send_and_auto_delete(chat_id, "⌛ Время редактирования истекло. Режим редактирования отменён.", 8)
+                day_key = store.get("current_view_day") or today_key()
+                return_to_main_window_closing_previous(chat_id, day_key, int(prompt_message_id))
         except Exception as e:
             log_error(f"schedule_cancel_edit({chat_id},{prompt_message_id}): {e}")
 
@@ -23990,6 +24133,67 @@ def keepalive_endpoint():
     }, 200
 
 
+def _protect_pending_ui_timers_on_receipt(payload: dict):
+    """
+    v104: пользователь уже отправил ответ/нажал кнопку — значит его рабочий таймер
+    не должен успеть отменить операцию только потому, что webhook ждёт другую задачу.
+    Продлеваем только обычные (не секретные) ожидания сразу при получении update.
+    """
+    try:
+        if not isinstance(payload, dict):
+            return
+        msg = payload.get("message") or payload.get("edited_message")
+        if isinstance(msg, dict):
+            chat = msg.get("chat") or {}
+            chat_id = int(chat.get("id"))
+            store = get_chat_store(chat_id)
+            wait = store.get("edit_wait") or {}
+            if isinstance(wait, dict) and wait.get("prompt_msg_id"):
+                schedule_cancel_edit(chat_id, int(wait["prompt_msg_id"]), delay=None)
+            wait = store.get("finwin_edit_wait") or {}
+            if isinstance(wait, dict) and wait.get("prompt_msg_id"):
+                schedule_cancel_finwin_edit(chat_id, int(wait["prompt_msg_id"]), delay=None)
+            for field in ("category_add_wait", "category_edit_wait"):
+                wait = store.get(field) or {}
+                if isinstance(wait, dict) and wait.get("prompt_msg_id"):
+                    schedule_cancel_category_wait(chat_id, field, int(wait["prompt_msg_id"]), delay=None)
+            wait = store.get("forward_copy_edit_wait") or {}
+            if isinstance(wait, dict) and wait.get("prompt_msg_id"):
+                schedule_forward_copy_edit_wait_cancel(chat_id, int(wait["prompt_msg_id"]), delay=None)
+            return
+
+        cq = payload.get("callback_query")
+        if isinstance(cq, dict):
+            cmsg = cq.get("message") or {}
+            chat = cmsg.get("chat") or {}
+            chat_id = int(chat.get("id"))
+            message_id = int(cmsg.get("message_id") or 0)
+            if not message_id:
+                return
+            raw = str(cq.get("data") or "")
+            # Секретные callback не трогаем: у них собственная логика таймеров.
+            if raw.startswith("sec") or raw.startswith("o9"):
+                return
+            try:
+                _touch_v98_auto_close_for_callback(chat_id, message_id, resolve_short_callback(raw) or raw)
+            except Exception:
+                pass
+            try:
+                store = get_chat_store(chat_id)
+                for timer_chat_id, store_key in list(_aux_window_timers.keys()):
+                    if int(timer_chat_id) != chat_id:
+                        continue
+                    if int(store.get(str(store_key)) or 0) == message_id:
+                        schedule_stored_window_delete(chat_id, str(store_key), None)
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            log_error(f"receipt timer protection: {e}")
+        except Exception:
+            pass
+
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
     try:
@@ -24014,35 +24218,65 @@ def telegram_webhook():
 
         update = telebot.types.Update.de_json(payload)
         update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
-        update_key = update_chat_id if update_chat_id is not None else getattr(update, "update_id", time.time_ns())
-
-        update_enqueued_at = time.time()
         update_id = getattr(update, "update_id", None)
+        if update_id is None:
+            update_id = time.time_ns()
+        update_key = update_chat_id if update_chat_id is not None else update_id
         update_type = "edited_message" if isinstance(payload, dict) and "edited_message" in payload else "callback_query" if isinstance(payload, dict) and "callback_query" in payload else "message" if isinstance(payload, dict) and "message" in payload else "other"
 
-        def _process_update():
-            started = time.time()
-            wait = started - update_enqueued_at
-            bot_journal("update_process_start", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s")
-            try:
-                with state_chat_context(update_chat_id):
-                    if update_chat_id is None:
-                        bot.process_new_updates([update])
-                    else:
-                        with locked_chat(update_chat_id):
+        # Пользователь уже совершил действие. Не даём рабочему таймеру истечь, пока update
+        # стоит за другой задачей этого чата. Секретные таймеры не меняются.
+        _protect_pending_ui_timers_on_receipt(payload)
+
+        claim_state, ticket = UPDATE_DISPATCHER.claim(update_id, update_chat_id, update_type)
+        if claim_state == "done":
+            return "OK", 200
+
+        update_enqueued_at = time.time()
+
+        if claim_state == "new":
+            def _process_update():
+                started = time.time()
+                wait = started - update_enqueued_at
+                UPDATE_DISPATCHER.mark_started(update_id)
+                bot_journal("update_process_start", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s")
+                success = False
+                error_text = ""
+                try:
+                    with state_chat_context(update_chat_id):
+                        if update_chat_id is None:
                             bot.process_new_updates([update])
-            finally:
-                bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s")
+                        else:
+                            # Порядок и целостность одного чата сохраняем как раньше.
+                            # Диспетчер независим, но не запускает две мутации одного чата одновременно.
+                            with locked_chat(update_chat_id):
+                                bot.process_new_updates([update])
+                    success = True
+                except Exception as exc:
+                    error_text = str(exc)
+                    log_error(f"WEBHOOK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}")
+                    raise
+                finally:
+                    UPDATE_DISPATCHER.finish(update_id, success, error_text)
+                    bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s success={success}")
 
-        if not WEBHOOK_TASK_POOL.submit(update_key, _process_update):
-            log_error(f"WEBHOOK QUEUE FULL: chat={update_chat_id}")
-            # Telegram повторит update позже; данные не теряются молча.
-            return "BUSY", 503
+            if not WEBHOOK_TASK_POOL.submit(update_key, _process_update):
+                log_error(f"WEBHOOK QUEUE FULL: chat={update_chat_id}")
+                UPDATE_DISPATCHER.release_failed_enqueue(update_id, "webhook_queue_full")
+                # Telegram повторит update позже; данные не теряются молча.
+                return "BUSY", 503
+
+        # В отличие от v103, не подтверждаем Telegram задачу, которая только лежит в RAM.
+        # Если не успела обработаться, 503 заставит Telegram сохранить/повторить update.
+        state, dispatch_error = UPDATE_DISPATCHER.wait_result(ticket, WEBHOOK_ACK_WAIT_SECONDS)
+        if state == "done":
+            return "OK", 200
+        if state == "failed":
+            return "RETRY", 503
+        return "PENDING", 503
     except Exception as e:
-        log_error(f"WEBHOOK: enqueue update error: {e}")
+        log_error(f"WEBHOOK: enqueue/update dispatcher error: {e}")
         return "ERROR", 500
-
-    return "OK", 200
         
 def set_webhook():
     if not WEBHOOK_URL:
@@ -24147,10 +24381,6 @@ def main():
     # После MEGA restore повторно поднимаем индекс пересылки в память.
     # Это позволяет редактировать старые сообщения сразу после деплоя.
     _restore_runtime_state_from_data(data)
-    try:
-        resume_observer_tasks()
-    except Exception as e:
-        log_error(f"resume_observer_tasks: {e}")
     if not RESTORE_GUARD_ACTIVE:
         save_data(data)
         data["forward_rules"] = load_forward_rules()
@@ -24215,11 +24445,7 @@ if __name__ == "__main__":
 
 
 # ─────────────────────────────────────────────────────────────
-# BOT FILE: bot_v103_compact_mega_delta_safe.py
-# BOT VERSION: bot_v103_compact_mega_delta_safe
+# BOT FILE: bot_v104_durable_dispatcher_timers.py
+# BOT VERSION: bot_v104_durable_dispatcher_timers
 # END OF BOT FILE
 # ─────────────────────────────────────────────────────────────
-
-# BOT FILE: bot_v104_observer_durable_timers.py
-# BOT VERSION: bot_v104_observer_durable_timers
-# PURPOSE: MEGA-durable observer queue + global internal timer settings
