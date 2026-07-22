@@ -1,6 +1,6 @@
-# BOT FILE: bot_v104_durable_dispatcher_timers.py
-# BOT VERSION: bot_v104_durable_dispatcher_timers
-# PURPOSE: Telegram finance bot — durable webhook dispatcher + unified non-secret timers
+# BOT FILE: bot_v105_mega_durable_tasks.py
+# BOT VERSION: bot_v105_mega_durable_tasks
+# PURPOSE: Telegram finance bot — MEGA-persisted critical task witness + durable dispatcher + unified timers
 # ─────────────────────────────────────────────────────────────
 import os
 import io
@@ -121,6 +121,24 @@ class KeyedTaskPool:
                         self._by_key.pop(key, None)
                         self._active_keys.discard(key)
                 self._ready.task_done()
+
+    def wait_key_idle(self, key, timeout: float = 15.0) -> bool:
+        """Wait until all already-submitted tasks for one logical key finish.
+
+        Used only by the durable MEGA witness before it declares a content update complete.
+        It does not create new workers and does not affect unrelated chat keys.
+        """
+        key = str(key)
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            with self._lock:
+                active = key in self._active_keys
+                queued = bool(self._by_key.get(key))
+            if not active and not queued:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
 
     def stats(self) -> dict:
         with self._lock:
@@ -543,8 +561,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v104_durable_dispatcher_timers"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v104_durable_dispatcher_timers.py"
+VERSION = "bot_v105_mega_durable_tasks"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v105_mega_durable_tasks.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -597,6 +615,30 @@ MEGA_MONTHLY_BACKUP_DIR = os.getenv("MEGA_MONTHLY_BACKUP_DIR", "monthly").strip(
 MEGA_HISTORY_BACKUP_DIR = os.getenv("MEGA_HISTORY_BACKUP_DIR", "history").strip().strip("/") or "history"
 # v90: небольшие неизменяемые delta-файлы вместо полного global после каждой операции.
 MEGA_DELTA_BACKUP_DIR = os.getenv("MEGA_DELTA_BACKUP_DIR", "deltas").strip().strip("/") or "deltas"
+# v105: отдельный облачный журнал критических входящих задач.
+# Он НЕ заменяет Telegram webhook и НЕ хранится только в локальной SQLite Render.
+MEGA_TASKS_ENABLED = _env_bool("MEGA_TASKS_ENABLED", "1")
+MEGA_TASK_BACKUP_DIR = os.getenv("MEGA_TASK_BACKUP_DIR", "tasks").strip().strip("/") or "tasks"
+try:
+    MEGA_TASK_DONE_KEEP = max(20, min(1000, int(os.getenv("MEGA_TASK_DONE_KEEP", "200") or "200")))
+except Exception:
+    MEGA_TASK_DONE_KEEP = 200
+try:
+    MEGA_TASK_RECOVERY_LIMIT = max(20, min(2000, int(os.getenv("MEGA_TASK_RECOVERY_LIMIT", "500") or "500")))
+except Exception:
+    MEGA_TASK_RECOVERY_LIMIT = 500
+try:
+    MEGA_TASK_RECOVERY_DELAY_SECONDS = max(0.5, min(30.0, float(os.getenv("MEGA_TASK_RECOVERY_DELAY_SECONDS", "2") or "2")))
+except Exception:
+    MEGA_TASK_RECOVERY_DELAY_SECONDS = 2.0
+try:
+    MEGA_TASK_FINALIZE_RETRIES = max(1, min(5, int(os.getenv("MEGA_TASK_FINALIZE_RETRIES", "3") or "3")))
+except Exception:
+    MEGA_TASK_FINALIZE_RETRIES = 3
+try:
+    MEGA_TASK_PROCESSED_KEEP = max(100, min(5000, int(os.getenv("MEGA_TASK_PROCESSED_KEEP", "500") or "500")))
+except Exception:
+    MEGA_TASK_PROCESSED_KEEP = 500
 try:
     MEGA_DELTA_DELAY_SECONDS = max(1.0, float(os.getenv("MEGA_DELTA_DELAY_SECONDS", "8") or "8"))
 except Exception:
@@ -5722,6 +5764,716 @@ def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None =
         except Exception:
             pass
 
+
+# ─────────────────────────────────────────────────────────────
+# v105: MEGA durable task witness
+# ─────────────────────────────────────────────────────────────
+_MEGA_TASK_LOCK = threading.RLock()
+_mega_task_registry = {}          # update_id(str) -> {state, path, loaded_at}
+_mega_task_processing = set()     # update_id currently executed by this process
+_mega_task_counters = {
+    "persisted": 0,
+    "recovered": 0,
+    "completed": 0,
+    "failed": 0,
+    "skipped_done": 0,
+    "persist_errors": 0,
+    "finalize_errors": 0,
+}
+_mega_task_last_error = ""
+_mega_task_registry_loaded_at = ""
+_mega_task_dirs_ready = False
+
+
+def mega_tasks_active() -> bool:
+    return bool(MEGA_TASKS_ENABLED and mega_is_configured() and not RESTORE_GUARD_ACTIVE)
+
+
+def mega_task_remote_root() -> str:
+    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{MEGA_TASK_BACKUP_DIR}"
+
+
+def ensure_mega_task_dirs(force: bool = False) -> bool:
+    global _mega_task_dirs_ready
+    if not mega_tasks_active():
+        return False
+    with _MEGA_TASK_LOCK:
+        if _mega_task_dirs_ready and not force:
+            return True
+    try:
+        mega_ensure_remote_path(mega_task_remote_root())
+        for state in ("pending", "running", "done", "failed"):
+            mega_ensure_remote_path(mega_task_remote_dir(state))
+        with _MEGA_TASK_LOCK:
+            _mega_task_dirs_ready = True
+        return True
+    except Exception as e:
+        log_error(f"ensure_mega_task_dirs: {e}")
+        return False
+
+
+def mega_task_remote_dir(state: str) -> str:
+    state = str(state or "pending").strip().lower()
+    if state not in {"pending", "running", "done", "failed"}:
+        state = "pending"
+    return f"{mega_task_remote_root().rstrip('/')}/{state}"
+
+
+def _mega_task_id(update_id) -> str:
+    try:
+        return str(int(update_id))
+    except Exception:
+        raw = str(update_id or "")
+        return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:24]
+
+
+def mega_task_filename(update_id) -> str:
+    return f"task_{_mega_task_id(update_id)}.json"
+
+
+def mega_task_remote_path(update_id, state: str) -> str:
+    return f"{mega_task_remote_dir(state).rstrip('/')}/{mega_task_filename(update_id)}"
+
+
+def _mega_task_update_registry(update_id, state: str, path: str | None = None):
+    key = _mega_task_id(update_id)
+    with _MEGA_TASK_LOCK:
+        _mega_task_registry[key] = {
+            "state": str(state),
+            "path": path or mega_task_remote_path(key, state),
+            "loaded_at": now_local().isoformat(timespec="seconds"),
+        }
+
+
+def mega_task_known_state(update_id) -> str:
+    key = _mega_task_id(update_id)
+    with _MEGA_TASK_LOCK:
+        return str((_mega_task_registry.get(key) or {}).get("state") or "")
+
+
+def mega_task_registry_stats() -> dict:
+    with _MEGA_TASK_LOCK:
+        states = defaultdict(int)
+        for row in _mega_task_registry.values():
+            states[str((row or {}).get("state") or "unknown")] += 1
+        processing = len(_mega_task_processing)
+        counters = dict(_mega_task_counters)
+        loaded_at = _mega_task_registry_loaded_at
+        last_error = _mega_task_last_error
+    return {
+        "pending": int(states.get("pending", 0)),
+        "running": int(states.get("running", 0)),
+        "done": int(states.get("done", 0)),
+        "failed": int(states.get("failed", 0)),
+        "processing": processing,
+        "loaded_at": loaded_at,
+        "last_error": last_error,
+        **counters,
+    }
+
+
+
+def durable_update_processed(update_id) -> bool:
+    key = _mega_task_id(update_id)
+    try:
+        with data_lock:
+            return key in ((data or {}).get("_durable_processed_updates", {}) or {})
+    except Exception:
+        return False
+
+
+def mark_durable_update_processed(update_id, chat_id=None, update_type: str = "other"):
+    """Put the idempotency marker into the same global/delta state as bot data."""
+    key = _mega_task_id(update_id)
+    with data_lock:
+        ledger = data.setdefault("_durable_processed_updates", {})
+        if not isinstance(ledger, dict):
+            ledger = {}
+            data["_durable_processed_updates"] = ledger
+        ledger[key] = {
+            "at": now_local().isoformat(timespec="microseconds"),
+            "chat_id": chat_id,
+            "type": str(update_type or "other"),
+        }
+        # Keep only the newest N markers. Dict order is insertion order on supported Python.
+        while len(ledger) > MEGA_TASK_PROCESSED_KEEP:
+            try:
+                ledger.pop(next(iter(ledger)))
+            except Exception:
+                break
+    # Root-only SQLite write is cheap; MEGA persistence is done synchronously right after this.
+    save_data(data, root_only=True)
+
+
+
+def wait_durable_subtasks(chat_id, timeout: float = 20.0) -> bool:
+    """Drain state-changing child queues already spawned by the current content update.
+
+    Forwarding is the important one: the message handler intentionally delegates it to
+    FORWARD_TASK_POOL, so declaring the MEGA task done before that worker finishes would
+    recreate the exact deploy-loss window v105 is meant to close.
+    """
+    if chat_id is None:
+        return True
+    key = int(chat_id)
+    deadline = time.monotonic() + max(0.5, float(timeout))
+    for pool in (FORWARD_TASK_POOL, FINANCE_TASK_POOL):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if not pool.wait_key_idle(key, remaining):
+            log_error(f"DURABLE CHILD QUEUE TIMEOUT pool={pool.name} chat={key}")
+            return False
+    return True
+
+
+def finalize_durable_task_after_business(update_id, chat_id, update_type: str = "other") -> bool:
+    """Business is already complete: persist marker+all changes in one critical delta, then mark task done."""
+    key = _mega_task_id(update_id)
+    if not wait_durable_subtasks(chat_id, timeout=20.0):
+        return False
+    try:
+        mark_durable_update_processed(key, chat_id, update_type)
+    except Exception as e:
+        log_error(f"DURABLE MARKER FAILED update={key}: {e}")
+        return False
+    try:
+        if chat_id is None:
+            # Persist root marker via a full delta pass over owner/current chat when possible.
+            cid = int(OWNER_ID) if OWNER_ID else None
+        else:
+            cid = int(chat_id)
+        if cid is None or not persist_critical_delta_now(cid):
+            log_error(f"DURABLE CRITICAL DELTA FAILED update={key} chat={chat_id}")
+            return False
+    except Exception as e:
+        log_error(f"DURABLE CRITICAL DELTA ERROR update={key}: {e}")
+        return False
+    return mega_task_finish(key, True)
+
+
+def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = "other", delay: float = 5.0):
+    key = _mega_task_id(update_id)
+    def _job():
+        if mega_task_known_state(key) == "done":
+            return
+        if not finalize_durable_task_after_business(key, chat_id, update_type):
+            # Keep retry bounded in frequency; the task remains running in MEGA and will also be
+            # checked after deploy. Re-scheduling is harmless because the business is NOT rerun here.
+            DELAYED_SCHEDULER.schedule(
+                f"mega-task-finalize:{key}",
+                15.0,
+                _job,
+            )
+    DELAYED_SCHEDULER.cancel(f"mega-task-finalize:{key}")
+    DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", max(0.5, float(delay)), _job)
+
+
+def durable_task_required(payload: dict) -> tuple[bool, str]:
+    """Hybrid persistence policy.
+
+    Only state-changing/content-bearing message updates are persisted: finance, forwarding,
+    article/edit input, secret input, edited messages and explicit mutation commands.
+    Navigation/read-only commands and callback buttons stay on the existing Telegram retry path.
+    """
+    if not isinstance(payload, dict):
+        return False, "invalid"
+    if not mega_tasks_active():
+        return False, "mega_tasks_inactive"
+
+    for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
+        msg = payload.get(key)
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("media_group_id"):
+            # Albums have their own delayed collector; keep their existing Telegram retry semantics
+            # rather than falsely marking one album part done before the collector fires.
+            return False, f"{key}:media_group_webhook_retry"
+        text = str(msg.get("text") or msg.get("caption") or "").strip()
+        first = text.split(maxsplit=1)[0].lower() if text else ""
+        read_only_commands = {
+            "/start", "/help", "/info", "/queues", "/queue_status", "/mega_status",
+            "/delta_status", "/health", "/ping", "/prev", "/next", "/balance",
+            "/report", "/tabl_lsx", "/xlsx", "/excel", "/csv", "/json",
+            "/mega_restore_now", "/mega_backup_now", "/diag", "/diagnostics",
+            "/errors", "/bot_errors", "/journal", "/log", "/logs", "/sqlite", "/db",
+            "/windows", "/okna", "/окна", "/owners", "/additional_owners",
+            "/доп_владельцы", "/dozvon",
+        }
+        if first in read_only_commands:
+            return False, f"{key}:readonly"
+
+        # Explicit mutation commands that should survive deploy even outside finance mode.
+        mutation_commands = {
+            "/reset", "/stopforward", "/backup_channel_on", "/backup_channel_off",
+            "/buttons", "/restore_guard_off", "/restore_guard_on",
+            "/off_on_backup_excel",
+        }
+        if first in mutation_commands or first.startswith("/izm_"):
+            return True, f"{key}:mutation_command"
+
+        try:
+            chat_id = int(((msg.get("chat") or {}).get("id")))
+        except Exception:
+            chat_id = None
+
+        # Edited content can alter finance and propagated copies; always witness it.
+        if key in {"edited_message", "edited_channel_post"}:
+            return True, key
+
+        if chat_id is not None:
+            try:
+                store = get_chat_store(chat_id)
+                waiting = any(
+                    str(k).endswith("_wait") and bool(v)
+                    for k, v in (store or {}).items()
+                )
+                if waiting:
+                    return True, f"{key}:input_wait"
+            except Exception:
+                pass
+            try:
+                if is_finance_mode(chat_id):
+                    return True, f"{key}:finance"
+            except Exception:
+                pass
+            try:
+                if resolve_forward_targets(chat_id):
+                    return True, f"{key}:forward"
+            except Exception:
+                pass
+            try:
+                if is_total_secret_mode(chat_id):
+                    return True, f"{key}:secret"
+            except Exception:
+                pass
+
+        # Ordinary chat/navigation text does not need cloud task persistence.
+        return False, f"{key}:noncritical_content"
+
+    # Callback-кнопки намеренно НЕ кладём в MEGA-task: большинство из них навигация/переключатели,
+    # а часть запускает свои фоновые очереди. Их защищает v104 webhook retry, зато кнопки не получают
+    # дополнительных сетевых задержек MEGA и не возникает риск повторного toggle после deploy.
+    if isinstance(payload.get("callback_query"), dict):
+        return False, "callback:webhook_retry_only"
+    return False, "noncritical_update"
+
+
+def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type: str = "other", reason: str = "") -> dict:
+    key = _mega_task_id(update_id)
+    context = {}
+    if chat_id is not None:
+        try:
+            store = get_chat_store(int(chat_id))
+            waits = {
+                str(k): _delta_json_clone(v)
+                for k, v in (store or {}).items()
+                if str(k).endswith("_wait") and bool(v)
+            }
+            if waits:
+                context["wait_states"] = waits
+            if (store or {}).get("current_view_day"):
+                context["current_view_day"] = str(store.get("current_view_day"))
+        except Exception as e:
+            log_error(f"MEGA TASK context capture update={key}: {e}")
+    return {
+        "kind": "telegram_bot_durable_task",
+        "schema_version": 2,
+        "bot_version": VERSION,
+        "task_id": key,
+        "update_id": int(update_id) if str(update_id).lstrip("-").isdigit() else str(update_id),
+        "created_at": now_local().isoformat(timespec="microseconds"),
+        "chat_id": chat_id,
+        "update_type": str(update_type or "other"),
+        "reason": str(reason or "critical_update"),
+        "context": context,
+        "payload": _delta_json_clone(payload or {}),
+    }
+
+
+def restore_mega_task_context(task: dict):
+    """Restore transient input/wait context captured at receipt before replay after deploy.
+
+    This is what keeps an article/finance edit answer meaningful even if Render wiped the
+    local SQLite after the prompt was opened but before the answer was processed.
+    """
+    if not isinstance(task, dict):
+        return
+    chat_id = task.get("chat_id")
+    if chat_id is None:
+        return
+    context = task.get("context") or {}
+    waits = context.get("wait_states") or {}
+    changed = False
+    try:
+        store = get_chat_store(int(chat_id))
+        for key, value in waits.items():
+            if str(key).endswith("_wait") and value and not store.get(str(key)):
+                store[str(key)] = _delta_json_clone(value)
+                changed = True
+        if context.get("current_view_day") and not store.get("current_view_day"):
+            store["current_view_day"] = str(context.get("current_view_day"))
+            changed = True
+        if changed:
+            save_data(data, chat_ids=[int(chat_id)])
+            bot_journal("mega_task_context_restored", int(chat_id), f"task={task.get('task_id')} waits={list(waits.keys())}")
+    except Exception as e:
+        log_error(f"restore_mega_task_context task={task.get('task_id')}: {e}")
+
+
+def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
+    """Write-before-execute: task exists in MEGA before it may enter a RAM worker queue."""
+    global _mega_task_last_error
+    if not mega_tasks_active():
+        return False
+    key = _mega_task_id(update_id)
+    known = mega_task_known_state(key)
+    if known in {"pending", "running", "done"}:
+        return True
+    local_path = None
+    try:
+        remote_dir = mega_task_remote_dir("pending")
+        if not ensure_mega_task_dirs():
+            raise RuntimeError("MEGA task directories unavailable")
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
+        candidate_name = f"candidate_task_{key}_{stamp}.json"
+        local_path = os.path.join(MEGA_LOCAL_TMP_DIR, candidate_name)
+        _save_json(local_path, task_payload)
+        _mega_run("mega-put", [local_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+        remote_candidate = f"{remote_dir.rstrip('/')}/{candidate_name}"
+        remote_final = mega_task_remote_path(key, "pending")
+        # update_id is unique, so a final file should not exist. If it does after a rare race,
+        # prefer the existing durable copy and remove only our candidate.
+        mv = _mega_run("mega-mv", [remote_candidate, remote_final], check=False, timeout=60)
+        if mv.returncode != 0:
+            existing = _mega_find_remote_files(remote_dir, mega_task_filename(key), limit=2)
+            if existing:
+                _mega_run("mega-rm", [remote_candidate], check=False, timeout=30)
+            else:
+                err = (mv.stderr or mv.stdout or "")[:500]
+                raise RuntimeError(f"task candidate move failed: {err}")
+        _mega_task_update_registry(key, "pending", remote_final)
+        with _MEGA_TASK_LOCK:
+            _mega_task_counters["persisted"] += 1
+        return True
+    except Exception as e:
+        _mega_task_last_error = str(e)[:500]
+        with _MEGA_TASK_LOCK:
+            _mega_task_counters["persist_errors"] += 1
+        log_error(f"[MEGA TASK PERSIST] update={key}: {e}")
+        return False
+    finally:
+        try:
+            if local_path and os.path.exists(local_path):
+                os.remove(local_path)
+        except Exception:
+            pass
+
+
+def _mega_task_move(update_id, from_state: str, to_state: str) -> bool:
+    global _mega_task_last_error
+    if not mega_tasks_active():
+        return False
+    key = _mega_task_id(update_id)
+    try:
+        src = mega_task_remote_path(key, from_state)
+        dst_dir = mega_task_remote_dir(to_state)
+        dst = mega_task_remote_path(key, to_state)
+        if not ensure_mega_task_dirs():
+            raise RuntimeError("MEGA task directories unavailable")
+        res = _mega_run("mega-mv", [src, dst], check=False, timeout=60)
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout or "")[:500]
+            # If destination already exists, treat move as completed.
+            found = _mega_find_remote_files(dst_dir, mega_task_filename(key), limit=2)
+            if not found:
+                raise RuntimeError(err or f"cannot move {src} -> {dst}")
+        _mega_task_update_registry(key, to_state, dst)
+        return True
+    except Exception as e:
+        _mega_task_last_error = str(e)[:500]
+        log_error(f"[MEGA TASK MOVE] update={key} {from_state}->{to_state}: {e}")
+        return False
+
+
+def mega_task_begin(update_id, allow_existing_running: bool = False) -> bool:
+    """Claim a persisted task for this process. Remote running state prevents double workers."""
+    key = _mega_task_id(update_id)
+    with _MEGA_TASK_LOCK:
+        if key in _mega_task_processing:
+            return False
+        state = mega_task_known_state(key)
+        if state == "done":
+            return False
+        if state == "running" and not allow_existing_running:
+            return False
+        _mega_task_processing.add(key)
+    try:
+        state = mega_task_known_state(key)
+        if state == "pending":
+            if not _mega_task_move(key, "pending", "running"):
+                return False
+        elif state == "failed":
+            if not _mega_task_move(key, "failed", "running"):
+                return False
+        elif state == "running" and allow_existing_running:
+            pass
+        else:
+            return False
+        return True
+    finally:
+        if mega_task_known_state(key) != "running":
+            with _MEGA_TASK_LOCK:
+                _mega_task_processing.discard(key)
+
+
+def _mega_task_prune_done_async():
+    def _job():
+        try:
+            rows = _mega_find_remote_files(mega_task_remote_dir("done"), "task_*.json")
+            for remote_path in rows[MEGA_TASK_DONE_KEEP:]:
+                _mega_run("mega-rm", [remote_path], check=False, timeout=30)
+                key = os.path.basename(remote_path).removeprefix("task_").removesuffix(".json")
+                with _MEGA_TASK_LOCK:
+                    if mega_task_known_state(key) == "done":
+                        _mega_task_registry.pop(key, None)
+        except Exception as e:
+            log_error(f"_mega_task_prune_done_async: {e}")
+    BACKUP_TASK_POOL.submit("mega-task-prune", _job)
+
+
+def mega_task_finish(update_id, success: bool, error: str = "") -> bool:
+    global _mega_task_last_error
+    key = _mega_task_id(update_id)
+    target = "done" if success else "failed"
+    ok = False
+    for attempt in range(MEGA_TASK_FINALIZE_RETRIES):
+        state = mega_task_known_state(key) or "running"
+        if state == target:
+            ok = True
+            break
+        if state == "done" and success:
+            ok = True
+            break
+        if _mega_task_move(key, state if state in {"pending", "running", "failed"} else "running", target):
+            ok = True
+            break
+        if attempt + 1 < MEGA_TASK_FINALIZE_RETRIES:
+            time.sleep(min(1.0, 0.2 * (attempt + 1)))
+    with _MEGA_TASK_LOCK:
+        _mega_task_processing.discard(key)
+        if success:
+            if ok:
+                _mega_task_counters["completed"] += 1
+            else:
+                _mega_task_counters["finalize_errors"] += 1
+        else:
+            _mega_task_counters["failed"] += 1
+    if success and ok:
+        _mega_task_prune_done_async()
+    if not ok:
+        _mega_task_last_error = f"finalize {target} failed for {key}: {error}"[:500]
+    return ok
+
+
+def mega_task_refresh_registry() -> dict:
+    """Load task states from MEGA in one recursive find. Safe to call at startup or manually."""
+    global _mega_task_registry_loaded_at, _mega_task_last_error
+    if not mega_tasks_active():
+        return mega_task_registry_stats()
+    try:
+        root = mega_task_remote_root()
+        if not ensure_mega_task_dirs(force=True):
+            raise RuntimeError("MEGA task directories unavailable")
+
+        # A deploy can happen after candidate upload but before candidate -> task_<id>.json move.
+        # Promote such orphan candidates before building the registry, so even that tiny window is recoverable.
+        for candidate in _mega_find_remote_files(root, "candidate_task_*.json", limit=None):
+            name = os.path.basename(candidate)
+            match = re.fullmatch(r"candidate_task_([A-Za-z0-9_-]+)_\d{8}_\d{6}_\d{6}\.json", name)
+            if not match:
+                continue
+            key = match.group(1)
+            final = mega_task_remote_path(key, "pending")
+            existing = _mega_find_remote_files(mega_task_remote_dir("pending"), mega_task_filename(key), limit=1)
+            if existing:
+                _mega_run("mega-rm", [candidate], check=False, timeout=30)
+            else:
+                _mega_run("mega-mv", [candidate, final], check=False, timeout=60)
+
+        rows = _mega_find_remote_files(root, "task_*.json", limit=None)
+        new_registry = {}
+        for path in rows:
+            name = os.path.basename(path)
+            match = re.fullmatch(r"task_([A-Za-z0-9_-]+)\.json", name)
+            if not match:
+                continue
+            state = ""
+            for candidate in ("pending", "running", "done", "failed"):
+                if f"/{candidate}/" in path.replace("\\", "/"):
+                    state = candidate
+                    break
+            if not state:
+                continue
+            key = match.group(1)
+            # done wins over stale duplicates; otherwise running > pending > failed.
+            rank = {"failed": 1, "pending": 2, "running": 3, "done": 4}
+            old = new_registry.get(key)
+            if old is None or rank[state] >= rank.get(old.get("state"), 0):
+                new_registry[key] = {"state": state, "path": path, "loaded_at": now_local().isoformat(timespec="seconds")}
+        # Keep in-process entries not yet visible in recursive find for a short race window.
+        with _MEGA_TASK_LOCK:
+            for key, row in _mega_task_registry.items():
+                if key in _mega_task_processing and key not in new_registry:
+                    new_registry[key] = dict(row)
+            _mega_task_registry.clear()
+            _mega_task_registry.update(new_registry)
+            _mega_task_registry_loaded_at = now_local().isoformat(timespec="seconds")
+        return mega_task_registry_stats()
+    except Exception as e:
+        _mega_task_last_error = str(e)[:500]
+        log_error(f"mega_task_refresh_registry: {e}")
+        return mega_task_registry_stats()
+
+
+def _mega_task_effect_exists(payload: dict) -> bool:
+    """Conservative duplicate guard for the most dangerous case: finance/forward message replay."""
+    try:
+        msg = None
+        for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
+            if isinstance((payload or {}).get(key), dict):
+                msg = payload[key]
+                break
+        if not isinstance(msg, dict):
+            return False
+        source_chat = int(((msg.get("chat") or {}).get("id")))
+        source_msg = int(msg.get("message_id") or 0)
+        if not source_msg:
+            return False
+        for cid_s, store in ((data or {}).get("chats", {}) or {}).items():
+            if not isinstance(store, dict):
+                continue
+            for rec in (store.get("records", []) or []):
+                if not isinstance(rec, dict):
+                    continue
+                if int(rec.get("forward_source_chat_id") or 0) == source_chat and int(rec.get("forward_source_msg_id") or 0) == source_msg:
+                    return True
+                # direct finance message in its own chat
+                try:
+                    cid = int(cid_s)
+                except Exception:
+                    cid = 0
+                if cid == source_chat and int(rec.get("source_msg_id") or 0) == source_msg:
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str = "other"):
+    """Single execution path used by live webhook and MEGA startup recovery."""
+    update = telebot.types.Update.de_json(payload)
+    if update_chat_id is None:
+        update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
+    with state_chat_context(update_chat_id):
+        if update_chat_id is None:
+            bot.process_new_updates([update])
+        else:
+            with locked_chat(update_chat_id):
+                bot.process_new_updates([update])
+
+
+def _mega_task_recover_one(update_id, state: str, remote_path: str):
+    key = _mega_task_id(update_id)
+    if mega_task_known_state(key) == "done":
+        return
+    if not mega_task_begin(key, allow_existing_running=(state == "running")):
+        return
+    try:
+        path = remote_path
+        if state == "pending":
+            path = mega_task_remote_path(key, "running")
+        local = _mega_download_remote_path(path)
+        task = _load_json(local, {}) if local else {}
+        payload = (task or {}).get("payload") or {}
+        if not isinstance(payload, dict) or not payload:
+            raise RuntimeError("task payload is empty")
+        restore_mega_task_context(task)
+        chat_id = (task or {}).get("chat_id")
+        update_type = str((task or {}).get("update_type") or "recovered")
+        # Strongest duplicate guard: a processed marker restored from global/delta means the
+        # business state was already durably committed before the previous process died.
+        if durable_update_processed(key):
+            mega_task_finish(key, True, "processed_marker_present")
+            with _MEGA_TASK_LOCK:
+                _mega_task_counters["skipped_done"] += 1
+            return
+        # Older/in-between running tasks may predate the marker. Finance/forward records have
+        # enough evidence to prove the effect exists; persist a marker before declaring done.
+        if state == "running" and _mega_task_effect_exists(payload):
+            if finalize_durable_task_after_business(key, chat_id, update_type):
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters["skipped_done"] += 1
+            else:
+                schedule_durable_task_finalize_retry(key, chat_id, update_type, 5.0)
+            return
+        _execute_telegram_payload(payload, key, chat_id, update_type)
+        finalized = finalize_durable_task_after_business(key, chat_id, update_type)
+        if not finalized:
+            schedule_durable_task_finalize_retry(key, chat_id, update_type, 5.0)
+        with _MEGA_TASK_LOCK:
+            _mega_task_counters["recovered"] += 1
+        bot_journal("mega_task_recovered", chat_id, f"update_id={key} state={state} finalized={finalized}")
+    except Exception as e:
+        mega_task_finish(key, False, str(e))
+        log_error(f"MEGA TASK RECOVERY FAILED update={key}: {e}")
+        try:
+            if OWNER_ID:
+                bot.send_message(int(OWNER_ID), f"⚠️ MEGA-задача {key} не восстановлена автоматически:\n{str(e)[:700]}")
+        except Exception:
+            pass
+
+
+def schedule_mega_task_recovery(delay: float | None = None):
+    """After data restore, replay pending/uncertain tasks independently of normal bot queues."""
+    if not mega_tasks_active():
+        return
+    delay = MEGA_TASK_RECOVERY_DELAY_SECONDS if delay is None else max(0.1, float(delay))
+
+    def _scan_and_submit():
+        stats = mega_task_refresh_registry()
+        rows = []
+        with _MEGA_TASK_LOCK:
+            for key, row in _mega_task_registry.items():
+                if row.get("state") in {"pending", "running"}:
+                    rows.append((key, str(row.get("state")), str(row.get("path") or "")))
+        rows = sorted(rows, key=lambda x: int(x[0]) if str(x[0]).isdigit() else str(x[0]))[:MEGA_TASK_RECOVERY_LIMIT]
+        for key, state, path in rows:
+            def _job(k=key, st=state, rp=path):
+                _mega_task_recover_one(k, st, rp)
+            if not WEBHOOK_TASK_POOL.submit("mega-recover-global", _job):
+                log_error(f"MEGA TASK RECOVERY QUEUE FULL update={key}")
+        log_info(f"[MEGA TASKS] registry pending={stats.get('pending')} running={stats.get('running')} failed={stats.get('failed')} recovery_submitted={len(rows)}")
+
+    DELAYED_SCHEDULER.cancel("mega-task-startup-recovery")
+    DELAYED_SCHEDULER.schedule("mega-task-startup-recovery", delay, _scan_and_submit)
+
+
+def mega_task_requeue_failed(limit: int = 20) -> int:
+    """Manual owner action only: move a bounded number of failed tasks back to pending."""
+    moved = 0
+    mega_task_refresh_registry()
+    with _MEGA_TASK_LOCK:
+        keys = [k for k, row in _mega_task_registry.items() if row.get("state") == "failed"][:max(1, int(limit))]
+    for key in keys:
+        if _mega_task_move(key, "failed", "pending"):
+            moved += 1
+    if moved:
+        schedule_mega_task_recovery(0.3)
+    return moved
+
+
 def current_month_key() -> str:
     return now_local().strftime("%Y-%m")
 
@@ -6023,7 +6775,7 @@ _DELTA_VOLATILE_ROOT_KEYS = {
     "chats", "records", "active_messages", "bot_errors", "_state_meta",
     "open_window_registry",
 }
-_DELTA_ROOT_MAP_KEYS = {"forward_index", "forward_rules", "forward_finance", "finance_active_chats", "_global_settings", "csv_meta", "chat_backup_meta", "backup_flags"}
+_DELTA_ROOT_MAP_KEYS = {"forward_index", "forward_rules", "forward_finance", "finance_active_chats", "_global_settings", "csv_meta", "chat_backup_meta", "backup_flags", "_durable_processed_updates"}
 _DELTA_GLOBAL_SETTINGS_EXCLUDE = {
     "version_mode_snapshots",  # хранится в полном global/config backup, а не в каждой финансовой delta
 }
@@ -17456,7 +18208,7 @@ def build_owner_instruction_text() -> str:
         "📤 Пересылка\n"
         "Меню пересылки задаёт связанные чаты и финансовую обработку копий. Режим «как у владельца» создаёт отдельный owner scope: настройки такого владельца сохраняются независимо.\n\n"
         "💾 Сохранение\n"
-        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup. Входящий Telegram update подтверждается только после фактической обработки; если он застрял или Render перезапустился, Telegram повторит его."
+        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup. В v105 содержательные message/edited_message сначала фиксируются маленьким task-файлом в MEGA, затем выполняются; перед статусом done итог и idempotency-marker синхронно попадают в delta. Callback-кнопки остаются быстрыми и защищаются Telegram webhook retry без лишней MEGA-задержки."
     )
 
 def build_owner_instruction_keyboard(chat_id: int):
@@ -17499,6 +18251,18 @@ def build_queue_status_text() -> str:
         f"готово {uds['completed']}, повторы {uds['duplicates']}, timeout {uds['timeouts']}, "
         f"retry {uds['retries']}, ACK ждёт до {uds['ack_wait']}с"
     )
+    mts = mega_task_registry_stats() if "mega_task_registry_stats" in globals() else {}
+    lines.append(
+        f"☁️ MEGA-задачи: pending {mts.get('pending', 0)}, running {mts.get('running', 0)}, "
+        f"failed {mts.get('failed', 0)}, done {mts.get('done', 0)}, сейчас {mts.get('processing', 0)}"
+    )
+    lines.append(
+        f"MEGA task: сохранено {mts.get('persisted', 0)}, восстановлено {mts.get('recovered', 0)}, "
+        f"уже выполнено {mts.get('skipped_done', 0)}, ошибки записи {mts.get('persist_errors', 0)}, "
+        f"ошибки финализации {mts.get('finalize_errors', 0)}"
+    )
+    if mts.get('last_error'):
+        lines.append(f"Последняя ошибка MEGA task: {str(mts.get('last_error'))[:180]}")
     lines.append(f"Excel-бэкап всех чатов: {backup_excel_all_label()}")
     lines.append(f"Telegram общий интервал: {TELEGRAM_GLOBAL_MIN_GAP:.3f}с")
     return "\n".join(lines)
@@ -20230,8 +20994,43 @@ def on_callback(call):
                 return
             kbq = types.InlineKeyboardMarkup()
             kbq.row(IB("🔄 Обновить", callback_data="info_queues"))
+            if mega_tasks_active():
+                kbq.row(IB("☁️ Проверить MEGA-задачи", callback_data="mega_tasks_check"))
+                kbq.row(IB("▶️ Поднять pending/running", callback_data="mega_tasks_recover"))
+                if mega_task_registry_stats().get("failed", 0):
+                    kbq.row(IB("🔁 Повторить до 20 ошибок", callback_data="mega_tasks_retry_failed"))
             kbq.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
             safe_edit(bot, call, build_queue_status_text(), reply_markup=kbq)
+            return
+        if data_str == "mega_tasks_check":
+            if not is_owner_chat(chat_id):
+                return
+            mega_task_refresh_registry()
+            kbq = types.InlineKeyboardMarkup()
+            kbq.row(IB("🔄 Обновить", callback_data="info_queues"))
+            kbq.row(IB("▶️ Поднять pending/running", callback_data="mega_tasks_recover"))
+            if mega_task_registry_stats().get("failed", 0):
+                kbq.row(IB("🔁 Повторить до 20 ошибок", callback_data="mega_tasks_retry_failed"))
+            kbq.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
+            safe_edit(bot, call, build_queue_status_text(), reply_markup=kbq)
+            return
+        if data_str == "mega_tasks_recover":
+            if not is_owner_chat(chat_id):
+                return
+            schedule_mega_task_recovery(0.1)
+            try:
+                bot.answer_callback_query(call.id, "Проверка и восстановление поставлены в очередь")
+            except Exception:
+                pass
+            return
+        if data_str == "mega_tasks_retry_failed":
+            if not is_owner_chat(chat_id):
+                return
+            moved = mega_task_requeue_failed(20)
+            try:
+                bot.answer_callback_query(call.id, f"Возвращено в pending: {moved}")
+            except Exception:
+                pass
             return
         if data_str == "info_finance_off":
             try:
@@ -24228,6 +25027,34 @@ def telegram_webhook():
         # стоит за другой задачей этого чата. Секретные таймеры не меняются.
         _protect_pending_ui_timers_on_receipt(payload)
 
+        # v105: критическое содержимое сначала получает маленькую durable-card в MEGA.
+        # Только после подтверждённой записи pending задача может войти в RAM worker.
+        durable_cloud, durable_reason = durable_task_required(payload)
+        if durable_cloud:
+            if durable_update_processed(update_id):
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters["skipped_done"] += 1
+                return "OK", 200
+            cloud_state = mega_task_known_state(update_id)
+            if cloud_state == "done":
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters["skipped_done"] += 1
+                return "OK", 200
+            if cloud_state == "running":
+                # После deploy это означает: выполнение уже начиналось. Не запускаем второй worker
+                # через webhook; recovery-контур сам сверит/доделает такую задачу.
+                schedule_mega_task_recovery(0.2)
+                return "TASK RUNNING", 503
+            if cloud_state == "failed":
+                if not _mega_task_move(update_id, "failed", "pending"):
+                    return "TASK RETRY PENDING", 503
+                cloud_state = "pending"
+            if cloud_state != "pending":
+                task_payload = _build_mega_task_payload(update_id, payload, update_chat_id, update_type, durable_reason)
+                if not _mega_task_upload_new_pending(update_id, task_payload):
+                    # Не исполняем критическую команду без внешнего свидетеля. Telegram повторит update.
+                    return "TASK BACKUP UNAVAILABLE", 503
+
         claim_state, ticket = UPDATE_DISPATCHER.claim(update_id, update_chat_id, update_type)
         if claim_state == "done":
             return "OK", 200
@@ -24239,31 +25066,38 @@ def telegram_webhook():
                 started = time.time()
                 wait = started - update_enqueued_at
                 UPDATE_DISPATCHER.mark_started(update_id)
-                bot_journal("update_process_start", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s")
+                bot_journal("update_process_start", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s durable={durable_cloud}")
                 success = False
                 error_text = ""
+                durable_started = False
                 try:
-                    with state_chat_context(update_chat_id):
-                        if update_chat_id is None:
-                            bot.process_new_updates([update])
-                        else:
-                            # Порядок и целостность одного чата сохраняем как раньше.
-                            # Диспетчер независим, но не запускает две мутации одного чата одновременно.
-                            with locked_chat(update_chat_id):
-                                bot.process_new_updates([update])
+                    if durable_cloud:
+                        durable_started = mega_task_begin(update_id, allow_existing_running=False)
+                        if not durable_started:
+                            raise RuntimeError("MEGA durable task could not enter running state")
+                    _execute_telegram_payload(payload, update_id, update_chat_id, update_type)
                     success = True
+                    if durable_cloud:
+                        finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type)
+                        if not finalized:
+                            # Бизнес уже выполнен, но облачный commit ещё не подтверждён.
+                            # Не повторяем бизнес; отдельный retry только допишет marker/delta и running->done.
+                            schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 5.0)
+                            log_error(f"MEGA TASK FINALIZE DEFERRED update={update_id}; business already completed")
                 except Exception as exc:
                     error_text = str(exc)
+                    if durable_cloud and durable_started:
+                        mega_task_finish(update_id, False, error_text)
                     log_error(f"WEBHOOK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}")
                     raise
                 finally:
                     UPDATE_DISPATCHER.finish(update_id, success, error_text)
-                    bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s success={success}")
+                    bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s success={success} durable={durable_cloud}")
 
             if not WEBHOOK_TASK_POOL.submit(update_key, _process_update):
                 log_error(f"WEBHOOK QUEUE FULL: chat={update_chat_id}")
                 UPDATE_DISPATCHER.release_failed_enqueue(update_id, "webhook_queue_full")
-                # Telegram повторит update позже; данные не теряются молча.
+                # Telegram повторит update позже; pending-файл уже сохранён в MEGA.
                 return "BUSY", 503
 
         # В отличие от v103, не подтверждаем Telegram задачу, которая только лежит в RAM.
@@ -24394,6 +25228,18 @@ def main():
         initialize_delta_baseline(data)
     except Exception as e:
         log_error(f"initialize_delta_baseline: {e}")
+    # v105: загрузить реестр durable tasks только ПОСЛЕ восстановления global+delta,
+    # но ДО начала приёма новых webhook. Сами pending/running выполняются отдельным worker позже.
+    if mega_tasks_active():
+        try:
+            task_stats = mega_task_refresh_registry()
+            log_info(
+                f"[MEGA TASKS STARTUP] pending={task_stats.get('pending', 0)} "
+                f"running={task_stats.get('running', 0)} failed={task_stats.get('failed', 0)} "
+                f"done={task_stats.get('done', 0)}"
+            )
+        except Exception as e:
+            log_error(f"mega_task_refresh_registry startup: {e}")
     if OWNER_ID:
         try:
             finance_active_chats.add(int(OWNER_ID))
@@ -24401,6 +25247,8 @@ def main():
             pass
     log_info(f"Данные загружены из SQLite ({DB_FILE}). Версия бота: {VERSION}")
     set_webhook()
+    if mega_tasks_active():
+        schedule_mega_task_recovery(MEGA_TASK_RECOVERY_DELAY_SECONDS)
     start_keep_alive_thread()
     owner_id = None
     if OWNER_ID:
@@ -24418,6 +25266,7 @@ def main():
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
+                    f"MEGA-задачи: pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\n"
                     f"Бэкап v91: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
@@ -24447,5 +25296,12 @@ if __name__ == "__main__":
 # ─────────────────────────────────────────────────────────────
 # BOT FILE: bot_v104_durable_dispatcher_timers.py
 # BOT VERSION: bot_v104_durable_dispatcher_timers
+# END OF BOT FILE
+# ─────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────
+# BOT FILE: bot_v105_mega_durable_tasks.py
+# BOT VERSION: bot_v105_mega_durable_tasks
 # END OF BOT FILE
 # ─────────────────────────────────────────────────────────────
