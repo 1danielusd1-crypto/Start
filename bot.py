@@ -373,8 +373,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v103_compact_mega_delta_safe"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v103_compact_mega_delta_safe.py"
+VERSION = "bot_v104_observer_durable_timers"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v104_observer_durable_timers.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -2525,7 +2525,7 @@ def _touch_v98_auto_close_for_callback(chat_id: int, message_id: int, data_str: 
     try:
         code = window_code_for_callback(data_str, owner_chat=is_owner_chat(chat_id))
         if code in {"о98", "в98", "Ф9998"}:
-            _schedule_v98_auto_close(chat_id, message_id, 60)
+            _schedule_v98_auto_close(chat_id, message_id, internal_timer_seconds("v98_window"))
         else:
             _cancel_v98_auto_close(chat_id, message_id)
     except Exception:
@@ -9213,6 +9213,164 @@ def describe_msg_for_log(msg) -> str:
         return "msg=?"
 
 
+
+# ─────────────────────────────────────────────────────────────
+# v104 durable observer / witness queue
+# Render local SQLite is ephemeral, therefore every accepted critical task is
+# immediately included in a compact MEGA delta before execution.
+# ─────────────────────────────────────────────────────────────
+_OBSERVER_LOCK = threading.RLock()
+_OBSERVER_RUNNING = set()
+_OBSERVER_MAX_HISTORY = 500
+
+
+def _observer_store() -> dict:
+    root = data.setdefault("observer_tasks", {})
+    if not isinstance(root, dict):
+        root = {}
+        data["observer_tasks"] = root
+    return root
+
+
+def _observer_trim():
+    tasks = _observer_store()
+    if len(tasks) <= _OBSERVER_MAX_HISTORY:
+        return
+    ordered = sorted(tasks.items(), key=lambda kv: str((kv[1] or {}).get("created_at") or ""))
+    removable = [k for k,v in ordered if str((v or {}).get("status")) in {"done","cancelled","failed"}]
+    for key in removable[:max(0, len(tasks)-_OBSERVER_MAX_HISTORY)]:
+        tasks.pop(key, None)
+
+
+def observer_accept(task_type: str, chat_id: int, payload: dict, *, dedupe_key: str | None = None, priority: int = 10) -> str:
+    """Fix a task locally and in MEGA before its worker may execute it."""
+    with _OBSERVER_LOCK:
+        tasks = _observer_store()
+        if dedupe_key:
+            for tid,item in tasks.items():
+                if str((item or {}).get("dedupe_key") or "") == str(dedupe_key) and str((item or {}).get("status")) in {"pending","running","done"}:
+                    return str(tid)
+        tid = f"T{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
+        tasks[tid] = {
+            "task_id": tid,
+            "task_type": str(task_type),
+            "priority": int(priority),
+            "status": "pending",
+            "chat_id": int(chat_id),
+            "payload": _delta_json_clone(payload or {}),
+            "dedupe_key": str(dedupe_key or ""),
+            "created_at": now_local().isoformat(timespec="milliseconds"),
+            "started_at": None,
+            "finished_at": None,
+            "attempts": 0,
+            "max_attempts": 5,
+            "last_error": "",
+            "cloud_confirmed": False,
+        }
+        _observer_trim()
+        save_data(data)
+    # Critical witness: do not rely on Render disk. Persist the pending task to MEGA now.
+    try:
+        tasks[tid]["cloud_confirmed"] = bool(persist_critical_delta_now(int(chat_id)))
+        save_data(data)
+    except Exception as e:
+        tasks[tid]["last_error"] = f"witness mega: {e}"
+        save_data(data)
+        schedule_delta_backup(int(chat_id), delay=0.5, reason="observer_accept_retry")
+    return tid
+
+
+def _observer_finish(tid: str, status: str, result: dict | None = None, error: str = ""):
+    with _OBSERVER_LOCK:
+        item = _observer_store().get(str(tid))
+        if not isinstance(item, dict):
+            return
+        item["status"] = str(status)
+        item["finished_at"] = now_local().isoformat(timespec="milliseconds")
+        item["result"] = _delta_json_clone(result or {})
+        item["last_error"] = str(error or "")[:1500]
+        save_data(data)
+    try:
+        schedule_delta_backup(int(item.get("chat_id") or 0), delay=0.5, reason=f"observer_{status}")
+    except Exception:
+        pass
+
+
+def _observer_execute(tid: str):
+    with _OBSERVER_LOCK:
+        item = _observer_store().get(str(tid))
+        if not isinstance(item, dict) or str(item.get("status")) not in {"pending","retry","running"}:
+            return
+        if tid in _OBSERVER_RUNNING:
+            return
+        _OBSERVER_RUNNING.add(tid)
+        item["status"] = "running"
+        item["started_at"] = now_local().isoformat(timespec="milliseconds")
+        item["attempts"] = int(item.get("attempts") or 0) + 1
+        save_data(data)
+    try:
+        typ = str(item.get("task_type") or "")
+        pl = item.get("payload") or {}
+        if typ == "edit_expense_category":
+            target_chat_id = int(pl.get("target_chat_id"))
+            edited = update_custom_expense_category(target_chat_id, str(pl.get("slug")), str(pl.get("name")), list(pl.get("keywords") or []))
+            if not edited:
+                raise RuntimeError("article not found")
+            _observer_finish(tid, "done", {"name": edited.get("name"), "target_chat_id": target_chat_id})
+        elif typ == "add_expense_category":
+            target_chat_id = int(pl.get("target_chat_id"))
+            added = add_custom_expense_category(target_chat_id, str(pl.get("name")), list(pl.get("keywords") or []))
+            _observer_finish(tid, "done", {"name": added.get("name"), "target_chat_id": target_chat_id})
+        else:
+            raise RuntimeError(f"unknown observer task: {typ}")
+    except Exception as e:
+        with _OBSERVER_LOCK:
+            cur = _observer_store().get(str(tid)) or {}
+            attempts = int(cur.get("attempts") or 0)
+            max_attempts = int(cur.get("max_attempts") or 5)
+            if attempts < max_attempts:
+                cur["status"] = "retry"
+                cur["last_error"] = str(e)[:1500]
+                save_data(data)
+                DELAYED_SCHEDULER.schedule(f"observer-retry:{tid}", min(60, 2 ** attempts), _observer_submit, tid)
+            else:
+                _observer_finish(tid, "failed", error=str(e))
+    finally:
+        with _OBSERVER_LOCK:
+            _OBSERVER_RUNNING.discard(tid)
+
+
+def _observer_submit(tid: str) -> bool:
+    return bool(GENERAL_TASK_POOL.submit(f"observer:{tid}", _observer_execute, str(tid)))
+
+
+def resume_observer_tasks():
+    """Resume pending tasks restored from MEGA after Render deploy."""
+    count = 0
+    with _OBSERVER_LOCK:
+        for tid,item in list(_observer_store().items()):
+            if isinstance(item, dict) and str(item.get("status")) in {"pending","running","retry"}:
+                item["status"] = "pending"
+                if _observer_submit(str(tid)):
+                    count += 1
+        save_data(data)
+    log_info(f"[OBSERVER] resumed={count}")
+
+
+def observer_status_text() -> str:
+    counts = {k:0 for k in ("pending","running","retry","done","failed","cancelled")}
+    for item in _observer_store().values():
+        st = str((item or {}).get("status") or "pending")
+        counts[st] = counts.get(st,0)+1
+    return wm_owner(
+        "🧠 Наблюдатель задач\n\n"
+        f"Ожидают: {counts.get('pending',0)}\n"
+        f"Выполняются: {counts.get('running',0)}\n"
+        f"Повтор: {counts.get('retry',0)}\n"
+        f"Выполнено: {counts.get('done',0)}\n"
+        f"Ошибки: {counts.get('failed',0)}\n\n"
+        "Критическая задача сначала фиксируется в состоянии и компактной delta MEGA, затем выполняется worker. После deploy pending-задачи восстанавливаются из MEGA.", 9)
+
 def _category_add_prompt_text(target_chat_id: int) -> str:
     return wm_common((
         f"➕ Добавление статьи расходов для: {get_chat_display_name(target_chat_id)}\n\n"
@@ -9251,7 +9409,7 @@ def start_category_add_wait(owner_chat_id: int, target_chat_id: int, owner_day_k
     store["category_add_wait"]["prompt_msg_id"] = prompt_id
     store["category_add_wait"]["countdown_base_text"] = text
     save_data(data)
-    schedule_cancel_category_wait(owner_chat_id, "category_add_wait", prompt_id, 60.0)
+    schedule_cancel_category_wait(owner_chat_id, "category_add_wait", prompt_id, internal_timer_seconds("category_wait"))
     bot_journal("category_add_wait_start", owner_chat_id, f"target={get_chat_display_name(target_chat_id)}")
 
 
@@ -9271,13 +9429,18 @@ def handle_category_add_message(msg) -> bool:
             clear_category_wait_state(chat_id, "category_add_wait", delete_prompt=True)
             send_and_auto_delete(chat_id, "❎ Добавление статьи отменено.", 10)
             return True
-        item = add_custom_expense_category(target_chat_id, name, keywords)
-        clear_category_wait_state(chat_id, "category_add_wait", delete_prompt=True)
-        send_and_auto_delete(
-            chat_id,
-            f"✅ Статья добавлена: {item.get('name')}\nКлючи: {', '.join(item.get('keywords', []))}",
-            20
-        )
+        tid = observer_accept("add_expense_category", chat_id, {"target_chat_id": target_chat_id, "name": name, "keywords": keywords, "source_message_id": int(msg.message_id)}, dedupe_key=f"addcat:{chat_id}:{msg.message_id}", priority=5)
+        clear_category_wait_state(chat_id, "category_add_wait", delete_prompt=False)
+        _observer_submit(tid)
+        try:
+            day = get_chat_store(chat_id).get("current_view_day") or today_key()
+            txt, _ = render_day_window(chat_id, day)
+            prompt_id = int(wait.get("prompt_msg_id") or 0)
+            if prompt_id:
+                bot.edit_message_text(txt, chat_id=chat_id, message_id=prompt_id, reply_markup=build_main_keyboard(day, chat_id), parse_mode=None)
+        except Exception:
+            pass
+        send_and_auto_delete(chat_id, f"⏳ Задача {tid} принята наблюдателем.", 12)
         try:
             bot.delete_message(chat_id, msg.message_id)
         except Exception:
@@ -9333,9 +9496,14 @@ def schedule_cancel_category_wait(chat_id: int, field: str, prompt_message_id: i
             wait = store.get(field) or {}
             if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
                 return
-            cleared = clear_category_wait_state(chat_id, field, prompt_message_id, delete_prompt=True)
+            cleared = clear_category_wait_state(chat_id, field, prompt_message_id, delete_prompt=False)
             if cleared:
-                send_and_auto_delete(chat_id, "⌛ Время ожидания истекло. Команда отменена.", 8)
+                try:
+                    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+                    txt, _ = render_day_window(chat_id, day)
+                    bot.edit_message_text(txt, chat_id=chat_id, message_id=int(prompt_message_id), reply_markup=build_main_keyboard(day, chat_id), parse_mode=None)
+                except Exception:
+                    pass
         except Exception as e:
             log_error(f"schedule_cancel_category_wait({chat_id},{field},{prompt_message_id}): {e}")
 
@@ -9497,7 +9665,7 @@ def start_category_edit_wait(chat_id: int, target_chat_id: int, slug: str):
         "started_at": now_local().isoformat(timespec="seconds"),
     }
     save_data(data)
-    schedule_cancel_category_wait(chat_id, "category_edit_wait", prompt_id, 60.0)
+    schedule_cancel_category_wait(chat_id, "category_edit_wait", prompt_id, internal_timer_seconds("category_wait"))
 
 
 def handle_category_edit_message(msg) -> bool:
@@ -9517,12 +9685,20 @@ def handle_category_edit_message(msg) -> bool:
         name, keywords = parse_category_definition(text)
         if not name:
             raise ValueError("format")
-        item = update_custom_expense_category(int(wait.get("target_chat_id") or chat_id), str(wait.get("slug")), name, keywords)
-        clear_category_wait_state(chat_id, "category_edit_wait", delete_prompt=True)
-        if item:
-            send_and_auto_delete(chat_id, f"✅ Статья изменена: {item.get('name')}\nКлючи: {', '.join(item.get('keywords', []))}", 20)
-        else:
-            send_and_auto_delete(chat_id, "❌ Статья не найдена.", 10)
+        target_chat_id = int(wait.get("target_chat_id") or chat_id)
+        slug = str(wait.get("slug"))
+        tid = observer_accept("edit_expense_category", chat_id, {"target_chat_id": target_chat_id, "slug": slug, "name": name, "keywords": keywords, "source_message_id": int(msg.message_id)}, dedupe_key=f"editcat:{chat_id}:{msg.message_id}:{slug}", priority=1)
+        prompt_id = int(wait.get("prompt_msg_id") or 0)
+        clear_category_wait_state(chat_id, "category_edit_wait", delete_prompt=False)
+        _observer_submit(tid)
+        try:
+            day = get_chat_store(chat_id).get("current_view_day") or today_key()
+            txt, _ = render_day_window(chat_id, day)
+            if prompt_id:
+                bot.edit_message_text(txt, chat_id=chat_id, message_id=prompt_id, reply_markup=build_main_keyboard(day, chat_id), parse_mode=None)
+        except Exception:
+            pass
+        send_and_auto_delete(chat_id, f"⏳ Задача {tid} принята наблюдателем.", 12)
         try:
             bot.delete_message(chat_id, msg.message_id)
         except Exception:
@@ -17294,6 +17470,77 @@ def keep_alive_status_text() -> str:
     return wm_owner("\n".join(lines), 9)
 
 
+
+# v104 configurable internal timers (global for all behavior profiles)
+_INTERNAL_TIMER_DEFS = {
+    "category_wait": ("Редактирование/добавление статьи", 60),
+    "aux_window": ("Вспомогательные окна", 60),
+    "v98_window": ("Окна о98/в98", 60),
+    "helper_delete": ("Служебные сообщения", 20),
+    "mega_delta": ("Delta MEGA", 1),
+}
+_TIMER_EDIT_STATE = {}
+
+
+def internal_timer_seconds(key: str) -> int:
+    cfg = data.setdefault("_global_settings", {}).setdefault("internal_timer_seconds", {})
+    default = int(_INTERNAL_TIMER_DEFS.get(str(key), (str(key), 60))[1])
+    try:
+        return max(0, min(24*3600, int(cfg.get(str(key), default))))
+    except Exception:
+        return default
+
+
+def set_internal_timer_seconds(key: str, seconds: int):
+    cfg = data.setdefault("_global_settings", {}).setdefault("internal_timer_seconds", {})
+    cfg[str(key)] = max(0, min(24*3600, int(seconds)))
+    save_data(data)
+    try:
+        persist_critical_delta_now(int(OWNER_ID or 0))
+    except Exception:
+        schedule_delta_backup(int(OWNER_ID or 0), delay=0.5, reason="timer_setting")
+
+
+def _fmt_timer_value(seconds: int) -> str:
+    m,s = divmod(max(0,int(seconds)),60)
+    return f"{m}м {s}с"
+
+
+def build_internal_timers_text() -> str:
+    lines=["⏱ Внутренние таймеры", "", "Настройка единая для всех режимов бота.", "Секретные режимы сюда не входят.", ""]
+    for key,(name,_) in _INTERNAL_TIMER_DEFS.items():
+        lines.append(f"• {name}: {_fmt_timer_value(internal_timer_seconds(key))}")
+    return wm_owner("\n".join(lines),9)
+
+
+def build_internal_timers_keyboard():
+    kb=types.InlineKeyboardMarkup(row_width=1)
+    for key,(name,_) in _INTERNAL_TIMER_DEFS.items():
+        kb.row(IB(f"{name} — {_fmt_timer_value(internal_timer_seconds(key))}", callback_data=f"timer_pick:{key}"))
+    kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
+    return kb
+
+
+def build_timer_digits_keyboard(chat_id: int, key: str):
+    state=_TIMER_EDIT_STATE.setdefault(int(chat_id), {"key":str(key),"digits":"","unit":"s"})
+    state["key"]=str(key)
+    kb=types.InlineKeyboardMarkup(row_width=3)
+    digits=[IB(str(i),callback_data=f"timer_digit:{key}:{i}") for i in range(10)]
+    for i in range(0,9,3): kb.row(*digits[i:i+3])
+    kb.row(digits[9], IB("⌫",callback_data=f"timer_backspace:{key}"), IB("Сброс",callback_data=f"timer_clear:{key}"))
+    kb.row(IB("м",callback_data=f"timer_unit:{key}:m"), IB("с",callback_data=f"timer_unit:{key}:s"))
+    kb.row(IB("✅ Выбрать",callback_data=f"timer_apply:{key}"))
+    kb.row(IB("⬅️ Назад",callback_data="internal_timers"), IB("❌ Отмена",callback_data="version_back"))
+    return kb
+
+
+def build_timer_digits_text(chat_id: int,key: str) -> str:
+    state=_TIMER_EDIT_STATE.setdefault(int(chat_id), {"key":str(key),"digits":"","unit":"s"})
+    name=_INTERNAL_TIMER_DEFS.get(str(key),(str(key),60))[0]
+    digits=state.get("digits") or "0"
+    unit="минут" if state.get("unit")=="m" else "секунд"
+    return wm_owner(f"⏱ {name}\n\nВведите число кнопками 0–9, выберите м или с и нажмите «Выбрать».\n\nСейчас набрано: {digits} {unit}\nТекущее значение: {_fmt_timer_value(internal_timer_seconds(key))}",9)
+
 def build_info_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     layout = version_mode_layout()
@@ -17362,6 +17609,10 @@ def build_info_keyboard(chat_id: int):
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
+        )
+        kb.row(
+            IB("🧠 Наблюдатель", callback_data="observer_status"),
+            IB("⏱ Внутренние таймеры", callback_data="internal_timers"),
         )
         if active_bot_behavior_profile() in {"v93_current", "v92_current", "v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
@@ -19767,6 +20018,55 @@ def on_callback(call):
             mode_text = "сначала и сразу в MEGA" if new_state else "как обычно"
             bot_journal("mega_priority_toggle", chat_id, f"enabled={new_state}")
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nБэкап MEGA: {mode_text}", reply_markup=build_info_keyboard(chat_id))
+            return
+        if data_str == "observer_status":
+            if not is_owner_chat(chat_id):
+                return
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.row(IB("🔄 Обновить", callback_data="observer_status"))
+            kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
+            safe_edit(bot, call, observer_status_text(), reply_markup=kb)
+            return
+        if data_str == "internal_timers":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(bot, call, build_internal_timers_text(), reply_markup=build_internal_timers_keyboard())
+            return
+        if data_str.startswith("timer_pick:"):
+            key=data_str.split(":",1)[1]
+            _TIMER_EDIT_STATE[int(chat_id)]={"key":key,"digits":"","unit":"s"}
+            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
+            return
+        if data_str.startswith("timer_digit:"):
+            _,key,digit=data_str.split(":",2)
+            st=_TIMER_EDIT_STATE.setdefault(int(chat_id),{"key":key,"digits":"","unit":"s"})
+            st["digits"]=(str(st.get("digits") or "")+digit)[-6:]
+            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
+            return
+        if data_str.startswith("timer_backspace:"):
+            key=data_str.split(":",1)[1]
+            st=_TIMER_EDIT_STATE.setdefault(int(chat_id),{"key":key,"digits":"","unit":"s"})
+            st["digits"]=str(st.get("digits") or "")[:-1]
+            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
+            return
+        if data_str.startswith("timer_clear:"):
+            key=data_str.split(":",1)[1]
+            _TIMER_EDIT_STATE[int(chat_id)]={"key":key,"digits":"","unit":"s"}
+            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
+            return
+        if data_str.startswith("timer_unit:"):
+            _,key,unit=data_str.split(":",2)
+            st=_TIMER_EDIT_STATE.setdefault(int(chat_id),{"key":key,"digits":"","unit":"s"})
+            st["unit"]=unit
+            safe_edit(bot, call, build_timer_digits_text(chat_id,key), reply_markup=build_timer_digits_keyboard(chat_id,key))
+            return
+        if data_str.startswith("timer_apply:"):
+            key=data_str.split(":",1)[1]
+            st=_TIMER_EDIT_STATE.get(int(chat_id),{})
+            value=int(st.get("digits") or 0)
+            seconds=value*60 if st.get("unit")=="m" else value
+            set_internal_timer_seconds(key,seconds)
+            safe_edit(bot, call, build_internal_timers_text(), reply_markup=build_internal_timers_keyboard())
             return
         if data_str == "info_instruction":
             if not is_owner_chat(chat_id):
@@ -23847,6 +24147,10 @@ def main():
     # После MEGA restore повторно поднимаем индекс пересылки в память.
     # Это позволяет редактировать старые сообщения сразу после деплоя.
     _restore_runtime_state_from_data(data)
+    try:
+        resume_observer_tasks()
+    except Exception as e:
+        log_error(f"resume_observer_tasks: {e}")
     if not RESTORE_GUARD_ACTIVE:
         save_data(data)
         data["forward_rules"] = load_forward_rules()
@@ -23915,3 +24219,7 @@ if __name__ == "__main__":
 # BOT VERSION: bot_v103_compact_mega_delta_safe
 # END OF BOT FILE
 # ─────────────────────────────────────────────────────────────
+
+# BOT FILE: bot_v104_observer_durable_timers.py
+# BOT VERSION: bot_v104_observer_durable_timers
+# PURPOSE: MEGA-durable observer queue + global internal timer settings
