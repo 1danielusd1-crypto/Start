@@ -622,8 +622,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v111_durable_journal_render_history"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v108_boot_shutdown_watcher_finwindows.py"
+VERSION = "bot_v112_runtime_forensics_stability"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v112_runtime_forensics_stability.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -1806,6 +1806,33 @@ def _journal_read_file_rows(limit: int = 20000) -> list[dict]:
         return []
     return rows
 
+
+
+def _atomic_json_dump(path: str, payload) -> None:
+    """Atomically write JSON on the local ephemeral disk before a MEGA upload.
+
+    v111 referenced this helper before it existed, so both runtime_latest and the
+    durable journal failed to persist.  Keep it tiny and dependency-free.
+    """
+    target = os.path.abspath(str(path))
+    parent = os.path.dirname(target) or "."
+    os.makedirs(parent, exist_ok=True)
+    tmp = f"{target}.tmp.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, target)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
 
 
 def _journal_durable_remote_dir() -> str:
@@ -7184,6 +7211,7 @@ def restore_mega_task_context(task: dict):
 def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
     """Write-before-execute: task exists in MEGA before it may enter a RAM worker queue."""
     global _mega_task_last_error
+    _timing_started = time.monotonic()
     if not mega_tasks_active():
         return False
     key = _mega_task_id(update_id)
@@ -7216,6 +7244,7 @@ def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
         _mega_task_update_registry(key, "pending", remote_final)
         with _MEGA_TASK_LOCK:
             _mega_task_counters["persisted"] += 1
+        bot_journal("mega_task_timing", None, f"phase=persist update={key} elapsed={time.monotonic()-_timing_started:.3f}s")
         return True
     except Exception as e:
         _mega_task_last_error = str(e)[:500]
@@ -7233,6 +7262,7 @@ def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
 
 def _mega_task_move(update_id, from_state: str, to_state: str) -> bool:
     global _mega_task_last_error
+    _timing_started = time.monotonic()
     if not mega_tasks_active():
         return False
     key = _mega_task_id(update_id)
@@ -7250,6 +7280,7 @@ def _mega_task_move(update_id, from_state: str, to_state: str) -> bool:
             if not found:
                 raise RuntimeError(err or f"cannot move {src} -> {dst}")
         _mega_task_update_registry(key, to_state, dst)
+        bot_journal("mega_task_timing", None, f"phase=move update={key} {from_state}->{to_state} elapsed={time.monotonic()-_timing_started:.3f}s")
         return True
     except Exception as e:
         _mega_task_last_error = str(e)[:500]
@@ -7305,6 +7336,7 @@ def _mega_task_prune_done_async():
 
 def mega_task_finish(update_id, success: bool, error: str = "") -> bool:
     global _mega_task_last_error
+    _timing_started = time.monotonic()
     key = _mega_task_id(update_id)
     target = "done" if success else "failed"
     ok = False
@@ -7334,6 +7366,7 @@ def mega_task_finish(update_id, success: bool, error: str = "") -> bool:
         _mega_task_prune_done_async()
     if not ok:
         _mega_task_last_error = f"finalize {target} failed for {key}: {error}"[:500]
+    bot_journal("mega_task_timing", None, f"phase=finish update={key} target={target} ok={ok} elapsed={time.monotonic()-_timing_started:.3f}s")
     return ok
 
 
@@ -8743,9 +8776,9 @@ try:
 except Exception:
     RUNTIME_WATCHER_HISTORY_KEEP = 100
 try:
-    RUNTIME_WATCHER_HEARTBEAT_SECONDS = max(60.0, min(3600.0, float(os.getenv("RUNTIME_WATCHER_HEARTBEAT_SECONDS", "300") or "300")))
+    RUNTIME_WATCHER_HEARTBEAT_SECONDS = max(20.0, min(3600.0, float(os.getenv("RUNTIME_WATCHER_HEARTBEAT_SECONDS", "30") or "30")))
 except Exception:
-    RUNTIME_WATCHER_HEARTBEAT_SECONDS = 300.0
+    RUNTIME_WATCHER_HEARTBEAT_SECONDS = 30.0
 
 _RUNTIME_LOCK = threading.RLock()
 _RUNTIME_SHUTDOWN_LOCK = threading.Lock()
@@ -8784,6 +8817,10 @@ _RUNTIME_STATE = {
     "shutdown_delta_ok": None,
     "last_error": "",
     "previous_reason": "first_seen",
+    "last_runtime_snapshot_ok_at": "",
+    "last_runtime_snapshot_error": "",
+    "fatal_main_exception": "",
+    "fatal_thread_exception": "",
 }
 
 
@@ -9026,6 +9063,7 @@ def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = Tru
     if not mega_is_configured():
         return False
     tmp = None
+    started = time.monotonic()
     try:
         snap = runtime_snapshot({"event": event})
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
@@ -9046,9 +9084,17 @@ def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = Tru
                 _mega_prune_remote_history(events_dir, "runtime_*.json", RUNTIME_WATCHER_HISTORY_KEEP)
             except Exception:
                 pass
+        elapsed = round(time.monotonic() - started, 3)
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE["last_runtime_snapshot_ok_at"] = now_local().isoformat(timespec="milliseconds")
+            _RUNTIME_STATE["last_runtime_snapshot_error"] = ""
+        runtime_event("watcher_mega_ok", f"event={event}; elapsed={elapsed}s; immutable={bool(immutable_event)}")
         return bool(ok)
     except Exception as e:
-        runtime_event("watcher_mega_error", str(e), "WARN")
+        elapsed = round(time.monotonic() - started, 3)
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE["last_runtime_snapshot_error"] = str(e)[:500]
+        runtime_event("watcher_mega_error", f"event={event}; elapsed={elapsed}s; {e}", "WARN")
         return False
     finally:
         try:
@@ -9299,11 +9345,57 @@ def _runtime_signal_handler(signum, frame):
         raise SystemExit(0)
 
 
+def _runtime_main_excepthook(exc_type, exc_value, exc_traceback):
+    try:
+        detail = f"{getattr(exc_type, '__name__', exc_type)}: {exc_value}"
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE["fatal_main_exception"] = detail[:1000]
+        runtime_event("fatal_main_exception", detail, "CRITICAL")
+        try:
+            journal_flush_to_mega(True)
+        except Exception:
+            pass
+        try:
+            runtime_upload_snapshot("fatal_main_exception", True)
+        except Exception:
+            pass
+    finally:
+        try:
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        except Exception:
+            pass
+
+
+def _runtime_thread_excepthook(args):
+    try:
+        thread_name = getattr(getattr(args, "thread", None), "name", "unknown")
+        detail = f"thread={thread_name}; {getattr(args.exc_type, '__name__', args.exc_type)}: {args.exc_value}"
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE["fatal_thread_exception"] = detail[:1000]
+        runtime_event("thread_unhandled_exception", detail, "ERROR")
+        # Do not synchronously hit MEGA from the failed worker thread; schedule a small snapshot.
+        try:
+            GENERAL_TASK_POOL.submit("runtime-thread-error-snapshot", runtime_upload_snapshot, "thread_exception", True)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        old = getattr(threading, "__excepthook__", None)
+        if old:
+            old(args)
+    except Exception:
+        pass
+
+
 def runtime_install_signal_handlers():
     try:
         signal.signal(signal.SIGTERM, _runtime_signal_handler)
         signal.signal(signal.SIGINT, _runtime_signal_handler)
-        runtime_event("signal_handlers", "SIGTERM/SIGINT installed")
+        sys.excepthook = _runtime_main_excepthook
+        if hasattr(threading, "excepthook"):
+            threading.excepthook = _runtime_thread_excepthook
+        runtime_event("signal_handlers", "SIGTERM/SIGINT + Python/thread exception hooks installed")
     except Exception as e:
         runtime_event("signal_handler_error", str(e), "WARN")
 
@@ -27418,7 +27510,7 @@ def main():
                     f"Приоритет: ФИНАНСЫ → ПЕРЕСЫЛКА; forward yield максимум {FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS:g}с\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; durable MEGA: {'ВКЛ' if BOT_JOURNAL_DURABLE_ENABLED else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
                     f"MEGA-задачи: pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\n"
-                    f"BOOT: {'READY' if runtime_is_ready() else 'RECOVERY'}; Watcher: Инфо → 🖥 Render / Сервер\n"
+                    f"BOOT: {'READY' if runtime_is_ready() else 'RECOVERY'}; Watcher: Инфо → 🖥 Render / Сервер; heartbeat {RUNTIME_WATCHER_HEARTBEAT_SECONDS:g}с\n"
                     f"Бэкап: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
@@ -27467,3 +27559,7 @@ if __name__ == "__main__":
 # BOT FILE: bot_v110_finance_priority_max_diagnostics.py
 # BOT VERSION: bot_v110_finance_priority_max_diagnostics
 # PURPOSE: finance priority + maximum Render/runtime diagnostic journal
+
+# BOT FILE: bot_v112_runtime_forensics_stability.py
+# BOT VERSION: bot_v112_runtime_forensics_stability
+# PURPOSE: fix durable journal/watcher + 30s runtime forensics + exception/timing diagnostics
