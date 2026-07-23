@@ -622,7 +622,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v110_finance_priority_max_diagnostics"
+VERSION = "bot_v111_durable_journal_render_history"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v108_boot_shutdown_watcher_finwindows.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -962,6 +962,36 @@ BOT_JOURNAL_MAX = int(os.getenv("BOT_JOURNAL_MAX", "1200") or "1200")
 BOT_JOURNAL_FILE = os.getenv("BOT_JOURNAL_FILE", "bot_journal.jsonl").strip() or "bot_journal.jsonl"
 BOT_ACTION_LOG = deque(maxlen=BOT_JOURNAL_MAX)
 bot_journal_lock = threading.RLock()
+
+# v111: локальный journal на Render ephemeral, поэтому сохраняем его append-only чанками в MEGA.
+# Это НЕ синхронная запись на каждую строку: обычная работа бота не должна ждать сеть.
+BOT_JOURNAL_DURABLE_ENABLED = str(os.getenv("BOT_JOURNAL_DURABLE_ENABLED", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}
+try:
+    BOT_JOURNAL_DURABLE_FLUSH_SECONDS = max(10.0, min(300.0, float(os.getenv("BOT_JOURNAL_DURABLE_FLUSH_SECONDS", "30") or "30")))
+except Exception:
+    BOT_JOURNAL_DURABLE_FLUSH_SECONDS = 30.0
+try:
+    BOT_JOURNAL_DURABLE_FLUSH_ROWS = max(10, min(500, int(os.getenv("BOT_JOURNAL_DURABLE_FLUSH_ROWS", "50") or "50")))
+except Exception:
+    BOT_JOURNAL_DURABLE_FLUSH_ROWS = 50
+try:
+    BOT_JOURNAL_DURABLE_REMOTE_KEEP = max(200, min(10000, int(os.getenv("BOT_JOURNAL_DURABLE_REMOTE_KEEP", "3000") or "3000")))
+except Exception:
+    BOT_JOURNAL_DURABLE_REMOTE_KEEP = 3000
+try:
+    BOT_JOURNAL_DURABLE_RESTORE_FILES = max(20, min(1000, int(os.getenv("BOT_JOURNAL_DURABLE_RESTORE_FILES", "400") or "400")))
+except Exception:
+    BOT_JOURNAL_DURABLE_RESTORE_FILES = 400
+
+_JOURNAL_DURABLE_LOCK = threading.RLock()
+_JOURNAL_DURABLE_BUFFER = []
+_JOURNAL_DURABLE_SEQ = 0
+_JOURNAL_DURABLE_THREAD_STARTED = False
+_JOURNAL_DURABLE_STATS = {
+    "uploaded_chunks": 0, "uploaded_rows": 0, "upload_errors": 0,
+    "restored_chunks": 0, "restored_rows": 0, "last_upload_at": "",
+    "last_upload_file": "", "last_error": "",
+}
 
 
 def _journal_ts() -> str:
@@ -1713,6 +1743,13 @@ def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"
             pass
         with bot_journal_lock:
             BOT_ACTION_LOG.append(row)
+        # v111: копия строки уходит в независимый MEGA journal-spool. Сеть здесь НЕ ждём.
+        if BOT_JOURNAL_DURABLE_ENABLED:
+            try:
+                with _JOURNAL_DURABLE_LOCK:
+                    _JOURNAL_DURABLE_BUFFER.append(dict(row))
+            except Exception:
+                pass
         if not JOURNAL_TASK_POOL.submit("journal-file", _journal_write_row, dict(row)):
             _journal_write_row(row)
         return row
@@ -1751,7 +1788,7 @@ def _safe_diag_call(name: str, func, default=None):
 
 
 def _journal_read_file_rows(limit: int = 20000) -> list[dict]:
-    """Читает максимум локального журнала текущего процесса; файл ephemeral, поэтому это данные с последнего старта."""
+    """Читает локальный журнал. В v111 он при BOOT предварительно дополняется историей из MEGA."""
     if not os.path.exists(BOT_JOURNAL_FILE):
         return []
     rows = []
@@ -1768,6 +1805,198 @@ def _journal_read_file_rows(limit: int = 20000) -> list[dict]:
     except Exception:
         return []
     return rows
+
+
+
+def _journal_durable_remote_dir() -> str:
+    base = str(globals().get("MEGA_BACKUP_DIR") or "/TelegramBotBackups").rstrip("/")
+    return f"{base}/runtime/journal"
+
+
+def _journal_row_key(row: dict):
+    return (
+        str(row.get("ts") or ""), str(row.get("action") or ""),
+        str(row.get("chat_id") or ""), str(row.get("detail") or ""),
+        str(row.get("thread") or ""),
+    )
+
+
+def _journal_merge_rows(*groups, limit: int = 20000) -> list[dict]:
+    seen = set()
+    out = []
+    for group in groups:
+        for row in (group or []):
+            if not isinstance(row, dict):
+                continue
+            key = _journal_row_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+    # ISO timestamps sort correctly for our journal format. Keep stable order for equal timestamps.
+    try:
+        out.sort(key=lambda r: str(r.get("ts") or ""))
+    except Exception:
+        pass
+    return out[-max(1, int(limit)):]
+
+
+def journal_flush_to_mega(force: bool = False) -> bool:
+    """Сбрасывает накопленный journal chunk в MEGA. Не перезаписывает старые чанки."""
+    global _JOURNAL_DURABLE_SEQ
+    if not BOT_JOURNAL_DURABLE_ENABLED:
+        return False
+    if not globals().get("mega_is_configured") or not mega_is_configured():
+        return False
+    with _JOURNAL_DURABLE_LOCK:
+        if not _JOURNAL_DURABLE_BUFFER:
+            return True
+        if not force and len(_JOURNAL_DURABLE_BUFFER) < BOT_JOURNAL_DURABLE_FLUSH_ROWS:
+            return False
+        rows = list(_JOURNAL_DURABLE_BUFFER)
+        _JOURNAL_DURABLE_BUFFER.clear()
+        _JOURNAL_DURABLE_SEQ += 1
+        seq = _JOURNAL_DURABLE_SEQ
+    tmp = None
+    try:
+        remote_dir = _journal_durable_remote_dir()
+        mega_ensure_remote_path(remote_dir)
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        stamp = now_local().strftime("%Y%m%d_%H%M%S_%f") if "now_local" in globals() else datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        inst = mega_safe_name(str(os.getenv("RENDER_INSTANCE_ID", "local") or "local")[-18:], "instance")
+        name = f"journal_{stamp}_{inst}_{seq:06d}.json"
+        tmp = os.path.join(MEGA_LOCAL_TMP_DIR, name)
+        payload = {
+            "kind": "telegram_bot_journal_chunk", "schema_version": 1,
+            "bot_version": globals().get("VERSION", ""), "created_at": _journal_ts(),
+            "render_instance_id": str(os.getenv("RENDER_INSTANCE_ID", "") or ""),
+            "render_git_commit": str(os.getenv("RENDER_GIT_COMMIT", "") or ""),
+            "row_count": len(rows), "rows": rows,
+        }
+        _atomic_json_dump(tmp, payload)
+        _mega_run("mega-put", [tmp, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+        _JOURNAL_DURABLE_STATS["uploaded_chunks"] += 1
+        _JOURNAL_DURABLE_STATS["uploaded_rows"] += len(rows)
+        _JOURNAL_DURABLE_STATS["last_upload_at"] = _journal_ts()
+        _JOURNAL_DURABLE_STATS["last_upload_file"] = name
+        _JOURNAL_DURABLE_STATS["last_error"] = ""
+        # Prune rarely; listing thousands of files on each flush would itself load Render/MEGA.
+        if (_JOURNAL_DURABLE_STATS["uploaded_chunks"] % 25) == 0:
+            try:
+                _mega_prune_remote_history(remote_dir, "journal_*.json", BOT_JOURNAL_DURABLE_REMOTE_KEEP)
+            except Exception:
+                pass
+        return True
+    except Exception as e:
+        _JOURNAL_DURABLE_STATS["upload_errors"] += 1
+        _JOURNAL_DURABLE_STATS["last_error"] = str(e)[:500]
+        # Не теряем строки при временной ошибке MEGA: возвращаем в голову буфера.
+        with _JOURNAL_DURABLE_LOCK:
+            _JOURNAL_DURABLE_BUFFER[0:0] = rows
+            # ограничиваем аварийный RAM spool, чтобы MEGA outage не съел всю память Render
+            if len(_JOURNAL_DURABLE_BUFFER) > 10000:
+                del _JOURNAL_DURABLE_BUFFER[:-10000]
+        return False
+    finally:
+        try:
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+
+
+def _journal_durable_loop():
+    # Периодический flush только когда есть строки. Никаких MEGA вызовов в простое.
+    while True:
+        try:
+            time.sleep(BOT_JOURNAL_DURABLE_FLUSH_SECONDS)
+            with _JOURNAL_DURABLE_LOCK:
+                has_rows = bool(_JOURNAL_DURABLE_BUFFER)
+            if has_rows:
+                journal_flush_to_mega(True)
+        except Exception as e:
+            _JOURNAL_DURABLE_STATS["last_error"] = str(e)[:500]
+            time.sleep(5.0)
+
+
+def journal_start_durable_loop():
+    global _JOURNAL_DURABLE_THREAD_STARTED
+    if not BOT_JOURNAL_DURABLE_ENABLED or _JOURNAL_DURABLE_THREAD_STARTED:
+        return
+    _JOURNAL_DURABLE_THREAD_STARTED = True
+    threading.Thread(target=_journal_durable_loop, name="journal-mega-spool", daemon=True).start()
+
+
+def _journal_read_mega_rows(limit: int = 20000) -> list[dict]:
+    """Читает последние durable journal chunks из MEGA, newest-first files -> chronological rows."""
+    if not BOT_JOURNAL_DURABLE_ENABLED or not globals().get("mega_is_configured") or not mega_is_configured():
+        return []
+    remote_dir = _journal_durable_remote_dir()
+    try:
+        files = _mega_find_remote_files(remote_dir, "journal_*.json", BOT_JOURNAL_DURABLE_RESTORE_FILES)
+    except Exception:
+        return []
+    chunks = []
+    total = 0
+    # mega-find returns reverse sorted. Read newest until enough rows, then merge chronologically.
+    for remote in files:
+        local = None
+        try:
+            local = _mega_download_remote_path(remote)
+            doc = _load_json(local, {}) if local else {}
+            rows = doc.get("rows") if isinstance(doc, dict) else []
+            if isinstance(rows, list) and rows:
+                chunks.append(rows)
+                total += len(rows)
+                if total >= int(limit):
+                    break
+        except Exception:
+            continue
+        finally:
+            try:
+                if local:
+                    shutil.rmtree(os.path.dirname(local), ignore_errors=True)
+            except Exception:
+                pass
+    merged = []
+    for rows in reversed(chunks):
+        merged.extend(rows)
+    return _journal_merge_rows(merged, limit=limit)
+
+
+def journal_restore_from_mega(limit: int = 20000) -> dict:
+    """BOOT: поднимает историю журнала из MEGA и сшивает её с ранними строками нового процесса."""
+    remote_rows = _journal_read_mega_rows(limit)
+    local_rows = _journal_read_file_rows(limit)
+    merged = _journal_merge_rows(remote_rows, local_rows, limit=limit)
+    if remote_rows:
+        try:
+            with bot_journal_lock:
+                BOT_ACTION_LOG.clear()
+                BOT_ACTION_LOG.extend(merged[-BOT_JOURNAL_MAX:])
+            # Локальный файл теперь тоже содержит историю до рестарта + новый BOOT хвост.
+            with open(BOT_JOURNAL_FILE, "w", encoding="utf-8") as f:
+                for row in merged:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception as e:
+            _JOURNAL_DURABLE_STATS["last_error"] = str(e)[:500]
+    _JOURNAL_DURABLE_STATS["restored_rows"] = len(remote_rows)
+    # approximate chunk count is exposed by read limit files; exact count not worth a second mega-find
+    _JOURNAL_DURABLE_STATS["restored_chunks"] = 0 if not remote_rows else 1
+    return {"remote_rows": len(remote_rows), "merged_rows": len(merged)}
+
+
+def journal_durable_stats() -> dict:
+    with _JOURNAL_DURABLE_LOCK:
+        out = dict(_JOURNAL_DURABLE_STATS)
+        out["buffer_rows"] = len(_JOURNAL_DURABLE_BUFFER)
+    out.update({
+        "enabled": BOT_JOURNAL_DURABLE_ENABLED,
+        "flush_seconds": BOT_JOURNAL_DURABLE_FLUSH_SECONDS,
+        "flush_rows": BOT_JOURNAL_DURABLE_FLUSH_ROWS,
+        "remote_dir": _journal_durable_remote_dir(),
+    })
+    return out
 
 
 def _journal_render_safe_env() -> dict:
@@ -1817,6 +2046,7 @@ def _journal_diagnostic_snapshot() -> dict:
         "keep_alive": dict(KEEP_ALIVE_STATE) if "KEEP_ALIVE_STATE" in globals() else {},
         "delayed_scheduler": DELAYED_SCHEDULER.stats() if "DELAYED_SCHEDULER" in globals() else {},
         "mega_tasks": mega_task_registry_stats() if "mega_task_registry_stats" in globals() else {},
+        "durable_journal": journal_durable_stats() if "journal_durable_stats" in globals() else {},
         "priority": {
             "order": ["finance", "forward", "other"],
             "forward_finance_priority_max_wait_seconds": globals().get("FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS"),
@@ -1836,16 +2066,16 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 20000):
         return
     bot_journal("journal_export_requested", chat_id, f"limit={limit}; maximum_diagnostics=1")
 
-    # Берём файл текущего процесса (он обычно полнее ring-buffer), затем добавляем ещё не сброшенный хвост RAM.
+    # v111: экспорт сшивает MEGA-историю прошлых процессов + локальный текущий процесс + RAM-хвост.
+    # Сначала форсируем маленький текущий spool, чтобы в скачанный файл попало почти всё до нажатия кнопки.
+    try:
+        journal_flush_to_mega(True)
+    except Exception:
+        pass
+    mega_rows = _journal_read_mega_rows(limit)
     rows = _journal_read_file_rows(limit)
     ram_rows = get_recent_journal(min(int(limit), max(BOT_JOURNAL_MAX, 1)))
-    seen = {(str(r.get("ts")), str(r.get("action")), str(r.get("chat_id")), str(r.get("detail"))) for r in rows}
-    for r in ram_rows:
-        key = (str(r.get("ts")), str(r.get("action")), str(r.get("chat_id")), str(r.get("detail")))
-        if key not in seen:
-            rows.append(r)
-            seen.add(key)
-    rows = rows[-max(1, int(limit)):]
+    rows = _journal_merge_rows(mega_rows, rows, ram_rows, limit=limit)
 
     diag = _journal_diagnostic_snapshot()
     text_lines = [
@@ -1857,6 +2087,10 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 20000):
         "",
         "==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================",
         json.dumps(diag, ensure_ascii=False, indent=2, default=str),
+        "",
+        "==================== DURABLE JOURNAL ====================",
+        json.dumps(journal_durable_stats(), ensure_ascii=False, indent=2, default=str),
+        f"MEGA historical rows merged into this export: {len(mega_rows)}",
         "",
         "==================== RUNTIME EVENTS ====================",
     ]
@@ -1891,6 +2125,7 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 20000):
         "new_instance_same_commit_crash_restart_or_maintenance: instance сменился, commit тот же, корректный shutdown не доказан.",
         "process_restart_or_unknown: локальных данных недостаточно для точного вывода.",
         "Keep-alive 503 при phase BOOT/SHUTDOWN может быть ответом самого бота readiness-gate, а не признаком deploy.",
+        "v111 durable journal: ACTION JOURNAL объединяет строки до и после restart/deploy из MEGA /runtime/journal.",
     ])
     payload = "\n".join(text_lines).encode("utf-8")
     buf = io.BytesIO(payload)
@@ -9043,6 +9278,11 @@ def runtime_graceful_shutdown(signal_name: str = "SIGTERM"):
             _RUNTIME_STATE["phase"] = "shutdown_complete"
             _RUNTIME_STATE["shutdown_finished_at"] = now_local().isoformat(timespec="seconds")
         runtime_event("shutdown_complete", f"delta_ok={delta_ok}; drain_ok={drain_ok}")
+        # Последний шанс сохранить journal перед уничтожением ephemeral container.
+        try:
+            journal_flush_to_mega(True)
+        except Exception:
+            pass
         runtime_upload_snapshot("shutdown", True)
     finally:
         _RUNTIME_SHUTDOWN_LOCK.release()
@@ -27019,6 +27259,16 @@ def main():
         runtime_event("previous_runtime", prev_reason)
     except Exception as e:
         runtime_event("previous_runtime_error", str(e), "WARN")
+    # v111: восстановить журнал ПРЕДЫДУЩИХ процессов до READY. Это позволяет видеть
+    # историю до sleep/restart/deploy даже после очистки ephemeral filesystem Render.
+    runtime_set_phase("boot_journal_restore", "поднимаю журнал предыдущих процессов из MEGA")
+    try:
+        jr = journal_restore_from_mega(20000)
+        runtime_event("journal_restored", f"remote_rows={jr.get('remote_rows',0)} merged_rows={jr.get('merged_rows',0)}")
+    except Exception as e:
+        runtime_event("journal_restore_error", str(e), "WARN")
+    journal_start_durable_loop()
+
     if not RESTORE_GUARD_ACTIVE:
         migrate_legacy_owner_secrets()
     try:
@@ -27143,6 +27393,10 @@ def main():
         threading.Thread(target=runtime_continue_boot_recovery_background, name="boot-task-recovery", daemon=True).start()
     else:
         runtime_mark_ready("global/delta восстановлены; pending/running durable tasks проверены")
+        try:
+            journal_flush_to_mega(True)
+        except Exception:
+            pass
     owner_id = None
     if OWNER_ID:
         try:
@@ -27162,7 +27416,7 @@ def main():
                     f"Защита бэкапа: {'ВКЛ — ' + RESTORE_GUARD_REASON if RESTORE_GUARD_ACTIVE else 'норма'}\n"
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Приоритет: ФИНАНСЫ → ПЕРЕСЫЛКА; forward yield максимум {FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS:g}с\n"
-                    f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
+                    f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; durable MEGA: {'ВКЛ' if BOT_JOURNAL_DURABLE_ENABLED else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
                     f"MEGA-задачи: pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\n"
                     f"BOOT: {'READY' if runtime_is_ready() else 'RECOVERY'}; Watcher: Инфо → 🖥 Render / Сервер\n"
                     f"Бэкап: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
