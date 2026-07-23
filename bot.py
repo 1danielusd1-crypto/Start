@@ -1,5 +1,5 @@
-# BOT FILE: bot_v113_memory_guard_stability.py
-# BOT VERSION: bot_v113_memory_guard_stability
+# BOT FILE: bot_v114_lowram_sqlite_mega_core.py
+# BOT VERSION: bot_v114_lowram_sqlite_mega_core
 # PURPOSE: deploy-safe Telegram finance bot — exact-once finance effects, non-replaying recovery, BOOT/SHUTDOWN and Render watcher
 # ─────────────────────────────────────────────────────────────
 import os
@@ -14,6 +14,7 @@ import sqlite3
 import threading
 import time
 import zipfile
+import gzip
 import subprocess
 import shutil
 import tempfile
@@ -622,7 +623,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v113_memory_guard_stability"
+VERSION = "bot_v114_lowram_sqlite_mega_core"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v112_runtime_forensics_stability.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -791,7 +792,9 @@ class SQLiteState:
             cur = self.conn.cursor()
             cur.execute("PRAGMA journal_mode=WAL")
             cur.execute("PRAGMA synchronous=NORMAL")
-            cur.execute("PRAGMA temp_store=MEMORY")
+            cur.execute("PRAGMA temp_store=FILE")
+            cur.execute("PRAGMA cache_size=-4096")  # ~4 MiB page cache; history belongs on disk, not Python/SQLite RAM
+            cur.execute("PRAGMA mmap_size=0")
             cur.execute("PRAGMA foreign_keys=ON")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
@@ -801,6 +804,10 @@ class SQLiteState:
             )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS meta (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY(kind, k))"
+            )
+            # v114 LOW-RAM: large per-chat history is stored on disk and loaded only on demand.
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS cold_fields (chat_id TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(chat_id, k))"
             )
             self.conn.commit()
 
@@ -888,9 +895,320 @@ class SQLiteState:
             )
             self.conn.commit()
 
+    # v114 LOW-RAM cold storage -------------------------------------------------
+    def get_cold(self, chat_id, key: str, default=None):
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT v FROM cold_fields WHERE chat_id=? AND k=?",
+                (str(chat_id), str(key)),
+            ).fetchone()
+        return self._load(row[0], default) if row else default
+
+    def set_cold(self, chat_id, key: str, obj):
+        payload = self._dump(obj)
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO cold_fields(chat_id,k,v,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(chat_id,k) DO UPDATE SET v=excluded.v,updated_at=excluded.updated_at",
+                (str(chat_id), str(key), payload, stamp),
+            )
+            self.conn.commit()
+
+    def delete_cold(self, chat_id, key: str):
+        with self.lock:
+            self.conn.execute("DELETE FROM cold_fields WHERE chat_id=? AND k=?", (str(chat_id), str(key)))
+            self.conn.commit()
+
+    def cold_count(self, chat_id=None, key: str | None = None) -> int:
+        sql = "SELECT COUNT(*) FROM cold_fields"
+        params = []
+        where = []
+        if chat_id is not None:
+            where.append("chat_id=?"); params.append(str(chat_id))
+        if key is not None:
+            where.append("k=?"); params.append(str(key))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        with self.lock:
+            row = self.conn.execute(sql, tuple(params)).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def cold_keys_for_chat(self, chat_id) -> list[str]:
+        with self.lock:
+            rows = self.conn.execute("SELECT k FROM cold_fields WHERE chat_id=?", (str(chat_id),)).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def backup_to(self, target_path: str):
+        """Consistent on-disk SQLite snapshot without materializing bot state in Python RAM."""
+        target_path = str(target_path)
+        os.makedirs(os.path.dirname(target_path) or ".", exist_ok=True)
+        with self.lock:
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass
+            dest = sqlite3.connect(target_path)
+            try:
+                self.conn.backup(dest, pages=128, sleep=0.01)
+                dest.commit()
+            finally:
+                dest.close()
+        return target_path
+
+    def replace_database(self, source_path: str):
+        """Replace ephemeral working DB with a restored MEGA snapshot and reopen connection."""
+        source_path = str(source_path)
+        if not os.path.exists(source_path):
+            raise FileNotFoundError(source_path)
+        with self.lock:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    if os.path.exists(self.path + suffix):
+                        os.remove(self.path + suffix)
+                except Exception:
+                    pass
+            shutil.copy2(source_path, self.path)
+            self.conn = sqlite3.connect(self.path, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            self._init_db()
+
 
 SQLITE = SQLiteState(DB_FILE)
 
+
+# ─────────────────────────────────────────────────────────────
+# v114 LOW-RAM CORE
+# RAM = active working set; SQLite = disposable working state; MEGA = durable state.
+# Large chat histories are lazy-loaded from SQLite and released after each Telegram update.
+# ─────────────────────────────────────────────────────────────
+LOWRAM_ENABLED = _env_bool("LOWRAM_ENABLED", "1")
+LOWRAM_COLD_KEYS = {
+    "records", "daily_records", "daily_records_by_date",
+    "ars_records", "ars_daily_records", "ars_daily_records_by_date",
+    "usd_records", "usd_daily_records", "usd_daily_records_by_date",
+    "secret_messages",
+}
+LOWRAM_LIST_KEYS = {"records", "ars_records", "usd_records", "secret_messages"}
+LOWRAM_DB_REMOTE_DIR_NAME = "database"
+LOWRAM_DB_LATEST_NAME = "latest_bot_state.sqlite3.gz"
+LOWRAM_DB_HISTORY_KEEP = max(2, min(30, int(os.getenv("LOWRAM_DB_HISTORY_KEEP", "6") or "6")))
+LOWRAM_LEGACY_GLOBAL_JSON = _env_bool("LOWRAM_LEGACY_GLOBAL_JSON", "0")
+_LOWRAM_DB_RESTORED_THIS_BOOT = False
+_LOWRAM_DB_RESTORE_DETAIL = ""
+_LOWRAM_LOCK = threading.RLock()
+_LOWRAM_STATS = {
+    "cold_loads": 0, "cold_saves": 0, "cold_evictions": 0,
+    "db_snapshots": 0, "db_snapshot_errors": 0, "db_restores": 0,
+    "last_snapshot_at": "", "last_restore_at": "", "last_error": "",
+}
+
+def _lowram_default_for_key(key: str):
+    return [] if str(key) in LOWRAM_LIST_KEYS else {}
+
+def _lowram_touch(chat_id: int, key: str):
+    # Lightweight diagnostic only; no growing per-message cache.
+    try:
+        _LOWRAM_STATS["last_access"] = now_local().isoformat(timespec="seconds")
+        _LOWRAM_STATS["last_chat"] = int(chat_id)
+        _LOWRAM_STATS["last_key"] = str(key)
+    except Exception:
+        pass
+
+class ColdChatStore(dict):
+    """dict-compatible chat state with lazy large fields backed by SQLite."""
+    def __init__(self, chat_id: int, initial=None):
+        super().__init__(initial or {})
+        self._chat_id = int(chat_id)
+        self._cold_loaded = {k for k in LOWRAM_COLD_KEYS if dict.__contains__(self, k)}
+
+    def _ensure_cold(self, key: str):
+        key = str(key)
+        if not LOWRAM_ENABLED or key not in LOWRAM_COLD_KEYS:
+            return
+        if dict.__contains__(self, key):
+            _lowram_touch(self._chat_id, key)
+            return
+        value = SQLITE.get_cold(self._chat_id, key, _lowram_default_for_key(key))
+        if value is None:
+            value = _lowram_default_for_key(key)
+        dict.__setitem__(self, key, value)
+        self._cold_loaded.add(key)
+        with _LOWRAM_LOCK:
+            _LOWRAM_STATS["cold_loads"] += 1
+        _lowram_touch(self._chat_id, key)
+
+    def __getitem__(self, key):
+        self._ensure_cold(key)
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        self._ensure_cold(key)
+        if dict.__contains__(self, key):
+            return dict.get(self, key)
+        return default
+
+    def setdefault(self, key, default=None):
+        self._ensure_cold(key)
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if default is None and str(key) in LOWRAM_COLD_KEYS:
+            default = _lowram_default_for_key(str(key))
+        dict.__setitem__(self, key, default)
+        if str(key) in LOWRAM_COLD_KEYS:
+            self._cold_loaded.add(str(key)); _lowram_touch(self._chat_id, str(key))
+        return default
+
+    def __setitem__(self, key, value):
+        dict.__setitem__(self, key, value)
+        if str(key) in LOWRAM_COLD_KEYS:
+            self._cold_loaded.add(str(key)); _lowram_touch(self._chat_id, str(key))
+
+def _lowram_wrap_store(chat_id, store):
+    if isinstance(store, ColdChatStore):
+        return store
+    return ColdChatStore(int(chat_id), store if isinstance(store, dict) else {})
+
+def _lowram_store_meta_payload(store: dict) -> dict:
+    # dict.items() intentionally avoids triggering ColdChatStore lazy loads.
+    return {str(k): v for k, v in dict.items(store) if str(k) not in LOWRAM_COLD_KEYS}
+
+def _lowram_rebuild_daily(records):
+    daily = {}
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            dk = _record_day_key(rec) if "_record_day_key" in globals() else str(rec.get("day_key") or "")
+        except Exception:
+            dk = str(rec.get("day_key") or "")
+        if dk:
+            rec["day_key"] = dk
+            daily.setdefault(str(dk), []).append(rec)
+    return daily
+
+def _lowram_flush_chat(chat_id: int, store: dict | None = None, evict: bool = False):
+    if not LOWRAM_ENABLED:
+        return
+    try:
+        cid = int(chat_id)
+    except Exception:
+        return
+    store = store if isinstance(store, dict) else ((data.get("chats", {}) or {}).get(str(cid)) if isinstance(data, dict) else None)
+    if not isinstance(store, dict):
+        return
+    # Keep records/daily consistent without loading a field that was never touched.
+    for rec_key, daily_key in (("records","daily_records"),("ars_records","ars_daily_records"),("usd_records","usd_daily_records")):
+        if dict.__contains__(store, rec_key):
+            records = dict.__getitem__(store, rec_key) or []
+            daily = _lowram_rebuild_daily(records)
+            dict.__setitem__(store, daily_key, daily)
+            if isinstance(store, ColdChatStore): store._cold_loaded.add(daily_key)
+    for key in LOWRAM_COLD_KEYS:
+        if dict.__contains__(store, key):
+            SQLITE.set_cold(cid, key, dict.__getitem__(store, key))
+            with _LOWRAM_LOCK:
+                _LOWRAM_STATS["cold_saves"] += 1
+    if evict:
+        removed = 0
+        for key in list(LOWRAM_COLD_KEYS):
+            if dict.__contains__(store, key):
+                dict.pop(store, key, None); removed += 1
+        if isinstance(store, ColdChatStore):
+            store._cold_loaded.clear()
+        if removed:
+            with _LOWRAM_LOCK:
+                _LOWRAM_STATS["cold_evictions"] += 1
+
+def _lowram_release_chat(chat_id):
+    """Called only after the update/finalizer finished, so temporary history can leave RAM."""
+    if not LOWRAM_ENABLED or chat_id is None:
+        return
+    try:
+        with data_lock:
+            store = (data.get("chats", {}) or {}).get(str(int(chat_id)))
+            if isinstance(store, dict):
+                _lowram_flush_chat(int(chat_id), store, evict=True)
+                SQLITE.save_chat(int(chat_id), _lowram_store_meta_payload(store))
+        # Prompt Python to return unreachable JSON/list objects before the next heavy MEGA operation.
+        if _memory_usage_snapshot().get("rss_mb", 0) >= 320:
+            import gc; gc.collect()
+    except Exception as exc:
+        with _LOWRAM_LOCK:
+            _LOWRAM_STATS["last_error"] = str(exc)[:300]
+        log_error(f"LOWRAM release chat={chat_id}: {exc}")
+
+def _lowram_prepare_loaded_data(d: dict, migrate_existing: bool = True) -> dict:
+    if not LOWRAM_ENABLED or not isinstance(d, dict):
+        return d
+    chats = d.setdefault("chats", {})
+    for cid_s, raw in list(chats.items()):
+        try:
+            cid = int(cid_s)
+        except Exception:
+            continue
+        raw = raw if isinstance(raw, dict) else {}
+        # One-time migration from legacy JSON/chat blobs to disk cold fields.
+        if migrate_existing:
+            for key in LOWRAM_COLD_KEYS:
+                if key in raw:
+                    SQLITE.set_cold(cid, key, raw.get(key))
+                    raw.pop(key, None)
+        chats[str(cid)] = _lowram_wrap_store(cid, raw)
+    return d
+
+def _lowram_materialize_chat_snapshot(chat_id: int, store: dict | None = None) -> dict:
+    """Plain JSON-ready chat snapshot. Loads only one chat's cold fields at a time."""
+    cid = int(chat_id)
+    store = store if isinstance(store, dict) else ((data.get("chats", {}) or {}).get(str(cid)) or {})
+    snap = _lowram_store_meta_payload(store)
+    for key in LOWRAM_COLD_KEYS:
+        if dict.__contains__(store, key):
+            value = dict.__getitem__(store, key)
+        else:
+            value = SQLITE.get_cold(cid, key, _lowram_default_for_key(key))
+        if value not in (None, [], {}):
+            snap[key] = value
+    return snap
+
+def _lowram_flush_all_hot(evict: bool = False):
+    if not LOWRAM_ENABLED or not isinstance(data, dict):
+        return
+    chats = data.get("chats", {}) or {}
+    with data_lock:
+        meta_chats = {}
+        for cid_s, store in list(chats.items()):
+            try: cid = int(cid_s)
+            except Exception: continue
+            if isinstance(store, dict):
+                _lowram_flush_chat(cid, store, evict=evict)
+                meta_chats[str(cid)] = _lowram_store_meta_payload(store)
+        if meta_chats:
+            SQLITE.save_chats(meta_chats)
+        SQLITE.save_root(_sqlite_pack_root(data))
+
+def lowram_status_text() -> str:
+    mem = _memory_usage_snapshot() if "_memory_usage_snapshot" in globals() else {}
+    with _LOWRAM_LOCK:
+        st = dict(_LOWRAM_STATS)
+    loaded = 0
+    try:
+        for store in ((data or {}).get("chats", {}) or {}).values():
+            if isinstance(store, dict):
+                loaded += sum(1 for k in LOWRAM_COLD_KEYS if dict.__contains__(store, k))
+    except Exception:
+        pass
+    return (
+        f"LOW-RAM: {'ВКЛ' if LOWRAM_ENABLED else 'ВЫКЛ'} | RAM {mem.get('rss_mb','?')} MB\n"
+        f"Cold fields loaded now: {loaded}; loads={st.get('cold_loads',0)} saves={st.get('cold_saves',0)} evictions={st.get('cold_evictions',0)}\n"
+        f"SQLite cold rows: {SQLITE.cold_count()} | DB snapshots={st.get('db_snapshots',0)} restores={st.get('db_restores',0)}\n"
+        f"Последний DB snapshot: {st.get('last_snapshot_at') or '—'}; restore: {st.get('last_restore_at') or '—'}\n"
+        f"Ошибка: {st.get('last_error') or 'нет'}"
+    )
 
 def _sqlite_pack_root(d: dict) -> dict:
     return {k: v for k, v in (d or {}).items() if k != "chats"}
@@ -8081,12 +8399,16 @@ def _delta_baseline_from_payload(payload: dict) -> tuple[dict[int, dict[str, str
             continue
         if not isinstance(store, dict):
             continue
+        if LOWRAM_ENABLED and isinstance(store, ColdChatStore) and not dict.__contains__(store, "records"):
+            records = SQLITE.get_cold(cid, "records", []) or []
+        else:
+            records = store.get("records", []) or []
         rec_baseline[cid] = {
             _delta_record_key(rec): _delta_hash(rec)
-            for rec in (store.get("records", []) or [])
-            if isinstance(rec, dict)
+            for rec in records if isinstance(rec, dict)
         }
-        meta = _delta_chat_meta(store)
+        records = None
+        meta = _delta_chat_meta(_lowram_store_meta_payload(store) if LOWRAM_ENABLED else store)
         meta_baseline[cid] = {str(key): _delta_hash(value) for key, value in meta.items()}
     root = _delta_root_patch(payload or {})
     root_baseline = _delta_root_signature_state(root)
@@ -8099,7 +8421,8 @@ def initialize_delta_baseline(payload: dict | None = None):
     if snapshot is None:
         with data_lock:
             _persist_forward_index_in_data(data)
-            snapshot = _delta_json_clone(data or {})
+            # v114: do not deep-clone all chat history. ColdChatStore histories live in SQLite.
+            snapshot = data or {}
     recs, metas, root_sig = _delta_baseline_from_payload(snapshot or {})
     with _delta_state_lock:
         _delta_record_baseline = recs
@@ -8119,10 +8442,16 @@ def _build_delta_payload(chat_ids: list[int], generation_map: dict[int, int]) ->
             if key != "chats"
         }
         all_chats = (data or {}).get("chats", {}) or {}
-        state["chats"] = {
-            str(cid): _delta_json_clone(all_chats.get(str(cid), {}) or {})
-            for cid in requested_ids
-        }
+        if LOWRAM_ENABLED:
+            state["chats"] = {
+                str(cid): _delta_json_clone(_lowram_materialize_chat_snapshot(cid, all_chats.get(str(cid), {}) or {}))
+                for cid in requested_ids
+            }
+        else:
+            state["chats"] = {
+                str(cid): _delta_json_clone(all_chats.get(str(cid), {}) or {})
+                for cid in requested_ids
+            }
 
     with _delta_state_lock:
         old_records = {int(cid): dict(sigs or {}) for cid, sigs in _delta_record_baseline.items()}
@@ -8534,9 +8863,9 @@ def delta_status_text() -> str:
         f"Событий в нём: {_delta_last_event_count}\n"
         f"Файл: {_delta_last_file or '-'}\n"
         f"Ошибка: {_delta_last_error or '-'}\n"
-        f"Full global ожидается: {'да' if global_pending else 'нет'}\n"
+        f"SQLite snapshot ожидается: {'да' if global_pending else 'нет'}\n"
         f"После последнего full: {since_full} сек.\n"
-        f"Тишина для full: {int(MEGA_GLOBAL_QUIET_SECONDS)} сек.; максимум: {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)} сек."
+        f"Тишина для SQLite snapshot: {int(MEGA_GLOBAL_QUIET_SECONDS)} сек.; максимум: {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)} сек."
     )
 
 
@@ -9687,6 +10016,8 @@ def build_runtime_watcher_text() -> str:
         f"Предыдущий commit: {str(prev_render.get('RENDER_GIT_COMMIT') or '—')[:12]}",
         "",
         f"Последняя ошибка Watcher: {str(st.get('last_error') or 'нет')[:300]}",
+        "",
+        lowram_status_text() if 'lowram_status_text' in globals() else "LOW-RAM: —",
     ])
     return wm_owner("\n".join(lines), 12)
 
@@ -9701,8 +10032,205 @@ def build_runtime_events_text(limit: int = 14) -> str:
         lines.append(f"{row.get('ts','')} [{row.get('level','')}] {row.get('event','')} — {row.get('detail','')[:180]}")
     return wm_owner("\n".join(lines), 13)
 
+def lowram_database_remote_dir() -> str:
+    return MEGA_BACKUP_DIR.rstrip("/") + "/" + LOWRAM_DB_REMOTE_DIR_NAME
+
+def lowram_database_remote_latest() -> str:
+    return lowram_database_remote_dir().rstrip("/") + "/" + LOWRAM_DB_LATEST_NAME
+
+def _lowram_gzip_file(src: str, dst: str):
+    with open(src, "rb") as fin, gzip.open(dst, "wb", compresslevel=5) as fout:
+        shutil.copyfileobj(fin, fout, length=1024 * 1024)
+    return dst
+
+def _lowram_gunzip_file(src: str, dst: str):
+    with gzip.open(src, "rb") as fin, open(dst, "wb") as fout:
+        shutil.copyfileobj(fin, fout, length=1024 * 1024)
+    return dst
+
+def mega_upload_latest_database_backup(force: bool = False) -> bool:
+    """Primary v114 snapshot: SQLite file -> gzip -> MEGA. No full Python state copy."""
+    if not mega_is_configured(): return False
+    if RESTORE_GUARD_ACTIVE and not force:
+        log_error(f"[MEGA DB SNAPSHOT BLOCKED] {RESTORE_GUARD_REASON}"); return False
+    with MEGA_GLOBAL_BACKUP_LOCK:
+        workdir = tempfile.mkdtemp(prefix="lowram_db_snapshot_")
+        try:
+            with _delta_state_lock:
+                capture_generation = int(_delta_generation)
+            _lowram_flush_all_hot(evict=False)
+            created_at = now_local().isoformat(timespec="seconds")
+            SQLITE.set_meta("db_snapshot", "main", {"created_at": created_at, "bot_version": VERSION, "schema": 1})
+            raw = os.path.join(workdir, "bot_state.sqlite3")
+            gz = os.path.join(workdir, f"candidate_bot_state_{now_local().strftime('%Y%m%d_%H%M%S_%f')}.sqlite3.gz")
+            SQLITE.backup_to(raw)
+            _lowram_gzip_file(raw, gz)
+            mega_ensure_remote_path(lowram_database_remote_dir())
+            history = lowram_database_remote_dir().rstrip("/") + "/history"
+            mega_ensure_remote_path(history)
+            _mega_run("mega-put", [gz, lowram_database_remote_dir()], check=True, timeout=MEGA_TIMEOUT)
+            remote_candidate = lowram_database_remote_dir().rstrip("/") + "/" + os.path.basename(gz)
+            remote_latest = lowram_database_remote_latest()
+            archived = history + "/bot_state_" + re.sub(r"[^0-9]", "", created_at)[:14] + ".sqlite3.gz"
+            _mega_run("mega-mv", [remote_latest, archived], check=False, timeout=60)
+            _mega_run("mega-mv", [remote_candidate, remote_latest], check=True, timeout=60)
+            # Baseline reads each chat's record list one at a time from SQLite.
+            initialize_delta_baseline(data)
+            global _global_snapshot_pending, _global_snapshot_last_success_monotonic, _global_snapshot_last_success_at
+            with _delta_state_lock:
+                newer = int(_delta_generation) > int(capture_generation)
+                _global_snapshot_pending = bool(newer)
+                _global_snapshot_last_success_monotonic = time.monotonic()
+                _global_snapshot_last_success_at = created_at
+            DELAYED_SCHEDULER.cancel("mega-global-max-v90"); DELAYED_SCHEDULER.cancel("mega-global-quiet-v90")
+            if newer: _mark_global_snapshot_pending()
+            try:
+                _mega_prune_remote_history(history, "bot_state_*.sqlite3.gz", LOWRAM_DB_HISTORY_KEEP)
+                _prune_delta_files_after_full_snapshot()
+            except Exception: pass
+            with _LOWRAM_LOCK:
+                _LOWRAM_STATS["db_snapshots"] += 1; _LOWRAM_STATS["last_snapshot_at"] = created_at
+            log_info(f"[MEGA DB SNAPSHOT] uploaded {remote_latest}; bytes={os.path.getsize(gz)}")
+            return True
+        except Exception as e:
+            with _LOWRAM_LOCK:
+                _LOWRAM_STATS["db_snapshot_errors"] += 1; _LOWRAM_STATS["last_error"] = str(e)[:300]
+            log_error(f"[MEGA DB SNAPSHOT ERROR] {e}"); return False
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+            try:
+                import gc; gc.collect()
+            except Exception: pass
+
+def mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, str]:
+    """Restore the disposable Render working DB from MEGA before load_data()."""
+    global _LOWRAM_DB_RESTORED_THIS_BOOT, _LOWRAM_DB_RESTORE_DETAIL
+    if not (LOWRAM_ENABLED and mega_is_configured()): return False, "LOWRAM/MEGA unavailable"
+    workdir = tempfile.mkdtemp(prefix="lowram_db_restore_")
+    try:
+        mega_login_if_needed()
+        remote = lowram_database_remote_latest()
+        res = _mega_run("mega-get", [remote, workdir], check=False, timeout=MEGA_TIMEOUT)
+        if res.returncode != 0:
+            return False, "MEGA SQLite snapshot not found yet"
+        candidates = list(Path(workdir).rglob(LOWRAM_DB_LATEST_NAME))
+        if not candidates:
+            candidates = list(Path(workdir).rglob("*.sqlite3.gz"))
+        if not candidates:
+            return False, "download returned no sqlite3.gz"
+        gz = str(candidates[0]); raw = os.path.join(workdir, "restored.sqlite3")
+        _lowram_gunzip_file(gz, raw)
+        # Basic SQLite integrity check before replacing the live working copy.
+        test = sqlite3.connect(raw)
+        remote_created = ""
+        try:
+            row = test.execute("PRAGMA quick_check").fetchone()
+            if not row or str(row[0]).lower() != "ok":
+                raise RuntimeError(f"SQLite quick_check failed: {row}")
+            try:
+                mrow = test.execute("SELECT v FROM meta WHERE kind='db_snapshot' AND k='main'").fetchone()
+                if mrow:
+                    remote_created = str((json.loads(mrow[0]) or {}).get("created_at") or "")
+            except Exception:
+                remote_created = ""
+        finally:
+            test.close()
+        # A same-instance Python restart can preserve a fresher ephemeral SQLite. Never overwrite
+        # newer local committed work with an older cloud snapshot; deploys normally have empty local DB.
+        local_root = SQLITE.load_root() or {}
+        local_saved = str((local_root.get("_state_meta") or {}).get("last_saved_at") or "") if isinstance(local_root, dict) else ""
+        local_has_state = bool(SQLITE.load_chats()) or SQLITE.cold_count() > 0
+        if local_has_state and _parse_iso_timestamp(local_saved) > _parse_iso_timestamp(remote_created) + 1:
+            _LOWRAM_DB_RESTORED_THIS_BOOT = True  # working SQLite is already the best base; still apply cloud deltas idempotently
+            _LOWRAM_DB_RESTORE_DETAIL = f"kept fresher local ({local_saved}) over cloud ({remote_created or 'unknown'})"
+            with _LOWRAM_LOCK:
+                _LOWRAM_STATS["last_restore_at"] = now_local().isoformat(timespec="seconds")
+            log_info(f"[MEGA DB RESTORE] {_LOWRAM_DB_RESTORE_DETAIL}")
+            return True, _LOWRAM_DB_RESTORE_DETAIL
+        SQLITE.replace_database(raw)
+        meta = SQLITE.get_meta("db_snapshot", "main", {}) or {}
+        _LOWRAM_DB_RESTORED_THIS_BOOT = True
+        _LOWRAM_DB_RESTORE_DETAIL = str(meta.get("created_at") or "unknown")
+        with _LOWRAM_LOCK:
+            _LOWRAM_STATS["db_restores"] += 1; _LOWRAM_STATS["last_restore_at"] = now_local().isoformat(timespec="seconds")
+        log_info(f"[MEGA DB RESTORE] restored primary SQLite snapshot created_at={_LOWRAM_DB_RESTORE_DETAIL}")
+        return True, f"SQLite snapshot { _LOWRAM_DB_RESTORE_DETAIL }"
+    except Exception as e:
+        with _LOWRAM_LOCK: _LOWRAM_STATS["last_error"] = str(e)[:300]
+        log_error(f"[MEGA DB RESTORE ERROR] {e}")
+        return False, str(e)[:300]
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+def _lowram_apply_delta_to_live_state(delta: dict):
+    """Apply one compact delta to metadata + SQLite cold finance history without global materialization."""
+    if not isinstance(delta, dict): return
+    # Root patches.
+    for key in (delta.get("root_deletes") or []):
+        if key not in _DELTA_VOLATILE_ROOT_KEYS: data.pop(str(key), None)
+    for key, value in (delta.get("root_patch") or {}).items():
+        if key not in _DELTA_VOLATILE_ROOT_KEYS: data[str(key)] = _delta_json_clone(value)
+    for key, entries in (delta.get("root_map_patches") or {}).items():
+        target = data.setdefault(str(key), {})
+        if not isinstance(target, dict): target = {}; data[str(key)] = target
+        for entry, value in (entries or {}).items(): target[str(entry)] = _delta_json_clone(value)
+    for key, entries in (delta.get("root_map_deletes") or {}).items():
+        target = data.get(str(key))
+        if isinstance(target, dict):
+            for entry in entries or []: target.pop(str(entry), None)
+    chats = data.setdefault("chats", {})
+    changed = []
+    for cid_s, change in (delta.get("chat_changes") or {}).items():
+        if not isinstance(change, dict): continue
+        try: cid = int(cid_s)
+        except Exception: continue
+        store = chats.get(str(cid))
+        if not isinstance(store, ColdChatStore):
+            store = _lowram_wrap_store(cid, store if isinstance(store, dict) else {})
+            chats[str(cid)] = store
+        for key in (change.get("chat_meta_deletes") or []): dict.pop(store, str(key), None)
+        meta = change.get("chat_meta")
+        if isinstance(meta, dict):
+            for key, value in meta.items(): dict.__setitem__(store, str(key), _delta_json_clone(value))
+        for key, value in (change.get("chat_meta_patch") or {}).items():
+            if str(key) not in LOWRAM_COLD_KEYS:
+                dict.__setitem__(store, str(key), _delta_json_clone(value))
+        records = SQLITE.get_cold(cid, "records", []) or []
+        current = {_delta_record_key(rec): rec for rec in records if isinstance(rec, dict)}
+        for key in (change.get("deletes") or []): current.pop(str(key), None)
+        for item in (change.get("upserts") or []):
+            if isinstance(item, dict) and isinstance(item.get("record"), dict):
+                current[str(item.get("key") or _delta_record_key(item["record"]))] = _delta_json_clone(item["record"])
+        records = sorted(current.values(), key=record_sort_key)
+        SQLITE.set_cold(cid, "records", records)
+        SQLITE.set_cold(cid, "daily_records", _lowram_rebuild_daily(records))
+        dict.__setitem__(store, "balance", sum(float(r.get("amount",0) or 0) for r in records if isinstance(r,dict)))
+        SQLITE.save_chat(cid, _lowram_store_meta_payload(store)); changed.append(cid)
+        records = current = None
+    SQLITE.save_root(_sqlite_pack_root(data))
+
+def lowram_apply_deltas_after_db_snapshot() -> int:
+    if not _LOWRAM_DB_RESTORED_THIS_BOOT: return 0
+    meta = SQLITE.get_meta("db_snapshot", "main", {}) or {}
+    created_at = str(meta.get("created_at") or "")
+    if not created_at: return 0
+    applied = 0
+    for remote_path in _delta_remote_candidates_after(created_at):
+        local = _mega_download_remote_path(remote_path)
+        if not local: continue
+        delta = _load_json(local, {}) or {}
+        if delta.get("kind") != "telegram_finance_bot_delta": continue
+        if _parse_iso_timestamp(delta.get("created_at")) <= _parse_iso_timestamp(created_at): continue
+        _lowram_apply_delta_to_live_state(delta); applied += 1
+    if applied:
+        _load_forward_index_from_data(data)
+        log_info(f"[MEGA DB RESTORE] applied {applied} compact deltas after SQLite snapshot")
+    return applied
+
 def mega_upload_latest_global_backup(force: bool = False) -> bool:
-    """Безопасный latest_global: проверка усечения, история и замена без предварительного удаления."""
+    """v114: automatic full snapshot is the SQLite working DB; legacy global JSON is optional."""
+    if LOWRAM_ENABLED and not LOWRAM_LEGACY_GLOBAL_JSON:
+        return mega_upload_latest_database_backup(force=force)
     if not mega_is_configured():
         return False
     if RESTORE_GUARD_ACTIVE and not force:
@@ -9793,13 +10321,22 @@ def is_data_effectively_empty_for_restore(d: dict) -> bool:
     for _, store in chats.items():
         if not isinstance(store, dict):
             continue
-        if store.get("records"):
-            return False
-        daily = store.get("daily_records") or {}
-        if any((daily.get(day) or []) for day in daily):
-            return False
-        if store.get("secret_messages"):
-            return False
+        if LOWRAM_ENABLED:
+            try:
+                cid_i = int(_)
+            except Exception:
+                cid_i = None
+            if cid_i is not None:
+                if SQLITE.get_cold(cid_i, "records", []) or SQLITE.get_cold(cid_i, "secret_messages", []):
+                    return False
+        else:
+            if store.get("records"):
+                return False
+            daily = store.get("daily_records") or {}
+            if any((daily.get(day) or []) for day in daily):
+                return False
+            if store.get("secret_messages"):
+                return False
     return True
 
 
@@ -9811,27 +10348,25 @@ def _parse_iso_timestamp(value: str | None) -> float:
 
 
 def _local_restore_stats(d: dict) -> dict:
-    """Статистика локальной базы без создания нового backup timestamp."""
+    """Статистика локальной базы без удержания всей истории в RAM."""
     chats = (d or {}).get("chats", {}) if isinstance(d, dict) else {}
-    if not isinstance(chats, dict):
-        chats = {}
-    records = 0
-    nonempty = 0
-    secrets = 0
-    for store in chats.values():
-        if not isinstance(store, dict):
-            continue
-        recs = store.get("records") or []
-        if isinstance(recs, list):
-            records += len(recs)
-            if recs:
-                nonempty += 1
-        secrets += len(store.get("secret_messages") or []) if isinstance(store.get("secret_messages") or [], list) else 0
+    if not isinstance(chats, dict): chats = {}
+    records = 0; nonempty = 0; secrets = 0
+    for cid_s, store in chats.items():
+        if not isinstance(store, dict): continue
+        try: cid = int(cid_s)
+        except Exception: continue
+        if LOWRAM_ENABLED:
+            recs = SQLITE.get_cold(cid, "records", []) or []
+            sec = SQLITE.get_cold(cid, "secret_messages", []) or []
+        else:
+            recs = store.get("records") or []; sec = store.get("secret_messages") or []
+        records += len(recs) if isinstance(recs, list) else 0
+        if recs: nonempty += 1
+        secrets += len(sec) if isinstance(sec, list) else 0
+        recs = sec = None
     return {
-        "chat_count": len(chats),
-        "nonempty_chats": nonempty,
-        "record_count": records,
-        "secret_count": secrets,
+        "chat_count": len(chats), "nonempty_chats": nonempty, "record_count": records, "secret_count": secrets,
         "forward_rules_count": sum(len(v or {}) for v in ((d or {}).get("forward_rules", {}) or {}).values()),
         "forward_index_count": len((d or {}).get("forward_index", {}) or {}),
         "last_saved_at": str(((d or {}).get("_state_meta") or {}).get("last_saved_at") or ""),
@@ -10018,7 +10553,7 @@ def mega_status_text() -> str:
     lines.append(f"MEGA_HISTORY_DIR: {mega_history_remote_dir()}")
     lines.append(f"MEGA_DELTA_DIR: {mega_delta_remote_root()}")
     lines.append(f"Delta delay: {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g} сек")
-    lines.append(f"Global full: после {int(MEGA_GLOBAL_QUIET_SECONDS)} сек. тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)} сек.")
+    lines.append(f"SQLite snapshot: после {int(MEGA_GLOBAL_QUIET_SECONDS)} сек. тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)} сек.")
     lines.append(f"MEGA_EMAIL: {'есть' if MEGA_EMAIL else 'нет'}")
     lines.append(f"MEGA_BACKUP_DIR: {MEGA_BACKUP_DIR}")
     lines.append(f"MEGA_CHAT_BACKUP_DIR: {MEGA_CHAT_BACKUP_DIR}")
@@ -10364,9 +10899,14 @@ def load_data():
         except Exception:
             pass
 
+    # v114: migrate/wrap large chat history into SQLite cold_fields before any startup scan.
+    _lowram_prepare_loaded_data(d, migrate_existing=True)
     try:
         _load_forward_index_from_data(d)
-        _rebuild_forward_index_from_finance_records(d)
+        # Rebuild from finance history only when the persisted index is missing. The low-RAM
+        # implementation scans one SQLite chat at a time and releases it immediately.
+        if not (d.get("forward_index") or {}):
+            _rebuild_forward_index_from_finance_records(d)
     except Exception as e:
         log_error(f"load_data forward_index: {e}")
 
@@ -10420,9 +10960,23 @@ def save_data(d, chat_ids=None, full: bool = False, root_only: bool = False):
             for cid in ids:
                 payload = chats.get(str(cid))
                 if isinstance(payload, dict):
-                    SQLITE.save_chat(cid, payload)
+                    if LOWRAM_ENABLED:
+                        _lowram_flush_chat(cid, payload, evict=False)
+                        SQLITE.save_chat(cid, _lowram_store_meta_payload(payload))
+                    else:
+                        SQLITE.save_chat(cid, payload)
         else:
-            SQLITE.save_chats(chats)
+            if LOWRAM_ENABLED:
+                meta_chats = {}
+                for cid_s, payload in list(chats.items()):
+                    try: cid = int(cid_s)
+                    except Exception: continue
+                    if isinstance(payload, dict):
+                        _lowram_flush_chat(cid, payload, evict=False)
+                        meta_chats[str(cid)] = _lowram_store_meta_payload(payload)
+                SQLITE.save_chats(meta_chats)
+            else:
+                SQLITE.save_chats(chats)
 def chat_json_file(chat_id: int) -> str:
     return f"data_{chat_id}.json"
 def chat_csv_file(chat_id: int) -> str:
@@ -10446,8 +11000,6 @@ def get_chat_store(chat_id: int) -> dict:
                 "info": {},
                 "known_chats": {},
                 "balance": 0,
-                "records": [],
-                "daily_records": {},
                 "next_id": 1,
                 "active_windows": {},
                 "edit_wait": None,
@@ -10478,6 +11030,10 @@ def get_chat_store(chat_id: int) -> dict:
                 },
             }
         )
+
+        if LOWRAM_ENABLED and not isinstance(store, ColdChatStore):
+            store = _lowram_wrap_store(int(chat_id), store)
+            chats[str(chat_id)] = store
 
         store.setdefault("settings", {}).setdefault("auto_add", True)
         store.setdefault("settings", {}).setdefault("quick_balance_enabled", False)
@@ -16234,31 +16790,41 @@ def _persist_forward_finance_delivery_now(src_chat_id: int, src_msg_id: int, dst
 
 
 def _rebuild_forward_index_from_finance_records(d: dict) -> int:
-    """После restore восстанавливает forward_index из provenance сохранённых финзаписей."""
+    """После restore восстанавливает forward_index, сканируя по одному чату без удержания всей истории в RAM."""
     added = 0
     try:
         with forward_map_lock:
             for cid, store in ((d or {}).get("chats", {}) or {}).items():
                 if not isinstance(store, dict):
                     continue
-                for rec in store.get("records", []) or []:
+                try:
+                    cid_i = int(cid)
+                except Exception:
+                    continue
+                if LOWRAM_ENABLED and not dict.__contains__(store, "records"):
+                    rows = SQLITE.get_cold(cid_i, "records", []) or []
+                else:
+                    rows = store.get("records", []) or []
+                for rec in rows:
                     if not isinstance(rec, dict) or not rec.get("forwarded_by_bot"):
                         continue
                     try:
                         src_chat = int(rec.get("forward_source_chat_id"))
                         src_msg = int(rec.get("forward_source_msg_id"))
-                        dst_chat = int(rec.get("forward_dst_chat_id") or cid)
+                        dst_chat = int(rec.get("forward_dst_chat_id") or cid_i)
                         dst_msg = int(rec.get("forward_dst_msg_id") or rec.get("source_msg_id") or rec.get("msg_id"))
                     except Exception:
                         continue
                     key = (src_chat, src_msg); pair = (dst_chat, dst_msg)
-                    rows = forward_map.setdefault(key, [])
-                    if pair not in rows:
-                        rows.append(pair); added += 1
+                    rows_map = forward_map.setdefault(key, [])
+                    if pair not in rows_map:
+                        rows_map.append(pair); added += 1
+                # rows becomes unreachable before the next chat.
+                rows = None
             if added:
                 _persist_forward_index_in_data(d)
         if added:
-            log_info(f"[FORWARD INDEX RECOVERY] rebuilt {added} links from finance records")
+            log_info(f"[FORWARD INDEX RECOVERY] rebuilt {added} links from SQLite finance records")
         return added
     except Exception as e:
         log_error(f"_rebuild_forward_index_from_finance_records: {e}")
@@ -26127,6 +26693,10 @@ def _run_full_chat_backup(chat_id: int):
             with timer_lock:
                 _backup_dirty_chats.discard(chat_id)
                 _backup_timers.pop(chat_id, None)
+            try:
+                _lowram_release_chat(chat_id)
+            except Exception as _lr_exc:
+                log_error(f"LOWRAM full-backup release {chat_id}: {_lr_exc}")
 
 
 def schedule_quick_backup(chat_id: int, delay: float | None = None):
@@ -27471,6 +28041,11 @@ def telegram_webhook():
                 finally:
                     UPDATE_DISPATCHER.finish(update_id, success, error_text)
                     bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s success={success} durable={durable_cloud}")
+                    # The update and its durable finalizer are finished: return large history to SQLite.
+                    try:
+                        _lowram_release_chat(update_chat_id)
+                    except Exception as _lr_exc:
+                        log_error(f"LOWRAM post-update release: {_lr_exc}")
 
             if not WEBHOOK_TASK_POOL.submit(update_key, _process_update):
                 log_error(f"WEBHOOK QUEUE FULL: chat={update_chat_id}")
@@ -27516,17 +28091,36 @@ def set_webhook():
 def main():
     global data
     runtime_install_signal_handlers()
-    runtime_set_phase("boot_local_load", "загружаю локальное состояние")
+    runtime_set_phase("boot_local_load", "восстанавливаю рабочую SQLite из MEGA / локального диска")
     restored = False
+    db_restored = False
+    if LOWRAM_ENABLED:
+        try:
+            db_restored, db_detail = mega_restore_sqlite_snapshot_from_cloud()
+            runtime_event("boot_sqlite_snapshot", f"ok={db_restored} {db_detail}")
+        except Exception as e:
+            runtime_event("boot_sqlite_snapshot_error", str(e), "WARN")
     data = load_data()
-    runtime_set_phase("boot_mega_restore", "проверяю global + delta в MEGA")
+    if db_restored:
+        try:
+            delta_count = lowram_apply_deltas_after_db_snapshot()
+            restored = True
+            runtime_event("boot_sqlite_deltas", f"applied={delta_count}")
+        except Exception as e:
+            runtime_event("boot_sqlite_deltas_error", str(e), "ERROR")
+    runtime_set_phase("boot_mega_restore", "проверяю SQLite snapshot / fallback global + delta в MEGA")
     with _RUNTIME_LOCK:
         _RUNTIME_STATE["restore_attempted"] = True
     try:
-        restored = mega_autorestore_if_needed()
+        if not db_restored:
+            restored = mega_autorestore_if_needed()
+            # First v114 boot may have come from legacy latest_global.json. Immediately move
+            # the restored history out of RAM into SQLite cold_fields.
+            _lowram_prepare_loaded_data(data, migrate_existing=True)
+            _lowram_flush_all_hot(evict=True)
         with _RUNTIME_LOCK:
             _RUNTIME_STATE["restore_ok"] = bool(restored or not RESTORE_GUARD_ACTIVE)
-            _RUNTIME_STATE["restore_detail"] = "MEGA restore applied" if restored else ("restore guard active" if RESTORE_GUARD_ACTIVE else "local state retained")
+            _RUNTIME_STATE["restore_detail"] = ("MEGA SQLite snapshot + deltas" if db_restored else ("MEGA legacy global restore applied" if restored else ("restore guard active" if RESTORE_GUARD_ACTIVE else "local state retained")))
     except Exception as e:
         log_error(f"main mega_autorestore_if_needed: {e}")
         restored = False
@@ -27619,8 +28213,7 @@ def main():
             settings.setdefault("currency_mode", "ars_usd" if settings.get("usd_display_enabled", False) else "ars")
             settings.setdefault("remaining_show_ost_label", True)
             settings.setdefault("total_secret_mode", False)
-            store.setdefault("secret_messages", [])
-            _ensure_secret_media_numbers(int(cid))
+            # v114: secret history stays cold in SQLite; numbering is repaired lazily when secret UI is opened.
         except Exception:
             pass
     # После MEGA restore повторно поднимаем индекс пересылки и компактное состояние окон в память.
@@ -27678,11 +28271,19 @@ def main():
         runtime_set_phase("boot_recovery_background", f"осталось {boot_recovery_remaining}; webhook временно 503")
         threading.Thread(target=runtime_continue_boot_recovery_background, name="boot-task-recovery", daemon=True).start()
     else:
-        runtime_mark_ready("global/delta восстановлены; pending/running durable tasks проверены")
+        runtime_mark_ready("SQLite/global + delta восстановлены; pending/running durable tasks проверены")
         try:
             journal_flush_to_mega(True)
         except Exception:
             pass
+    if LOWRAM_ENABLED and not db_restored and not RESTORE_GUARD_ACTIVE:
+        def _seed_primary_db_snapshot():
+            try:
+                time.sleep(2.0)
+                mega_upload_latest_database_backup(force=True)
+            except Exception as exc:
+                log_error(f"LOWRAM initial DB snapshot: {exc}")
+        threading.Thread(target=_seed_primary_db_snapshot, name="lowram-db-seed", daemon=True).start()
     owner_id = None
     if OWNER_ID:
         try:
@@ -27698,14 +28299,15 @@ def main():
                     f"Причина предыдущего запуска (оценка): {_RUNTIME_STATE.get('previous_reason', '—')}\n"
                     f"Render instance: {str(os.getenv('RENDER_INSTANCE_ID','') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT','') or '—')[:12]}\n"
                     f"⚠️ Это время старта Python-процесса, НЕ время начала deploy в Render Events. Процесс также стартует после sleep/restart/maintenance/crash.\n"
-                    f"Восстановление: {'OK — полный универсальный снимок' if restored else ('ОШИБКА — защитный режим' if RESTORE_GUARD_ACTIVE else 'локальная база сохранена')}\n"
+                    f"Восстановление: {'OK — SQLite snapshot из MEGA' if db_restored else ('OK — legacy global → SQLite' if restored else ('ОШИБКА — защитный режим' if RESTORE_GUARD_ACTIVE else 'локальная база сохранена'))}\n"
+                    f"LOW-RAM: {'ВКЛ — RAM только активное; SQLite рабочее; MEGA постоянное' if LOWRAM_ENABLED else 'ВЫКЛ'}\n"
                     f"Защита бэкапа: {'ВКЛ — ' + RESTORE_GUARD_REASON if RESTORE_GUARD_ACTIVE else 'норма'}\n"
                     f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
                     f"Приоритет: ФИНАНСЫ → ПЕРЕСЫЛКА; forward yield максимум {FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS:g}с\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; durable MEGA: {'ВКЛ' if BOT_JOURNAL_DURABLE_ENABLED else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
                     f"MEGA-задачи: pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\n"
                     f"BOOT: {'READY' if runtime_is_ready() else 'RECOVERY'}; Watcher: Инфо → 🖥 Render / Сервер; heartbeat {RUNTIME_WATCHER_HEARTBEAT_SECONDS:g}с\n"
-                    f"Бэкап: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
+                    f"Бэкап: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; SQLite snapshot после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
@@ -27757,3 +28359,10 @@ if __name__ == "__main__":
 # BOT FILE: bot_v112_runtime_forensics_stability.py
 # BOT VERSION: bot_v112_runtime_forensics_stability
 # PURPOSE: fix durable journal/watcher + 30s runtime forensics + exception/timing diagnostics
+
+# ─────────────────────────────────────────────────────────────
+# v114 LOW-RAM STORAGE NOTES
+# RAM: only currently accessed cold chat fields.
+# SQLite: working state + cold_fields; disposable on Render.
+# MEGA: primary latest_bot_state.sqlite3.gz + compact deltas + durable tasks.
+# Legacy latest_global.json remains restore fallback and can be re-enabled with LOWRAM_LEGACY_GLOBAL_JSON=1.
