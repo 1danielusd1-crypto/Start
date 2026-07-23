@@ -1,5 +1,5 @@
-# BOT FILE: bot_v109_exact_once_finance_safe_recovery.py
-# BOT VERSION: bot_v109_exact_once_finance_safe_recovery
+# BOT FILE: bot_v113_memory_guard_stability.py
+# BOT VERSION: bot_v113_memory_guard_stability
 # PURPOSE: deploy-safe Telegram finance bot — exact-once finance effects, non-replaying recovery, BOOT/SHUTDOWN and Render watcher
 # ─────────────────────────────────────────────────────────────
 import os
@@ -262,17 +262,17 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 128) -> i
 
 WEBHOOK_TASK_POOL = KeyedTaskPool(
     "webhook",
-    _env_int("WEBHOOK_WORKERS", 6, 2, 16),
+    _env_int("WEBHOOK_WORKERS", 3, 2, 16),
     _env_int("WEBHOOK_MAX_PENDING", 2000, 100, 10000),
 )
 FINANCE_TASK_POOL = KeyedTaskPool(
     "finance",
-    _env_int("FINANCE_WORKERS", 4, 2, 12),
+    _env_int("FINANCE_WORKERS", 2, 2, 12),
     _env_int("FINANCE_MAX_PENDING", 1000, 100, 5000),
 )
 FORWARD_TASK_POOL = KeyedTaskPool(
     "forward",
-    _env_int("FORWARD_WORKERS", 4, 2, 12),
+    _env_int("FORWARD_WORKERS", 2, 2, 12),
     _env_int("FORWARD_MAX_PENDING", 1500, 100, 5000),
 )
 BACKUP_TASK_POOL = KeyedTaskPool(
@@ -293,7 +293,7 @@ EXPORT_TASK_POOL = KeyedTaskPool(
 )
 GENERAL_TASK_POOL = KeyedTaskPool(
     "general",
-    _env_int("GENERAL_WORKERS", 2, 1, 6),
+    _env_int("GENERAL_WORKERS", 1, 1, 6),
     _env_int("GENERAL_MAX_PENDING", 500, 50, 2000),
 )
 JOURNAL_TASK_POOL = KeyedTaskPool(
@@ -303,7 +303,7 @@ JOURNAL_TASK_POOL = KeyedTaskPool(
 )
 DELAYED_TASK_POOL = KeyedTaskPool(
     "delayed",
-    _env_int("DELAYED_WORKERS", 2, 1, 6),
+    _env_int("DELAYED_WORKERS", 1, 1, 6),
     _env_int("DELAYED_MAX_PENDING", 1000, 100, 5000),
 )
 DOZVON_TASK_POOL = KeyedTaskPool(
@@ -622,7 +622,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v112_runtime_forensics_stability"
+VERSION = "bot_v113_memory_guard_stability"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v112_runtime_forensics_stability.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -958,7 +958,7 @@ def get_recent_errors(limit: int = 20):
 # ─────────────────────────────────────────────────────────────
 # 📓 Журнал действий всего бота
 # ─────────────────────────────────────────────────────────────
-BOT_JOURNAL_MAX = int(os.getenv("BOT_JOURNAL_MAX", "1200") or "1200")
+BOT_JOURNAL_MAX = int(os.getenv("BOT_JOURNAL_MAX", "400") or "400")
 BOT_JOURNAL_FILE = os.getenv("BOT_JOURNAL_FILE", "bot_journal.jsonl").strip() or "bot_journal.jsonl"
 BOT_ACTION_LOG = deque(maxlen=BOT_JOURNAL_MAX)
 bot_journal_lock = threading.RLock()
@@ -979,9 +979,9 @@ try:
 except Exception:
     BOT_JOURNAL_DURABLE_REMOTE_KEEP = 3000
 try:
-    BOT_JOURNAL_DURABLE_RESTORE_FILES = max(20, min(1000, int(os.getenv("BOT_JOURNAL_DURABLE_RESTORE_FILES", "400") or "400")))
+    BOT_JOURNAL_DURABLE_RESTORE_FILES = max(10, min(200, int(os.getenv("BOT_JOURNAL_DURABLE_RESTORE_FILES", "80") or "80")))
 except Exception:
-    BOT_JOURNAL_DURABLE_RESTORE_FILES = 400
+    BOT_JOURNAL_DURABLE_RESTORE_FILES = 80
 
 _JOURNAL_DURABLE_LOCK = threading.RLock()
 _JOURNAL_DURABLE_BUFFER = []
@@ -1921,8 +1921,8 @@ def journal_flush_to_mega(force: bool = False) -> bool:
         with _JOURNAL_DURABLE_LOCK:
             _JOURNAL_DURABLE_BUFFER[0:0] = rows
             # ограничиваем аварийный RAM spool, чтобы MEGA outage не съел всю память Render
-            if len(_JOURNAL_DURABLE_BUFFER) > 10000:
-                del _JOURNAL_DURABLE_BUFFER[:-10000]
+            if len(_JOURNAL_DURABLE_BUFFER) > 1000:
+                del _JOURNAL_DURABLE_BUFFER[:-1000]
         return False
     finally:
         try:
@@ -1991,8 +1991,8 @@ def _journal_read_mega_rows(limit: int = 20000) -> list[dict]:
     return _journal_merge_rows(merged, limit=limit)
 
 
-def journal_restore_from_mega(limit: int = 20000) -> dict:
-    """BOOT: поднимает историю журнала из MEGA и сшивает её с ранними строками нового процесса."""
+def journal_restore_from_mega(limit: int = 200) -> dict:
+    """BOOT: restores only a small recent tail. Full history stays in MEGA and is streamed on export."""
     remote_rows = _journal_read_mega_rows(limit)
     local_rows = _journal_read_file_rows(limit)
     merged = _journal_merge_rows(remote_rows, local_rows, limit=limit)
@@ -2083,81 +2083,132 @@ def _journal_diagnostic_snapshot() -> dict:
     }
 
 
-def send_journal_file_to_owner(chat_id: int, limit: int = 20000):
-    """
-    v110: максимальный диагностический экспорт. Он специально собирает подробности в момент скачивания,
-    чтобы ежедневная работа бота не тратила CPU/RAM на тяжёлый telemetry snapshot для каждой строки.
-    """
+def _journal_write_export_row(fh, r: dict):
+    q = (
+        f"Q wh={r.get('webhook_pending',0)}/{r.get('webhook_active',0)} "
+        f"fin={r.get('finance_pending',0)}/{r.get('finance_active',0)} "
+        f"fwd={r.get('forward_pending',0)}/{r.get('forward_active',0)} "
+        f"delta={r.get('delta_pending',0)} backup={r.get('backup_pending',0)}"
+    )
+    fh.write(
+        f"{r.get('ts','')} | {r.get('level','')} | {r.get('action','')} | "
+        f"chat={r.get('chat_name') or r.get('chat_id')} | thread={r.get('thread','')} | "
+        f"phase={r.get('runtime_phase','')} ready={r.get('runtime_ready','')} | {q} | {r.get('detail','')}\n"
+    )
+
+
+def _journal_stream_mega_rows_to_file(fh, limit: int = 3000) -> int:
+    """Stream durable journal chunks to an already-open text file without holding all history in RAM."""
+    if not BOT_JOURNAL_DURABLE_ENABLED or not mega_is_configured():
+        return 0
+    remote_dir = _journal_durable_remote_dir()
+    # 50 rows/chunk by default; a modest margin covers partially-filled chunks.
+    max_files = min(BOT_JOURNAL_DURABLE_RESTORE_FILES, max(8, int(max(1, limit) / max(1, BOT_JOURNAL_DURABLE_FLUSH_ROWS)) + 8))
+    try:
+        files = _mega_find_remote_files(remote_dir, "journal_*.json", max_files)
+    except Exception:
+        return 0
+    count = 0
+    seen = set()
+    # Files are normally newest-first; reverse for readable chronology.
+    for remote in reversed(files):
+        local = None
+        try:
+            local = _mega_download_remote_path(remote)
+            doc = _load_json(local, {}) if local else {}
+            rows = doc.get("rows") if isinstance(doc, dict) else []
+            if not isinstance(rows, list):
+                continue
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                key = _journal_row_key(r)
+                if key in seen:
+                    continue
+                seen.add(key)
+                _journal_write_export_row(fh, r)
+                count += 1
+                if count >= int(limit):
+                    return count
+        except Exception as e:
+            fh.write(f"[journal chunk read error] {remote}: {e}\n")
+        finally:
+            try:
+                if local:
+                    shutil.rmtree(os.path.dirname(local), ignore_errors=True)
+            except Exception:
+                pass
+    return count
+
+
+def send_journal_file_to_owner(chat_id: int, limit: int = 3000):
+    """v113: maximum diagnostics, streamed to disk to avoid OOM on Render Free."""
     if not is_owner_chat(chat_id):
         send_and_auto_delete(chat_id, "📓 Журнал доступен только владельцу.", HELPER_DELETE_DELAY)
         return
-    bot_journal("journal_export_requested", chat_id, f"limit={limit}; maximum_diagnostics=1")
-
-    # v111: экспорт сшивает MEGA-историю прошлых процессов + локальный текущий процесс + RAM-хвост.
-    # Сначала форсируем маленький текущий spool, чтобы в скачанный файл попало почти всё до нажатия кнопки.
+    bot_journal("journal_export_requested", chat_id, f"limit={limit}; streaming=1; memory_guard=1")
     try:
         journal_flush_to_mega(True)
     except Exception:
         pass
-    mega_rows = _journal_read_mega_rows(limit)
-    rows = _journal_read_file_rows(limit)
-    ram_rows = get_recent_journal(min(int(limit), max(BOT_JOURNAL_MAX, 1)))
-    rows = _journal_merge_rows(mega_rows, rows, ram_rows, limit=limit)
+
+    pressure = _runtime_memory_pressure()
+    if str(pressure.get("level")) in {"high", "critical"}:
+        _runtime_emergency_trim("journal_export")
 
     diag = _journal_diagnostic_snapshot()
-    text_lines = [
-        "📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА",
-        f"Создан: {_journal_ts()}",
-        f"Версия: {VERSION}",
-        "ВАЖНО: время 'Бот запущен' = старт/READY Python-процесса, а не обязательно время начала Render deploy.",
-        "Новый процесс может появиться из-за deploy, restart, wake после sleep, maintenance или crash.",
-        "",
-        "==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================",
-        json.dumps(diag, ensure_ascii=False, indent=2, default=str),
-        "",
-        "==================== DURABLE JOURNAL ====================",
-        json.dumps(journal_durable_stats(), ensure_ascii=False, indent=2, default=str),
-        f"MEGA historical rows merged into this export: {len(mega_rows)}",
-        "",
-        "==================== RUNTIME EVENTS ====================",
-    ]
+    tmp_path = None
     try:
-        with _RUNTIME_LOCK:
-            runtime_rows = list(_RUNTIME_EVENTS)
-        for r in runtime_rows:
-            text_lines.append(f"{r.get('ts','')} | {r.get('level','')} | {r.get('event','')} | {r.get('detail','')}")
-    except Exception as e:
-        text_lines.append(f"runtime events unavailable: {e}")
-
-    text_lines.extend(["", "==================== ACTION JOURNAL ===================="])
-    for r in rows:
-        q = (
-            f"Q wh={r.get('webhook_pending',0)}/{r.get('webhook_active',0)} "
-            f"fin={r.get('finance_pending',0)}/{r.get('finance_active',0)} "
-            f"fwd={r.get('forward_pending',0)}/{r.get('forward_active',0)} "
-            f"delta={r.get('delta_pending',0)} backup={r.get('backup_pending',0)}"
-        )
-        text_lines.append(
-            f"{r.get('ts','')} | {r.get('level','')} | {r.get('action','')} | "
-            f"chat={r.get('chat_name') or r.get('chat_id')} | thread={r.get('thread','')} | "
-            f"phase={r.get('runtime_phase','')} ready={r.get('runtime_ready','')} | {q} | {r.get('detail','')}"
-        )
-
-    text_lines.extend([
-        "",
-        "==================== INTERPRETATION KEYS ====================",
-        "deploy_new_commit_*: Git commit изменился — сильный признак deploy новой версии.",
-        "planned_restart_same_commit: тот же commit + корректный SIGTERM — restart/замена instance без новой версии.",
-        "probable_render_idle_*: вероятный sleep/wake по длительности отсутствия inbound webhook; это оценка, не Render Events API.",
-        "new_instance_same_commit_crash_restart_or_maintenance: instance сменился, commit тот же, корректный shutdown не доказан.",
-        "process_restart_or_unknown: локальных данных недостаточно для точного вывода.",
-        "Keep-alive 503 при phase BOOT/SHUTDOWN может быть ответом самого бота readiness-gate, а не признаком deploy.",
-        "v111 durable journal: ACTION JOURNAL объединяет строки до и после restart/deploy из MEGA /runtime/journal.",
-    ])
-    payload = "\n".join(text_lines).encode("utf-8")
-    buf = io.BytesIO(payload)
-    buf.name = f"bot_diagnostic_journal_{now_local().strftime('%Y%m%d_%H%M%S')}.txt" if 'now_local' in globals() else "bot_diagnostic_journal.txt"
-    _tg_call_retry(bot.send_document, chat_id, buf, caption="📓 Максимальный журнал: Render + бот + очереди + MEGA", purpose="journal_send_document")
+        fd, tmp_path = tempfile.mkstemp(prefix="bot_diagnostic_", suffix=".txt")
+        os.close(fd)
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
+            fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
+            fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
+            fh.write("v113: BOOT держит в RAM только короткий хвост; полная история экспортируется потоково из MEGA.\n\n")
+            fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
+            json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
+            fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
+            json.dump(journal_durable_stats(), fh, ensure_ascii=False, indent=2, default=str)
+            fh.write("\n\n==================== RUNTIME EVENTS ====================\n")
+            try:
+                with _RUNTIME_LOCK:
+                    runtime_rows = list(_RUNTIME_EVENTS)
+                for r in runtime_rows:
+                    fh.write(f"{r.get('ts','')} | {r.get('level','')} | {r.get('event','')} | {r.get('detail','')}\n")
+            except Exception as e:
+                fh.write(f"runtime events unavailable: {e}\n")
+            fh.write("\n==================== ACTION JOURNAL (MEGA STREAM) ====================\n")
+            remote_count = _journal_stream_mega_rows_to_file(fh, int(limit))
+            fh.write(f"\n[MEGA rows streamed: {remote_count}]\n")
+            fh.write("\n==================== CURRENT PROCESS TAIL ====================\n")
+            seen_tail = set()
+            for r in _journal_merge_rows(_journal_read_file_rows(300), get_recent_journal(300), limit=600):
+                key = _journal_row_key(r)
+                if key in seen_tail:
+                    continue
+                seen_tail.add(key)
+                _journal_write_export_row(fh, r)
+            fh.write("\n==================== INTERPRETATION KEYS ====================\n")
+            fh.write("deploy_new_commit_*: Git commit changed — strong deploy evidence.\n")
+            fh.write("planned_restart_same_commit: same commit + graceful SIGTERM.\n")
+            fh.write("probable_render_idle_*: probable sleep/wake estimate.\n")
+            fh.write("process_restart_or_unknown + high RAM/no SIGTERM: suspect OOM/hard kill.\n")
+            fh.write("v113 heartbeat is intentionally tiny and full previous_runtime chains are not retained.\n")
+        with open(tmp_path, "rb") as fh:
+            _tg_call_retry(
+                bot.send_document,
+                chat_id,
+                fh,
+                caption="📓 Максимальный журнал: Render + бот + очереди + MEGA (streaming v113)",
+                purpose="journal_send_document",
+            )
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────
@@ -8782,7 +8833,7 @@ except Exception:
 
 _RUNTIME_LOCK = threading.RLock()
 _RUNTIME_SHUTDOWN_LOCK = threading.Lock()
-_RUNTIME_EVENTS = deque(maxlen=120)
+_RUNTIME_EVENTS = deque(maxlen=40)
 _RUNTIME_PREVIOUS = {}
 _RUNTIME_REMOTE_DIR_NAME = "runtime"
 _RUNTIME_LATEST_NAME = "runtime_latest.json"
@@ -8899,6 +8950,141 @@ def _runtime_memory_stats() -> dict:
     return out
 
 
+
+# ─────────────────────────────────────────────────────────────
+# v113: memory guard for Render Free (512 MB).
+# Diagnostic history lives in MEGA; RAM only keeps a small live working set.
+# ─────────────────────────────────────────────────────────────
+def _runtime_memory_pressure() -> dict:
+    mem = _runtime_memory_stats()
+    rss = mem.get("rss_mb")
+    limit = mem.get("limit_mb")
+    pct = mem.get("rss_percent_limit")
+    level = "normal"
+    try:
+        p = float(pct or 0.0)
+        if p >= 90.0:
+            level = "critical"
+        elif p >= 82.0:
+            level = "high"
+        elif p >= 70.0:
+            level = "warning"
+    except Exception:
+        pass
+    return {"level": level, "rss_mb": rss, "limit_mb": limit, "percent": pct}
+
+
+def _runtime_previous_summary(prev: dict) -> dict:
+    """Flatten previous watcher state. Never keep recursive previous_runtime chains in RAM."""
+    if not isinstance(prev, dict) or not prev:
+        return {}
+    st = prev.get("state") or {}
+    ren = prev.get("render") or {}
+    proc = prev.get("process") or {}
+    return {
+        "kind": "telegram_bot_runtime_previous_summary",
+        "captured_at": prev.get("captured_at") or "",
+        "bot_version": prev.get("bot_version") or "",
+        "state": {
+            "phase": st.get("phase") or "",
+            "ready": bool(st.get("ready")),
+            "started_at": st.get("started_at") or "",
+            "ready_at": st.get("ready_at") or "",
+            "last_webhook_at": st.get("last_webhook_at") or "",
+            "last_webhook_update_id": st.get("last_webhook_update_id") or "",
+            "shutdown_started_at": st.get("shutdown_started_at") or "",
+            "shutdown_finished_at": st.get("shutdown_finished_at") or "",
+            "shutdown_signal": st.get("shutdown_signal") or "",
+            "fatal_main_exception": st.get("fatal_main_exception") or "",
+            "fatal_thread_exception": st.get("fatal_thread_exception") or "",
+            "last_runtime_snapshot_ok_at": st.get("last_runtime_snapshot_ok_at") or "",
+        },
+        "render": {
+            "RENDER_INSTANCE_ID": ren.get("RENDER_INSTANCE_ID") or "",
+            "RENDER_GIT_COMMIT": ren.get("RENDER_GIT_COMMIT") or "",
+            "RENDER_SERVICE_ID": ren.get("RENDER_SERVICE_ID") or "",
+        },
+        "process": {
+            "rss_mb": proc.get("rss_mb"),
+            "peak_rss_mb": proc.get("peak_rss_mb"),
+            "limit_mb": proc.get("limit_mb"),
+            "rss_percent_limit": proc.get("rss_percent_limit"),
+            "uptime_seconds": proc.get("uptime_seconds"),
+        },
+    }
+
+
+def _runtime_emergency_trim(reason: str = "memory_pressure") -> dict:
+    """Best-effort RAM cleanup. Never changes finance/forward/business state."""
+    before = _runtime_memory_pressure()
+    try:
+        with bot_journal_lock:
+            if len(BOT_ACTION_LOG) > 250:
+                tail = list(BOT_ACTION_LOG)[-250:]
+                BOT_ACTION_LOG.clear()
+                BOT_ACTION_LOG.extend(tail)
+    except Exception:
+        pass
+    try:
+        with _JOURNAL_DURABLE_LOCK:
+            if len(_JOURNAL_DURABLE_BUFFER) > 300:
+                del _JOURNAL_DURABLE_BUFFER[:-300]
+    except Exception:
+        pass
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    after = _runtime_memory_pressure()
+    return {"reason": reason, "before": before, "after": after}
+
+
+def runtime_heartbeat_snapshot(event: str = "heartbeat") -> dict:
+    """Tiny durable liveness marker: deliberately excludes history, full queues and events."""
+    with _RUNTIME_LOCK:
+        st = dict(_RUNTIME_STATE)
+    mem = _runtime_memory_stats()
+    return {
+        "kind": "telegram_bot_runtime_heartbeat",
+        "schema_version": 2,
+        "bot_version": VERSION,
+        "captured_at": now_local().isoformat(timespec="milliseconds"),
+        "event": str(event or "heartbeat"),
+        "state": {
+            "phase": st.get("phase") or "",
+            "ready": bool(st.get("ready")),
+            "shutting_down": bool(st.get("shutting_down")),
+            "started_at": st.get("started_at") or "",
+            "ready_at": st.get("ready_at") or "",
+            "last_webhook_at": st.get("last_webhook_at") or "",
+            "last_webhook_update_id": st.get("last_webhook_update_id") or "",
+            "shutdown_started_at": st.get("shutdown_started_at") or "",
+            "shutdown_finished_at": st.get("shutdown_finished_at") or "",
+            "shutdown_signal": st.get("shutdown_signal") or "",
+            "fatal_main_exception": st.get("fatal_main_exception") or "",
+            "fatal_thread_exception": st.get("fatal_thread_exception") or "",
+            "last_runtime_snapshot_ok_at": st.get("last_runtime_snapshot_ok_at") or "",
+        },
+        "render": _runtime_render_env(),
+        "process": {
+            "pid": os.getpid(),
+            "rss_mb": mem.get("rss_mb"),
+            "peak_rss_mb": mem.get("peak_rss_mb"),
+            "limit_mb": mem.get("limit_mb"),
+            "rss_percent_limit": mem.get("rss_percent_limit"),
+            "threads": threading.active_count(),
+            "uptime_seconds": round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3),
+        },
+        "queues": {
+            "webhook": WEBHOOK_TASK_POOL.stats().get("pending", 0),
+            "finance": FINANCE_TASK_POOL.stats().get("pending", 0),
+            "forward": FORWARD_TASK_POOL.stats().get("pending", 0),
+            "delta": DELTA_TASK_POOL.stats().get("pending", 0),
+            "backup": BACKUP_TASK_POOL.stats().get("pending", 0),
+        },
+    }
+
 def _runtime_disk_stats() -> dict:
     try:
         usage = shutil.disk_usage(os.getcwd())
@@ -8923,8 +9109,8 @@ def _runtime_pool_stats() -> dict:
 def runtime_snapshot(extra: dict | None = None) -> dict:
     with _RUNTIME_LOCK:
         state = dict(_RUNTIME_STATE)
-        events = list(_RUNTIME_EVENTS)
-        previous = dict(_RUNTIME_PREVIOUS) if isinstance(_RUNTIME_PREVIOUS, dict) else {}
+        events = list(_RUNTIME_EVENTS)[-20:]
+        previous = _runtime_previous_summary(_RUNTIME_PREVIOUS) if isinstance(_RUNTIME_PREVIOUS, dict) else {}
     snap = {
         "kind": "telegram_bot_runtime_watcher",
         "schema_version": 1,
@@ -8953,6 +9139,7 @@ def runtime_snapshot(extra: dict | None = None) -> dict:
             "last_error": globals().get("_delta_last_error", ""),
         },
         "keep_alive": dict(KEEP_ALIVE_STATE) if "KEEP_ALIVE_STATE" in globals() else {},
+        "memory_guard": _runtime_memory_pressure(),
         "previous_runtime": previous,
         "events": events,
     }
@@ -8980,6 +9167,7 @@ def runtime_load_previous_snapshot() -> dict:
         prev = _load_json(local, {}) if local else {}
         if not isinstance(prev, dict):
             prev = {}
+        prev = _runtime_previous_summary(prev)
         with _RUNTIME_LOCK:
             _RUNTIME_PREVIOUS = prev
         return prev
@@ -9065,7 +9253,13 @@ def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = Tru
     tmp = None
     started = time.monotonic()
     try:
-        snap = runtime_snapshot({"event": event})
+        pressure = _runtime_memory_pressure()
+        if str(event) == "heartbeat":
+            if str(pressure.get("level")) in {"high", "critical"}:
+                _runtime_emergency_trim("heartbeat_memory_pressure")
+            snap = runtime_heartbeat_snapshot(event)
+        else:
+            snap = runtime_snapshot({"event": event})
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
         stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
         safe_event = mega_safe_name(event, "event")
@@ -27355,7 +27549,7 @@ def main():
     # историю до sleep/restart/deploy даже после очистки ephemeral filesystem Render.
     runtime_set_phase("boot_journal_restore", "поднимаю журнал предыдущих процессов из MEGA")
     try:
-        jr = journal_restore_from_mega(20000)
+        jr = journal_restore_from_mega(200)
         runtime_event("journal_restored", f"remote_rows={jr.get('remote_rows',0)} merged_rows={jr.get('merged_rows',0)}")
     except Exception as e:
         runtime_event("journal_restore_error", str(e), "WARN")
