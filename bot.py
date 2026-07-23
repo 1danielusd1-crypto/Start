@@ -1,4 +1,4 @@
-# BOT FILE:bot_v108_boot_shutdown_watcher_finwindows.py
+# BOT FILE: bot_v108_boot_shutdown_watcher_finwindows.py
 # BOT VERSION: bot_v108_boot_shutdown_watcher_finwindows
 # PURPOSE: deploy-safe Telegram finance bot — BOOT/SHUTDOWN protection, Render watcher, durable forwarding and independent finance windows
 # ─────────────────────────────────────────────────────────────
