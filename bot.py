@@ -1,6 +1,6 @@
-# BOT FILE: bot_v108_boot_shutdown_watcher_finwindows.py
-# BOT VERSION: bot_v108_boot_shutdown_watcher_finwindows
-# PURPOSE: deploy-safe Telegram finance bot — BOOT/SHUTDOWN protection, Render watcher, durable forwarding and independent finance windows
+# BOT FILE: bot_v107_all_forwarding_durable.py
+# BOT VERSION: bot_v107_all_forwarding_durable
+# PURPOSE: Telegram finance bot — deploy-safe MEGA task witness for albums/forward/finance/secret + durable dispatcher
 # ─────────────────────────────────────────────────────────────
 import os
 import io
@@ -21,10 +21,6 @@ import calendar
 import hashlib
 import queue
 import heapq
-import signal
-import socket
-import sys
-import platform
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -39,7 +35,6 @@ from flask import Flask, request
 
 from collections import defaultdict, deque
 from contextlib import contextmanager
-from pathlib import Path
 
 window_locks = defaultdict(threading.Lock)
 
@@ -566,8 +561,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v108_boot_shutdown_watcher_finwindows"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v108_boot_shutdown_watcher_finwindows.py"
+VERSION = "bot_v107_all_forwarding_durable"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v107_all_forwarding_durable.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -2439,10 +2434,6 @@ WINDOW_MARKER_CONSTANTS = {
     'icon_buttons_toggle': 'Ф84',
     'restore_guard_toggle': 'Ф165',
     'mega_manual_restore': 'Ф166',
-    'main_close:*': 'Ф167',
-    'runtime_watcher': 'Ф168',
-    'runtime_events': 'Ф169',
-    'runtime_snapshot_now': 'Ф170',
     'info_close': 'Ф85',
     'info_finance_off': 'Ф86',
     'journal_back': 'Ф87',
@@ -3290,229 +3281,6 @@ def get_quick_balance_behavior(chat_id: int) -> str:
     return "normal"
 
 
-
-def _infer_legacy_finance_window_mode(chat_id: int) -> str:
-    """Migration from v107: hidden-only means no visible auto-window; otherwise preserve old visible mode."""
-    try:
-        if not is_finance_mode(chat_id):
-            return "off"
-        if is_quick_balance_enabled(chat_id):
-            behavior = get_quick_balance_behavior(chat_id)
-            if behavior in {"open", "first"}:
-                return behavior
-        # In v107 simple "finance ON" enabled hidden finance and intentionally showed no window.
-        if is_hidden_finance_mode(chat_id):
-            return "off"
-        return "normal"
-    except Exception:
-        return "off"
-
-
-def _finance_window_state(chat_id: int) -> dict:
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    state = store.get("finance_window_state")
-    if not isinstance(state, dict):
-        try:
-            active = dict((data.get("active_messages", {}) or {}).get(str(chat_id), {}) or {})
-        except Exception:
-            active = {}
-        mode = _infer_legacy_finance_window_mode(chat_id)
-        state = {
-            "mode": mode,
-            "main_windows": {str(k): int(v) for k, v in active.items() if v},
-            "balance_panel_id": int(store.get("balance_panel_id")) if store.get("balance_panel_id") else None,
-            "balance_panel_mode": str(store.get("balance_panel_mode") or "mini"),
-            "current_view_day": str(store.get("current_view_day") or today_key()),
-            "auto_reopen_on_boot": bool(mode != "off" and (active or store.get("balance_panel_id") or not is_hidden_finance_mode(chat_id))),
-            "updated_at": now_local().isoformat(timespec="seconds"),
-        }
-        store["finance_window_state"] = state
-    state.setdefault("mode", _infer_legacy_finance_window_mode(chat_id))
-    if state.get("mode") not in {"off", "normal", "open", "first"}:
-        state["mode"] = "off"
-    state.setdefault("main_windows", {})
-    state.setdefault("balance_panel_id", None)
-    state.setdefault("balance_panel_mode", "mini")
-    state.setdefault("current_view_day", str(store.get("current_view_day") or today_key()))
-    state.setdefault("auto_reopen_on_boot", bool(state.get("mode") != "off"))
-    state.setdefault("updated_at", now_local().isoformat(timespec="seconds"))
-    return state
-
-
-def finance_window_mode(chat_id: int) -> str:
-    if not is_finance_mode(chat_id):
-        return "off"
-    try:
-        return str(_finance_window_state(chat_id).get("mode") or "off")
-    except Exception:
-        return "off"
-
-
-def finance_window_mode_enabled(chat_id: int, mode: str | None = None) -> bool:
-    current = finance_window_mode(chat_id)
-    if mode is None:
-        return current in {"normal", "open", "first"}
-    return current == str(mode)
-
-
-def _sync_finance_window_state_from_runtime(chat_id: int, *, schedule_delta: bool = False):
-    """Compact UI state intentionally survives deploy without putting full open_window_registry into delta."""
-    try:
-        chat_id = int(chat_id)
-        store = get_chat_store(chat_id)
-        state = _finance_window_state(chat_id)
-        try:
-            active = dict((data.get("active_messages", {}) or {}).get(str(chat_id), {}) or {})
-        except Exception:
-            active = {}
-        state["main_windows"] = {str(k): int(v) for k, v in active.items() if v}
-        state["balance_panel_id"] = int(store.get("balance_panel_id")) if store.get("balance_panel_id") else None
-        state["balance_panel_mode"] = str(store.get("balance_panel_mode") or state.get("balance_panel_mode") or "mini")
-        state["current_view_day"] = str(store.get("current_view_day") or state.get("current_view_day") or today_key())
-        state["updated_at"] = now_local().isoformat(timespec="seconds")
-        store["finance_window_state"] = state
-        save_data(data, chat_ids=[chat_id])
-        if schedule_delta and mega_is_configured() and not RESTORE_GUARD_ACTIVE:
-            schedule_quick_backup(chat_id, 0.5)
-    except Exception as e:
-        log_error(f"_sync_finance_window_state_from_runtime({chat_id}): {e}")
-
-
-def restore_finance_window_runtime_state():
-    """Rehydrate volatile Telegram message ids from compact chat metadata after MEGA/global+delta restore."""
-    try:
-        for cid_s, store in (data.get("chats", {}) or {}).items():
-            try:
-                cid = int(cid_s)
-            except Exception:
-                continue
-            state = store.get("finance_window_state")
-            if not isinstance(state, dict):
-                # Create migration state, but do not generate Telegram windows here.
-                _finance_window_state(cid)
-                state = store.get("finance_window_state") or {}
-            mode = str(state.get("mode") or "off")
-            settings = store.setdefault("settings", {})
-            if mode == "normal":
-                settings["quick_balance_enabled"] = False
-                settings["quick_balance_behavior"] = "normal"
-                settings["quick_balance_user_selected"] = True
-            elif mode in {"open", "first"}:
-                settings["quick_balance_enabled"] = True
-                settings["quick_balance_behavior"] = mode
-                settings["quick_balance_user_selected"] = True
-            else:
-                settings["quick_balance_enabled"] = False
-                settings["quick_balance_behavior"] = "normal"
-                settings["quick_balance_user_selected"] = True
-            main_windows = state.get("main_windows") or {}
-            data.setdefault("active_messages", {})[str(cid)] = {
-                str(k): int(v) for k, v in main_windows.items() if v
-            }
-            store["balance_panel_id"] = int(state.get("balance_panel_id")) if state.get("balance_panel_id") else None
-            store["balance_panel_mode"] = str(state.get("balance_panel_mode") or "mini")
-            if state.get("current_view_day"):
-                store["current_view_day"] = str(state.get("current_view_day"))
-    except Exception as e:
-        log_error(f"restore_finance_window_runtime_state: {e}")
-
-
-def _persist_finance_window_mode_critical(chat_id: int) -> bool:
-    """Persist window choice + callback idempotency marker before a critical callback may be acknowledged."""
-    try:
-        chat_id = int(chat_id)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=False)
-        if mega_is_configured() and not RESTORE_GUARD_ACTIVE:
-            ctx = _current_telegram_update_context()
-            update_id = ctx.get("update_id")
-            if update_id is not None and str(ctx.get("update_type") or "") == "callback_query":
-                # Marker and chat state are captured by the same following compact delta.
-                mark_durable_update_processed(update_id, chat_id, "callback_query")
-            return bool(persist_critical_delta_now(chat_id))
-    except Exception as e:
-        log_error(f"_persist_finance_window_mode_critical({chat_id}): {e}")
-    return False
-
-
-def set_finance_window_mode(chat_id: int, mode: str, *, persist_now: bool = False):
-    chat_id = int(chat_id)
-    mode = str(mode or "off").lower().strip()
-    if mode not in {"off", "normal", "open", "first"}:
-        mode = "off"
-    store = get_chat_store(chat_id)
-    settings = store.setdefault("settings", {})
-    state = _finance_window_state(chat_id)
-    state["mode"] = mode
-    state["auto_reopen_on_boot"] = bool(mode != "off")
-    state["updated_at"] = now_local().isoformat(timespec="seconds")
-    if mode == "normal":
-        settings["quick_balance_enabled"] = False
-        settings["quick_balance_behavior"] = "normal"
-        settings["quick_balance_user_selected"] = True
-    elif mode in {"open", "first"}:
-        settings["quick_balance_enabled"] = True
-        settings["quick_balance_behavior"] = mode
-        settings["quick_balance_user_selected"] = True
-    else:
-        settings["quick_balance_enabled"] = False
-        settings["quick_balance_behavior"] = "normal"
-        settings["quick_balance_user_selected"] = True
-    store["finance_window_state"] = state
-    save_data(data, chat_ids=[chat_id])
-    if persist_now:
-        _persist_finance_window_mode_critical(chat_id)
-    else:
-        schedule_config_backup_for_chats(chat_id)
-
-
-def delete_auto_finance_windows_for_chat(chat_id: int, *, persist_now: bool = False) -> int:
-    """Delete only automatic finance windows controlled by the three F39 modes, not manual reports/F91/category views."""
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    ids = set()
-    try:
-        ids.update(int(v) for v in (get_or_create_active_windows(chat_id) or {}).values() if v)
-    except Exception:
-        pass
-    try:
-        if store.get("balance_panel_id"):
-            ids.add(int(store.get("balance_panel_id")))
-    except Exception:
-        pass
-    removed = 0
-    for mid in sorted(ids):
-        try:
-            bot.delete_message(chat_id, mid)
-            removed += 1
-        except Exception:
-            pass
-        try:
-            unregister_open_window(chat_id, mid)
-        except Exception:
-            pass
-    data.setdefault("active_messages", {})[str(chat_id)] = {}
-    store["balance_panel_id"] = None
-    store["balance_panel_mode"] = "mini"
-    store["main_window_msg_count"] = 0
-    store["balance_panel_msg_count"] = 0
-    state = _finance_window_state(chat_id)
-    state["main_windows"] = {}
-    state["balance_panel_id"] = None
-    state["balance_panel_mode"] = "mini"
-    state["auto_reopen_on_boot"] = False if finance_window_mode(chat_id) == "off" else state.get("auto_reopen_on_boot", True)
-    state["updated_at"] = now_local().isoformat(timespec="seconds")
-    save_data(data, chat_ids=[chat_id])
-    if persist_now:
-        _persist_finance_window_mode_critical(chat_id)
-    else:
-        try:
-            schedule_quick_backup(chat_id, 0.5)
-        except Exception:
-            pass
-    return removed
-
-
 def set_quick_balance_behavior(chat_id: int, behavior: str):
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
@@ -3956,21 +3724,34 @@ def build_removed_chats_menu(day_key: str | None = None):
 
 
 def set_hidden_finance_mode(chat_id: int, enabled: bool):
-    """v108: hidden finance is independent from the three automatic finance-window modes."""
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
     settings["hidden_finance"] = bool(enabled)
+
     if enabled:
-        # Hidden means silent accounting/confirmations. It must NOT erase or disable a separately selected window mode.
         set_finance_mode(chat_id, True)
-    save_data(data, chat_ids=[chat_id])
+        # Скрытый режим независим от меню быстрого остатка: не меняем выбранный режим.
+        panel_id = store.get("balance_panel_id")
+        if panel_id:
+            try:
+                bot.delete_message(chat_id, panel_id)
+            except Exception:
+                pass
+        store["balance_panel_id"] = None
+        store["balance_panel_mode"] = "mini"
+        # Убираем сохранённые активные окна, чтобы скрытый чат больше не размножал фин-окна.
+        try:
+            data.setdefault("active_messages", {})[str(chat_id)] = {}
+        except Exception:
+            pass
+    save_data(data)
     schedule_config_backup_for_chats(chat_id)
 
 
 def force_recreate_balance_panel(chat_id: int):
     """Пересоздаёт быстрый остаток, чтобы он снова стал последним окном в чате."""
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -3989,11 +3770,11 @@ def force_recreate_balance_panel(chat_id: int):
 
 
 def is_normal_finance_window_mode(chat_id: int) -> bool:
-    """Как обычно: отдельный выбранный режим; hidden finance does not disable it."""
+    """Как обычно: финокно чата, без быстрого остатка, пересоздаётся после 10 сообщений."""
     try:
-        return bool(is_finance_mode(chat_id) and finance_window_mode(chat_id) == "normal")
+        return (not is_quick_balance_enabled(chat_id)) or get_quick_balance_behavior(chat_id) == "normal"
     except Exception:
-        return False
+        return True
 
 
 def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
@@ -4001,7 +3782,9 @@ def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
         chat_id = int(chat_id)
     except Exception:
         return
-    if not is_finance_mode(chat_id) or finance_window_mode(chat_id) != "normal":
+    if is_hidden_finance_mode(chat_id):
+        return
+    if not is_finance_mode(chat_id):
         return
 
     def _job():
@@ -4029,7 +3812,9 @@ def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
 def bump_quick_balance_recreate_counter(chat_id: int, count: int = 1):
     """Сообщения после ввода: обычное окно через 10 сообщений или быстрый остаток по выбранному режиму."""
     try:
-        if not is_finance_mode(chat_id) or finance_window_mode(chat_id) == "off":
+        if is_hidden_finance_mode(chat_id):
+            return
+        if not is_finance_mode(chat_id):
             return
 
         if is_normal_finance_window_mode(chat_id):
@@ -4066,7 +3851,7 @@ def schedule_quick_balance_first_recreate(chat_id: int, delay: float = 60.0):
         chat_id = int(chat_id)
     except Exception:
         return
-    if finance_window_mode(chat_id) != "first":
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -4076,7 +3861,7 @@ def schedule_quick_balance_first_recreate(chat_id: int, delay: float = 60.0):
     def _job():
         try:
             with locked_chat(chat_id):
-                if finance_window_mode(chat_id) != "first":
+                if is_hidden_finance_mode(chat_id):
                     return
                 if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
                     return
@@ -4100,7 +3885,7 @@ def schedule_quick_balance_recreate_after_quiet(chat_id: int, delay: float = 4.0
         chat_id = int(chat_id)
     except Exception:
         return
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -4130,7 +3915,6 @@ def _set_panel_open_state(chat_id: int, message_id: int):
     store["balance_panel_mode"] = "open"
     store["balance_panel_msg_count"] = 0
     save_data(data)
-    _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
     schedule_balance_panel_collapse(chat_id)
 
 def schedule_owner_total_window_delete(chat_id: int, message_id: int, delay: int | float | None = None):
@@ -4841,10 +4625,6 @@ def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
     if is_owner_chat(chat_id):
         return False
     if is_finance_output_suppressed(chat_id):
-        # v108: hidden accounting no longer disables a deliberately selected visible finance window.
-        # Its buttons (including Ф91 Close / quick-balance open-collapse / edit/report) must remain usable.
-        if finance_window_mode(chat_id) in {"normal", "open", "first"}:
-            return False
         return True
     if is_finance_mode(chat_id):
         return False
@@ -5471,7 +5251,6 @@ def collapse_balance_panel(chat_id: int):
         )
         store["balance_panel_mode"] = "mini"
         save_data(data)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
     except Exception as e:
         err = str(e).lower()
         if "message is not modified" not in err:
@@ -5496,7 +5275,7 @@ def schedule_balance_panel_collapse(chat_id: int, delay: float | None = None):
 
 
 def send_minimized_balance_panel(chat_id: int):
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -5514,14 +5293,12 @@ def send_minimized_balance_panel(chat_id: int):
             )
             store["balance_panel_mode"] = "mini"
             save_data(data)
-            _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
             return
         except Exception as e:
             err = str(e).lower()
             if "message is not modified" in err:
                 store["balance_panel_mode"] = "mini"
                 save_data(data)
-                _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
                 return
             log_error(f"send_minimized_balance_panel edit({chat_id}): {e}")
             try:
@@ -5539,14 +5316,12 @@ def send_minimized_balance_panel(chat_id: int):
         store["balance_panel_id"] = sent.message_id
         store["balance_panel_mode"] = "mini"
         save_data(data)
-        _finance_window_state(chat_id)["auto_reopen_on_boot"] = True
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
     except Exception as e:
         log_error(f"send_minimized_balance_panel({chat_id}): {e}")
 
 
 def refresh_balance_panel_now(chat_id: int):
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -5588,12 +5363,11 @@ def refresh_balance_panel_now(chat_id: int):
         store["balance_panel_id"] = None
         store["balance_panel_mode"] = "mini"
         save_data(data)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
         send_minimized_balance_panel(chat_id)
 
 
 def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_REFRESH_DELAY):
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -5615,7 +5389,7 @@ def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_RE
 
 
 def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | None = None):
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -6383,8 +6157,7 @@ def finalize_durable_task_after_business(update_id, chat_id, update_type: str = 
     key = _mega_task_id(update_id)
     if not wait_durable_subtasks(chat_id, timeout=20.0):
         return False
-    callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
-    if isinstance(payload, dict) and callback_target is None:
+    if isinstance(payload, dict):
         _raw, _src, _mid, group_id = _durable_payload_message(payload)
         if not _durable_forward_effect_complete(payload):
             if group_id:
@@ -6412,9 +6185,7 @@ def finalize_durable_task_after_business(update_id, chat_id, update_type: str = 
             critical_chats.add(int(chat_id))
         # Forwarding may change destination finance and destination secret data as well.
         # Persist those destination chats before the source task is allowed to become done.
-        if callback_target is not None:
-            critical_chats.add(int(callback_target))
-        if isinstance(payload, dict) and callback_target is None:
+        if isinstance(payload, dict):
             _raw, source_chat_id, _source_msg_id, _group_id = _durable_payload_message(payload)
             for dst_chat_id, _mode, _finance_enabled in _durable_forward_targets(source_chat_id):
                 critical_chats.add(int(dst_chat_id))
@@ -6462,48 +6233,6 @@ def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = 
             )
     DELAYED_SCHEDULER.cancel(f"mega-task-finalize:{key}")
     DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", max(0.5, float(delay)), _job)
-
-
-_TELEGRAM_UPDATE_CONTEXT = threading.local()
-
-
-def _current_telegram_update_context() -> dict:
-    try:
-        return dict(getattr(_TELEGRAM_UPDATE_CONTEXT, "value", {}) or {})
-    except Exception:
-        return {}
-
-
-def _durable_callback_target_chat(payload: dict) -> int | None:
-    """Only rare state-changing finance-window callbacks get cloud-task latency.
-
-    Navigation callbacks stay fast. These toggles are protected because replaying a toggle twice
-    after deploy could otherwise reverse the user's choice.
-    """
-    try:
-        cb = payload.get("callback_query") if isinstance(payload, dict) else None
-        if not isinstance(cb, dict):
-            return None
-        data_str = str(cb.get("data") or "")
-        msg = cb.get("message") or {}
-        chat_id = int(((msg.get("chat") or {}).get("id")))
-        if data_str == "info_finance_off" or data_str.startswith("main_close:"):
-            return chat_id
-        if not data_str.startswith("d:"):
-            return None
-        parts = data_str.split(":", 2)
-        if len(parts) < 3:
-            return None
-        cmd = parts[2]
-        prefixes = (
-            "qb_mode_normal_", "qb_mode_open_", "qb_mode_first_",
-            "qb_hidden_toggle_", "fin_mode_toggle_", "fin_mode_off_",
-        )
-        if not cmd.startswith(prefixes):
-            return None
-        return int(cmd.rsplit("_", 1)[1])
-    except Exception:
-        return None
 
 
 def durable_task_required(payload: dict) -> tuple[bool, str]:
@@ -6591,13 +6320,10 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
         # Ordinary chat/navigation text does not need cloud task persistence.
         return False, f"{key}:noncritical_content"
 
-    # Navigation callbacks stay fast. Only the rare F39 finance/window mutations and the
-    # main-window close are write-before-execute durable tasks; they also get a persisted
-    # update-id marker, so Telegram retry after a deploy cannot toggle the setting twice.
+    # Callback-кнопки намеренно НЕ кладём в MEGA-task: большинство из них навигация/переключатели,
+    # а часть запускает свои фоновые очереди. Их защищает v104 webhook retry, зато кнопки не получают
+    # дополнительных сетевых задержек MEGA и не возникает риск повторного toggle после deploy.
     if isinstance(payload.get("callback_query"), dict):
-        target_chat = _durable_callback_target_chat(payload)
-        if target_chat is not None:
-            return True, f"callback:critical_finance_window:{target_chat}"
         return False, "callback:webhook_retry_only"
     return False, "noncritical_update"
 
@@ -6619,9 +6345,6 @@ def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type
                 context["current_view_day"] = str(store.get("current_view_day"))
         except Exception as e:
             log_error(f"MEGA TASK context capture update={key}: {e}")
-    callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
-    if callback_target is not None:
-        context["callback_target_chat_id"] = int(callback_target)
     return {
         "kind": "telegram_bot_durable_task",
         "schema_version": 3,
@@ -6933,31 +6656,12 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
     update = telebot.types.Update.de_json(payload)
     if update_chat_id is None:
         update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
-    previous_ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
-    critical_callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
-    _TELEGRAM_UPDATE_CONTEXT.value = {
-        "update_id": update_id,
-        "chat_id": update_chat_id,
-        "update_type": str(update_type or "other"),
-        "critical_callback": critical_callback_target is not None,
-        "critical_callback_target": critical_callback_target,
-        "deferred_quick_chats": set(),
-    }
-    try:
-        with state_chat_context(update_chat_id):
-            if update_chat_id is None:
-                bot.process_new_updates([update])
-            else:
-                with locked_chat(update_chat_id):
-                    bot.process_new_updates([update])
-    finally:
-        if previous_ctx is None:
-            try:
-                delattr(_TELEGRAM_UPDATE_CONTEXT, "value")
-            except Exception:
-                pass
+    with state_chat_context(update_chat_id):
+        if update_chat_id is None:
+            bot.process_new_updates([update])
         else:
-            _TELEGRAM_UPDATE_CONTEXT.value = previous_ctx
+            with locked_chat(update_chat_id):
+                bot.process_new_updates([update])
 
 
 def _mega_task_recover_one(update_id, state: str, remote_path: str):
@@ -8183,694 +7887,6 @@ def _mega_download_remote_path(remote_path: str) -> str | None:
         log_error(f"_mega_download_remote_path({remote_path}): {e}")
     return None
 
-
-
-# ─────────────────────────────────────────────────────────────
-# v108: BOOT / SHUTDOWN protection + maximum Render/runtime watcher
-# ─────────────────────────────────────────────────────────────
-try:
-    GRACEFUL_SHUTDOWN_SECONDS = max(5.0, min(240.0, float(os.getenv("GRACEFUL_SHUTDOWN_SECONDS", "25") or "25")))
-except Exception:
-    GRACEFUL_SHUTDOWN_SECONDS = 25.0
-try:
-    BOOT_SYNC_RECOVERY_SECONDS = max(5.0, min(180.0, float(os.getenv("BOOT_SYNC_RECOVERY_SECONDS", "45") or "45")))
-except Exception:
-    BOOT_SYNC_RECOVERY_SECONDS = 45.0
-try:
-    BOOT_RECOVERY_RETRY_SECONDS = max(1.0, min(60.0, float(os.getenv("BOOT_RECOVERY_RETRY_SECONDS", "5") or "5")))
-except Exception:
-    BOOT_RECOVERY_RETRY_SECONDS = 5.0
-try:
-    RUNTIME_WATCHER_HISTORY_KEEP = max(20, min(500, int(os.getenv("RUNTIME_WATCHER_HISTORY_KEEP", "100") or "100")))
-except Exception:
-    RUNTIME_WATCHER_HISTORY_KEEP = 100
-try:
-    RUNTIME_WATCHER_HEARTBEAT_SECONDS = max(60.0, min(3600.0, float(os.getenv("RUNTIME_WATCHER_HEARTBEAT_SECONDS", "300") or "300")))
-except Exception:
-    RUNTIME_WATCHER_HEARTBEAT_SECONDS = 300.0
-
-_RUNTIME_LOCK = threading.RLock()
-_RUNTIME_SHUTDOWN_LOCK = threading.Lock()
-_RUNTIME_EVENTS = deque(maxlen=120)
-_RUNTIME_PREVIOUS = {}
-_RUNTIME_REMOTE_DIR_NAME = "runtime"
-_RUNTIME_LATEST_NAME = "runtime_latest.json"
-_RUNTIME_STARTED_MONO = time.monotonic()
-_RUNTIME_STARTED_AT = now_local().isoformat(timespec="seconds")
-_RUNTIME_STATE = {
-    "phase": "module_loaded",
-    "ready": False,
-    "shutting_down": False,
-    "started_at": _RUNTIME_STARTED_AT,
-    "ready_at": "",
-    "boot_completed_at": "",
-    "boot_duration_seconds": None,
-    "restore_attempted": False,
-    "restore_ok": None,
-    "restore_detail": "",
-    "task_recovery_started_at": "",
-    "task_recovery_finished_at": "",
-    "task_recovery_remaining": 0,
-    "task_recovery_recovered": 0,
-    "last_webhook_at": "",
-    "last_webhook_update_id": "",
-    "last_webhook_type": "",
-    "last_webhook_chat_id": None,
-    "webhook_received": 0,
-    "webhook_blocked_boot": 0,
-    "webhook_blocked_shutdown": 0,
-    "shutdown_started_at": "",
-    "shutdown_finished_at": "",
-    "shutdown_signal": "",
-    "shutdown_drain_ok": None,
-    "shutdown_delta_ok": None,
-    "last_error": "",
-    "previous_reason": "first_seen",
-}
-
-
-def _runtime_render_env() -> dict:
-    keys = (
-        "RENDER_INSTANCE_ID", "RENDER_GIT_COMMIT", "RENDER_SERVICE_ID",
-        "RENDER_SERVICE_NAME", "RENDER_SERVICE_TYPE", "RENDER_REGION",
-        "RENDER_EXTERNAL_HOSTNAME",
-    )
-    return {k: str(os.getenv(k, "") or "") for k in keys}
-
-
-def runtime_event(name: str, detail: str = "", level: str = "INFO"):
-    row = {
-        "ts": now_local().isoformat(timespec="milliseconds"),
-        "event": str(name or "event"),
-        "detail": str(detail or "")[:1000],
-        "level": str(level or "INFO")[:16],
-    }
-    with _RUNTIME_LOCK:
-        _RUNTIME_EVENTS.append(row)
-        _RUNTIME_STATE["last_event_at"] = row["ts"]
-        _RUNTIME_STATE["last_event"] = row["event"]
-        if level.upper() in {"ERROR", "CRITICAL"}:
-            _RUNTIME_STATE["last_error"] = row["detail"]
-    try:
-        bot_journal("runtime_" + row["event"], None, row["detail"], level)
-    except Exception:
-        pass
-
-
-def runtime_set_phase(phase: str, detail: str = ""):
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["phase"] = str(phase)
-    runtime_event("phase", f"{phase}: {detail}" if detail else str(phase))
-
-
-def runtime_is_ready() -> bool:
-    with _RUNTIME_LOCK:
-        return bool(_RUNTIME_STATE.get("ready")) and not bool(_RUNTIME_STATE.get("shutting_down"))
-
-
-def runtime_is_shutting_down() -> bool:
-    with _RUNTIME_LOCK:
-        return bool(_RUNTIME_STATE.get("shutting_down"))
-
-
-def _runtime_memory_stats() -> dict:
-    out = {"rss_mb": None, "peak_rss_mb": None, "limit_mb": None, "rss_percent_limit": None}
-    try:
-        status = Path("/proc/self/status").read_text(errors="ignore") if os.path.exists("/proc/self/status") else ""
-        for line in status.splitlines():
-            if line.startswith("VmRSS:"):
-                out["rss_mb"] = round(float(line.split()[1]) / 1024.0, 1)
-            elif line.startswith("VmHWM:"):
-                out["peak_rss_mb"] = round(float(line.split()[1]) / 1024.0, 1)
-    except Exception:
-        pass
-    # Render runs in a cgroup.  Read the real container limit instead of hard-coding 512 MB.
-    try:
-        raw = None
-        for candidate in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
-            if os.path.exists(candidate):
-                raw = Path(candidate).read_text(errors="ignore").strip()
-                if raw:
-                    break
-        if raw and raw.lower() != "max":
-            limit = int(raw)
-            # Ignore host-sized sentinel values from old cgroup implementations.
-            if 0 < limit < (1 << 60):
-                out["limit_mb"] = round(limit / 1024.0 / 1024.0, 1)
-                if out.get("rss_mb") is not None and out["limit_mb"] > 0:
-                    out["rss_percent_limit"] = round(100.0 * float(out["rss_mb"]) / float(out["limit_mb"]), 1)
-    except Exception:
-        pass
-    return out
-
-
-def _runtime_disk_stats() -> dict:
-    try:
-        usage = shutil.disk_usage(os.getcwd())
-        return {
-            "total_mb": round(usage.total / 1024 / 1024, 1),
-            "used_mb": round(usage.used / 1024 / 1024, 1),
-            "free_mb": round(usage.free / 1024 / 1024, 1),
-        }
-    except Exception:
-        return {"total_mb": None, "used_mb": None, "free_mb": None}
-
-
-def _runtime_pool_stats() -> dict:
-    pools = (
-        WEBHOOK_TASK_POOL, FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL,
-        BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, JOURNAL_TASK_POOL,
-        DELAYED_TASK_POOL, DOZVON_TASK_POOL,
-    )
-    return {p.name: p.stats() for p in pools}
-
-
-def runtime_snapshot(extra: dict | None = None) -> dict:
-    with _RUNTIME_LOCK:
-        state = dict(_RUNTIME_STATE)
-        events = list(_RUNTIME_EVENTS)
-        previous = dict(_RUNTIME_PREVIOUS) if isinstance(_RUNTIME_PREVIOUS, dict) else {}
-    snap = {
-        "kind": "telegram_bot_runtime_watcher",
-        "schema_version": 1,
-        "bot_version": VERSION,
-        "captured_at": now_local().isoformat(timespec="milliseconds"),
-        "state": state,
-        "render": _runtime_render_env(),
-        "process": {
-            "pid": os.getpid(),
-            "hostname": socket.gethostname(),
-            "python": sys.version.split()[0],
-            "platform": platform.platform(),
-            "threads": threading.active_count(),
-            "uptime_seconds": round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3),
-            **_runtime_memory_stats(),
-        },
-        "disk": _runtime_disk_stats(),
-        "queues": _runtime_pool_stats(),
-        "delayed": DELAYED_SCHEDULER.stats(),
-        "mega_tasks": mega_task_registry_stats() if "mega_task_registry_stats" in globals() else {},
-        "delta": {
-            "pending_chats": len(_delta_pending_chats) if "_delta_pending_chats" in globals() else 0,
-            "last_success_at": globals().get("_delta_last_success_at", ""),
-            "last_file": globals().get("_delta_last_file", ""),
-            "last_event_count": globals().get("_delta_last_event_count", 0),
-            "last_error": globals().get("_delta_last_error", ""),
-        },
-        "keep_alive": dict(KEEP_ALIVE_STATE) if "KEEP_ALIVE_STATE" in globals() else {},
-        "previous_runtime": previous,
-        "events": events,
-    }
-    if extra:
-        snap["extra"] = _delta_json_clone(extra)
-    return snap
-
-
-def runtime_remote_dir() -> str:
-    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{_RUNTIME_REMOTE_DIR_NAME}"
-
-
-def runtime_latest_remote_path() -> str:
-    return f"{runtime_remote_dir().rstrip('/')}/{_RUNTIME_LATEST_NAME}"
-
-
-def runtime_load_previous_snapshot() -> dict:
-    global _RUNTIME_PREVIOUS
-    if not mega_is_configured():
-        return {}
-    local = None
-    try:
-        mega_ensure_remote_path(runtime_remote_dir())
-        local = _mega_download_remote_path(runtime_latest_remote_path())
-        prev = _load_json(local, {}) if local else {}
-        if not isinstance(prev, dict):
-            prev = {}
-        with _RUNTIME_LOCK:
-            _RUNTIME_PREVIOUS = prev
-        return prev
-    except Exception as e:
-        runtime_event("previous_snapshot_error", str(e), "WARN")
-        return {}
-    finally:
-        try:
-            if local:
-                shutil.rmtree(os.path.dirname(local), ignore_errors=True)
-        except Exception:
-            pass
-
-
-def _runtime_parse_ts(value):
-    try:
-        text = str(value or "").strip()
-        if not text:
-            return None
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def _runtime_seconds_between(a, b):
-    da, db = _runtime_parse_ts(a), _runtime_parse_ts(b)
-    if not da or not db:
-        return None
-    try:
-        # Avoid aware/naive mismatch from historical watcher files.
-        if (da.tzinfo is None) != (db.tzinfo is None):
-            da = da.replace(tzinfo=None)
-            db = db.replace(tzinfo=None)
-        return (db - da).total_seconds()
-    except Exception:
-        return None
-
-
-def runtime_classify_previous(prev: dict) -> str:
-    """Best-effort diagnosis. It deliberately says *probable* when Render provides no exact reason."""
-    if not isinstance(prev, dict) or not prev:
-        return "first_seen"
-    prev_state = prev.get("state") or {}
-    prev_render = prev.get("render") or {}
-    cur_render = _runtime_render_env()
-    prev_commit = str(prev_render.get("RENDER_GIT_COMMIT") or "")
-    cur_commit = str(cur_render.get("RENDER_GIT_COMMIT") or "")
-    prev_instance = str(prev_render.get("RENDER_INSTANCE_ID") or "")
-    cur_instance = str(cur_render.get("RENDER_INSTANCE_ID") or "")
-    graceful = bool(prev_state.get("shutdown_finished_at")) or str(prev_state.get("phase") or "") in {"stopped", "shutdown_complete"}
-    signal_name = str(prev_state.get("shutdown_signal") or "")
-
-    # A new git SHA is the strongest local evidence of a code deploy.
-    if prev_commit and cur_commit and prev_commit != cur_commit:
-        return "deploy_new_commit_graceful" if graceful else "deploy_new_commit_ungraceful"
-
-    # Estimate whether the previous service had already been idle around Render's free-tier sleep window.
-    last_webhook = prev_state.get("last_webhook_at")
-    shutdown_at = prev_state.get("shutdown_started_at") or prev.get("captured_at")
-    idle_before_shutdown = _runtime_seconds_between(last_webhook, shutdown_at)
-    idle_to_new_start = _runtime_seconds_between(last_webhook, _RUNTIME_STARTED_AT)
-    probable_idle = bool(
-        (idle_before_shutdown is not None and idle_before_shutdown >= 13.5 * 60)
-        or (not graceful and idle_to_new_start is not None and idle_to_new_start >= 13.5 * 60)
-    )
-
-    if graceful:
-        if probable_idle and signal_name in {"SIGTERM", ""}:
-            return "probable_render_idle_spin_down_graceful"
-        if signal_name == "SIGINT":
-            return "manual_or_local_stop_same_commit"
-        return "planned_restart_same_commit"
-    if prev_instance and cur_instance and prev_instance != cur_instance:
-        if probable_idle:
-            return "probable_render_idle_spin_down_or_idle_restart"
-        return "new_instance_same_commit_crash_restart_or_maintenance"
-    return "process_restart_or_unknown"
-
-
-def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = True) -> bool:
-    if not mega_is_configured():
-        return False
-    tmp = None
-    try:
-        snap = runtime_snapshot({"event": event})
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
-        safe_event = mega_safe_name(event, "event")
-        tmp = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_{stamp}_{safe_event}.json")
-        _atomic_json_dump(tmp, snap)
-        mega_ensure_remote_path(runtime_remote_dir())
-        ok = mega_put_replace(tmp, runtime_remote_dir(), _RUNTIME_LATEST_NAME)
-        if immutable_event:
-            events_dir = runtime_remote_dir().rstrip("/") + "/events"
-            mega_ensure_remote_path(events_dir)
-            event_local = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_{stamp}_{safe_event}.json")
-            if event_local != tmp:
-                shutil.copy2(tmp, event_local)
-            _mega_run("mega-put", [event_local, events_dir], check=True, timeout=MEGA_TIMEOUT)
-            try:
-                _mega_prune_remote_history(events_dir, "runtime_*.json", RUNTIME_WATCHER_HISTORY_KEEP)
-            except Exception:
-                pass
-        return bool(ok)
-    except Exception as e:
-        runtime_event("watcher_mega_error", str(e), "WARN")
-        return False
-    finally:
-        try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-
-
-def runtime_mark_webhook(payload: dict | None = None, blocked: str = ""):
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["webhook_received"] = int(_RUNTIME_STATE.get("webhook_received", 0) or 0) + 1
-        _RUNTIME_STATE["last_webhook_at"] = now_local().isoformat(timespec="milliseconds")
-        if blocked == "boot":
-            _RUNTIME_STATE["webhook_blocked_boot"] = int(_RUNTIME_STATE.get("webhook_blocked_boot", 0) or 0) + 1
-        elif blocked == "shutdown":
-            _RUNTIME_STATE["webhook_blocked_shutdown"] = int(_RUNTIME_STATE.get("webhook_blocked_shutdown", 0) or 0) + 1
-        if isinstance(payload, dict):
-            _RUNTIME_STATE["last_webhook_update_id"] = payload.get("update_id", "")
-            if "edited_message" in payload:
-                typ = "edited_message"
-            elif "message" in payload:
-                typ = "message"
-            elif "callback_query" in payload:
-                typ = "callback_query"
-            elif "channel_post" in payload:
-                typ = "channel_post"
-            elif "edited_channel_post" in payload:
-                typ = "edited_channel_post"
-            else:
-                typ = "other"
-            _RUNTIME_STATE["last_webhook_type"] = typ
-            try:
-                _RUNTIME_STATE["last_webhook_chat_id"] = _extract_update_chat_id(payload)
-            except Exception:
-                pass
-
-
-def _runtime_watcher_should_yield_to_critical_mega() -> bool:
-    """Watcher is diagnostic and must never intentionally compete with business persistence."""
-    try:
-        for pool in (DELTA_TASK_POOL, BACKUP_TASK_POOL):
-            st = pool.stats() or {}
-            if int(st.get("pending", 0) or 0) > 0 or int(st.get("active", 0) or 0) > 0:
-                return True
-        mt = mega_task_registry_stats() or {}
-        if int(mt.get("processing", 0) or 0) > 0:
-            return True
-    except Exception:
-        return False
-    return False
-
-
-def _runtime_heartbeat_job():
-    if runtime_is_shutting_down():
-        return
-    next_delay = RUNTIME_WATCHER_HEARTBEAT_SECONDS
-    try:
-        if _runtime_watcher_should_yield_to_critical_mega():
-            runtime_event("watcher_heartbeat_deferred", "critical MEGA work has priority")
-            next_delay = min(60.0, RUNTIME_WATCHER_HEARTBEAT_SECONDS)
-        else:
-            GENERAL_TASK_POOL.submit("runtime-heartbeat-upload", runtime_upload_snapshot, "heartbeat", False)
-    finally:
-        try:
-            DELAYED_SCHEDULER.schedule("runtime-heartbeat", next_delay, _runtime_heartbeat_job)
-        except Exception:
-            pass
-
-
-def runtime_mark_ready(detail: str = ""):
-    with _RUNTIME_LOCK:
-        if _RUNTIME_STATE.get("ready"):
-            return
-        _RUNTIME_STATE["ready"] = True
-        _RUNTIME_STATE["phase"] = "ready"
-        _RUNTIME_STATE["ready_at"] = now_local().isoformat(timespec="seconds")
-        _RUNTIME_STATE["boot_completed_at"] = _RUNTIME_STATE["ready_at"]
-        _RUNTIME_STATE["boot_duration_seconds"] = round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3)
-    runtime_event("ready", detail or "BOOT completed")
-    # Watcher is diagnostic only: a MEGA error here must not make the bot unavailable.
-    GENERAL_TASK_POOL.submit("runtime-ready-snapshot", runtime_upload_snapshot, "boot_ready", True)
-    try:
-        DELAYED_SCHEDULER.schedule("runtime-heartbeat", RUNTIME_WATCHER_HEARTBEAT_SECONDS, _runtime_heartbeat_job)
-    except Exception:
-        pass
-    # Recreate only the automatic finance windows that were persisted as open.
-    if not RESTORE_GUARD_ACTIVE:
-        try:
-            schedule_startup_main_windows(delay=1.0)
-        except Exception as e:
-            runtime_event("startup_windows_error", str(e), "WARN")
-    try:
-        schedule_restored_secret_media_recovery(1.5)
-    except Exception as e:
-        runtime_event("secret_media_resume_error", str(e), "WARN")
-
-
-def _runtime_pending_recovery_rows() -> list[tuple[str, str, str]]:
-    rows = []
-    with _MEGA_TASK_LOCK:
-        for key, row in _mega_task_registry.items():
-            if str((row or {}).get("state")) in {"pending", "running"}:
-                rows.append((key, str(row.get("state")), str(row.get("path") or "")))
-    return sorted(rows, key=lambda x: (0, int(x[0])) if str(x[0]).isdigit() else (1, str(x[0])))
-
-
-def runtime_recover_tasks_blocking(max_seconds: float | None = None) -> dict:
-    if not mega_tasks_active():
-        return mega_task_registry_stats()
-    max_seconds = BOOT_SYNC_RECOVERY_SECONDS if max_seconds is None else max(0.0, float(max_seconds))
-    deadline = time.monotonic() + max_seconds
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["task_recovery_started_at"] = now_local().isoformat(timespec="seconds")
-    runtime_set_phase("task_recovery", "восстанавливаю pending/running из MEGA")
-    while time.monotonic() < deadline:
-        stats = mega_task_refresh_registry()
-        rows = _runtime_pending_recovery_rows()
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["task_recovery_remaining"] = len(rows)
-        if not rows:
-            with _RUNTIME_LOCK:
-                _RUNTIME_STATE["task_recovery_finished_at"] = now_local().isoformat(timespec="seconds")
-            return stats
-        progressed = False
-        for key, state, path in rows[:MEGA_TASK_RECOVERY_LIMIT]:
-            if time.monotonic() >= deadline:
-                break
-            before = mega_task_known_state(key)
-            _mega_task_recover_one(key, state, path)
-            after = mega_task_known_state(key)
-            progressed = progressed or after != before
-        if not progressed:
-            time.sleep(0.25)
-    mega_task_refresh_registry()
-    rows = _runtime_pending_recovery_rows()
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["task_recovery_remaining"] = len(rows)
-    return mega_task_registry_stats()
-
-
-def runtime_continue_boot_recovery_background():
-    """Keep webhook gated until old durable tasks are resolved; health endpoint stays alive."""
-    while not runtime_is_shutting_down():
-        try:
-            runtime_recover_tasks_blocking(max_seconds=max(5.0, BOOT_SYNC_RECOVERY_SECONDS))
-            rows = _runtime_pending_recovery_rows() if mega_tasks_active() else []
-            if not rows:
-                runtime_mark_ready("старые MEGA-задачи проверены/восстановлены")
-                return
-            runtime_event("boot_recovery_wait", f"осталось задач: {len(rows)}", "WARN")
-        except Exception as e:
-            runtime_event("boot_recovery_error", str(e), "ERROR")
-        time.sleep(BOOT_RECOVERY_RETRY_SECONDS)
-
-
-def runtime_queue_drain_status() -> dict:
-    critical = (WEBHOOK_TASK_POOL, FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL)
-    stats = {p.name: p.stats() for p in critical}
-    # KeyedTaskPool.pending includes active jobs today, but keep both counters explicit for diagnostics.
-    stats["critical_pending"] = sum(int(v.get("pending", 0) or 0) for v in stats.values() if isinstance(v, dict))
-    stats["critical_active"] = sum(int(v.get("active", 0) or 0) for v in stats.values() if isinstance(v, dict))
-    return stats
-
-
-def _runtime_force_delta_flush() -> bool:
-    """Capture all changed compact chat/root metadata once before a graceful exit."""
-    global _delta_generation
-    if RESTORE_GUARD_ACTIVE or not mega_is_configured():
-        return False
-    try:
-        with _delta_state_lock:
-            for cid in (data.get("chats", {}) or {}).keys():
-                try:
-                    int_cid = int(cid)
-                except Exception:
-                    continue
-                _delta_generation += 1
-                _delta_pending_chats.add(int_cid)
-                _delta_chat_generation[int_cid] = _delta_generation
-        if not _delta_pending_chats:
-            return True
-        return bool(_run_delta_batch())
-    except Exception as e:
-        runtime_event("shutdown_delta_error", str(e), "ERROR")
-        return False
-
-
-def runtime_graceful_shutdown(signal_name: str = "SIGTERM"):
-    with _RUNTIME_LOCK:
-        if _RUNTIME_STATE.get("shutdown_finished_at"):
-            return
-    if not _RUNTIME_SHUTDOWN_LOCK.acquire(blocking=False):
-        return
-    try:
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["shutting_down"] = True
-            _RUNTIME_STATE["ready"] = False
-            _RUNTIME_STATE["phase"] = "shutting_down"
-            _RUNTIME_STATE["shutdown_started_at"] = now_local().isoformat(timespec="seconds")
-            _RUNTIME_STATE["shutdown_signal"] = str(signal_name)
-        runtime_event("shutdown_start", f"signal={signal_name}")
-        try:
-            DELAYED_SCHEDULER.cancel("runtime-heartbeat")
-        except Exception:
-            pass
-
-        deadline = time.monotonic() + GRACEFUL_SHUTDOWN_SECONDS
-        drain_ok = False
-        while time.monotonic() < deadline:
-            drain = runtime_queue_drain_status()
-            if int(drain.get("critical_pending", 0) or 0) <= 0:
-                drain_ok = True
-                break
-            time.sleep(0.05)
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["shutdown_drain_ok"] = bool(drain_ok)
-        runtime_event("shutdown_drain", f"ok={drain_ok}; {runtime_queue_drain_status()}")
-
-        try:
-            save_data(data, full=True)
-        except Exception as e:
-            runtime_event("shutdown_local_save_error", str(e), "ERROR")
-        delta_ok = _runtime_force_delta_flush()
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["shutdown_delta_ok"] = bool(delta_ok)
-            _RUNTIME_STATE["phase"] = "shutdown_complete"
-            _RUNTIME_STATE["shutdown_finished_at"] = now_local().isoformat(timespec="seconds")
-        runtime_event("shutdown_complete", f"delta_ok={delta_ok}; drain_ok={drain_ok}")
-        runtime_upload_snapshot("shutdown", True)
-    finally:
-        _RUNTIME_SHUTDOWN_LOCK.release()
-
-
-def _runtime_signal_handler(signum, frame):
-    try:
-        name = signal.Signals(signum).name
-    except Exception:
-        name = str(signum)
-    try:
-        runtime_graceful_shutdown(name)
-    finally:
-        raise SystemExit(0)
-
-
-def runtime_install_signal_handlers():
-    try:
-        signal.signal(signal.SIGTERM, _runtime_signal_handler)
-        signal.signal(signal.SIGINT, _runtime_signal_handler)
-        runtime_event("signal_handlers", "SIGTERM/SIGINT installed")
-    except Exception as e:
-        runtime_event("signal_handler_error", str(e), "WARN")
-
-
-def _fmt_runtime_age(seconds) -> str:
-    try:
-        sec = max(0, int(float(seconds)))
-    except Exception:
-        return "—"
-    d, sec = divmod(sec, 86400)
-    h, sec = divmod(sec, 3600)
-    m, sec = divmod(sec, 60)
-    if d:
-        return f"{d}д {h:02d}:{m:02d}:{sec:02d}"
-    return f"{h:02d}:{m:02d}:{sec:02d}"
-
-
-def build_runtime_watcher_text() -> str:
-    snap = runtime_snapshot()
-    st = snap.get("state") or {}
-    ren = snap.get("render") or {}
-    proc = snap.get("process") or {}
-    disk = snap.get("disk") or {}
-    mega = snap.get("mega_tasks") or {}
-    prev = snap.get("previous_runtime") or {}
-    prev_state = prev.get("state") or {}
-    prev_render = prev.get("render") or {}
-    queues = snap.get("queues") or {}
-    status = "🟢 READY" if runtime_is_ready() else ("🟠 SHUTDOWN" if runtime_is_shutting_down() else "🟡 BOOT / RECOVERY")
-    commit = str(ren.get("RENDER_GIT_COMMIT") or "—")
-    instance = str(ren.get("RENDER_INSTANCE_ID") or "—")
-    lines = [
-        "🖥 Render / Сервер — Watcher",
-        f"Состояние: {status}",
-        f"Фаза: {st.get('phase') or '—'}",
-        f"Версия: {VERSION}",
-        f"Uptime: {_fmt_runtime_age(proc.get('uptime_seconds'))}",
-        f"Старт: {st.get('started_at') or '—'}",
-        f"READY: {st.get('ready_at') or '—'}",
-        f"BOOT: {st.get('boot_duration_seconds') if st.get('boot_duration_seconds') is not None else '—'} сек",
-        "",
-        "Render:",
-        f"Instance: {instance[-28:] if instance != '—' else instance}",
-        f"Commit: {commit[:12] if commit != '—' else commit}",
-        f"Service: {ren.get('RENDER_SERVICE_NAME') or ren.get('RENDER_SERVICE_ID') or '—'}",
-        f"Region/type: {(ren.get('RENDER_REGION') or '—')} / {(ren.get('RENDER_SERVICE_TYPE') or '—')}",
-        f"PID/host: {proc.get('pid')} / {proc.get('hostname')}",
-        "",
-        "Ресурсы:",
-        f"RAM сейчас: {proc.get('rss_mb') if proc.get('rss_mb') is not None else '—'} MB; пик: {proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—'} MB",
-        f"RAM лимит cgroup: {proc.get('limit_mb') if proc.get('limit_mb') is not None else '—'} MB; использование: {proc.get('rss_percent_limit') if proc.get('rss_percent_limit') is not None else '—'}%",
-        f"Диск: занято {disk.get('used_mb') if disk.get('used_mb') is not None else '—'} MB; свободно {disk.get('free_mb') if disk.get('free_mb') is not None else '—'} MB",
-        f"Потоков Python: {proc.get('threads')}",
-        "",
-        "BOOT / Telegram gate:",
-        f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}",
-        f"Recovery: start {st.get('task_recovery_started_at') or '—'} | finish {st.get('task_recovery_finished_at') or '—'} | осталось {st.get('task_recovery_remaining', 0)}",
-        f"Webhook получено: {st.get('webhook_received', 0)}",
-        f"Последний: {st.get('last_webhook_at') or '—'} | {st.get('last_webhook_type') or '—'} | update {st.get('last_webhook_update_id') or '—'} | chat {st.get('last_webhook_chat_id') or '—'}",
-        f"Отклонено BOOT: {st.get('webhook_blocked_boot', 0)} | SHUTDOWN: {st.get('webhook_blocked_shutdown', 0)}",
-        "",
-        "Очереди P/A | done err rej | max wait:",
-    ]
-    for name in ("webhook", "finance", "forward", "delta", "backup", "export", "general", "journal", "delayed", "dozvon"):
-        q = queues.get(name) or {}
-        lines.append(
-            f"{name}: {q.get('pending', 0)}/{q.get('active', 0)} | "
-            f"{q.get('completed', 0)} {q.get('failed', 0)} {q.get('rejected', 0)} | {q.get('max_wait', 0)}с"
-        )
-    delta = snap.get('delta') or {}
-    keep = snap.get('keep_alive') or {}
-    lines.extend([
-        "",
-        "MEGA durable tasks / delta:",
-        f"tasks: pending {mega.get('pending', 0)} | running {mega.get('running', 0)} | failed {mega.get('failed', 0)} | done {mega.get('done', 0)} | processing {mega.get('processing', 0)}",
-        f"task counters: saved {mega.get('persisted', 0)} | recovered {mega.get('recovered', 0)} | done {mega.get('completed', 0)} | skip {mega.get('skipped_done', 0)} | save err {mega.get('persist_errors', 0)} | final err {mega.get('finalize_errors', 0)}",
-        f"task last error: {str(mega.get('last_error') or 'нет')[:220]}",
-        f"delta: pending chats {delta.get('pending_chats', 0)} | last {delta.get('last_success_at') or '—'} | events {delta.get('last_event_count', 0)}",
-        f"delta file: {os.path.basename(str(delta.get('last_file') or '—'))}",
-        f"delta error: {str(delta.get('last_error') or 'нет')[:220]}",
-        f"keep-alive: last ok {keep.get('last_ok_at') or keep.get('last_success_at') or '—'} | last error {str(keep.get('last_error') or 'нет')[:160]}",
-        "",
-        "SHUTDOWN:",
-        f"start {st.get('shutdown_started_at') or '—'} | finish {st.get('shutdown_finished_at') or '—'} | signal {st.get('shutdown_signal') or '—'}",
-        f"drain={st.get('shutdown_drain_ok')} | final delta={st.get('shutdown_delta_ok')}",
-        "",
-        "Предыдущий запуск:",
-        f"Классификация: {st.get('previous_reason') or '—'}",
-        f"Предыдущий state: {prev_state.get('phase') or '—'}",
-        f"Предыдущий snapshot: {prev.get('captured_at') or '—'}",
-        f"Предыдущий старт: {prev_state.get('started_at') or '—'}",
-        f"Предыдущий shutdown: {prev_state.get('shutdown_finished_at') or 'не зафиксирован'}",
-        f"Предыдущий signal: {prev_state.get('shutdown_signal') or '—'}",
-        f"Предыдущий instance: {str(prev_render.get('RENDER_INSTANCE_ID') or '—')[-28:]}",
-        f"Предыдущий commit: {str(prev_render.get('RENDER_GIT_COMMIT') or '—')[:12]}",
-        "",
-        f"Последняя ошибка Watcher: {str(st.get('last_error') or 'нет')[:300]}",
-    ])
-    return wm_owner("\n".join(lines), 12)
-
-
-def build_runtime_events_text(limit: int = 14) -> str:
-    with _RUNTIME_LOCK:
-        rows = list(_RUNTIME_EVENTS)[-max(1, int(limit)):]
-    lines = ["📜 Runtime события (последние)"]
-    if not rows:
-        lines.append("Событий пока нет.")
-    for row in rows:
-        lines.append(f"{row.get('ts','')} [{row.get('level','')}] {row.get('event','')} — {row.get('detail','')[:180]}")
-    return wm_owner("\n".join(lines), 13)
 
 def mega_upload_latest_global_backup(force: bool = False) -> bool:
     """Безопасный latest_global: проверка усечения, история и замена без предварительного удаления."""
@@ -15237,25 +14253,28 @@ def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -
     return True
 
 def _has_visible_fin_mode_selected(chat_id: int) -> bool:
-    """v108: visible auto-window selection is independent from hidden accounting."""
+    """True если включён один из трёх видимых режимов В24: как обычно / 3️⃣ / 🥇."""
     try:
-        return bool(is_finance_mode(chat_id) and finance_window_mode(chat_id) in {"normal", "open", "first"})
+        if not is_finance_mode(chat_id) or is_hidden_finance_mode(chat_id):
+            return False
+        if is_quick_balance_enabled(chat_id):
+            return get_quick_balance_behavior(chat_id) in {"open", "first"}
+        return get_quick_balance_behavior(chat_id) == "normal" or not is_quick_balance_enabled(chat_id)
     except Exception:
         return False
 
 
 def ensure_hidden_finance_for_forward_dst(dst_chat_id: int):
-    """💰 forwarding enables hidden accounting without touching an already selected visible window mode."""
+    """Если включили 💰учёт пересылки в чат, этот чат должен принимать финзаписи скрыто."""
     try:
         dst_chat_id = int(dst_chat_id)
-        was_finance = is_finance_mode(dst_chat_id)
-        if not was_finance:
-            set_finance_mode(dst_chat_id, True)
-            set_finance_window_mode(dst_chat_id, "off", persist_now=False)
-        if not is_hidden_finance_mode(dst_chat_id):
-            set_hidden_finance_mode(dst_chat_id, True)
-        _persist_finance_window_mode_critical(dst_chat_id)
-        bot_journal("forward_finance_auto_hidden", dst_chat_id, "💰 учёт пересылки включил скрытые финансы; оконный режим сохранён")
+        if is_hidden_finance_mode(dst_chat_id):
+            return
+        set_finance_mode(dst_chat_id, True)
+        set_quick_balance_behavior(dst_chat_id, "normal")
+        set_quick_balance_enabled(dst_chat_id, False)
+        set_hidden_finance_mode(dst_chat_id, True)
+        bot_journal("forward_finance_auto_hidden", dst_chat_id, "💰 учёт пересылки включил скрытые финансы")
     except Exception as e:
         log_error(f"ensure_hidden_finance_for_forward_dst({dst_chat_id}): {e}")
 
@@ -17186,8 +16205,6 @@ def build_main_keyboard(day_key: str, chat_id=None):
             IB("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"),
         )
 
-    # v108 / окно Ф91 (основное О1): явное закрытие без выключения финансового режима.
-    kb.row(IB("❌ Закрыть", callback_data=f"main_close:{day_key}"))
     return kb
 
 
@@ -18255,38 +17272,36 @@ def build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: 
 
 
 def finance_mode_compact_icon(chat_id: int) -> str:
-    """v108: hidden finance and visible auto-window mode are shown independently."""
+    """Короткий знак режима для В24 в списке чатов. Скрытый режим независим и дописывается обезьянкой."""
     try:
         if not is_finance_mode(chat_id):
             return "❌"
         hidden_prefix = "🙈" if is_hidden_finance_mode(chat_id) else ""
-        mode = finance_window_mode(chat_id)
-        if mode == "first":
-            return hidden_prefix + "✅🥇"
-        if mode == "open":
-            return hidden_prefix + "✅3️⃣"
-        if mode == "normal":
-            return hidden_prefix + "✅🔟"
-        return hidden_prefix + "✅"
+        if is_quick_balance_enabled(chat_id):
+            behavior = get_quick_balance_behavior(chat_id)
+            if behavior == "first":
+                return hidden_prefix + "✅🥇"
+            if behavior == "open":
+                return hidden_prefix + "✅3️⃣"
+        return hidden_prefix + "✅🔟"
     except Exception:
         return "❌"
 
 
 def finance_mode_state_lines(chat_id: int) -> list[str]:
-    """F39/v108: hidden accounting is independent; exactly one of the three visible modes may be active, or none."""
+    """Строки В25: скрытые финансы независимы от трёх видимых режимов."""
     fin_on = is_finance_mode(chat_id)
     hidden_on = bool(fin_on and is_hidden_finance_mode(chat_id))
-    mode = finance_window_mode(chat_id) if fin_on else "off"
+    qb_on = bool(fin_on and is_quick_balance_enabled(chat_id))
+    behavior = get_quick_balance_behavior(chat_id) if fin_on else "normal"
     return [
         f"Чат: {chat_button_title(chat_id)}",
         "",
         f"{'✅' if fin_on else '❌'} Фин режим",
-        f"{'🙈' if hidden_on else '❌'} Скрытые финансы — независимо",
-        f"{'✅🔟' if (fin_on and mode == 'normal') else '❌'} Как обычно — окно через 10 сообщений",
-        f"{'✅3️⃣' if (fin_on and mode == 'open') else '❌'} Быстрый остаток — открывать окно",
-        f"{'✅🥇' if (fin_on and mode == 'first') else '❌'} Быстрый остаток — всегда первым",
-        "",
-        "Повторное нажатие активного режима окна выключает только окно; скрытые финансы остаются.",
+        f"{'🙈' if hidden_on else '❌'} Скрытые финансы",
+        f"{'✅🔟' if (fin_on and (not qb_on or behavior == 'normal')) else '❌'} Как обычно — окно через 10 сообщений",
+        f"{'✅3️⃣' if (fin_on and qb_on and behavior == 'open') else '❌'} Быстрый остаток — открывать окно",
+        f"{'✅🥇' if (fin_on and qb_on and behavior == 'first') else '❌'} Быстрый остаток — всегда первым",
     ]
 
 
@@ -18348,8 +17363,9 @@ def build_quick_balance_chat_menu(day_key: str):
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
         if owner_item and int_cid == owner_item[0]:
             continue
-        mode = finance_window_mode(int_cid) if is_finance_mode(int_cid) else "off"
-        icon = "✅🥇" if mode == "first" else ("✅3️⃣" if mode == "open" else ("✅🔟" if mode == "normal" else "❌"))
+        visible_qb = bool(is_finance_mode(int_cid) and is_quick_balance_enabled(int_cid))
+        behavior = get_quick_balance_behavior(int_cid) if visible_qb else "normal"
+        icon = "✅🥇" if visible_qb and behavior == "first" else ("✅3️⃣" if visible_qb and behavior == "open" else ("✅" if visible_qb else "❌"))
         buttons.append(IB(
             f'{icon} {chat_button_title(int_cid, title)}',
             callback_data=f"d:{day_key}:qb_cfg_{int_cid}"
@@ -18358,8 +17374,9 @@ def build_quick_balance_chat_menu(day_key: str):
     add_buttons_in_rows(kb, buttons, 2)
 
     if owner_item:
-        mode = finance_window_mode(owner_item[0]) if is_finance_mode(owner_item[0]) else "off"
-        icon = "✅🥇" if mode == "first" else ("✅3️⃣" if mode == "open" else ("✅🔟" if mode == "normal" else "❌"))
+        visible_qb = bool(is_finance_mode(owner_item[0]) and is_quick_balance_enabled(owner_item[0]))
+        behavior = get_quick_balance_behavior(owner_item[0]) if visible_qb else "normal"
+        icon = "✅🥇" if visible_qb and behavior == "first" else ("✅3️⃣" if visible_qb and behavior == "open" else ("✅" if visible_qb else "❌"))
         kb.row(IB(
             f'{icon} {chat_button_title(owner_item[0], owner_item[1])}',
             callback_data=f"d:{day_key}:qb_cfg_{owner_item[0]}"
@@ -18372,12 +17389,13 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
     fin_on = is_finance_mode(target_chat_id)
     hidden_on = bool(fin_on and is_hidden_finance_mode(target_chat_id))
-    mode = finance_window_mode(target_chat_id) if fin_on else "off"
+    enabled = bool(fin_on and is_quick_balance_enabled(target_chat_id))
+    behavior = get_quick_balance_behavior(target_chat_id) if fin_on else "normal"
 
     fin_icon = "✅" if fin_on else "❌"
-    normal_icon = "✅🔟" if (fin_on and mode == "normal") else "❌"
-    open_icon = "✅3️⃣" if (fin_on and mode == "open") else "❌"
-    first_icon = "✅🥇" if (fin_on and mode == "first") else "❌"
+    normal_icon = "✅🔟" if (fin_on and (not enabled or behavior == "normal")) else "❌"
+    open_icon = "✅3️⃣" if (fin_on and enabled and behavior == "open") else "❌"
+    first_icon = "✅🥇" if (fin_on and enabled and behavior == "first") else "❌"
 
     hidden_icon = "🙈" if hidden_on else "❌"
     finwin_icon = "🪟✅" if fin_on else "🪟❌"
@@ -18400,45 +17418,6 @@ def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
 
 def build_finance_mode_config_text(target_chat_id: int) -> str:
     return "💰 Фин режим / В24\n" + "\n".join(finance_mode_state_lines(target_chat_id))
-
-def _apply_finance_window_mode_choice(chat_id: int, selected_mode: str) -> str:
-    """F39/v108: the three visible modes are mutually exclusive; clicking the active one turns only windows off."""
-    chat_id = int(chat_id)
-    selected_mode = str(selected_mode or "off")
-    if selected_mode not in {"normal", "open", "first"}:
-        selected_mode = "off"
-    was_finance = is_finance_mode(chat_id)
-    if not was_finance:
-        set_finance_mode(chat_id, True)
-        # Explicitly enabling finance always starts with hidden accounting ON.
-        set_hidden_finance_mode(chat_id, True)
-    current = finance_window_mode(chat_id)
-    if current == selected_mode:
-        set_finance_window_mode(chat_id, "off", persist_now=False)
-        delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-        _persist_finance_window_mode_critical(chat_id)
-        return "off"
-
-    # Switching visible mode: remove the old automatic windows first, but leave hidden finance untouched.
-    delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-    set_finance_window_mode(chat_id, selected_mode, persist_now=False)
-    try:
-        store = get_chat_store(chat_id)
-        day_key = store.get("current_view_day") or today_key()
-        if selected_mode == "normal":
-            store["main_window_msg_count"] = 0
-            recreate_main_window_now(chat_id, day_key)
-        else:
-            store["balance_panel_msg_count"] = 0
-            send_minimized_balance_panel(chat_id)
-            if selected_mode == "first":
-                schedule_quick_balance_first_recreate(chat_id, 60.0)
-    except Exception as e:
-        log_error(f"_apply_finance_window_mode_choice({chat_id},{selected_mode}): {e}")
-    _finance_window_state(chat_id)["auto_reopen_on_boot"] = True
-    _persist_finance_window_mode_critical(chat_id)
-    return selected_mode
-
 
 def build_hidden_finance_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -19823,7 +18802,6 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
-        kb.row(IB("🖥 Render / Сервер", callback_data="runtime_watcher"))
         if active_bot_behavior_profile() in {"v93_current", "v92_current", "v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
@@ -21588,43 +20566,6 @@ def on_callback(call):
                 save_data(data)
             return
 
-        if data_str.startswith("main_close:"):
-            # v108 / Ф91: close the actual automatic finance window and remember that it was closed.
-            try:
-                day_key = data_str.split(":", 1)[1] or today_key()
-            except Exception:
-                day_key = today_key()
-            cancel_pending_window_commands(chat_id, delete_prompt=False)
-            mid = int(call.message.message_id)
-            try:
-                bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
-            try:
-                aw = get_or_create_active_windows(chat_id)
-                for key, value in list(aw.items()):
-                    try:
-                        if int(value or 0) == mid:
-                            aw.pop(key, None)
-                    except Exception:
-                        pass
-                store = get_chat_store(chat_id)
-                if int(store.get("balance_panel_id") or 0) == mid:
-                    store["balance_panel_id"] = None
-                    store["balance_panel_mode"] = "mini"
-                unregister_open_window(chat_id, mid)
-                state = _finance_window_state(chat_id)
-                state["main_windows"] = {str(k): int(v) for k, v in aw.items() if v}
-                state["balance_panel_id"] = int(store.get("balance_panel_id")) if store.get("balance_panel_id") else None
-                # Manual close means: do not recreate this window merely because Render restarted.
-                state["auto_reopen_on_boot"] = False
-                state["updated_at"] = now_local().isoformat(timespec="seconds")
-                save_data(data, chat_ids=[chat_id])
-                _persist_finance_window_mode_critical(chat_id)
-            except Exception as e:
-                log_error(f"main_close({chat_id},{day_key}): {e}")
-            return
-
         if data_str in {"aux_close", "info_close"}:
             cancel_pending_window_commands(chat_id, delete_prompt=False)
             try:
@@ -22384,38 +21325,6 @@ def on_callback(call):
             kbd.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
             safe_edit(bot, call, delta_status_text(), reply_markup=kbd)
             return
-        if data_str == "runtime_watcher":
-            if not is_owner_chat(chat_id):
-                return
-            kbw = types.InlineKeyboardMarkup(row_width=2)
-            kbw.row(IB("🔄 Обновить", callback_data="runtime_watcher"), IB("📜 События", callback_data="runtime_events"))
-            kbw.row(IB("☁️ Снимок Watcher в MEGA", callback_data="runtime_snapshot_now"))
-            kbw.row(IB("🚦 Очереди", callback_data="info_queues"), IB("🧩 Delta", callback_data="info_delta_status"))
-            kbw.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB("❌ Закрыть", callback_data="info_close"))
-            safe_edit(bot, call, build_runtime_watcher_text(), reply_markup=kbw)
-            return
-        if data_str == "runtime_events":
-            if not is_owner_chat(chat_id):
-                return
-            kbe = types.InlineKeyboardMarkup(row_width=2)
-            kbe.row(IB("🔄 Обновить", callback_data="runtime_events"), IB("🖥 Watcher", callback_data="runtime_watcher"))
-            kbe.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB("❌ Закрыть", callback_data="info_close"))
-            safe_edit(bot, call, build_runtime_events_text(), reply_markup=kbe)
-            return
-        if data_str == "runtime_snapshot_now":
-            if not is_owner_chat(chat_id):
-                return
-            ok = GENERAL_TASK_POOL.submit("runtime-manual-snapshot", runtime_upload_snapshot, "manual", True)
-            try:
-                bot.answer_callback_query(call.id, "Снимок Watcher поставлен в MEGA-очередь" if ok else "Очередь занята", show_alert=False)
-            except Exception:
-                pass
-            kbw = types.InlineKeyboardMarkup(row_width=2)
-            kbw.row(IB("🔄 Обновить", callback_data="runtime_watcher"), IB("📜 События", callback_data="runtime_events"))
-            kbw.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
-            safe_edit(bot, call, build_runtime_watcher_text(), reply_markup=kbw)
-            return
-
         if data_str == "info_queues":
             if not is_owner_chat(chat_id):
                 try:
@@ -22466,18 +21375,14 @@ def on_callback(call):
         if data_str == "info_finance_off":
             try:
                 if is_finance_mode(chat_id):
-                    set_finance_window_mode(chat_id, "off", persist_now=False)
-                    delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
                     set_hidden_finance_mode(chat_id, False)
+                    set_quick_balance_behavior(chat_id, "normal")
+                    set_quick_balance_enabled(chat_id, False)
                     set_finance_mode(chat_id, False)
                     state_text = "выключен"
                 else:
                     set_finance_mode(chat_id, True)
-                    set_finance_window_mode(chat_id, "off", persist_now=False)
-                    set_hidden_finance_mode(chat_id, True)
-                    delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-                    state_text = "включён (скрытые финансы ВКЛ)"
-                _persist_finance_window_mode_critical(chat_id)
+                    state_text = "включён"
                 open_info_window(chat_id)
                 bot.answer_callback_query(call.id, f"Фин режим {state_text}", show_alert=False)
             except Exception as e:
@@ -23108,4 +22013,3640 @@ def on_callback(call):
                 except Exception:
                     pass
                 return
-            target = cmd.replace("backup_mass_", "", 1
+            target = cmd.replace("backup_mass_", "", 1)
+            enabled_count, total_count = _backup_target_all_state(target)
+            new_value = not bool(total_count and enabled_count == total_count)
+            count = set_backup_target_for_all(target, new_value)
+            try:
+                bot.answer_callback_query(call.id, f"{'Включено' if new_value else 'Выключено'} для чатов: {count}")
+            except Exception:
+                pass
+            safe_edit(bot, call, build_backup_owner_menu_text(), reply_markup=build_backup_owner_menu(day_key))
+            return
+        if cmd.startswith("backup_toggle_"):
+            if not is_owner_chat(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "BACKUP доступен только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            try:
+                tail = cmd[len("backup_toggle_"):]
+                target, cid_s = tail.rsplit("_", 1)
+                target_chat_id = int(cid_s)
+            except Exception:
+                return
+            if answer_removed_chat(call, target_chat_id):
+                return
+            if target == "chat" and not is_owner_chat(target_chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Бэкап в сам чат разрешён только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            set_backup_target_enabled(target_chat_id, target, not is_backup_target_enabled(target_chat_id, target))
+            try:
+                bot.answer_callback_query(call.id, "Бэкап включён" if is_backup_target_enabled(target_chat_id, target) else "Бэкап выключен")
+            except Exception:
+                pass
+            safe_edit(bot, call, build_backup_owner_menu_text(), reply_markup=build_backup_owner_menu(day_key))
+            return
+        if cmd in ("edit_menu", "menu"):
+            clear_edit_delete_selection(chat_id, day_key)
+            store["current_view_day"] = day_key
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(bot, call, txt, reply_markup=build_main_keyboard(day_key, chat_id), parse_mode="HTML")
+            set_active_window_id(chat_id, day_key, call.message.message_id)
+            return
+        if cmd == "back_main":
+            # Сначала мгновенно возвращаем интерфейс. Очистку старых режимов и SQLite
+            # выполняем после показа основного окна, чтобы кнопка не висела несколько секунд.
+            store["current_view_day"] = day_key
+            return_to_main_window_closing_previous(chat_id, day_key, call.message.message_id)
+
+            def _cleanup_after_fast_back():
+                try:
+                    cancel_pending_window_commands(chat_id, delete_prompt=False)
+                except Exception:
+                    pass
+                try:
+                    clear_edit_delete_selection(chat_id, day_key)
+                except Exception:
+                    pass
+                try:
+                    save_data(data, chat_ids=[chat_id])
+                except Exception:
+                    pass
+
+            if not GENERAL_TASK_POOL.submit(f"back-cleanup:{chat_id}", _cleanup_after_fast_back):
+                _cleanup_after_fast_back()
+            return
+        if cmd == "csv_all":
+            kb = build_csv_menu(day_key, chat_id)
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(
+                bot,
+                call,
+                txt,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="csv_menu", day_key=day_key,
+                params={"view_action": "csv_menu"},
+            )
+            return
+        if cmd in {"bk_chat", "bk_channel", "bk_mega"}:
+            if not is_owner_chat(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Настройка бэкапа доступна только владельцу", show_alert=True)
+                except Exception:
+                    pass
+                return
+            target = cmd.replace("bk_", "")
+            set_backup_target_enabled(chat_id, target, not is_backup_target_enabled(chat_id, target))
+            kb = build_csv_menu(day_key, chat_id)
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
+            return
+        if cmd in {"csv_day", "csv_week", "csv_month", "csv_wedthu", "csv_all_real", "xlsx_day", "xlsx_week", "xlsx_month", "xlsx_wedthu", "xlsx_all", "xlsxstat_day", "xlsxstat_week", "xlsxstat_month", "xlsxstat_wedthu", "xlsxstat_all"}:
+            if cmd.startswith("xlsxstat_"):
+                file_type = "xlsxstat"
+                mode = cmd.replace("xlsxstat_", "", 1)
+            else:
+                file_type = "xlsx" if cmd.startswith("xlsx_") else "csv"
+                mode = cmd.replace("csv_", "").replace("xlsx_", "")
+            if mode == "all_real":
+                mode = "all"
+            send_export_for_chat_to(chat_id, chat_id, mode, day_key, file_type)
+            return
+        if cmd == "reset":
+            # Кнопка обнуления убрана из о1. Старые/зависшие кнопки не запускают reset;
+            # рабочий путь оставлен только через команду /reset из окна ℹ️ Инфо.
+            send_and_auto_delete(chat_id, "⚙️ Обнуление доступно только командой /reset из окна ℹ️ Инфо.", 12)
+            return
+
+        if cmd == "edit_list":
+            if usd_transactions_view_enabled(chat_id):
+                rows = usd_records_for_month(chat_id, str(day_key)[:7])
+                if not rows:
+                    send_and_auto_delete(chat_id, "Нет USD-записей за этот месяц.")
+                    return
+                txt, _ = render_usd_month_window(chat_id, day_key)
+                safe_edit(bot, call, txt, reply_markup=build_usd_edit_records_keyboard(day_key, chat_id), parse_mode="HTML")
+                return
+            day_recs = store.get("daily_records", {}).get(day_key, [])
+            if not day_recs:
+                send_and_auto_delete(chat_id, "Нет записей за этот день.")
+                return
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(
+                bot,
+                call,
+                txt,
+                reply_markup=build_edit_records_keyboard(day_key, chat_id),
+                parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key,
+                params={"view_action": "edit_list"},
+            )
+            return
+
+        if cmd.startswith("value_rec_"):
+            if not effective_main_financial_value_buttons_enabled(chat_id):
+                send_and_auto_delete(chat_id, "Этот режим финансовых кнопок сейчас выключен.", 8)
+                return
+            rid = int(cmd.split("_")[-1])
+            start_record_edit_prompt(chat_id, day_key, rid)
+            return
+
+        if cmd.startswith("edit_rec_"):
+            rid = int(cmd.split("_")[-1])
+            start_record_edit_prompt(chat_id, day_key, rid)
+            return
+        if cmd.startswith("del_toggle_"):
+            rid = int(cmd.split("_")[-1])
+            toggle_edit_delete_selection(chat_id, day_key, rid)
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(bot, call, txt, reply_markup=build_edit_records_keyboard(day_key, chat_id), parse_mode="HTML")
+            register_open_window(chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key, params={"view_action": "edit_list"})
+            return
+        if cmd == "del_selected":
+            count = delete_selected_records(chat_id, day_key)
+            txt, _ = render_day_window(chat_id, day_key)
+            safe_edit(bot, call, txt, reply_markup=build_edit_records_keyboard(day_key, chat_id), parse_mode="HTML")
+            register_open_window(chat_id, call.message.message_id, "local_fin_view", code="edit_list", day_key=day_key, params={"view_action": "edit_list"})
+            send_and_auto_delete(chat_id, f"🗑 Удалено записей: {count}", 8)
+            return
+
+        if cmd == "forward_menu":
+            if not is_owner_chat(chat_id):
+                send_and_auto_delete(chat_id, "Меню доступно только владельцу.", HELPER_DELETE_DELAY)
+                return
+            kb = build_forward_menu_keyboard_for_current_mode(day_key)
+            safe_edit(
+                bot,
+                call,
+                build_forward_menu_text_for_current_mode("Пересылка:\nВыберите чат A:"),
+                reply_markup=kb
+            )
+            return
+        if cmd == "forward_finmode_menu":
+            kb = build_finance_toggle_chat_menu(day_key)
+            safe_edit(
+                bot,
+                call,
+                "💰 Фин режим / В24\nВыберите чат. Значок рядом с чатом показывает текущий режим:\n❌ выкл | 🙈 скрыто | ✅🔟 как обычно | ✅3️⃣ открыть окно | ✅🥇 всегда первым",
+                reply_markup=kb
+            )
+            return
+        if cmd == "quick_balance_menu":
+            kb = build_quick_balance_chat_menu(day_key)
+            safe_edit(
+                bot,
+                call,
+                build_forward_status_text("Быстрый остаток:\nВыберите чат для включения или выключения режима."),
+                reply_markup=kb
+            )
+            return
+        if cmd == "hidden_finance_menu":
+            kb = build_hidden_finance_chat_menu(day_key)
+            safe_edit(
+                bot,
+                call,
+                build_forward_status_text("Скрытые финансы:\nВыберите чат. Финансовый учёт и бэкапы работают, окна в чате не выводятся."),
+                reply_markup=kb
+            )
+            return
+        if cmd.startswith("hf_pick_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            set_hidden_finance_mode(tgt, not is_hidden_finance_mode(tgt))
+            kb = build_hidden_finance_chat_menu(day_key)
+            safe_edit(
+                bot,
+                call,
+                build_forward_status_text("Скрытые финансы:\nВыберите чат."),
+                reply_markup=kb
+            )
+            return
+        if cmd == "fin_windows_menu":
+            kb = build_fin_windows_chat_menu(day_key)
+            safe_edit(
+                bot,
+                call,
+                "🪟 Фин окна чатов\nВыберите чат для просмотра операций:",
+                reply_markup=kb
+            )
+            return
+        if cmd.startswith("finwin_open_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            target_store = get_chat_store(tgt)
+            view_day = target_store.get("current_view_day", today_key())
+            safe_edit(
+                bot,
+                call,
+                render_fin_window_text(tgt, view_day),
+                reply_markup=build_fin_window_view_keyboard(tgt, view_day, day_key),
+                parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "fin_view", code="fv:open", day_key=view_day,
+                params={"target_chat_id": tgt, "owner_day_key": day_key, "view_action": "open"},
+            )
+            return
+        if cmd.startswith("qb_cfg_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            kb = build_quick_balance_mode_menu(day_key, tgt)
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=kb
+            )
+            return
+        if cmd.startswith("qb_mode_normal_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            set_hidden_finance_mode(tgt, False)
+            set_finance_mode(tgt, True)
+            set_quick_balance_behavior(tgt, "normal")
+            set_quick_balance_enabled(tgt, False)
+            try:
+                get_chat_store(tgt)["main_window_msg_count"] = 0
+                save_data(data)
+            except Exception:
+                pass
+            try:
+                if is_finance_mode(tgt) and not is_hidden_finance_mode(tgt):
+                    recreate_main_window_now(tgt, get_chat_store(tgt).get("current_view_day") or today_key())
+            except Exception as e:
+                log_error(f"qb_mode_normal recreate main window {get_chat_display_name(tgt)}: {e}")
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
+        if cmd.startswith("qb_mode_open_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            set_hidden_finance_mode(tgt, False)
+            set_quick_balance_behavior(tgt, "open")
+            set_quick_balance_enabled(tgt, True)
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
+        if cmd.startswith("qb_mode_first_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            set_hidden_finance_mode(tgt, False)
+            set_quick_balance_behavior(tgt, "first")
+            set_quick_balance_enabled(tgt, True)
+            schedule_quick_balance_first_recreate(tgt, 60.0)
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
+        if cmd.startswith("qb_hidden_toggle_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            new_hidden = not is_hidden_finance_mode(tgt)
+            if new_hidden:
+                # Скрытые финансы независимы от трёх режимов: не сбрасываем quick_balance/normal.
+                set_finance_mode(tgt, True)
+                set_hidden_finance_mode(tgt, True)
+            else:
+                # Выключаем только скрытый режим. Остальные выбранные режимы остаются как были.
+                set_hidden_finance_mode(tgt, False)
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
+        if cmd.startswith("qb_finwin_open_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            target_store = get_chat_store(tgt)
+            view_day = target_store.get("current_view_day", today_key())
+            safe_edit(
+                bot,
+                call,
+                render_fin_window_text(tgt, view_day),
+                reply_markup=build_fin_window_view_keyboard(tgt, view_day, day_key),
+                parse_mode="HTML"
+            )
+            register_open_window(
+                chat_id, call.message.message_id, "fin_view", code="fv:open", day_key=view_day,
+                params={"target_chat_id": tgt, "owner_day_key": day_key, "view_action": "open"},
+            )
+            return
+        if cmd.startswith("fw_finmode_pick_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
+        if cmd.startswith("fin_mode_toggle_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            if is_finance_mode(tgt):
+                set_hidden_finance_mode(tgt, False)
+                set_quick_balance_behavior(tgt, "normal")
+                set_quick_balance_enabled(tgt, False)
+                set_finance_mode(tgt, False)
+            else:
+                set_finance_mode(tgt, True)
+                set_quick_balance_behavior(tgt, "normal")
+                set_quick_balance_enabled(tgt, False)
+                # По ТЗ при простом включении финрежима включаем скрытый режим, остальные режимы остаются ❌.
+                set_hidden_finance_mode(tgt, True)
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
+        if cmd.startswith("fin_mode_off_"):
+            tgt = int(cmd.split("_")[-1])
+            if answer_removed_chat(call, tgt):
+                return
+            set_hidden_finance_mode(tgt, False)
+            set_finance_mode(tgt, False)
+            set_quick_balance_behavior(tgt, "normal")
+            set_quick_balance_enabled(tgt, False)
+            save_data(data)
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
+            return
+        if cmd == "pick_date":
+            try:
+                cdt = datetime.strptime(day_key, "%Y-%m-%d")
+            except Exception:
+                cdt = now_local()
+            safe_edit(bot, call, calendar_window_text(cdt, marker=False), reply_markup=build_calendar_keyboard(cdt, chat_id))
+            return
+        if cmd == "cancel_edit":
+            clear_edit_wait_state(chat_id, call.message.message_id, delete_prompt=True)
+            try:
+                bot.answer_callback_query(call.id, "Редактирование отменено")
+            except Exception:
+                pass
+            return
+    except Exception as e:
+        log_error(f"on_callback error: {e}")
+def send_csv_week(chat_id: int, day_key: str):
+    if is_finance_output_suppressed(chat_id):
+        return
+    try:
+        store = get_chat_store(chat_id)
+
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+        start = base - timedelta(days=6)
+
+        rows = []
+
+        for i in range(7):
+            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            for r in store.get("daily_records", {}).get(d, []):
+                rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+
+        if not rows:
+            send_info(chat_id, "Нет данных за неделю")
+            return
+
+        tmp = f"week_{chat_id}.csv"
+
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "amount", "note"])
+            rows.sort(key=lambda row: str(row[0]))
+            write_csv_rows_with_day_gaps(w, rows, 3)
+
+        with open(tmp, "rb") as f:
+            bot.send_document(chat_id, f, caption="🗓 CSV за неделю")
+
+    except Exception as e:
+        log_error(f"send_csv_week: {e}")
+def send_csv_month(chat_id: int, day_key: str):
+    if is_finance_output_suppressed(chat_id):
+        return
+    try:
+        store = get_chat_store(chat_id)
+
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+        start = base.replace(day=1)
+
+        rows = []
+
+        for d, recs in store.get("daily_records", {}).items():
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            if dt >= start and dt <= base:
+                for r in recs:
+                    rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+
+        if not rows:
+            send_info(chat_id, "Нет данных за месяц")
+            return
+
+        tmp = f"month_{chat_id}.csv"
+
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "amount", "note"])
+            rows.sort(key=lambda row: str(row[0]))
+            write_csv_rows_with_day_gaps(w, rows, 3)
+
+        with open(tmp, "rb") as f:
+            bot.send_document(chat_id, f, caption="📆 CSV за месяц")
+
+    except Exception as e:
+        log_error(f"send_csv_month: {e}")
+def send_csv_wedthu(chat_id: int, day_key: str):
+    if is_finance_output_suppressed(chat_id):
+        return
+    try:
+        store = get_chat_store(chat_id)
+
+        base = datetime.strptime(day_key, "%Y-%m-%d")
+
+        while base.weekday() != 2:
+            base -= timedelta(days=1)
+
+        start = base
+
+        rows = []
+
+        for i in range(2):
+            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            for r in store.get("daily_records", {}).get(d, []):
+                rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
+
+        if not rows:
+            send_info(chat_id, "Нет данных Ср–Чт")
+            return
+
+        tmp = f"wedthu_{chat_id}.csv"
+
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "amount", "note"])
+            rows.sort(key=lambda row: str(row[0]))
+            write_csv_rows_with_day_gaps(w, rows, 3)
+
+        with open(tmp, "rb") as f:
+            bot.send_document(chat_id, f, caption="📊 CSV Ср–Чт")
+
+    except Exception as e:
+        log_error(f"send_csv_wedthu: {e}")
+
+def add_record_to_chat(
+    chat_id: int,
+    amount: float,
+    note: str,
+    owner: int,
+    source_msg=None,
+    day_key=None,
+    usd_amount=None,
+    usd_note: str = "",
+    usd_only: bool = False,
+    source_finance_text: str = "",
+):
+    bot_journal("record_add_start", chat_id, f"amount={amount} note={note}")
+    with locked_chat(chat_id):
+        store = get_chat_store(chat_id)
+        rid = store.get("next_id", 1)
+
+        if not day_key:
+            day_key = day_key_from_message(source_msg)
+
+        source_msg_id = getattr(source_msg, "message_id", None) if source_msg else None
+        source_order_msg_id = (
+            getattr(source_msg, "source_order_msg_id", None)
+            or getattr(source_msg, "forward_source_msg_id", None)
+            or source_msg_id
+        )
+
+        rec = {
+            "id": rid,
+            "short_id": "",
+            "timestamp": message_timestamp_iso(source_msg),
+            "amount": amount,
+            "note": note,
+            "source_msg_id": source_msg_id,
+            "source_order_msg_id": source_order_msg_id,
+            "owner": owner,
+            "msg_id": source_msg_id,
+            "origin_msg_id": source_msg_id,
+            "day_key": day_key,
+        }
+        if usd_amount is not None:
+            rec["usd_amount"] = float(usd_amount or 0)
+            rec["usd_note"] = str(usd_note or note or "")
+            rec["usd_only"] = bool(usd_only)
+        if source_finance_text:
+            rec["source_finance_text"] = str(source_finance_text)
+
+        store.setdefault("records", []).append(rec)
+        normalize_chat_records(chat_id)
+        store["next_id"] = max([int(r.get("id", 0) or 0) for r in store.get("records", [])] + [0]) + 1
+        store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
+
+        rebuild_month_short_ids(chat_id)
+        rebuild_global_records()
+        return rec
+
+def delete_record_in_chat(chat_id: int, rid: int):
+    with locked_chat(chat_id):
+        store = get_chat_store(chat_id)
+
+        store["records"] = [x for x in store["records"] if x["id"] != rid]
+
+        for day, arr in list(store.get("daily_records", {}).items()):
+            arr2 = [x for x in arr if x["id"] != rid]
+            if arr2:
+                store["daily_records"][day] = arr2
+            else:
+                del store["daily_records"][day]
+
+        renumber_chat_records(chat_id)
+        store["balance"] = sum(x["amount"] for x in store["records"])
+        rebuild_global_records()
+
+def renumber_chat_records(chat_id: int):
+    """Перенумеровывает записи по реальной хронологии поступления сообщений."""
+    store = get_chat_store(chat_id)
+    normalize_chat_records(chat_id)
+    all_recs = list(store.get("records", []) or [])
+    all_recs.sort(key=record_sort_key)
+
+    for new_id, r in enumerate(all_recs, 1):
+        r["id"] = new_id
+
+    store["records"] = all_recs
+    rebuilt_daily = {}
+    for r in all_recs:
+        rebuilt_daily.setdefault(_record_day_key(r), []).append(r)
+    store["daily_records"] = rebuilt_daily
+    store["next_id"] = len(all_recs) + 1
+    rebuild_month_short_ids(chat_id)
+    
+def get_or_create_active_windows(chat_id: int) -> dict:
+    return data.setdefault("active_messages", {}).setdefault(str(chat_id), {})
+def set_active_window_id(chat_id: int, day_key: str, message_id: int):
+    aw = get_or_create_active_windows(chat_id)
+    aw[day_key] = message_id
+    register_open_window(chat_id, message_id, "main_day", code="О1", day_key=day_key)
+    save_data(data)
+def get_active_window_id(chat_id: int, day_key: str):
+    aw = get_or_create_active_windows(chat_id)
+    return aw.get(day_key)
+
+def clear_active_window_id(chat_id: int, day_key: str):
+    try:
+        aw = get_or_create_active_windows(chat_id)
+        if str(day_key) in aw:
+            old_mid = aw.pop(str(day_key), None)
+            if old_mid:
+                unregister_open_window(chat_id, old_mid)
+            save_data(data)
+    except Exception as e:
+        log_error(f"clear_active_window_id({chat_id},{day_key}): {e}")
+
+def close_previous_main_window_before_back(chat_id: int, day_key: str, current_message_id: int | None = None):
+    """При возврате в основное окно удаляет прежнее О1, чтобы не оставалось дубля."""
+    try:
+        old_mid = get_active_window_id(chat_id, day_key)
+        if not old_mid:
+            return
+        if current_message_id is not None and int(old_mid) == int(current_message_id):
+            return
+        try:
+            bot.delete_message(int(chat_id), int(old_mid))
+        except Exception:
+            pass
+        clear_active_window_id(chat_id, day_key)
+    except Exception as e:
+        log_error(f"close_previous_main_window_before_back({chat_id},{day_key}): {e}")
+def update_or_send_day_window(chat_id: int, day_key: str):
+    if is_hidden_finance_mode(chat_id) and not is_owner_chat(chat_id):
+        return
+    if is_owner_chat(chat_id):
+        backup_window_for_owner(chat_id, day_key)
+        schedule_balance_panel_refresh(chat_id, 0.5)
+        return
+
+    lock = window_locks[(chat_id, day_key)]
+
+    with lock:
+        txt, _ = render_day_window(chat_id, day_key)
+        kb = build_main_keyboard(day_key, chat_id)
+        old_mid = get_active_window_id(chat_id, day_key)
+
+        if len(txt) > 3900:
+            log_error(f"update_or_send_day_window: text too long for {chat_id} {day_key}, len={len(txt)}")
+
+        if old_mid:
+            try:
+                bot.edit_message_text(
+                    txt,
+                    chat_id=chat_id,
+                    message_id=old_mid,
+                    reply_markup=kb,
+                    parse_mode="HTML"
+                )
+                set_active_window_id(chat_id, day_key, old_mid)
+                schedule_balance_panel_refresh(chat_id, 0.5)
+                return
+            except Exception as e:
+                err = str(e).lower()
+                if "message is not modified" in err:
+                    schedule_balance_panel_refresh(chat_id, 0.5)
+                    return
+                try:
+                    bot.delete_message(chat_id, old_mid)
+                except Exception:
+                    pass
+
+        sent = bot.send_message(
+            chat_id,
+            txt,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+        set_active_window_id(chat_id, day_key, sent.message_id)
+    schedule_balance_panel_refresh(chat_id, 0.5)
+def is_finance_mode(chat_id):
+
+    store = get_chat_store(chat_id)
+    return store.get("finance_mode", False)
+
+def set_finance_mode(chat_id: int, enabled: bool):
+    chat_id = int(chat_id)
+    store = get_chat_store(chat_id)
+    enabled = bool(enabled)
+    store["finance_mode"] = enabled
+
+    if enabled:
+        finance_active_chats.add(chat_id)
+        # Фин-режим сам по себе = "как обычно": основное окно через 10 сообщений,
+        # без быстрого остатка. Быстрый остаток включается только если владелец
+        # явно выбрал режим в меню быстрого остатка (quick_balance_user_selected=True).
+        settings = store.setdefault("settings", {})
+        settings.setdefault("quick_balance_user_selected", False)
+        if not settings.get("quick_balance_user_selected", False):
+            settings["quick_balance_enabled"] = False
+            settings["quick_balance_behavior"] = "normal"
+            panel_id = store.get("balance_panel_id")
+            if panel_id:
+                try:
+                    bot.delete_message(chat_id, panel_id)
+                except Exception:
+                    pass
+            store["balance_panel_id"] = None
+            store["balance_panel_mode"] = "normal"
+    else:
+        finance_active_chats.discard(chat_id)
+        panel_id = store.get("balance_panel_id")
+        if panel_id:
+            try:
+                bot.delete_message(chat_id, panel_id)
+            except Exception:
+                pass
+        store["balance_panel_id"] = None
+        store["balance_panel_mode"] = "mini"
+    save_data(data)
+    schedule_config_backup_for_chats(chat_id)
+
+def require_finance(chat_id: int) -> bool:
+    """
+    Проверка: включён ли финансовый режим.
+    Если нет — показываем подсказку /поехали.
+    """
+    if not is_finance_mode(chat_id):
+        send_and_auto_delete(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /ok")
+        return False
+    return True
+def refresh_total_message_if_any(chat_id: int):
+    """
+    Если в чате есть активное сообщение '💰 Общий итог',
+    пересчитывает и обновляет его текст.
+    """
+    store = get_chat_store(chat_id)
+    msg_id = store.get("total_msg_id")
+    if not msg_id:
+        return
+    try:
+        chat_bal = store.get("balance", 0)
+        if not is_owner_chat(chat_id):
+            text = wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
+        else:
+            lines = []
+            info = store.get("info", {})
+            title = get_chat_display_name(chat_id)
+            lines.append("💰 Общий итог (для владельца)")
+            lines.append("")
+            lines.append(f"• Этот чат ({title}): {format_chat_amount(chat_id, chat_bal, True)}")
+            all_chats = data.get("chats", {})
+            total_all = 0
+            other_lines = []
+            for cid, st in all_chats.items():
+                try:
+                    cid_int = int(cid)
+                except Exception:
+                    continue
+                bal = st.get("balance", 0)
+                total_all += bal
+                if cid_int == chat_id:
+                    continue
+                info2 = st.get("info", {})
+                title2 = get_chat_display_name(cid_int)
+                other_lines.append(f"   • {title2}: {format_chat_amount(chat_id, bal, True)}")
+            if other_lines:
+                lines.append("")
+                lines.append("• Другие чаты:")
+                lines.extend(other_lines)
+            lines.append("")
+            lines.append(f"• Всего по всем чатам: {format_chat_amount(chat_id, total_all, True)}")
+            text = "\n".join(lines)
+        bot.edit_message_text(
+            text,
+            chat_id=chat_id,
+            message_id=msg_id,
+            parse_mode="HTML"
+        )
+        if is_owner_chat(chat_id):
+            schedule_owner_total_window_delete(chat_id, msg_id)
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            if is_owner_chat(chat_id):
+                schedule_owner_total_window_delete(chat_id, msg_id)
+            return
+        log_error(f"refresh_total_message_if_any({chat_id}): {e}")
+        store["total_msg_id"] = None
+        save_data(data)
+def refresh_owner_after_chat_change(source_chat_id: int):
+    if not OWNER_ID:
+        return
+    try:
+        owner_chat_id = int(OWNER_ID)
+    except Exception:
+        return
+    if int(source_chat_id) == owner_chat_id:
+        return
+
+    try:
+        owner_store = get_chat_store(owner_chat_id)
+        owner_day_key = owner_store.get("current_view_day", today_key())
+        backup_window_for_owner(owner_chat_id, owner_day_key, None)
+        refresh_balance_panel_now(owner_chat_id)
+        refresh_total_message_if_any(owner_chat_id)
+    except Exception as e:
+        log_error(f"refresh_owner_after_chat_change({source_chat_id}): {e}")
+
+
+def cancel_pending_window_commands(chat_id: int, delete_prompt: bool = False):
+    """Назад в основное окно отменяет режимы ожидания предыдущих окон и их таймеры."""
+    try:
+        clear_forward_copy_edit_wait(chat_id, delete_prompt=delete_prompt)
+    except Exception:
+        pass
+    try:
+        clear_edit_wait_state(chat_id, delete_prompt=delete_prompt)
+    except Exception:
+        pass
+    try:
+        clear_finwin_edit_wait_state(chat_id, delete_prompt=delete_prompt)
+    except Exception:
+        pass
+    try:
+        clear_category_wait_state(chat_id, "category_add_wait", delete_prompt=delete_prompt)
+    except Exception:
+        pass
+    try:
+        clear_category_wait_state(chat_id, "category_edit_wait", delete_prompt=delete_prompt)
+    except Exception:
+        pass
+    try:
+        _clear_secret_wait(chat_id, delete_prompt=delete_prompt)
+    except Exception:
+        pass
+    try:
+        store = get_chat_store(chat_id)
+        if store.get("reset_wait"):
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            save_data(data)
+    except Exception:
+        pass
+
+
+def send_info(chat_id: int, text: str):
+    send_and_auto_delete(chat_id, text, HELPER_DELETE_DELAY)
+
+
+@bot.message_handler(commands=["owners", "additional_owners", "доп_владельцы"])
+def cmd_additional_owners(msg):
+    schedule_command_delete(msg)
+    if not is_primary_owner(msg.chat.id):
+        return
+    bot.send_message(
+        msg.chat.id,
+        wm_owner("👥 Дополнительные владельцы\n\n✅ — доступ владельца включён\n❌ — доступ выключен", 36),
+        reply_markup=build_additional_owners_keyboard(),
+    )
+
+
+@bot.message_handler(commands=["windows", "okna", "окна"])
+def cmd_windows_in_current_message(msg):
+    schedule_command_delete(msg)
+    enabled = toggle_chat_buttons_current_window(msg.chat.id)
+    send_and_auto_delete(
+        msg.chat.id,
+        f"{'✅' if enabled else '❌'} Режим открытия в текущем окне: {'ВКЛ' if enabled else 'ВЫКЛ'}",
+        8,
+    )
+                
+@bot.message_handler(commands=["ok", "поехали"])
+def cmd_ok(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    set_total_secret_mode(chat_id, False)
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    store = get_chat_store(chat_id)
+
+    set_finance_mode(chat_id, True)
+    view_day = finance_today_key()
+    store["current_view_day"] = view_day
+    store.setdefault("settings", {})["auto_add"] = True
+
+    save_data(data)
+    schedule_finalize(chat_id, view_day)
+
+    send_and_auto_delete(chat_id, "✅ Финансовый режим включён", HELPER_DELETE_DELAY)
+@bot.message_handler(commands=["start"])
+def cmd_start(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    set_total_secret_mode(chat_id, False)
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+
+    day_key = finance_today_key() if is_finance_mode(chat_id) else today_key()
+    get_chat_store(chat_id)["current_view_day"] = day_key
+    force_new_day_window(chat_id, day_key)
+@bot.message_handler(commands=["help"])
+def cmd_help(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    help_text = build_help_text(chat_id)
+    send_and_auto_delete(chat_id, help_text, HELPER_DELETE_DELAY)
+
+@bot.message_handler(commands=["articles", "статьи"])
+def cmd_articles(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    send_and_auto_delete(chat_id, build_articles_description_text(chat_id), 40)
+    
+@bot.message_handler(commands=["restore"])
+def cmd_restore(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    stop_dozvon_for_target(msg.chat.id)
+
+    global restore_mode
+    restore_mode = msg.chat.id  # включаем только для текущего чата
+    cleanup_forward_links(msg.chat.id)
+    send_and_auto_delete(
+        msg.chat.id,
+        "📥 Режим восстановления включён.\n"
+        "Отправьте JSON/CSV файл для восстановления."
+    )
+    
+@bot.message_handler(commands=["restore_off"])
+def cmd_restore_off(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    stop_dozvon_for_target(msg.chat.id)
+
+    global restore_mode
+    restore_mode = None  # выключаем
+    cleanup_forward_links(msg.chat.id)
+    send_and_auto_delete(msg.chat.id, "🔒 Режим восстановления выключен.")
+@bot.message_handler(commands=["ping"])
+def cmd_ping(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    stop_dozvon_for_target(msg.chat.id)
+    send_and_auto_delete(msg.chat.id, "PONG — бот работает 🟢", HELPER_DELETE_DELAY)
+@bot.message_handler(commands=["prev"])
+def cmd_prev(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+    d = datetime.strptime(today_key(), "%Y-%m-%d") - timedelta(days=1)
+    day_key = d.strftime("%Y-%m-%d")
+    get_chat_store(chat_id)["current_view_day"] = day_key
+    update_or_send_day_window(chat_id, day_key)
+@bot.message_handler(commands=["next"])
+def cmd_next(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+    d = datetime.strptime(today_key(), "%Y-%m-%d") + timedelta(days=1)
+    day_key = d.strftime("%Y-%m-%d")
+    get_chat_store(chat_id)["current_view_day"] = day_key
+    update_or_send_day_window(chat_id, day_key)
+@bot.message_handler(commands=["balance"])
+def cmd_balance(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+    store = get_chat_store(chat_id)
+    bal = store.get("balance", 0)
+    send_info(chat_id, f"💰 Баланс: {fmt_num(bal)}")
+@bot.message_handler(commands=["report"])
+def cmd_report(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+
+    lines = build_day_report_lines(chat_id)
+    report_html = "<pre>" + html.escape("\n".join(lines)) + "</pre>"
+    send_html_and_auto_delete(chat_id, report_html, 20)
+def cmd_csv_all(chat_id: int):
+    """
+    Общий CSV этого чата (все дни этого чата).
+    """
+    if is_finance_output_suppressed(chat_id):
+        return
+    if not require_finance(chat_id):
+        return
+    try:
+        save_chat_json(chat_id)
+        path = chat_csv_file(chat_id)
+        if not os.path.exists(path):
+            send_info(chat_id, "CSV файла ещё нет.")
+            return
+        with open(path, "rb") as f:
+            bot.send_document(
+                chat_id,
+                f,
+                caption=f"📂 Общий CSV: {get_chat_display_name(chat_id)}"
+            )
+    except Exception as e:
+        log_error(f"cmd_csv_all: {e}")
+def cmd_csv_day(chat_id: int, day_key: str):
+    """CSV только за один день для текущего чата, date DD:MM:YY."""
+    if is_finance_output_suppressed(chat_id):
+        return
+    if not require_finance(chat_id):
+        return
+    store = get_chat_store(chat_id)
+    day_recs = sorted(store.get("daily_records", {}).get(day_key, []) or [], key=record_sort_key)
+    if not day_recs:
+        send_info(chat_id, "Нет записей за этот день.")
+        return
+    tmp_name = f"data_{chat_id}_{day_key}.csv"
+    try:
+        with open(tmp_name, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["date", "chat", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
+            rows = []
+            for r in day_recs:
+                rows.append((
+                    fmt_date_table(day_key),
+                    get_chat_display_name(chat_id),
+                    r.get("id"),
+                    r.get("short_id"),
+                    r.get("timestamp"),
+                    fmt_csv_amount(r.get("amount")),
+                    r.get("note"),
+                    r.get("owner"),
+                    day_key,
+                ))
+            write_csv_rows_with_day_gaps(w, rows, 9)
+        with open(tmp_name, "rb") as f:
+            bot.send_document(chat_id, f, caption=f"📅 CSV за день {fmt_date_table(day_key)}: {get_chat_display_name(chat_id)}")
+    except Exception as e:
+        log_error(f"cmd_csv_day: {e}")
+    finally:
+        try:
+            os.remove(tmp_name)
+        except FileNotFoundError:
+            pass
+
+@bot.message_handler(commands=["tabl_lsx"])
+def cmd_tabl_lsx(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help", "tabl_lsx"}):
+        return
+    if not require_finance(chat_id):
+        return
+    try:
+        notice = bot.send_message(chat_id, "⏳ Готовлю /tabl_lsx в фоне…")
+        delete_message_later(chat_id, notice.message_id, 20)
+    except Exception:
+        pass
+    if not EXPORT_TASK_POOL.submit(f"tabl-lsx:{chat_id}", send_tabl_lsx_for_chat, chat_id, chat_id):
+        send_and_auto_delete(chat_id, "⛔ Очередь Excel переполнена.", 12)
+
+
+@bot.message_handler(commands=["xlsx", "excel"])
+def cmd_xlsx(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+    send_export_for_chat_to(chat_id, chat_id, "all", today_key(), "xlsx")
+
+@bot.message_handler(commands=["csv"])
+def cmd_csv(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    """
+    Экспортирует CSV текущего чата.
+    """
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+    export_global_csv(data)
+    save_chat_json(chat_id)
+    per_csv = chat_csv_file(chat_id)
+    sent = None
+    if os.path.exists(per_csv):
+        with open(per_csv, "rb") as f:
+            sent = bot.send_document(chat_id, f, caption="📂 CSV этого чата")
+    if OWNER_ID and chat_id == int(OWNER_ID):
+        meta = _load_csv_meta()
+        if sent and getattr(sent, "document", None):
+            meta["file_id_csv"] = sent.document.file_id
+        meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
+        _save_csv_meta(meta)
+    send_backup_to_channel(chat_id)
+def _send_json_snapshot_job(chat_id: int):
+    started = time.time()
+    try:
+        bot_journal("json_export_start", chat_id, "создание атомарного снимка")
+        store = snapshot_chat_store(chat_id)
+        payload = build_chat_backup_payload(chat_id, store)
+        raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        buf = io.BytesIO(raw)
+        buf.name = f"{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{now_local().strftime('%Y%m%d_%H%M%S')}.json"
+        sent = _tg_call_retry(bot.send_document, chat_id, buf, caption="🧾 JSON этого чата — последние операции сверху", purpose="manual_json_export")
+        elapsed = time.time() - started
+        bot_journal("json_export_sent", chat_id, f"bytes={len(raw)} message_id={getattr(sent, 'message_id', '')} elapsed={elapsed:.3f}s")
+    except Exception as e:
+        bot_journal("json_export_error", chat_id, f"elapsed={time.time()-started:.3f}s error={e}", "ERROR")
+        send_and_auto_delete(chat_id, "❌ Не удалось создать JSON. Ошибка записана в журнал.", 15)
+
+
+@bot.message_handler(commands=["json"])
+def cmd_json(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = int(msg.chat.id)
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+    bot_journal("json_command", chat_id, f"message_id={getattr(msg, 'message_id', '')}")
+    if not EXPORT_TASK_POOL.submit(f"json:{chat_id}", _send_json_snapshot_job, chat_id):
+        send_and_auto_delete(chat_id, "⛔ Очередь JSON занята. Повторите команду.", 10)
+
+@bot.message_handler(commands=["reset"])
+def cmd_reset(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not require_finance(chat_id):
+        return
+    store = get_chat_store(chat_id)
+    store["reset_wait"] = True
+    store["reset_time"] = time.time()
+    save_data(data)
+    send_and_auto_delete(
+        chat_id,
+        "⚠️ Вы уверены, что хотите обнулить данные? Напишите ДА в течение 15 секунд.",
+        15
+    )
+    schedule_cancel_wait(chat_id, 15)
+
+@bot.message_handler(commands=["stopforward"])
+def cmd_stopforward(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not is_owner_chat(chat_id):
+        send_info(chat_id, "Эта команда только для владельца.")
+        schedule_command_delete(msg)
+        return
+    clear_forward_all()
+    send_info(chat_id, "Пересылка полностью отключена.")
+@bot.message_handler(commands=["backup_channel_on"])
+def cmd_on_channel(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    backup_flags["channel"] = True
+    save_data(data)
+    send_info(chat_id, "📡 Бэкап в канал включён")
+@bot.message_handler(commands=["backup_channel_off"])
+def cmd_off_channel(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    backup_flags["channel"] = False
+    save_data(data)
+    send_info(chat_id, "📡 Бэкап в канал выключен")
+    
+@bot.message_handler(commands=["dozvon"])
+def cmd_dozvon(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+
+    connected = get_connected_chat_ids(chat_id)
+    if not connected:
+        send_and_auto_delete(chat_id, "📞 Нет связанных чатов для дозвона.", HELPER_DELETE_DELAY)
+        return
+
+    bot.send_message(
+        chat_id,
+        "📞 Выберите чат для дозвона:",
+        reply_markup=build_dozvon_menu(chat_id)
+    )
+
+def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DELAY):
+    if is_finance_output_suppressed(chat_id):
+        return
+    if chat_buttons_current_window_enabled(chat_id):
+        send_or_edit_stored_window(chat_id, "command_window_id", text, delay=delay)
+        return
+    try:
+        msg = bot.send_message(chat_id, text)
+        def _delete():
+            try:
+                bot.delete_message(chat_id, msg.message_id)
+            except Exception:
+                pass
+        DELAYED_SCHEDULER.schedule(f"auto-delete:{chat_id}:{msg.message_id}", delay, _delete)
+    except Exception as e:
+        log_error(f"send_and_auto_delete: {e}")
+
+
+def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = HELPER_DELETE_DELAY):
+    if is_finance_output_suppressed(chat_id):
+        return
+    if chat_buttons_current_window_enabled(chat_id):
+        send_or_edit_stored_window(chat_id, "command_window_id", html_text, parse_mode="HTML", delay=delay)
+        return
+    try:
+        msg = bot.send_message(chat_id, html_text, parse_mode="HTML")
+        def _delete():
+            try:
+                bot.delete_message(chat_id, msg.message_id)
+            except Exception:
+                pass
+        DELAYED_SCHEDULER.schedule(f"auto-delete-html:{chat_id}:{msg.message_id}", delay, _delete)
+    except Exception as e:
+        log_error(f"send_html_and_auto_delete: {e}")
+def delete_message_later(chat_id: int, message_id: int, delay: int = 30):
+    """
+    Отложенное удаление сообщения пользователя (например, команд).
+    """
+    try:
+        def _job():
+            try:
+                bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+        DELAYED_SCHEDULER.schedule(f"delete-later:{chat_id}:{message_id}", delay, _job)
+    except Exception as e:
+        log_error(f"delete_message_later: {e}")
+_edit_cancel_timers = {}
+
+
+def clear_edit_wait_state(chat_id: int, expected_prompt_id: int | None = None, delete_prompt: bool = True):
+    store = get_chat_store(chat_id)
+    edit_wait = store.get("edit_wait") or {}
+    prompt_id = edit_wait.get("prompt_msg_id")
+
+    if expected_prompt_id is not None and prompt_id and int(prompt_id) != int(expected_prompt_id):
+        return False
+
+    key = (int(chat_id), "edit_wait")
+    _edit_cancel_timers.pop(key, None)
+    DELAYED_SCHEDULER.cancel(f"edit-wait:{int(chat_id)}")
+
+    store["edit_wait"] = None
+    save_data(data)
+
+    if delete_prompt and prompt_id:
+        try:
+            bot.delete_message(chat_id, int(prompt_id))
+        except Exception:
+            pass
+    return True
+
+
+def clear_finwin_edit_wait_state(chat_id: int, expected_prompt_id: int | None = None, delete_prompt: bool = True):
+    store = get_chat_store(chat_id)
+    edit_wait = store.get("finwin_edit_wait") or {}
+    prompt_id = edit_wait.get("prompt_msg_id")
+
+    if expected_prompt_id is not None and prompt_id and int(prompt_id) != int(expected_prompt_id):
+        return False
+
+    key = (int(chat_id), "finwin_edit_wait")
+    _edit_cancel_timers.pop(key, None)
+    DELAYED_SCHEDULER.cancel(f"finwin-edit-wait:{int(chat_id)}")
+
+    store["finwin_edit_wait"] = None
+    save_data(data)
+
+    if delete_prompt and prompt_id:
+        try:
+            bot.delete_message(chat_id, int(prompt_id))
+        except Exception:
+            pass
+    return True
+
+
+def _edit_countdown_text(base_text: str, remaining: int) -> str:
+    base = strip_window_mark(str(base_text or "")).rstrip()
+    return wm_common(base + f"\n\n⏳ До закрытия: {int(remaining)} сек.", 10)
+
+
+def schedule_cancel_finwin_edit(chat_id: int, prompt_message_id: int, delay: float | None = None):
+    """Единый таймер фин-редактирования; timeout отменяет ввод и возвращает основное окно."""
+    key = (int(chat_id), "finwin_edit_wait")
+    scheduler_key = f"finwin-edit-wait:{int(chat_id)}"
+    if delay is None:
+        delay = internal_timer_seconds("input_wait", 40)
+
+    def _job():
+        try:
+            store = get_chat_store(chat_id)
+            wait = store.get("finwin_edit_wait") or {}
+            if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
+                return
+            cleared = clear_finwin_edit_wait_state(chat_id, prompt_message_id, delete_prompt=False)
+            if cleared:
+                day_key = store.get("current_view_day") or today_key()
+                return_to_main_window_closing_previous(chat_id, day_key, int(prompt_message_id))
+                log_info(f"finwin edit_wait auto-cancelled for chat {chat_id}")
+        except Exception as e:
+            log_error(f"schedule_cancel_finwin_edit({chat_id},{prompt_message_id}): {e}")
+
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
+    _edit_cancel_timers[key] = deadline
+
+
+def schedule_cancel_edit(chat_id: int, prompt_message_id: int, delay: float | None = None):
+    """Единый таймер обычного редактирования; timeout отменяет ввод и возвращает основное окно."""
+    key = (int(chat_id), "edit_wait")
+    scheduler_key = f"edit-wait:{int(chat_id)}"
+    if delay is None:
+        delay = internal_timer_seconds("input_wait", 40)
+
+    def _job():
+        try:
+            store = get_chat_store(chat_id)
+            wait = store.get("edit_wait") or {}
+            if not wait or int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
+                return
+            cleared = clear_edit_wait_state(chat_id, prompt_message_id, delete_prompt=False)
+            if cleared:
+                day_key = store.get("current_view_day") or today_key()
+                return_to_main_window_closing_previous(chat_id, day_key, int(prompt_message_id))
+        except Exception as e:
+            log_error(f"schedule_cancel_edit({chat_id},{prompt_message_id}): {e}")
+
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
+    _edit_cancel_timers[key] = deadline
+
+
+def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
+    """Через delay секунд сбрасывает reset_wait через общий планировщик."""
+    scheduler_key = f"reset-wait:{int(chat_id)}"
+
+    def _job():
+        try:
+            store = get_chat_store(chat_id)
+            changed = False
+            if store.get("reset_wait", False):
+                store["reset_wait"] = False
+                store["reset_time"] = 0
+                changed = True
+            if changed:
+                save_data(data)
+        except Exception as e:
+            log_error(f"schedule_cancel_wait job: {e}")
+
+    DELAYED_SCHEDULER.cancel(scheduler_key)
+    deadline = DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
+    _edit_cancel_timers[int(chat_id)] = deadline
+
+
+def update_chat_info_from_message(msg):
+    """
+    Обновляет информацию о чате в памяти.
+    На диск пишем только если реально что-то изменилось.
+    """
+    chat_id = msg.chat.id
+    was_new_chat = str(chat_id) not in (data.get("chats", {}) if isinstance(data, dict) else {})
+    try:
+        if not getattr(getattr(msg, "from_user", None), "is_bot", False):
+            stop_dozvon_for_target(chat_id)
+    except Exception:
+        pass
+    store = get_chat_store(chat_id)
+    try:
+        if store.setdefault("settings", {}).get("bot_removed"):
+            store["settings"]["bot_removed"] = False
+            store["settings"].pop("bot_removed_reason", None)
+            store["settings"].pop("bot_removed_at", None)
+            save_data(data)
+    except Exception:
+        pass
+    info = store.setdefault("info", {})
+    # У каналов/чатов username может отсутствовать. Не обращаемся к ключам напрямую,
+    # чтобы не ловить KeyError: 'username' на channel_post / edited_channel_post.
+    info.setdefault("title", "")
+    info.setdefault("username", None)
+    info.setdefault("type", getattr(msg.chat, "type", None))
+
+    changed = False
+
+    # В личных чатах callback приходит от самого бота. Не даём ему затирать имя пользователя названием бота.
+    try:
+        if getattr(getattr(msg, "from_user", None), "is_bot", False) and not getattr(msg.chat, "title", None):
+            return
+    except Exception:
+        pass
+
+    new_title = _chat_title_from_message(msg, info.get("title") or "")
+    new_username = _chat_username_from_message(msg)
+    new_type = msg.chat.type
+
+    if info.get("title") != new_title:
+        info["title"] = new_title
+        changed = True
+
+    if info.get("username") != new_username:
+        info["username"] = new_username
+        changed = True
+
+    if info.get("type") != new_type:
+        info["type"] = new_type
+        changed = True
+
+    if OWNER_ID and str(chat_id) != str(OWNER_ID):
+        owner_store = get_chat_store(int(OWNER_ID))
+        kc = owner_store.setdefault("known_chats", {})
+
+        new_known = {
+            "title": info.get("title") or get_chat_display_name(chat_id),
+            "username": info.get("username"),
+            "type": info.get("type"),
+        }
+
+        # Перед добавлением убираем старые карточки того же чата по username/title, чтобы не плодить дубли.
+        new_identity = _chat_identity_key(chat_id, new_known)
+        for old_cid, old_info in list(kc.items()):
+            try:
+                old_id_int = int(old_cid)
+            except Exception:
+                kc.pop(old_cid, None)
+                changed = True
+                continue
+            if str(old_cid) != str(chat_id) and _chat_identity_key(old_id_int, old_info if isinstance(old_info, dict) else {}) == new_identity:
+                kc.pop(old_cid, None)
+                changed = True
+        if kc.get(str(chat_id)) != new_known:
+            kc[str(chat_id)] = new_known
+            changed = True
+
+    if changed:
+        save_data(data)
+        # Если имя/username чата изменились, обновляем карточку памяти/known_chats и бэкапы,
+        # чтобы у владельца и в backup-файлах отображалось актуальное название.
+        try:
+            ids_for_backup = [chat_id]
+            if OWNER_ID:
+                ids_for_backup.append(int(OWNER_ID))
+            schedule_config_backup_for_chats(*ids_for_backup, delay=2.0)
+        except Exception as e:
+            log_error(f"chat info changed backup schedule {chat_id}: {e}")
+
+    try:
+        if was_new_chat and OWNER_ID and str(chat_id) != str(OWNER_ID):
+            maybe_prompt_owner_for_new_chat_auto_backup(chat_id)
+    except Exception as e:
+        log_error(f"new chat auto-backup prompt failed for {get_chat_display_name(chat_id)}: {e}")
+
+
+def maybe_prompt_owner_for_new_chat_auto_backup(chat_id: int):
+    """При первом появлении чата спрашиваем владельца, обновлять ли JSON/CSV бэкапы автоматически."""
+    if not OWNER_ID:
+        return
+    store = get_chat_store(chat_id)
+    settings = store.setdefault("settings", {})
+    if settings.get("owner_auto_backup_prompted"):
+        return
+    settings["owner_auto_backup_prompted"] = True
+    settings.setdefault("auto_backup_enabled", True)
+    save_data(data)
+
+    owner_id = int(OWNER_ID)
+    title = get_chat_display_name(chat_id)
+    text = (
+        "🆕 Новый чат появился в картотеке\n\n"
+        f"{title}\n"
+        "Автоматически обновлять JSON/CSV бэкапы по этому чату?"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        IB("✅ Да", callback_data=f"ncb:{chat_id}:yes"),
+        IB("❌ Нет", callback_data=f"ncb:{chat_id}:no"),
+    )
+    msg = bot.send_message(owner_id, text, reply_markup=kb)
+    settings["owner_auto_backup_prompt_msg_id"] = msg.message_id
+    save_data(data)
+    delete_message_later(owner_id, msg.message_id, 10)
+
+
+
+def _safe_tmp_json_name(fname: str) -> str:
+    base = os.path.basename(str(fname or "backup.json"))
+    base = re.sub(r"[^0-9A-Za-zА-Яа-я_.\-]+", "_", base)
+    if not base.lower().endswith(".json"):
+        base += ".json"
+    return base[:80]
+
+
+def _extract_chat_id_from_json_filename(fname: str):
+    """Пытается вытащить chat_id из имени data_<chat_id>.json."""
+    try:
+        m = re.search(r"data_(-?\d+)\.json$", str(fname or "").strip().lower())
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def _describe_json_restore_payload(payload, fname: str = ""):
+    """Возвращает короткое описание JSON перед подтверждением восстановления."""
+    fname_l = str(fname or "").lower()
+    if fname_l == "csv_meta.json":
+        return "метаданные CSV", None
+    if isinstance(payload, dict) and isinstance(payload.get("chats"), dict):
+        return f"глобальный data.json, чатов: {len(payload.get('chats') or {})}", None
+    if isinstance(payload, dict):
+        cid = payload.get("chat_id")
+        if cid is None:
+            cid = _extract_chat_id_from_json_filename(fname)
+        if cid is not None:
+            try:
+                cid = int(cid)
+                rec_count = len(payload.get("records") or []) if isinstance(payload.get("records"), list) else 0
+                daily = payload.get("daily_records") or {}
+                if isinstance(daily, dict):
+                    rec_count = rec_count or sum(len(v or []) for v in daily.values())
+                return f"JSON чата {get_chat_display_name(cid)} / ID {cid}, записей: {rec_count}", cid
+            except Exception:
+                pass
+    return "JSON-файл неизвестного формата", None
+
+
+def _apply_json_restore_from_owner_prompt(owner_chat_id: int, tmp_path: str, fname: str) -> str:
+    """
+    Восстановление JSON, когда владелец прислал файл без /restore и нажал ✅ Да.
+    Поддерживает:
+    • глобальный data.json / JSON с ключом chats;
+    • csv_meta.json;
+    • per-chat JSON data_<chat_id>.json или JSON с chat_id.
+    """
+    global data, restore_mode
+
+    fname_l = str(fname or "").lower()
+    payload = _load_json(tmp_path, None)
+    if not isinstance(payload, dict):
+        raise RuntimeError("JSON повреждён или не является объектом")
+
+    # csv_meta.json
+    if fname_l == "csv_meta.json":
+        os.replace(tmp_path, CSV_META_FILE)
+        _save_csv_meta(_load_json(CSV_META_FILE, {}) or {})
+        restore_mode = None
+        return "🟢 csv_meta.json обновлён"
+
+    # Глобальный data.json
+    if fname_l == "data.json" or isinstance(payload.get("chats"), dict):
+        os.replace(tmp_path, DATA_FILE)
+        _import_legacy_global_json_to_db(DATA_FILE, force=True)
+        data.clear()
+        data.update(load_data())
+        rebuild_global_records()
+        save_data(data)
+        export_global_csv(data)
+        restore_mode = None
+        return "🟢 Глобальный data.json обновлён"
+
+    # JSON конкретного чата
+    target_chat_id = payload.get("chat_id")
+    if target_chat_id is None:
+        target_chat_id = _extract_chat_id_from_json_filename(fname_l)
+    if target_chat_id is None:
+        raise RuntimeError("В JSON нет chat_id и его нельзя понять из имени файла")
+    target_chat_id = int(target_chat_id)
+
+    # Восстанавливаем именно тот чат, к которому относится файл, даже если файл прислан владельцу.
+    restore_from_json(target_chat_id, tmp_path)
+    day_key = get_chat_store(target_chat_id).get("current_view_day", today_key())
+    finance_changed(target_chat_id, day_key, reason="owner_json_restore", delay=0.1)
+    restore_mode = None
+    return f"🟢 JSON чата обновлён: {get_chat_display_name(target_chat_id)}"
+
+
+def _cleanup_owner_json_restore_prompt(key: int, remove_prompt: bool = False):
+    try:
+        with _owner_json_restore_prompt_lock:
+            item = _owner_json_restore_prompts.pop(int(key), None)
+        if not item:
+            return
+        if remove_prompt:
+            try:
+                bot.delete_message(int(OWNER_ID), int(item.get("prompt_msg_id")))
+            except Exception:
+                pass
+        tmp_path = item.get("tmp_path")
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        log_error(f"_cleanup_owner_json_restore_prompt({key}): {e}")
+
+
+def _schedule_owner_json_restore_prompt_cleanup(key: int, delay: int = 12):
+    def _job():
+        _cleanup_owner_json_restore_prompt(key, remove_prompt=True)
+    try:
+        DELAYED_SCHEDULER.schedule(f"owner-json-restore-cleanup:{int(key)}", delay, _job)
+    except Exception as e:
+        log_error(f"_schedule_owner_json_restore_prompt_cleanup({key}): {e}")
+
+
+def maybe_prompt_owner_for_json_restore(msg, fname: str) -> bool:
+    """
+    Если владелец прислал .json в личку без /restore — спрашиваем, обновлять данные или нет.
+    Кнопки/окно удаляются через 10 секунд в любом случае.
+    """
+    try:
+        if not is_owner_chat(msg.chat.id):
+            return False
+        if restore_mode is not None:
+            return False
+        if not str(fname or "").lower().endswith((".json", ".ison")):
+            return False
+
+        file_info = bot.get_file(msg.document.file_id)
+        raw = bot.download_file(file_info.file_path)
+
+        tmp_name = f"owner_json_restore_{int(msg.chat.id)}_{int(msg.message_id)}_{_safe_tmp_json_name(fname)}"
+        with open(tmp_name, "wb") as f:
+            f.write(raw)
+
+        payload = _load_json(tmp_name, None)
+        if not isinstance(payload, dict):
+            try:
+                os.remove(tmp_name)
+            except Exception:
+                pass
+            send_and_auto_delete(int(msg.chat.id), f"⚠️ JSON не прочитан или повреждён: {fname}", 10)
+            return True
+
+        desc, target_chat_id = _describe_json_restore_payload(payload, fname)
+        key = int(msg.message_id)
+        text = (
+            "🧾 В чате владельца появился JSON-файл без /restore\n\n"
+            f"Файл: {fname}\n"
+            f"Что внутри: {desc}\n\n"
+            "Обновить данные бота из этого JSON?"
+        )
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.row(
+            IB("✅ Да", callback_data=f"ojr:{key}:yes"),
+            IB("❌ Нет", callback_data=f"ojr:{key}:no"),
+        )
+        sent = bot.send_message(int(msg.chat.id), text, reply_markup=kb)
+        with _owner_json_restore_prompt_lock:
+            _owner_json_restore_prompts[key] = {
+                "tmp_path": tmp_name,
+                "fname": fname,
+                "prompt_msg_id": sent.message_id,
+                "created_at": time.time(),
+                "target_chat_id": target_chat_id,
+            }
+        delete_message_later(int(msg.chat.id), sent.message_id, 10)
+        _schedule_owner_json_restore_prompt_cleanup(key, 12)
+        return True
+    except Exception as e:
+        log_error(f"maybe_prompt_owner_for_json_restore({fname}): {e}")
+        return False
+
+
+def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
+    tmp_path = item.get("tmp_path")
+    fname = item.get("fname") or "backup.json"
+    try:
+        # Для глобального файла защищаем data_lock, для per-chat restore_from_json уже сохраняет данные.
+        with data_lock:
+            result = _apply_json_restore_from_owner_prompt(owner_chat_id, tmp_path, fname)
+        send_and_auto_delete(owner_chat_id, result, 10)
+    except Exception as e:
+        send_and_auto_delete(owner_chat_id, f"❌ JSON не обновлён: {e}", 12)
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+
+# ─────────────────────────────────────────────────────────────
+# v27: единая модель финансовых записей
+# ─────────────────────────────────────────────────────────────
+def _record_day_key(rec: dict) -> str:
+    """Безопасно возвращает day_key для записи."""
+    dk = rec.get("day_key")
+    if dk:
+        return str(dk)[:10]
+    ts = rec.get("timestamp") or ""
+    if isinstance(ts, str) and len(ts) >= 10 and re.match(r"\d{4}-\d{2}-\d{2}", ts[:10]):
+        rec["day_key"] = ts[:10]
+        return ts[:10]
+    rec["day_key"] = today_key()
+    return rec["day_key"]
+
+
+def normalize_chat_records(chat_id: int) -> None:
+    """
+    v33: records — основной источник, daily_records строится из него.
+    Сортировка стабильная: Telegram date + исходный message_id, чтобы 1 2 3 4 не превращалось в 1 2 4 3.
+    """
+    store = get_chat_store(chat_id)
+    records = store.get("records")
+    daily = store.get("daily_records") or {}
+
+    if not isinstance(records, list) or not records:
+        rebuilt = []
+        for dk in sorted(daily.keys()):
+            for rec in daily.get(dk, []) or []:
+                if isinstance(rec, dict):
+                    rec.setdefault("day_key", dk)
+                    rebuilt.append(rec)
+        records = rebuilt
+
+    clean = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        rec.setdefault("timestamp", now_local().isoformat(timespec="seconds"))
+        rec.setdefault("amount", 0)
+        rec.setdefault("note", "")
+        rec.setdefault("owner", "")
+        rec.setdefault("source_order_msg_id", rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or rec.get("id") or 0)
+        _record_day_key(rec)
+        clean.append(rec)
+
+    clean.sort(key=record_sort_key)
+    store["records"] = clean
+
+    rebuilt_daily = {}
+    for rec in clean:
+        rebuilt_daily.setdefault(_record_day_key(rec), []).append(rec)
+    store["daily_records"] = rebuilt_daily
+
+
+def recalc_balance(chat_id: int):
+    normalize_chat_records(chat_id)
+    store = get_chat_store(chat_id)
+    store["balance"] = sum(float(r.get("amount", 0) or 0) for r in store.get("records", []))
+
+
+def rebuild_month_short_ids(chat_id: int):
+    """Пересчитывает short_id как месячную нумерацию по стабильной хронологии."""
+    normalize_chat_records(chat_id)
+    store = get_chat_store(chat_id)
+    daily = store.get("daily_records", {}) or {}
+    month_counters = {}
+    usd_month_counters = {}
+
+    for dk in sorted(daily.keys()):
+        month_key = dk[:7]
+        month_counters.setdefault(month_key, 1)
+        usd_month_counters.setdefault(month_key, 1)
+        recs = sorted(daily.get(dk, []) or [], key=record_sort_key)
+        daily[dk] = recs
+        for r in recs:
+            has_usd = bool(float(r.get("usd_amount", 0) or 0))
+            usd_only = bool(r.get("usd_only", False))
+            if not usd_only:
+                r["short_id"] = f"R{month_counters[month_key]}"
+                month_counters[month_key] += 1
+            elif has_usd:
+                r["short_id"] = f"U{usd_month_counters[month_key]}"
+            if has_usd:
+                r["usd_short_id"] = f"U{usd_month_counters[month_key]}"
+                usd_month_counters[month_key] += 1
+
+    store["records"] = [r for dk in sorted(daily.keys()) for r in daily.get(dk, [])]
+
+
+def calc_day_balance(store: dict, day_key: str) -> float:
+    total = 0.0
+    daily = store.get("daily_records", {}) or {}
+    for dk in sorted(daily.keys()):
+        if dk > day_key:
+            break
+        for r in daily.get(dk, []) or []:
+            total += float(r.get("amount", 0) or 0)
+    return total
+
+
+def rebuild_global_records():
+    """Быстрый общий итог без копирования всех записей всех чатов при каждом сообщении."""
+    with data_lock:
+        total = 0.0
+        for _cid, store in (data.get("chats", {}) or {}).items():
+            try:
+                if "balance" in store:
+                    total += float(store.get("balance", 0) or 0)
+                else:
+                    total += sum(float(r.get("amount", 0) or 0) for r in (store.get("records", []) or []))
+            except Exception:
+                pass
+        # Полные записи уже находятся в chats; дублировать их в root больше не нужно.
+        data["records"] = []
+        data["overall_balance"] = total
+
+_finalize_timers = {}
+_backup_timers = {}
+_quick_backup_timers = {}
+_balance_panel_refresh_timers = {}
+_balance_panel_collapse_timers = {}
+_balance_panel_first_timers = {}
+_balance_panel_recreate_timers = {}
+_total_message_timers = {}
+_backup_dirty_chats = set()
+_quick_backup_dirty_chats = set()
+_global_mega_timer = None
+
+def collect_finance_chat_ids():
+    ids = set()
+    try:
+        for cid, enabled in (data.get("finance_active_chats", {}) or {}).items():
+            if enabled:
+                ids.add(int(cid))
+    except Exception:
+        pass
+    try:
+        for cid in list(finance_active_chats):
+            ids.add(int(cid))
+    except Exception:
+        pass
+    try:
+        for cid, store in (data.get("chats", {}) or {}).items():
+            try:
+                int_cid = int(cid)
+            except Exception:
+                continue
+            if store.get("finance_mode") or (OWNER_ID and str(int_cid) == str(OWNER_ID)):
+                ids.add(int_cid)
+    except Exception:
+        pass
+    return sorted(ids)
+
+
+def schedule_startup_main_windows(delay: float = 3.0):
+    """После deploy/рестарта создаёт или обновляет основное окно у владельца и финчатов, кроме скрытых."""
+    def _job():
+        try:
+            for cid in collect_finance_chat_ids():
+                try:
+                    if is_hidden_finance_mode(cid) and not is_owner_chat(cid):
+                        continue
+                    if is_chat_bot_removed(cid):
+                        continue
+                    store = get_chat_store(cid)
+                    day_key = store.get("current_view_day") or today_key()
+                    update_or_send_day_window(cid, day_key)
+                    time.sleep(0.25)
+                except Exception as e:
+                    log_error(f"startup_main_window({get_chat_display_name(cid)}): {e}")
+        except Exception as e:
+            log_error(f"schedule_startup_main_windows job: {e}")
+
+    try:
+        DELAYED_SCHEDULER.schedule("startup-main-windows", delay, _job)
+    except Exception as e:
+        log_error(f"schedule_startup_main_windows: {e}")
+
+def schedule_all_finance_backups(delay: float = 10.0):
+    for cid in collect_finance_chat_ids():
+        schedule_backup_flush(cid, delay=delay)
+
+
+def _schedule_global_mega_snapshot(delay: float = 30.0):
+    """Совместимость старых вызовов: v90 лишь отмечает pending full snapshot.
+
+    Полный global больше не создаётся через 20–30 секунд после каждого чата.
+    Его запускает общий quiet/max scheduler.
+    """
+    _mark_global_snapshot_pending()
+
+
+def _run_quick_chat_backup(chat_id: int):
+    """v90 quick backup = маленький immutable delta, а не полная копия чата/global."""
+    chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"QUICK DELTA BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
+    with state_chat_context(chat_id):
+        try:
+            save_data(data, chat_ids=[chat_id])
+            with _delta_state_lock:
+                _delta_pending_chats.add(chat_id)
+                if not _delta_chat_generation.get(chat_id):
+                    _delta_chat_generation[chat_id] = int(time.time_ns())
+            if not _run_delta_batch():
+                schedule_delta_backup(chat_id, BACKUP_BUSY_RETRY_SECONDS, reason="delta_retry")
+        finally:
+            with timer_lock:
+                _quick_backup_dirty_chats.discard(chat_id)
+
+
+def _run_full_chat_backup(chat_id: int):
+    chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"FULL BACKUP BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
+    trace = ProcessTrace(chat_id, f"Бэкап: {get_chat_display_name(chat_id)}").start()
+    with state_chat_context(chat_id):
+        try:
+            if not is_finance_mode(chat_id):
+                trace.step("финрежим выключен — пропуск")
+                trace.finish("бэкап завершён")
+                return
+            if not is_auto_backup_enabled(chat_id):
+                trace.step("все авто-бэкапы выключены — пропуск")
+                trace.finish("бэкап завершён")
+                return
+            save_data(data, chat_ids=[chat_id])
+            trace.step("создаёт JSON/CSV" + ("/Excel" if backup_excel_all_enabled() else ""))
+            save_chat_json(chat_id)
+
+            # Канал/личный чат работают как раньше, но MEGA-файлы теперь заменяются
+            # через candidate -> history -> move, без предварительного удаления.
+            if is_backup_to_chat_enabled(chat_id) and can_receive_direct_json_backup(chat_id) and not is_finance_output_suppressed(chat_id):
+                send_backup_to_chat(chat_id, ensure_files=False)
+            if is_backup_to_channel_enabled(chat_id):
+                send_backup_to_channel(chat_id, ensure_files=False)
+            if is_backup_to_mega_enabled(chat_id):
+                trace.step("безопасно обновляет JSON чата и месячный JSON в MEGA")
+                mega_upload_chat_backup_bundle(chat_id, current_month_key())
+                _mark_global_snapshot_pending()
+            trace.finish("бэкап завершён")
+        except Exception as exc:
+            trace.fail(exc)
+            log_error(f"_run_full_chat_backup({chat_id}): {exc}")
+        finally:
+            with timer_lock:
+                _backup_dirty_chats.discard(chat_id)
+                _backup_timers.pop(chat_id, None)
+
+
+def schedule_quick_backup(chat_id: int, delay: float | None = None):
+    """Debounce delta для конкретного чата; разные чаты объединяются общим delta batch."""
+    chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        return
+    if delay is None:
+        delay = MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS
+    due = time.time() + max(0.5, float(delay))
+    with timer_lock:
+        _quick_backup_dirty_chats.add(chat_id)
+        _quick_backup_timers[chat_id] = due
+    with _delta_state_lock:
+        global _delta_generation
+        _delta_generation += 1
+        _delta_pending_chats.add(chat_id)
+        _delta_chat_generation[chat_id] = _delta_generation
+
+    def _fire():
+        # Одна общая задача заберёт изменения всех чатов, накопившиеся к этому моменту.
+        def _job():
+            if not _run_delta_batch():
+                schedule_delta_backup(None, delay=BACKUP_BUSY_RETRY_SECONDS, reason="quick_upload_retry")
+        if not DELTA_TASK_POOL.submit("mega-delta-v90", _job):
+            log_error(f"QUICK DELTA QUEUE FULL, RETRY: {chat_id}")
+            schedule_quick_backup(chat_id, BACKUP_BUSY_RETRY_SECONDS)
+    DELAYED_SCHEDULER.cancel("mega-delta-batch-v90")
+    DELAYED_SCHEDULER.schedule("mega-delta-batch-v90", max(0.5, float(delay)), _fire)
+
+
+def schedule_full_backup_only(chat_id: int, delay: float = 3.0):
+    """Тяжёлый JSON/канал/MEGA-файл чата — отдельно от быстрого delta."""
+    chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"FULL BACKUP SCHEDULE BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
+    try:
+        delay = max(float(delay or 0), BACKUP_MIN_DELAY_SECONDS)
+    except Exception:
+        delay = BACKUP_MIN_DELAY_SECONDS
+    due = time.time() + delay
+    with timer_lock:
+        _backup_dirty_chats.add(chat_id)
+        _backup_timers[chat_id] = due
+    def _fire():
+        with timer_lock:
+            _backup_timers.pop(chat_id, None)
+        if not BACKUP_TASK_POOL.submit(f"full:{chat_id}", _run_full_chat_backup, chat_id):
+            log_error(f"FULL BACKUP QUEUE FULL, RETRY: {chat_id}")
+            schedule_full_backup_only(chat_id, BACKUP_BUSY_RETRY_SECONDS)
+    DELAYED_SCHEDULER.schedule(f"full-backup:{chat_id}", delay, _fire)
+
+
+def schedule_backup_flush(chat_id: int, delay: float = 3.0):
+    """SQLite уже сохранена; delta быстро; полный файл чата после 120 сек. тишины."""
+    chat_id = int(chat_id)
+    if RESTORE_GUARD_ACTIVE:
+        log_error(f"BACKUP SCHEDULE BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
+        return
+    quick_delay = MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS
+    schedule_quick_backup(chat_id, quick_delay)
+    schedule_full_backup_only(chat_id, delay)
+
+def _safe_stabilize(action_name, func):
+    try:
+        try:
+            if verbose_process_journal_enabled():
+                bot_journal("process_call_start", None, str(action_name))
+        except Exception:
+            pass
+        res = func()
+        try:
+            if verbose_process_journal_enabled():
+                bot_journal("process_call_done", None, str(action_name))
+        except Exception:
+            pass
+        return res
+    except Exception as e:
+        log_error(f"[STABILIZE ERROR] {action_name}: {e}")
+        try:
+            bot_journal("process_call_error", None, f"{action_name}: {e}", "ERROR")
+        except Exception:
+            pass
+        return None
+
+
+def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str = "change"):
+    """
+    Единая точка после фин-изменения.
+    Важно: Telegram-отправки/редактирования окон и бэкапы не держат chat_lock,
+    чтобы кнопки в этом же чате не висели «Загрузка».
+    """
+    chat_id = int(chat_id)
+    day_key = day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
+    trace = ProcessTrace(chat_id, f"Фин-процесс: {get_chat_display_name(chat_id)} / {reason}").start()
+
+    try:
+        with locked_chat(chat_id):
+            store = get_chat_store(chat_id)
+            store["current_view_day"] = day_key
+
+            trace.step("получает хранилище чата")
+            trace.step("фиксирует текущую дату окна")
+            trace.step("нормализует записи чата")
+            _safe_stabilize("normalize_chat_records", lambda: normalize_chat_records(chat_id))
+
+            trace.step("вычисляет остатки")
+            _safe_stabilize("recalc_balance", lambda: recalc_balance(chat_id))
+
+            trace.step("пересчитывает месячные номера R")
+            _safe_stabilize("rebuild_month_short_ids", lambda: rebuild_month_short_ids(chat_id))
+
+            trace.step("пересобирает общие записи")
+            _safe_stabilize("rebuild_global_records", rebuild_global_records)
+
+            trace.step("записывает финрежимы в общий словарь")
+            trace.step("сохраняет SQLite/data")
+            _safe_stabilize("currency_ledger_snapshot", lambda: _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store)))
+            _safe_stabilize("save_data", lambda: save_data(data, chat_ids=[chat_id]))
+
+            trace.step("проверяет скрытый финрежим")
+            hidden = is_finance_output_suppressed(chat_id)
+
+        # v90: сразу после подтверждённой SQLite ставим маленький delta, ДО Telegram-окон.
+        # Поэтому медленное редактирование интерфейса не откладывает аварийную копию.
+        trace.step("ставит быстрый delta до обновления окон")
+        _safe_stabilize(
+            "delta_queue_early",
+            lambda: schedule_quick_backup(
+                chat_id,
+                MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
+            ),
+        )
+
+        # Ниже тяжёлые Telegram-вызовы уже вне chat_lock.
+        if not hidden:
+            if is_owner_chat(chat_id):
+                trace.step("обновляет окно владельца")
+                _safe_stabilize("owner_window", lambda: backup_window_for_owner(chat_id, day_key, None))
+            else:
+                trace.step("обновляет окно дня")
+                _safe_stabilize("day_window", lambda: update_or_send_day_window(chat_id, day_key))
+
+            trace.step("обновляет общий итог")
+            _safe_stabilize("refresh_total", lambda: refresh_total_message_if_any(chat_id))
+
+            trace.step("обновляет быстрый остаток")
+            _safe_stabilize("quick_balance_now", lambda: refresh_balance_panel_now(chat_id))
+            _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
+
+        # Реестр обновляем даже для скрытого финрежима: сам скрытый чат может не показывать финансы,
+        # но открытое у владельца окно этого чата обязано синхронизироваться.
+        trace.step("обновляет зарегистрированные открытые окна")
+        _safe_stabilize("open_windows_registry", lambda: refresh_registered_financial_windows(chat_id))
+
+        trace.step("ставит бэкап в отдельную очередь")
+        _safe_stabilize("full_backup_queue", lambda: schedule_full_backup_only(chat_id, BACKUP_MIN_DELAY_SECONDS))
+
+        # Важно: действия в других чатах не должны менять личное окно владельца.
+        # Поэтому здесь не вызываем backup_window_for_owner/refresh_owner_after_chat_change.
+
+        trace.finish("финобработка завершена")
+    except Exception as e:
+        trace.fail(e)
+        raise
+
+
+def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.35):
+    """Debounced универсальный финальный пересчёт для одного чата."""
+    chat_id = int(chat_id)
+    bot_journal("finance_changed_scheduled", chat_id, f"day={day_key} reason={reason} delay={delay}")
+    day_key = day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
+
+    def _job():
+        if not FINANCE_TASK_POOL.submit(chat_id, _finance_changed_now, chat_id, day_key, reason):
+            log_error(f"FINANCE QUEUE FULL, RETRY: {chat_id}")
+            with timer_lock:
+                _finalize_timers[chat_id] = time.time() + 1.0
+            DELAYED_SCHEDULER.schedule(f"finance-finalize:{chat_id}", 1.0, _fire_finance)
+
+    with timer_lock:
+        _finalize_timers[chat_id] = time.time() + max(0.0, float(delay))
+    def _fire_finance():
+        with timer_lock:
+            _finalize_timers.pop(chat_id, None)
+        _job()
+    DELAYED_SCHEDULER.schedule(f"finance-finalize:{chat_id}", delay, _fire_finance)
+
+
+def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.35):
+    """Совместимость со старым кодом: теперь всё идёт через finance_changed()."""
+    return finance_changed(chat_id, day_key, reason="schedule_finalize", delay=delay)
+
+
+def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
+    """
+    Окно дня для владельца без document-caption.
+    JSON-бэкапы отправляются отдельно через schedule_backup_flush().
+    """
+    lock = window_locks[(chat_id, day_key)]
+
+    with lock:
+        txt, _ = render_day_window(chat_id, day_key)
+        kb = build_main_keyboard(day_key, chat_id)
+
+        if len(txt) > 3900:
+            log_error(f"backup_window_for_owner: text too long for {chat_id} {day_key}, len={len(txt)}")
+
+        mid = message_id_override or get_active_window_id(chat_id, day_key)
+        if message_id_override:
+            try:
+                set_active_window_id(chat_id, day_key, message_id_override)
+            except Exception:
+                pass
+
+        if mid:
+            try:
+                bot.edit_message_text(
+                    txt,
+                    chat_id=chat_id,
+                    message_id=mid,
+                    reply_markup=kb,
+                    parse_mode="HTML"
+                )
+                set_active_window_id(chat_id, day_key, mid)
+                return
+            except Exception as e:
+                err = str(e).lower()
+                if "message is not modified" in err:
+                    return
+                # Старое окно могли удалить руками или Telegram уже не даёт его редактировать.
+                # Это не критическая ошибка: очищаем сохранённый id и создаём новое окно.
+                if any(x in err for x in ("message to edit not found", "message_id_invalid", "message not found")):
+                    try:
+                        aw = get_or_create_active_windows(chat_id)
+                        if aw.get(day_key) == mid:
+                            aw.pop(day_key, None)
+                            save_data(data)
+                    except Exception:
+                        pass
+                else:
+                    log_error(f"backup_window_for_owner edit failed: {e}")
+                try:
+                    bot.delete_message(chat_id, mid)
+                except Exception:
+                    pass
+
+        sent = bot.send_message(
+            chat_id,
+            txt,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+        set_active_window_id(chat_id, day_key, sent.message_id)
+
+def cancel_auto_delete_for_message(chat_id: int, message_id: int):
+    """Если окно с автоудалением превращается кнопкой «Назад» в основное — его старый таймер больше не должен удалить О1."""
+    chat_id = int(chat_id)
+    message_id = int(message_id)
+    try:
+        _cancel_v98_auto_close(chat_id, message_id)
+    except Exception:
+        pass
+    for key in (
+        f"auto-delete:{chat_id}:{message_id}",
+        f"auto-delete-html:{chat_id}:{message_id}",
+        f"delete-later:{chat_id}:{message_id}",
+    ):
+        try:
+            DELAYED_SCHEDULER.cancel(key)
+        except Exception:
+            pass
+    try:
+        store = get_chat_store(chat_id)
+        was_total_window = int(store.get("total_msg_id") or 0) == message_id
+        # Отменяем только реальные stored-window таймеры этого чата, а не перебираем
+        # все числовые поля store (id записи/флаги не должны случайно очищаться).
+        for timer_key in list(_aux_window_timers.keys()):
+            try:
+                timer_chat_id, store_key = timer_key
+                if int(timer_chat_id) != chat_id:
+                    continue
+                if int(store.get(str(store_key)) or 0) != message_id:
+                    continue
+            except Exception:
+                continue
+            DELAYED_SCHEDULER.cancel(f"stored-window-delete:{chat_id}:{store_key}")
+            _aux_window_timers.pop(timer_key, None)
+            store[str(store_key)] = None
+
+        if was_total_window:
+            DELAYED_SCHEDULER.cancel(f"owner-total-delete:{chat_id}")
+            _total_message_timers.pop(chat_id, None)
+            store["total_msg_id"] = None
+        # Сохранение сделает уже существующая фоновая очистка back_main; здесь важно
+        # не задерживать мгновенное возвращение в основное окно.
+    except Exception as e:
+        log_error(f"cancel_auto_delete_for_message({chat_id},{message_id}): {e}")
+
+
+def recreate_main_window_now(chat_id: int, day_key: str):
+    """Удаляет старое о1, если возможно, и создаёт новое основное окно."""
+    try:
+        old_mid = get_active_window_id(chat_id, day_key)
+        if old_mid:
+            try:
+                bot.delete_message(chat_id, int(old_mid))
+            except Exception:
+                pass
+            try:
+                clear_active_window_id(chat_id, day_key)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    force_new_day_window(chat_id, day_key)
+
+
+def force_new_day_window(chat_id: int, day_key: str):
+    if is_hidden_finance_mode(chat_id) and not is_owner_chat(chat_id):
+        return
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+    sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+    set_active_window_id(chat_id, day_key, sent.message_id)
+    schedule_balance_panel_refresh(chat_id, 0.5)
+
+
+def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
+    """Мгновенный возврат в О1 без синхронного удаления и тяжёлого backup_window_for_owner."""
+    chat_id = int(chat_id)
+    try:
+        current_message_id = int(current_message_id) if current_message_id is not None else None
+    except Exception:
+        current_message_id = None
+
+    try:
+        if current_message_id is not None:
+            cancel_auto_delete_for_message(chat_id, current_message_id)
+            cancel_fast_ui_edit(chat_id, current_message_id)
+    except Exception:
+        pass
+
+    try:
+        old_mid = get_active_window_id(chat_id, day_key)
+    except Exception:
+        old_mid = None
+
+    txt, _ = render_day_window(chat_id, day_key)
+    kb = build_main_keyboard(day_key, chat_id)
+
+    if current_message_id is not None:
+        set_active_window_id(chat_id, day_key, current_message_id)
+        result = fast_ui_edit_message_text(
+            chat_id, current_message_id, txt,
+            reply_markup=kb, parse_mode="HTML", purpose="back_main_instant",
+        )
+        bot_journal("back_main_fast", chat_id, f"day={day_key} result={result} old={old_mid} current={current_message_id}")
+
+        if old_mid and int(old_mid) != current_message_id:
+            def _delete_old():
+                try:
+                    _tg_call_retry(bot.delete_message, chat_id, int(old_mid), attempts=1, purpose="back_main_delete_old")
+                except Exception:
+                    pass
+            GENERAL_TASK_POOL.submit(f"back-delete:{chat_id}:{old_mid}", _delete_old)
+        schedule_balance_panel_refresh(chat_id, 0.05)
+        return
+
+    def _send_fallback():
+        try:
+            update_or_send_day_window(chat_id, day_key)
+        except Exception as e:
+            log_error(f"return_to_main fallback({chat_id},{day_key}): {e}")
+    if not GENERAL_TASK_POOL.submit(f"back-send:{chat_id}", _send_fallback):
+        _send_fallback()
+
+def reset_chat_data(chat_id: int):
+    """v27: обнуление данных чата без ручного дублирования окон/бэкапов."""
+    try:
+        with locked_chat(chat_id):
+            store = get_chat_store(chat_id)
+            cleanup_forward_links(chat_id)
+            store["balance"] = 0
+            store["records"] = []
+            store["daily_records"] = {}
+            store["next_id"] = 1
+            store["active_windows"] = {}
+            clear_edit_wait_state(chat_id, delete_prompt=True)
+            store["edit_target"] = None
+            store["reset_wait"] = False
+            store["reset_time"] = 0
+            day_key = store.get("current_view_day", today_key())
+            save_data(data)
+        finance_changed(chat_id, day_key, reason="reset", delay=0.1)
+    except Exception as e:
+        log_error(f"reset_chat_data({chat_id}): {e}")
+
+
+@bot.message_handler(content_types=["document"])
+def handle_document(msg):
+    global restore_mode, data
+
+    chat_id = msg.chat.id
+    update_chat_info_from_message(msg)
+    if handle_secret_input_message(msg):
+        return
+    try:
+        if not getattr(getattr(msg, "from_user", None), "is_bot", False):
+            bump_quick_balance_recreate_counter(chat_id)
+            stop_dozvon_for_target(chat_id)
+    except Exception:
+        pass
+
+    file = msg.document
+    fname = (file.file_name or "").lower()
+
+    log_info(f"[DOC] recv chat={chat_id} restore={restore_mode} fname={fname}")
+
+    # Владелец прислал .json без /restore: спрашиваем, обновлять данные или нет.
+    # Если показали вопрос — сам файл дальше не пересылаем и не обрабатываем как обычный документ.
+    if restore_mode is None and is_owner_chat(chat_id) and fname.endswith((".json", ".ison")):
+        if maybe_prompt_owner_for_json_restore(msg, fname):
+            return
+
+    if restore_mode is not None and restore_mode == chat_id:
+
+        if not (fname.endswith(".json") or fname.endswith(".csv")):
+            send_and_auto_delete(
+                chat_id,
+                "⚠️ В режиме восстановления принимаются только JSON / CSV."
+            )
+            return
+
+        try:
+            file_info = bot.get_file(file.file_id)
+            raw = bot.download_file(file_info.file_path)
+        except Exception as e:
+            send_and_auto_delete(chat_id, f"❌ Ошибка скачивания: {e}")
+            return
+
+        tmp_path = f"restore_{chat_id}_{fname}"
+        with open(tmp_path, "wb") as f:
+            f.write(raw)
+
+        try:
+            if fname == "data.json":
+                os.replace(tmp_path, DATA_FILE)
+                _import_legacy_global_json_to_db(DATA_FILE, force=True)
+                data = load_data()
+
+                finance_active_chats.clear()
+                fac = data.get("finance_active_chats") or {}
+                for cid, enabled in fac.items():
+                    if enabled:
+                        try:
+                            finance_active_chats.add(int(cid))
+                        except Exception:
+                            pass
+
+                restore_mode = None
+                send_and_auto_delete(chat_id, "🟢 Глобальный data.json импортирован в SQLite!")
+                return
+
+            if fname == "csv_meta.json":
+                os.replace(tmp_path, CSV_META_FILE)
+                _save_csv_meta(_load_json(CSV_META_FILE, {}) or {})
+                restore_mode = None
+                send_and_auto_delete(chat_id, "🟢 csv_meta.json импортирован в SQLite")
+                return
+
+            if fname.endswith(".json"):
+                payload = _load_json(tmp_path, None)
+                if not isinstance(payload, dict):
+                    raise RuntimeError("JSON не является объектом")
+
+                if "chats" in payload:
+                    os.replace(tmp_path, DATA_FILE)
+                    _import_legacy_global_json_to_db(DATA_FILE, force=True)
+                    data.clear()
+                    data.update(load_data())
+                    restore_mode = None
+                    send_and_auto_delete(chat_id, "🟢 Глобальный data.json импортирован в SQLite")
+                    return
+
+                inner_chat_id = payload.get("chat_id")
+                if inner_chat_id is None:
+                    raise RuntimeError("В JSON нет chat_id")
+
+                if int(inner_chat_id) != int(chat_id):
+                    raise RuntimeError(
+                        f"JSON относится к чату {get_chat_display_name(int(inner_chat_id))}, а не к текущему {get_chat_display_name(chat_id)}"
+                    )
+
+                restore_from_json(chat_id, tmp_path)
+
+                day_key = get_chat_store(chat_id).get(
+                    "current_view_day",
+                    today_key()
+                )
+                finance_changed(chat_id, day_key, reason="restore_json", delay=0.1)
+
+                restore_mode = None
+                send_and_auto_delete(
+                    chat_id,
+                    f"🟢 JSON чата {get_chat_display_name(chat_id)} восстановлен"
+                )
+                return
+
+            if fname.startswith("data_") and fname.endswith(".csv"):
+                restore_from_csv(chat_id, tmp_path)
+
+                day_key = get_chat_store(chat_id).get(
+                    "current_view_day",
+                    today_key()
+                )
+                finance_changed(chat_id, day_key, reason="restore_csv", delay=0.1)
+
+                restore_mode = None
+                send_and_auto_delete(
+                    chat_id,
+                    f"🟢 CSV чата восстановлен ({fname})"
+                )
+                return
+
+            send_and_auto_delete(chat_id, f"⚠️ Неизвестный файл: {fname}")
+
+        except Exception as e:
+            send_and_auto_delete(chat_id, f"❌ Ошибка восстановления: {e}")
+
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+        return
+
+    try:
+        schedule_forward_any_message(chat_id, msg)
+    except Exception as e:
+        log_error(f"handle_document forward failed: {e}")
+
+
+def cleanup_forward_links(chat_id: int):
+    """
+    Удаляет все связи пересылки для чата из памяти и из сохранённого индекса.
+    """
+    _cleanup_forward_storage_for_chat(chat_id)
+
+KEEP_ALIVE_SEND_TO_OWNER = False
+KEEP_ALIVE_STATE = {
+    "started_at": None,
+    "last_attempt_at": None,
+    "last_ok_at": None,
+    "last_error": "",
+    "last_status_code": None,
+    "ok_count": 0,
+    "fail_count": 0,
+    "telegram_ok_at": None,
+}
+_keep_alive_thread = None
+_keep_alive_thread_lock = threading.RLock()
+
+
+def _keep_alive_base_candidates() -> list[str]:
+    result = []
+    extra = os.getenv("KEEP_ALIVE_URLS", "")
+    values = [APP_URL, WEBHOOK_URL, os.getenv("RENDER_EXTERNAL_URL", "").strip(), _RENDER_HOST_URL]
+    if extra:
+        values.extend(x.strip() for x in extra.split(","))
+    for raw in values:
+        if not raw:
+            continue
+        base = str(raw).strip().rstrip("/")
+        if base and base not in result:
+            result.append(base)
+    return result
+
+
+def keep_alive_task():
+    session = requests.Session()
+    cycle = 0
+    KEEP_ALIVE_STATE["started_at"] = _journal_ts()
+    while True:
+        cycle_started = time.time()
+        try:
+            if not KEEP_ALIVE_ENABLED:
+                time.sleep(max(20, KEEP_ALIVE_INTERVAL_SECONDS))
+                continue
+
+            KEEP_ALIVE_STATE["last_attempt_at"] = _journal_ts()
+            bases = _keep_alive_base_candidates()
+            ok = False
+            last_error = ""
+            last_code = None
+
+            for base in bases:
+                for path in ("/keepalive", "/healthz", "/"):
+                    url = f"{base}{path}?ts={int(time.time() * 1000)}"
+                    try:
+                        resp = session.get(url, timeout=12, headers={"Cache-Control": "no-cache", "User-Agent": f"{VERSION}-keepalive"})
+                        last_code = int(resp.status_code)
+                        if 200 <= resp.status_code < 500:
+                            ok = True
+                            break
+                        last_error = f"HTTP {resp.status_code} {url}"
+                    except Exception as e:
+                        last_error = f"{url}: {e}"
+                if ok:
+                    break
+
+            cycle += 1
+            if cycle % KEEP_ALIVE_TELEGRAM_EVERY == 0:
+                try:
+                    bot.get_me()
+                    KEEP_ALIVE_STATE["telegram_ok_at"] = _journal_ts()
+                except Exception as e:
+                    last_error = (last_error + " | " if last_error else "") + f"Telegram getMe: {e}"
+
+            KEEP_ALIVE_STATE["last_status_code"] = last_code
+            if ok:
+                KEEP_ALIVE_STATE["last_ok_at"] = _journal_ts()
+                KEEP_ALIVE_STATE["last_error"] = ""
+                KEEP_ALIVE_STATE["ok_count"] = int(KEEP_ALIVE_STATE.get("ok_count", 0)) + 1
+                if cycle == 1 or cycle % 20 == 0:
+                    log_info(f"Keep-alive OK: status={last_code}, bases={len(bases)}")
+            else:
+                KEEP_ALIVE_STATE["last_error"] = last_error or "APP_URL / WEBHOOK_URL не заданы"
+                KEEP_ALIVE_STATE["fail_count"] = int(KEEP_ALIVE_STATE.get("fail_count", 0)) + 1
+                log_error(f"Keep-alive failed: {KEEP_ALIVE_STATE['last_error']}")
+        except Exception as e:
+            KEEP_ALIVE_STATE["last_error"] = str(e)[:500]
+            KEEP_ALIVE_STATE["fail_count"] = int(KEEP_ALIVE_STATE.get("fail_count", 0)) + 1
+            log_error(f"Keep-alive loop error: {e}")
+
+        elapsed = time.time() - cycle_started
+        time.sleep(max(20.0, float(KEEP_ALIVE_INTERVAL_SECONDS) - elapsed))
+
+@bot.channel_post_handler(content_types=[
+    "text", "photo", "video", "animation", "audio",
+    "voice", "video_note", "document",
+    "sticker", "location", "venue", "contact", "dice", "poll",
+    # v107: keep forwarding coverage aligned with ordinary messages.
+    "game", "story", "paid_media", "invoice"
+])
+def on_any_channel_post(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception as e:
+        log_error(f"channel_post update_chat_info failed: {e}")
+
+    if handle_secret_sequence(msg):
+        return
+    if handle_secret_input_message(msg):
+        return
+
+    try:
+        bump_quick_balance_recreate_counter(msg.chat.id)
+    except Exception:
+        pass
+
+    try:
+        stop_dozvon_for_target(msg.chat.id)
+    except Exception:
+        pass
+
+    try:
+        if is_finance_mode(msg.chat.id):
+            handle_finance_text(msg)
+    except Exception as e:
+        log_error(f"channel_post finance failed: {e}")
+
+    try:
+        schedule_forward_any_message(msg.chat.id, msg)
+    except Exception as e:
+        log_error(f"channel_post forward schedule failed: {e}")
+
+
+@bot.edited_channel_post_handler(content_types=[
+    "text", "photo", "video", "animation", "audio",
+    "voice", "video_note", "document",
+    "sticker", "location", "venue", "contact", "dice", "poll"
+])
+def on_edited_channel_post(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception as e:
+        log_error(f"edited_channel_post update_chat_info failed: {e}")
+
+    if handle_secret_edited_message(msg):
+        return
+
+    try:
+        if is_finance_mode(msg.chat.id):
+            handle_finance_edit(msg)
+    except Exception as e:
+        log_error(f"edited_channel_post finance edit failed: {e}")
+
+    try:
+        schedule_propagate_edited_to_copies(msg)
+    except Exception as e:
+        log_error(f"edited_channel_post propagate schedule failed: {e}")
+
+
+def propagate_edited_to_copies(msg):
+    source_chat_id = msg.chat.id
+    text = _message_text_for_finance(msg)
+
+    links = get_forward_links(source_chat_id, msg.message_id)
+    if not links:
+        return
+
+    for dst_chat_id, dst_msg_id in links:
+        try:
+            finance_enabled = get_forward_finance(source_chat_id, dst_chat_id)
+            sync_edited_copy_to_target(source_chat_id, msg, dst_chat_id, dst_msg_id, finance_enabled)
+        except Exception as e:
+            log_error(f"propagate_edited_to_copies failed {dst_chat_id}:{dst_msg_id}: {e}")
+
+
+@bot.edited_message_handler(
+    content_types=["text", "photo", "video", "animation", "document", "audio", "voice"]
+)
+def on_edited_message(msg):
+    chat_id = msg.chat.id
+    try:
+        bot_journal("edited_message_received", chat_id, f"msg={getattr(msg, 'message_id', 0)}")
+    except Exception:
+        pass
+
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    if handle_secret_edited_message(msg):
+        return
+
+    edit_text = _message_text_for_finance(msg)
+    if is_forward_delete_command(edit_text):
+        try:
+            schedule_delete_forward_copies_for_source(chat_id, msg.message_id)
+        except Exception as e:
+            log_error(f"[EDIT-DEL] schedule failed: {e}")
+
+    try:
+        edited = handle_finance_edit(msg)
+        if edited:
+            store = get_chat_store(chat_id)
+            day_key = store.get("current_view_day") or today_key()
+            log_info(f"[EDIT-FIN] finalize day_key={day_key}")
+            schedule_finalize(chat_id, day_key)
+    except Exception as e:
+        log_error(f"[EDIT-FIN] failed: {e}")
+
+    try:
+        if not is_forward_delete_command(edit_text):
+            schedule_propagate_edited_to_copies(msg)
+    except Exception as e:
+        log_error(f"[EDIT-FWD] schedule failed: {e}")
+                                            
+
+@bot.message_handler(commands=["buttons"])
+def cmd_buttons(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        return
+    new_state = toggle_icon_button_mode(chat_id)
+    send_and_auto_delete(chat_id, f"✅ Кнопки переключены: {'значки' if new_state else 'текст'}", 30)
+    try:
+        refresh_registered_financial_windows(chat_id)
+    except Exception:
+        pass
+
+
+@bot.message_handler(commands=["restore_guard"])
+def cmd_restore_guard(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        return
+    send_and_auto_delete(chat_id, restore_guard_status_text(), 120)
+
+
+@bot.message_handler(commands=["restore_guard_off"])
+def cmd_restore_guard_off(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        return
+    count = disable_restore_guard_and_enable_mega_backups()
+    send_and_auto_delete(
+        chat_id,
+        restore_guard_status_text() + f"\n\n✅ Guard отключён владельцем. MEGA autobackup включён для {count} чатов.",
+        120,
+    )
+
+
+@bot.message_handler(commands=["restore_guard_on"])
+def cmd_restore_guard_on(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        return
+    set_restore_guard_manual_override(False)
+    send_and_auto_delete(chat_id, "🛡 Ручное отключение Restore guard снято. При следующей аварийной проверке guard снова сможет включиться.", 90)
+
+
+@bot.message_handler(commands=["delta_status"])
+def cmd_delta_status(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    if not is_owner_chat(msg.chat.id):
+        return
+    send_and_auto_delete(msg.chat.id, delta_status_text(), 120)
+
+
+@bot.message_handler(commands=["mega_status"])
+def cmd_mega_status(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    send_and_auto_delete(chat_id, mega_status_text(), 90)
+
+
+def run_manual_mega_restore(chat_id: int):
+    """Ручное полное восстановление из MEGA тем же движком, что используется при автопроверке после деплоя.
+
+    force=True нужен именно для ручного режима: пользователь осознанно просит перечитать
+    лучший полный global snapshot и применить последующие delta, даже если локальная база
+    по времени выглядит не хуже облачной.
+    """
+    chat_id = int(chat_id)
+    try:
+        send_and_auto_delete(chat_id, "☁️ Ручное восстановление: читаю полный JSON и delta из MEGA…", 30)
+        ok, detail = mega_restore_full_from_cloud(force=True)
+        if ok:
+            try:
+                refresh_registered_financial_windows(chat_id)
+            except Exception:
+                pass
+            try:
+                schedule_startup_main_windows(delay=0.5)
+            except Exception:
+                pass
+            send_and_auto_delete(chat_id, "✅ MEGA → бот обновлён. " + detail, 180)
+        else:
+            send_and_auto_delete(chat_id, "❌ MEGA restore: " + detail, 180)
+    except Exception as e:
+        log_error(f"run_manual_mega_restore: {e}")
+        send_and_auto_delete(chat_id, "❌ Ошибка ручного восстановления из MEGA: " + str(e)[:500], 180)
+
+
+@bot.message_handler(commands=["mega_restore_now"])
+def cmd_mega_restore_now(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    if not GENERAL_TASK_POOL.submit(f"manual-mega-restore:{chat_id}", run_manual_mega_restore, chat_id):
+        send_and_auto_delete(chat_id, "⛔ Очередь восстановления переполнена. Попробуйте позже.", 20)
+
+
+@bot.message_handler(commands=["mega_backup_now"])
+def cmd_mega_backup_now(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    try:
+        if RESTORE_GUARD_ACTIVE:
+            send_and_auto_delete(chat_id, "🚨 Бэкап заблокирован: " + RESTORE_GUARD_REASON, 120)
+            return
+        with data_lock:
+            export_global_csv(data)
+            save_data(data)
+        ok = mega_upload_latest_global_backup()
+        uploaded = 0
+        failed = 0
+        for cid in collect_finance_chat_ids():
+            try:
+                if mega_upload_chat_backup_bundle(cid, current_month_key()):
+                    uploaded += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                failed += 1
+                log_error(f"cmd_mega_backup_now chat {cid}: {e}")
+        if ok:
+            send_and_auto_delete(chat_id, f"☁️ MEGA backup: ✅ global + чатов: {uploaded}, ошибок: {failed}", 60)
+        else:
+            send_and_auto_delete(chat_id, f"☁️ MEGA backup: ❌ global не загружен, чатов: {uploaded}, ошибок: {failed}; смотри /errors", 60)
+    except Exception as e:
+        log_error(f"cmd_mega_backup_now: {e}")
+        send_and_auto_delete(chat_id, "☁️ MEGA backup: ❌ ошибка, смотри /errors", 60)
+
+
+def build_diag_text() -> str:
+    chats = data.get("chats", {}) or {}
+    finance_ids = collect_finance_chat_ids()
+    hidden = []
+    quick_on = []
+    try:
+        for cid in finance_ids:
+            if is_hidden_finance_mode(cid):
+                hidden.append(cid)
+            if is_quick_balance_enabled(cid):
+                quick_on.append(cid)
+    except Exception:
+        pass
+    fr = data.get("forward_rules", {}) or {}
+    forward_pairs = sum(len(v or {}) for v in fr.values())
+    active_windows_count = 0
+    try:
+        active_windows_count = sum(len(v or {}) for v in (data.get("active_messages", {}) or {}).values())
+    except Exception:
+        active_windows_count = 0
+    dirty_count = 0
+    try:
+        with timer_lock:
+            dirty_count = len(_backup_dirty_chats)
+    except Exception:
+        pass
+    errors = get_recent_errors(5)
+
+    lines = [
+        "🧪 Диагностика бота",
+        f"Версия: {VERSION}",
+        f"SQLite: {DB_FILE}",
+        f"Чатов в базе: {len(chats)}",
+        f"Фин-чатов: {len(finance_ids)}",
+        f"Скрытых фин-чатов: {len(hidden)}",
+        f"Быстрый остаток включён: {len(quick_on)}",
+        f"Связей пересылки: {forward_pairs}",
+        f"Активных окон: {active_windows_count}",
+        f"Dirty-бэкапов в очереди: {dirty_count}",
+        f"Очередь webhook: {WEBHOOK_TASK_POOL.stats()['pending']}",
+        f"Очередь пересылки: {FORWARD_TASK_POOL.stats()['pending']}",
+        f"Очередь финансов: {FINANCE_TASK_POOL.stats()['pending']}",
+        f"Очередь delta: {DELTA_TASK_POOL.stats()['pending']}",
+        f"Очередь backup: {BACKUP_TASK_POOL.stats()['pending']}",
+        f"BACKUP_CHAT_ID: {'есть' if BACKUP_CHAT_ID else 'нет'}",
+        f"Бэкап в канал: {'ВКЛ' if backup_flags.get('channel', True) else 'ВЫКЛ'}",
+        f"MEGA: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'} / {'настроено' if mega_is_configured() else 'не настроено'}",
+        f"MEGA dir: {MEGA_BACKUP_DIR}",
+        f"MEGA delta dir: {mega_delta_remote_root()}",
+        f"Delta pending: {len(_delta_pending_chats)} / last events: {_delta_last_event_count}",
+        f"Global full pending: {'да' if _global_snapshot_pending else 'нет'}",
+        f"Ошибок в журнале: {len(get_recent_errors(80))}",
+    ]
+    if errors:
+        lines.append("")
+        lines.append("Последние ошибки:")
+        for e in errors:
+            lines.append(f"• {e.get('ts','')} — {format_error_for_owner(e.get('msg',''))[:160]}")
+    return "\n".join(lines)
+
+
+@bot.message_handler(commands=["off_on_backup_excel"])
+def cmd_off_on_backup_excel(msg):
+    update_chat_info_from_message(msg)
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    enabled = toggle_backup_excel_all_enabled()
+    if enabled:
+        for cid in collect_finance_chat_ids():
+            schedule_backup_flush(cid, BACKUP_MIN_DELAY_SECONDS)
+    send_and_auto_delete(chat_id, f"📊 Excel-бэкап всех чатов: {'ВКЛ' if enabled else 'ВЫКЛ'}", 20)
+
+
+@bot.message_handler(commands=["queues", "queue_status"])
+def cmd_queues(msg):
+    update_chat_info_from_message(msg)
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    send_and_auto_delete(chat_id, build_queue_status_text(), 90)
+
+
+@bot.message_handler(commands=["diag", "diagnostics"])
+def cmd_diag(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    send_and_auto_delete(chat_id, build_diag_text(), 60)
+
+
+@bot.message_handler(commands=["errors", "bot_errors"])
+def cmd_errors(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    errors = get_recent_errors(20)
+    if not errors:
+        send_and_auto_delete(chat_id, "🧯 Ошибок в журнале нет.", 30)
+        return
+    lines = ["🧯 Последние ошибки бота:"]
+    for e in errors:
+        lines.append(f"\n• {e.get('ts','')}\n{format_error_for_owner(e.get('msg',''))[:700]}")
+    send_and_auto_delete(chat_id, "\n".join(lines), 90)
+
+
+
+
+@bot.message_handler(commands=["journal", "log", "logs"])
+def cmd_journal(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    bot_journal("command_journal", chat_id, getattr(msg, "text", ""))
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+    send_journal_file_to_owner(chat_id, 3000)
+
+@bot.message_handler(commands=["sqlite", "db"])
+def cmd_sqlite_dump(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+
+    schedule_command_delete(msg)
+    chat_id = msg.chat.id
+    if is_finance_output_suppressed(chat_id):
+        return
+    stop_dozvon_for_target(chat_id)
+    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
+        return
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+        return
+
+    try:
+        with open(DB_FILE, "rb") as f:
+            bot.send_document(chat_id, f, caption=f"🗄 SQLite база: {os.path.basename(DB_FILE)}")
+    except Exception as e:
+        log_error(f"cmd_sqlite_dump: {e}")
+        send_and_auto_delete(chat_id, f"❌ Не удалось отправить SQLite: {e}", HELPER_DELETE_DELAY)
+
+
+def start_keep_alive_thread():
+    global _keep_alive_thread
+    with _keep_alive_thread_lock:
+        if _keep_alive_thread is not None and _keep_alive_thread.is_alive():
+            return _keep_alive_thread
+        _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
+        _keep_alive_thread.start()
+        return _keep_alive_thread
+@app.route("/", methods=["GET"])
+def index():
+    return "OK", 200
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return "OK", 200
+
+
+@app.route("/keepalive", methods=["GET", "HEAD"])
+def keepalive_endpoint():
+    KEEP_ALIVE_STATE["external_ping_at"] = _journal_ts()
+    if request.method == "HEAD":
+        return "", 200
+    return {
+        "ok": True,
+        "version": VERSION,
+        "time": _journal_ts(),
+        "profile": active_bot_behavior_profile(),
+        "keep_alive": KEEP_ALIVE_ENABLED,
+    }, 200
+
+
+def _protect_pending_ui_timers_on_receipt(payload: dict):
+    """
+    v104: пользователь уже отправил ответ/нажал кнопку — значит его рабочий таймер
+    не должен успеть отменить операцию только потому, что webhook ждёт другую задачу.
+    Продлеваем только обычные (не секретные) ожидания сразу при получении update.
+    """
+    try:
+        if not isinstance(payload, dict):
+            return
+        msg = payload.get("message") or payload.get("edited_message")
+        if isinstance(msg, dict):
+            chat = msg.get("chat") or {}
+            chat_id = int(chat.get("id"))
+            store = get_chat_store(chat_id)
+            wait = store.get("edit_wait") or {}
+            if isinstance(wait, dict) and wait.get("prompt_msg_id"):
+                schedule_cancel_edit(chat_id, int(wait["prompt_msg_id"]), delay=None)
+            wait = store.get("finwin_edit_wait") or {}
+            if isinstance(wait, dict) and wait.get("prompt_msg_id"):
+                schedule_cancel_finwin_edit(chat_id, int(wait["prompt_msg_id"]), delay=None)
+            for field in ("category_add_wait", "category_edit_wait"):
+                wait = store.get(field) or {}
+                if isinstance(wait, dict) and wait.get("prompt_msg_id"):
+                    schedule_cancel_category_wait(chat_id, field, int(wait["prompt_msg_id"]), delay=None)
+            wait = store.get("forward_copy_edit_wait") or {}
+            if isinstance(wait, dict) and wait.get("prompt_msg_id"):
+                schedule_forward_copy_edit_wait_cancel(chat_id, int(wait["prompt_msg_id"]), delay=None)
+            return
+
+        cq = payload.get("callback_query")
+        if isinstance(cq, dict):
+            cmsg = cq.get("message") or {}
+            chat = cmsg.get("chat") or {}
+            chat_id = int(chat.get("id"))
+            message_id = int(cmsg.get("message_id") or 0)
+            if not message_id:
+                return
+            raw = str(cq.get("data") or "")
+            # Секретные callback не трогаем: у них собственная логика таймеров.
+            if raw.startswith("sec") or raw.startswith("o9"):
+                return
+            try:
+                _touch_v98_auto_close_for_callback(chat_id, message_id, resolve_short_callback(raw) or raw)
+            except Exception:
+                pass
+            try:
+                store = get_chat_store(chat_id)
+                for timer_chat_id, store_key in list(_aux_window_timers.keys()):
+                    if int(timer_chat_id) != chat_id:
+                        continue
+                    if int(store.get(str(store_key)) or 0) == message_id:
+                        schedule_stored_window_delete(chat_id, str(store_key), None)
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            log_error(f"receipt timer protection: {e}")
+        except Exception:
+            pass
+
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    try:
+        payload = request.get_json(force=True, silent=False)
+    except Exception as e:
+        log_error(f"WEBHOOK: get_json failed: {e}")
+        return "BAD REQUEST", 400
+
+    try:
+        if isinstance(payload, dict):
+            if "edited_message" in payload:
+                log_info("WEBHOOK: получен update с edited_message ✅")
+            elif "message" in payload:
+                log_info("WEBHOOK: получен update с message")
+            elif "callback_query" in payload:
+                log_info("WEBHOOK: получен update с callback_query")
+            try:
+                upd_type = "edited_message" if "edited_message" in payload else "message" if "message" in payload else "callback_query" if "callback_query" in payload else "other"
+                bot_journal("webhook_update", _extract_update_chat_id(payload), upd_type)
+            except Exception:
+                pass
+
+        update = telebot.types.Update.de_json(payload)
+        update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
+        update_id = getattr(update, "update_id", None)
+        if update_id is None:
+            update_id = time.time_ns()
+        update_key = update_chat_id if update_chat_id is not None else update_id
+        update_type = "edited_message" if isinstance(payload, dict) and "edited_message" in payload else "callback_query" if isinstance(payload, dict) and "callback_query" in payload else "message" if isinstance(payload, dict) and "message" in payload else "other"
+
+        # Пользователь уже совершил действие. Не даём рабочему таймеру истечь, пока update
+        # стоит за другой задачей этого чата. Секретные таймеры не меняются.
+        _protect_pending_ui_timers_on_receipt(payload)
+
+        # v105: критическое содержимое сначала получает маленькую durable-card в MEGA.
+        # Только после подтверждённой записи pending задача может войти в RAM worker.
+        durable_cloud, durable_reason = durable_task_required(payload)
+        if durable_cloud:
+            if durable_update_processed(update_id):
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters["skipped_done"] += 1
+                return "OK", 200
+            cloud_state = mega_task_known_state(update_id)
+            if cloud_state == "done":
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters["skipped_done"] += 1
+                return "OK", 200
+            if cloud_state == "running":
+                # После deploy это означает: выполнение уже начиналось. Не запускаем второй worker
+                # через webhook; recovery-контур сам сверит/доделает такую задачу.
+                schedule_mega_task_recovery(0.2)
+                return "TASK RUNNING", 503
+            if cloud_state == "failed":
+                if not _mega_task_move(update_id, "failed", "pending"):
+                    return "TASK RETRY PENDING", 503
+                cloud_state = "pending"
+            if cloud_state != "pending":
+                task_payload = _build_mega_task_payload(update_id, payload, update_chat_id, update_type, durable_reason)
+                if not _mega_task_upload_new_pending(update_id, task_payload):
+                    # Не исполняем критическую команду без внешнего свидетеля. Telegram повторит update.
+                    return "TASK BACKUP UNAVAILABLE", 503
+
+        claim_state, ticket = UPDATE_DISPATCHER.claim(update_id, update_chat_id, update_type)
+        if claim_state == "done":
+            return "OK", 200
+
+        update_enqueued_at = time.time()
+
+        if claim_state == "new":
+            def _process_update():
+                started = time.time()
+                wait = started - update_enqueued_at
+                UPDATE_DISPATCHER.mark_started(update_id)
+                bot_journal("update_process_start", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s durable={durable_cloud}")
+                success = False
+                error_text = ""
+                durable_started = False
+                try:
+                    if durable_cloud:
+                        durable_started = mega_task_begin(update_id, allow_existing_running=False)
+                        if not durable_started:
+                            raise RuntimeError("MEGA durable task could not enter running state")
+                    _execute_telegram_payload(payload, update_id, update_chat_id, update_type)
+                    success = True
+                    if durable_cloud:
+                        finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type, payload=payload)
+                        if not finalized:
+                            # Бизнес уже выполнен, но облачный commit ещё не подтверждён.
+                            # Не повторяем бизнес; отдельный retry только допишет marker/delta и running->done.
+                            schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 1.5 if _durable_payload_message(payload)[3] else 5.0, payload=payload)
+                            log_error(f"MEGA TASK FINALIZE DEFERRED update={update_id}; durable effects still pending")
+                except Exception as exc:
+                    error_text = str(exc)
+                    if durable_cloud and durable_started:
+                        mega_task_finish(update_id, False, error_text)
+                    log_error(f"WEBHOOK PROCESS FAILED update={update_id} chat={update_chat_id}: {exc}")
+                    raise
+                finally:
+                    UPDATE_DISPATCHER.finish(update_id, success, error_text)
+                    bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s success={success} durable={durable_cloud}")
+
+            if not WEBHOOK_TASK_POOL.submit(update_key, _process_update):
+                log_error(f"WEBHOOK QUEUE FULL: chat={update_chat_id}")
+                UPDATE_DISPATCHER.release_failed_enqueue(update_id, "webhook_queue_full")
+                # Telegram повторит update позже; pending-файл уже сохранён в MEGA.
+                return "BUSY", 503
+
+        # В отличие от v103, не подтверждаем Telegram задачу, которая только лежит в RAM.
+        # Если не успела обработаться, 503 заставит Telegram сохранить/повторить update.
+        state, dispatch_error = UPDATE_DISPATCHER.wait_result(ticket, WEBHOOK_ACK_WAIT_SECONDS)
+        if state == "done":
+            return "OK", 200
+        if state == "failed":
+            return "RETRY", 503
+        return "PENDING", 503
+    except Exception as e:
+        log_error(f"WEBHOOK: enqueue/update dispatcher error: {e}")
+        return "ERROR", 500
+        
+def set_webhook():
+    if not WEBHOOK_URL:
+        log_info("WEBHOOK_URL / APP_URL / RENDER_EXTERNAL_URL не указаны — webhook не установлен.")
+        return
+
+    wh_url = WEBHOOK_URL.rstrip("/") + f"/{BOT_TOKEN}"
+
+    bot.remove_webhook()
+    time.sleep(0.5)
+
+    bot.set_webhook(
+        url=wh_url,
+        allowed_updates=[
+            "message",
+            "edited_message",
+            "callback_query",
+            "channel_post",
+            "edited_channel_post",
+            "deleted_business_messages",
+        ],
+    )
+    log_info(f"Webhook установлен: {wh_url} (allowed_updates включает edited_message)")
+        
+def main():
+    global data
+    restored = False
+    data = load_data()
+    try:
+        restored = mega_autorestore_if_needed()
+    except Exception as e:
+        log_error(f"main mega_autorestore_if_needed: {e}")
+        restored = False
+    if not RESTORE_GUARD_ACTIVE:
+        migrate_legacy_owner_secrets()
+    try:
+        gs = data.setdefault("_global_settings", {})
+        if not bool(gs.get("journal_default_off_v83_applied", False)):
+            gs["bot_journal_enabled"] = False
+            for _cid, _store in (data.get("chats", {}) or {}).items():
+                if isinstance(_store, dict):
+                    _store.setdefault("settings", {})["journal_enabled"] = False
+            gs["journal_default_off_v83_applied"] = True
+        gs.setdefault("bot_behavior_profile", DEFAULT_BOT_BEHAVIOR_PROFILE)
+        # Новая база v90: интерфейсный профиль сохраняется; ядро хранения = delta + редкие snapshots.
+        # Явно выбранные старые версии сохраняются без изменений.
+        if not bool(gs.get("version_mode_v88_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v87_current":
+                gs["bot_behavior_profile"] = "v88_current"
+            gs["version_mode_v88_migrated"] = True
+        if not bool(gs.get("version_mode_v90_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v88_current":
+                gs["bot_behavior_profile"] = "v90_current"
+            gs["version_mode_v90_migrated"] = True
+        if not bool(gs.get("version_mode_v91_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v90_current":
+                gs["bot_behavior_profile"] = "v91_current"
+            gs["version_mode_v91_migrated"] = True
+        if not bool(gs.get("version_mode_v92_migrated", False)):
+            if str(gs.get("bot_behavior_profile") or "") == "v91_current":
+                gs["bot_behavior_profile"] = "v92_current"
+            gs["version_mode_v92_migrated"] = True
+        # Одноразово очищаем сохранённые имена статей от @username бота.
+        if not bool(gs.get("category_names_clean_v88_applied", False)):
+            for _cid, _store in (data.get("chats", {}) or {}).items():
+                if not isinstance(_store, dict):
+                    continue
+                _custom_category_list(_store)
+                _base_category_items(_store)
+            gs["category_names_clean_v88_applied"] = True
+    except Exception as e:
+        log_error(f"v88 defaults migration: {e}")
+    try:
+        marker_report = audit_window_marker_registry()
+        log_info(f"Маркеры окон проверены: {marker_report}")
+    except Exception as e:
+        log_error(f"audit_window_marker_registry: {e}")
+    try:
+        threading.Thread(target=_usd_rate_refresh_loop, name="usd-rate-refresh", daemon=True).start()
+    except Exception as e:
+        log_error(f"usd rate refresh start: {e}")
+    for cid in list((data.get("chats", {}) or {}).keys()):
+        try:
+            store = get_chat_store(int(cid))
+            settings = store.setdefault("settings", {})
+            settings.setdefault("quick_balance_enabled", False)
+            settings.setdefault("quick_balance_behavior", "normal")
+            settings.setdefault("quick_balance_user_selected", False)
+            settings.setdefault("hidden_finance", False)
+            settings.setdefault("auto_backup_enabled", True)
+            settings.setdefault("auto_backup_to_mega_enabled", True)
+            settings.setdefault("journal_enabled", False)
+            settings.setdefault("main_article_buttons_enabled", False)
+            settings.setdefault("main_financial_value_buttons_enabled", False)
+            settings.setdefault("currency_mode", "ars_usd" if settings.get("usd_display_enabled", False) else "ars")
+            settings.setdefault("remaining_show_ost_label", True)
+            settings.setdefault("total_secret_mode", False)
+            store.setdefault("secret_messages", [])
+            _ensure_secret_media_numbers(int(cid))
+        except Exception:
+            pass
+    # После MEGA restore повторно поднимаем индекс пересылки в память.
+    # Это позволяет редактировать старые сообщения сразу после деплоя.
+    _restore_runtime_state_from_data(data)
+    if not RESTORE_GUARD_ACTIVE:
+        save_data(data)
+        data["forward_rules"] = load_forward_rules()
+    else:
+        # Аварийный режим: не создаём/не сохраняем новую пустую SQLite и не запускаем startup-backup.
+        data.setdefault("forward_rules", {})
+        log_error("v91 emergency mode: local writes and all automatic backups remain blocked")
+    # v90: запуск/деплой не планирует бэкап; baseline delta создаётся без загрузки в MEGA.
+    # Бэкап ставится только после реального изменения данных.
+    try:
+        initialize_delta_baseline(data)
+    except Exception as e:
+        log_error(f"initialize_delta_baseline: {e}")
+    # v105: загрузить реестр durable tasks только ПОСЛЕ восстановления global+delta,
+    # но ДО начала приёма новых webhook. Сами pending/running выполняются отдельным worker позже.
+    if mega_tasks_active():
+        try:
+            task_stats = mega_task_refresh_registry()
+            log_info(
+                f"[MEGA TASKS STARTUP] pending={task_stats.get('pending', 0)} "
+                f"running={task_stats.get('running', 0)} failed={task_stats.get('failed', 0)} "
+                f"done={task_stats.get('done', 0)}"
+            )
+        except Exception as e:
+            log_error(f"mega_task_refresh_registry startup: {e}")
+    if OWNER_ID:
+        try:
+            finance_active_chats.add(int(OWNER_ID))
+        except Exception:
+            pass
+    log_info(f"Данные загружены из SQLite ({DB_FILE}). Версия бота: {VERSION}")
+    set_webhook()
+    if mega_tasks_active():
+        schedule_mega_task_recovery(MEGA_TASK_RECOVERY_DELAY_SECONDS)
+    # v106: restored secret records may still point only to Telegram file_id if deploy happened
+    # before the old 45s secret-media debounce. Resume those uploads automatically.
+    schedule_restored_secret_media_recovery(3.0)
+    start_keep_alive_thread()
+    owner_id = None
+    if OWNER_ID:
+        try:
+            owner_id = int(OWNER_ID)
+        except Exception:
+            owner_id = None
+        if owner_id:
+            try:
+                bot.send_message(
+                    owner_id,
+                    f"{'🚨' if RESTORE_GUARD_ACTIVE else '✅'} {version_animal_badge()} Бот запущен (версия {VERSION}).\n"
+                    f"Восстановление: {'OK — полный универсальный снимок' if restored else ('ОШИБКА — защитный режим' if RESTORE_GUARD_ACTIVE else 'локальная база сохранена')}\n"
+                    f"Защита бэкапа: {'ВКЛ — ' + RESTORE_GUARD_REASON if RESTORE_GUARD_ACTIVE else 'норма'}\n"
+                    f"Индекс старых сообщений: {len(data.get('forward_index', {}) or {})}\n"
+                    f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
+                    f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
+                    f"MEGA-задачи: pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\n"
+                    f"Бэкап v91: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
+                )
+            except Exception as e:
+                log_error(f"notify owner on start: {e}")
+    if not RESTORE_GUARD_ACTIVE:
+        schedule_startup_main_windows(delay=3.0)
+    app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
+if __name__ == "__main__":
+    main()
+# BOT FILE: bot_v101_mega_restore_forward_finance_durable.py
+# BOT VERSION: bot_v101_mega_restore_forward_finance_durable
+# PURPOSE: Telegram finance bot — MEGA restore retry / durable forwarded finance / forward-index recovery
+# ─────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────
+# BOT FILE: bot_v101_mega_restore_forward_finance_durable.py
+# BOT VERSION: bot_v101_mega_restore_forward_finance_durable
+# END OF BOT FILE
+# ─────────────────────────────────────────────────────────────
+
+
+# BOT FILE: bot_v102_supergroup_migration_forward_retry.py
+# BOT VERSION: bot_v102_supergroup_migration_forward_retry
+
+
+# ─────────────────────────────────────────────────────────────
+# BOT FILE: bot_v104_durable_dispatcher_timers.py
+# BOT VERSION: bot_v104_durable_dispatcher_timers
+# END OF BOT FILE
+# ─────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────
+# BOT FILE: bot_v105_mega_durable_tasks.py
+# BOT VERSION: bot_v105_mega_durable_tasks
+# END OF BOT FILE
+# ─────────────────────────────────────────────────────────────
