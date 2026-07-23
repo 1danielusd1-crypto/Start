@@ -1,6 +1,6 @@
-# BOT FILE: bot_v109_exact_once_finance_safe_recovery.py
-# BOT VERSION: bot_v109_exact_once_finance_safe_recovery
-# PURPOSE: deploy-safe Telegram finance bot — exact-once finance effects, non-replaying recovery, BOOT/SHUTDOWN and Render watcher
+# BOT FILE: bot_v105_mega_durable_tasks.py
+# BOT VERSION: bot_v105_mega_durable_tasks
+# PURPOSE: Telegram finance bot — MEGA-persisted critical task witness + durable dispatcher + unified timers
 # ─────────────────────────────────────────────────────────────
 import os
 import io
@@ -21,10 +21,6 @@ import calendar
 import hashlib
 import queue
 import heapq
-import signal
-import socket
-import sys
-import platform
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -39,7 +35,6 @@ from flask import Flask, request
 
 from collections import defaultdict, deque
 from contextlib import contextmanager
-from pathlib import Path
 
 window_locks = defaultdict(threading.Lock)
 
@@ -566,8 +561,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v109_exact_once_finance_safe_recovery"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v108_boot_shutdown_watcher_finwindows.py"
+VERSION = "bot_v105_mega_durable_tasks"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v105_mega_durable_tasks.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -2439,10 +2434,6 @@ WINDOW_MARKER_CONSTANTS = {
     'icon_buttons_toggle': 'Ф84',
     'restore_guard_toggle': 'Ф165',
     'mega_manual_restore': 'Ф166',
-    'main_close:*': 'Ф167',
-    'runtime_watcher': 'Ф168',
-    'runtime_events': 'Ф169',
-    'runtime_snapshot_now': 'Ф170',
     'info_close': 'Ф85',
     'info_finance_off': 'Ф86',
     'journal_back': 'Ф87',
@@ -3290,229 +3281,6 @@ def get_quick_balance_behavior(chat_id: int) -> str:
     return "normal"
 
 
-
-def _infer_legacy_finance_window_mode(chat_id: int) -> str:
-    """Migration from v107: hidden-only means no visible auto-window; otherwise preserve old visible mode."""
-    try:
-        if not is_finance_mode(chat_id):
-            return "off"
-        if is_quick_balance_enabled(chat_id):
-            behavior = get_quick_balance_behavior(chat_id)
-            if behavior in {"open", "first"}:
-                return behavior
-        # In v107 simple "finance ON" enabled hidden finance and intentionally showed no window.
-        if is_hidden_finance_mode(chat_id):
-            return "off"
-        return "normal"
-    except Exception:
-        return "off"
-
-
-def _finance_window_state(chat_id: int) -> dict:
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    state = store.get("finance_window_state")
-    if not isinstance(state, dict):
-        try:
-            active = dict((data.get("active_messages", {}) or {}).get(str(chat_id), {}) or {})
-        except Exception:
-            active = {}
-        mode = _infer_legacy_finance_window_mode(chat_id)
-        state = {
-            "mode": mode,
-            "main_windows": {str(k): int(v) for k, v in active.items() if v},
-            "balance_panel_id": int(store.get("balance_panel_id")) if store.get("balance_panel_id") else None,
-            "balance_panel_mode": str(store.get("balance_panel_mode") or "mini"),
-            "current_view_day": str(store.get("current_view_day") or today_key()),
-            "auto_reopen_on_boot": bool(mode != "off" and (active or store.get("balance_panel_id") or not is_hidden_finance_mode(chat_id))),
-            "updated_at": now_local().isoformat(timespec="seconds"),
-        }
-        store["finance_window_state"] = state
-    state.setdefault("mode", _infer_legacy_finance_window_mode(chat_id))
-    if state.get("mode") not in {"off", "normal", "open", "first"}:
-        state["mode"] = "off"
-    state.setdefault("main_windows", {})
-    state.setdefault("balance_panel_id", None)
-    state.setdefault("balance_panel_mode", "mini")
-    state.setdefault("current_view_day", str(store.get("current_view_day") or today_key()))
-    state.setdefault("auto_reopen_on_boot", bool(state.get("mode") != "off"))
-    state.setdefault("updated_at", now_local().isoformat(timespec="seconds"))
-    return state
-
-
-def finance_window_mode(chat_id: int) -> str:
-    if not is_finance_mode(chat_id):
-        return "off"
-    try:
-        return str(_finance_window_state(chat_id).get("mode") or "off")
-    except Exception:
-        return "off"
-
-
-def finance_window_mode_enabled(chat_id: int, mode: str | None = None) -> bool:
-    current = finance_window_mode(chat_id)
-    if mode is None:
-        return current in {"normal", "open", "first"}
-    return current == str(mode)
-
-
-def _sync_finance_window_state_from_runtime(chat_id: int, *, schedule_delta: bool = False):
-    """Compact UI state intentionally survives deploy without putting full open_window_registry into delta."""
-    try:
-        chat_id = int(chat_id)
-        store = get_chat_store(chat_id)
-        state = _finance_window_state(chat_id)
-        try:
-            active = dict((data.get("active_messages", {}) or {}).get(str(chat_id), {}) or {})
-        except Exception:
-            active = {}
-        state["main_windows"] = {str(k): int(v) for k, v in active.items() if v}
-        state["balance_panel_id"] = int(store.get("balance_panel_id")) if store.get("balance_panel_id") else None
-        state["balance_panel_mode"] = str(store.get("balance_panel_mode") or state.get("balance_panel_mode") or "mini")
-        state["current_view_day"] = str(store.get("current_view_day") or state.get("current_view_day") or today_key())
-        state["updated_at"] = now_local().isoformat(timespec="seconds")
-        store["finance_window_state"] = state
-        save_data(data, chat_ids=[chat_id])
-        if schedule_delta and mega_is_configured() and not RESTORE_GUARD_ACTIVE:
-            schedule_quick_backup(chat_id, 0.5)
-    except Exception as e:
-        log_error(f"_sync_finance_window_state_from_runtime({chat_id}): {e}")
-
-
-def restore_finance_window_runtime_state():
-    """Rehydrate volatile Telegram message ids from compact chat metadata after MEGA/global+delta restore."""
-    try:
-        for cid_s, store in (data.get("chats", {}) or {}).items():
-            try:
-                cid = int(cid_s)
-            except Exception:
-                continue
-            state = store.get("finance_window_state")
-            if not isinstance(state, dict):
-                # Create migration state, but do not generate Telegram windows here.
-                _finance_window_state(cid)
-                state = store.get("finance_window_state") or {}
-            mode = str(state.get("mode") or "off")
-            settings = store.setdefault("settings", {})
-            if mode == "normal":
-                settings["quick_balance_enabled"] = False
-                settings["quick_balance_behavior"] = "normal"
-                settings["quick_balance_user_selected"] = True
-            elif mode in {"open", "first"}:
-                settings["quick_balance_enabled"] = True
-                settings["quick_balance_behavior"] = mode
-                settings["quick_balance_user_selected"] = True
-            else:
-                settings["quick_balance_enabled"] = False
-                settings["quick_balance_behavior"] = "normal"
-                settings["quick_balance_user_selected"] = True
-            main_windows = state.get("main_windows") or {}
-            data.setdefault("active_messages", {})[str(cid)] = {
-                str(k): int(v) for k, v in main_windows.items() if v
-            }
-            store["balance_panel_id"] = int(state.get("balance_panel_id")) if state.get("balance_panel_id") else None
-            store["balance_panel_mode"] = str(state.get("balance_panel_mode") or "mini")
-            if state.get("current_view_day"):
-                store["current_view_day"] = str(state.get("current_view_day"))
-    except Exception as e:
-        log_error(f"restore_finance_window_runtime_state: {e}")
-
-
-def _persist_finance_window_mode_critical(chat_id: int) -> bool:
-    """Persist window choice + callback idempotency marker before a critical callback may be acknowledged."""
-    try:
-        chat_id = int(chat_id)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=False)
-        if mega_is_configured() and not RESTORE_GUARD_ACTIVE:
-            ctx = _current_telegram_update_context()
-            update_id = ctx.get("update_id")
-            if update_id is not None and str(ctx.get("update_type") or "") == "callback_query":
-                # Marker and chat state are captured by the same following compact delta.
-                mark_durable_update_processed(update_id, chat_id, "callback_query")
-            return bool(persist_critical_delta_now(chat_id))
-    except Exception as e:
-        log_error(f"_persist_finance_window_mode_critical({chat_id}): {e}")
-    return False
-
-
-def set_finance_window_mode(chat_id: int, mode: str, *, persist_now: bool = False):
-    chat_id = int(chat_id)
-    mode = str(mode or "off").lower().strip()
-    if mode not in {"off", "normal", "open", "first"}:
-        mode = "off"
-    store = get_chat_store(chat_id)
-    settings = store.setdefault("settings", {})
-    state = _finance_window_state(chat_id)
-    state["mode"] = mode
-    state["auto_reopen_on_boot"] = bool(mode != "off")
-    state["updated_at"] = now_local().isoformat(timespec="seconds")
-    if mode == "normal":
-        settings["quick_balance_enabled"] = False
-        settings["quick_balance_behavior"] = "normal"
-        settings["quick_balance_user_selected"] = True
-    elif mode in {"open", "first"}:
-        settings["quick_balance_enabled"] = True
-        settings["quick_balance_behavior"] = mode
-        settings["quick_balance_user_selected"] = True
-    else:
-        settings["quick_balance_enabled"] = False
-        settings["quick_balance_behavior"] = "normal"
-        settings["quick_balance_user_selected"] = True
-    store["finance_window_state"] = state
-    save_data(data, chat_ids=[chat_id])
-    if persist_now:
-        _persist_finance_window_mode_critical(chat_id)
-    else:
-        schedule_config_backup_for_chats(chat_id)
-
-
-def delete_auto_finance_windows_for_chat(chat_id: int, *, persist_now: bool = False) -> int:
-    """Delete only automatic finance windows controlled by the three F39 modes, not manual reports/F91/category views."""
-    chat_id = int(chat_id)
-    store = get_chat_store(chat_id)
-    ids = set()
-    try:
-        ids.update(int(v) for v in (get_or_create_active_windows(chat_id) or {}).values() if v)
-    except Exception:
-        pass
-    try:
-        if store.get("balance_panel_id"):
-            ids.add(int(store.get("balance_panel_id")))
-    except Exception:
-        pass
-    removed = 0
-    for mid in sorted(ids):
-        try:
-            bot.delete_message(chat_id, mid)
-            removed += 1
-        except Exception:
-            pass
-        try:
-            unregister_open_window(chat_id, mid)
-        except Exception:
-            pass
-    data.setdefault("active_messages", {})[str(chat_id)] = {}
-    store["balance_panel_id"] = None
-    store["balance_panel_mode"] = "mini"
-    store["main_window_msg_count"] = 0
-    store["balance_panel_msg_count"] = 0
-    state = _finance_window_state(chat_id)
-    state["main_windows"] = {}
-    state["balance_panel_id"] = None
-    state["balance_panel_mode"] = "mini"
-    state["auto_reopen_on_boot"] = False if finance_window_mode(chat_id) == "off" else state.get("auto_reopen_on_boot", True)
-    state["updated_at"] = now_local().isoformat(timespec="seconds")
-    save_data(data, chat_ids=[chat_id])
-    if persist_now:
-        _persist_finance_window_mode_critical(chat_id)
-    else:
-        try:
-            schedule_quick_backup(chat_id, 0.5)
-        except Exception:
-            pass
-    return removed
-
-
 def set_quick_balance_behavior(chat_id: int, behavior: str):
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
@@ -3956,21 +3724,34 @@ def build_removed_chats_menu(day_key: str | None = None):
 
 
 def set_hidden_finance_mode(chat_id: int, enabled: bool):
-    """v108: hidden finance is independent from the three automatic finance-window modes."""
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
     settings = store.setdefault("settings", {})
     settings["hidden_finance"] = bool(enabled)
+
     if enabled:
-        # Hidden means silent accounting/confirmations. It must NOT erase or disable a separately selected window mode.
         set_finance_mode(chat_id, True)
-    save_data(data, chat_ids=[chat_id])
+        # Скрытый режим независим от меню быстрого остатка: не меняем выбранный режим.
+        panel_id = store.get("balance_panel_id")
+        if panel_id:
+            try:
+                bot.delete_message(chat_id, panel_id)
+            except Exception:
+                pass
+        store["balance_panel_id"] = None
+        store["balance_panel_mode"] = "mini"
+        # Убираем сохранённые активные окна, чтобы скрытый чат больше не размножал фин-окна.
+        try:
+            data.setdefault("active_messages", {})[str(chat_id)] = {}
+        except Exception:
+            pass
+    save_data(data)
     schedule_config_backup_for_chats(chat_id)
 
 
 def force_recreate_balance_panel(chat_id: int):
     """Пересоздаёт быстрый остаток, чтобы он снова стал последним окном в чате."""
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -3989,11 +3770,11 @@ def force_recreate_balance_panel(chat_id: int):
 
 
 def is_normal_finance_window_mode(chat_id: int) -> bool:
-    """Как обычно: отдельный выбранный режим; hidden finance does not disable it."""
+    """Как обычно: финокно чата, без быстрого остатка, пересоздаётся после 10 сообщений."""
     try:
-        return bool(is_finance_mode(chat_id) and finance_window_mode(chat_id) == "normal")
+        return (not is_quick_balance_enabled(chat_id)) or get_quick_balance_behavior(chat_id) == "normal"
     except Exception:
-        return False
+        return True
 
 
 def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
@@ -4001,7 +3782,9 @@ def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
         chat_id = int(chat_id)
     except Exception:
         return
-    if not is_finance_mode(chat_id) or finance_window_mode(chat_id) != "normal":
+    if is_hidden_finance_mode(chat_id):
+        return
+    if not is_finance_mode(chat_id):
         return
 
     def _job():
@@ -4029,7 +3812,9 @@ def schedule_main_window_recreate_after_quiet(chat_id: int, delay: float = 4.0):
 def bump_quick_balance_recreate_counter(chat_id: int, count: int = 1):
     """Сообщения после ввода: обычное окно через 10 сообщений или быстрый остаток по выбранному режиму."""
     try:
-        if not is_finance_mode(chat_id) or finance_window_mode(chat_id) == "off":
+        if is_hidden_finance_mode(chat_id):
+            return
+        if not is_finance_mode(chat_id):
             return
 
         if is_normal_finance_window_mode(chat_id):
@@ -4066,7 +3851,7 @@ def schedule_quick_balance_first_recreate(chat_id: int, delay: float = 60.0):
         chat_id = int(chat_id)
     except Exception:
         return
-    if finance_window_mode(chat_id) != "first":
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -4076,7 +3861,7 @@ def schedule_quick_balance_first_recreate(chat_id: int, delay: float = 60.0):
     def _job():
         try:
             with locked_chat(chat_id):
-                if finance_window_mode(chat_id) != "first":
+                if is_hidden_finance_mode(chat_id):
                     return
                 if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
                     return
@@ -4100,7 +3885,7 @@ def schedule_quick_balance_recreate_after_quiet(chat_id: int, delay: float = 4.0
         chat_id = int(chat_id)
     except Exception:
         return
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -4130,7 +3915,6 @@ def _set_panel_open_state(chat_id: int, message_id: int):
     store["balance_panel_mode"] = "open"
     store["balance_panel_msg_count"] = 0
     save_data(data)
-    _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
     schedule_balance_panel_collapse(chat_id)
 
 def schedule_owner_total_window_delete(chat_id: int, message_id: int, delay: int | float | None = None):
@@ -4841,10 +4625,6 @@ def guard_non_owner_finance_for_callback(chat_id: int, data_str: str) -> bool:
     if is_owner_chat(chat_id):
         return False
     if is_finance_output_suppressed(chat_id):
-        # v108: hidden accounting no longer disables a deliberately selected visible finance window.
-        # Its buttons (including Ф91 Close / quick-balance open-collapse / edit/report) must remain usable.
-        if finance_window_mode(chat_id) in {"normal", "open", "first"}:
-            return False
         return True
     if is_finance_mode(chat_id):
         return False
@@ -5471,7 +5251,6 @@ def collapse_balance_panel(chat_id: int):
         )
         store["balance_panel_mode"] = "mini"
         save_data(data)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
     except Exception as e:
         err = str(e).lower()
         if "message is not modified" not in err:
@@ -5496,7 +5275,7 @@ def schedule_balance_panel_collapse(chat_id: int, delay: float | None = None):
 
 
 def send_minimized_balance_panel(chat_id: int):
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -5514,14 +5293,12 @@ def send_minimized_balance_panel(chat_id: int):
             )
             store["balance_panel_mode"] = "mini"
             save_data(data)
-            _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
             return
         except Exception as e:
             err = str(e).lower()
             if "message is not modified" in err:
                 store["balance_panel_mode"] = "mini"
                 save_data(data)
-                _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
                 return
             log_error(f"send_minimized_balance_panel edit({chat_id}): {e}")
             try:
@@ -5539,14 +5316,12 @@ def send_minimized_balance_panel(chat_id: int):
         store["balance_panel_id"] = sent.message_id
         store["balance_panel_mode"] = "mini"
         save_data(data)
-        _finance_window_state(chat_id)["auto_reopen_on_boot"] = True
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
     except Exception as e:
         log_error(f"send_minimized_balance_panel({chat_id}): {e}")
 
 
 def refresh_balance_panel_now(chat_id: int):
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -5588,12 +5363,11 @@ def refresh_balance_panel_now(chat_id: int):
         store["balance_panel_id"] = None
         store["balance_panel_mode"] = "mini"
         save_data(data)
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
         send_minimized_balance_panel(chat_id)
 
 
 def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_REFRESH_DELAY):
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -5615,7 +5389,7 @@ def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_RE
 
 
 def open_balance_panel_in_message(chat_id: int, message_id: int, day_key: str | None = None):
-    if finance_window_mode(chat_id) not in {"open", "first"}:
+    if is_hidden_finance_mode(chat_id):
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
         return
@@ -6132,320 +5906,13 @@ def mark_durable_update_processed(update_id, chat_id=None, update_type: str = "o
 
 
 
-def _durable_raw_content_type(raw: dict | None) -> str:
-    """Best-effort Telegram content classifier for durable forwarding diagnostics.
-
-    Raw Bot API updates do not carry a `content_type` field.  We only use this label
-    for task metadata/logging; delivery itself is always attempted by source message_id.
-    """
-    if not isinstance(raw, dict):
-        return "unknown"
-    for key in (
-        "text", "photo", "video", "animation", "audio", "voice", "video_note",
-        "document", "sticker", "location", "venue", "contact", "dice", "poll",
-        "game", "story", "paid_media", "invoice", "web_app_data"
-    ):
-        if key in raw and raw.get(key) is not None:
-            return key
-    # Service/novel Bot API payloads are still witnessed; copy/forward by message_id
-    # gets the first chance and Telegram itself decides whether the type is forwardable.
-    ignored = {
-        "message_id", "message_thread_id", "direct_messages_topic", "from", "sender_chat",
-        "sender_boost_count", "sender_business_bot", "date", "business_connection_id",
-        "chat", "forward_origin", "is_topic_message", "is_automatic_forward",
-        "reply_to_message", "external_reply", "quote", "reply_to_story", "reply_to_checklist_task_id",
-        "via_bot", "edit_date", "has_protected_content", "is_from_offline", "media_group_id",
-        "author_signature", "paid_star_count", "effect_id", "show_caption_above_media",
-        "has_media_spoiler", "reply_markup"
-    }
-    for key in raw.keys():
-        if key not in ignored:
-            return str(key)
-    return "unknown"
-
-
-def _durable_payload_message(payload: dict):
-    """Return (raw_message_dict, source_chat_id, source_msg_id, media_group_id)."""
-    if not isinstance(payload, dict):
-        return None, None, None, None
-    for name in ("message", "edited_message", "channel_post", "edited_channel_post"):
-        msg = payload.get(name)
-        if not isinstance(msg, dict):
-            continue
-        try:
-            chat_id = int(((msg.get("chat") or {}).get("id")))
-        except Exception:
-            chat_id = None
-        try:
-            msg_id = int(msg.get("message_id") or 0) or None
-        except Exception:
-            msg_id = None
-        group_id = str(msg.get("media_group_id") or "").strip() or None
-        return msg, chat_id, msg_id, group_id
-    return None, None, None, None
-
-
-def _durable_forward_targets(source_chat_id: int | None) -> list[tuple]:
-    if source_chat_id is None:
-        return []
-    try:
-        return list(resolve_forward_targets(int(source_chat_id)) or [])
-    except Exception as e:
-        log_error(f"DURABLE resolve targets {source_chat_id}: {e}")
-        return []
-
-
-
-def _durable_expected_effects(payload: dict) -> dict:
-    """Snapshot the effects that this Telegram update is actually expected to create.
-
-    v109 rule: the witness must never infer a financial effect merely because a message
-    contains a digit.  We use the real finance parser predicate (`looks_like_amount`) and
-    the destination's finance mode at task-creation time.  This prevents false `running`
-    tasks from being replayed and creating duplicate money records.
-    """
-    out = {
-        "source_finance": False,
-        "source_secret": False,
-        "forward_targets": [],
-    }
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return out
-    text = str(raw.get("text") or raw.get("caption") or "").strip()
-    # Wait-state replies are commands/answers first.  Do not guess a direct finance effect
-    # from the digits while a dedicated input state is active.
-    waiting = False
-    try:
-        store = get_chat_store(int(source_chat_id))
-        waiting = any(str(k).endswith("_wait") and bool(v) for k, v in (store or {}).items())
-    except Exception:
-        waiting = False
-    try:
-        out["source_finance"] = bool(
-            (not waiting)
-            and is_finance_mode(int(source_chat_id))
-            and text
-            and looks_like_amount(text)
-        )
-    except Exception:
-        out["source_finance"] = False
-    try:
-        marked, _cleaned = _extract_secret_codeword(text)
-    except Exception:
-        marked = False
-    try:
-        out["source_secret"] = bool(is_total_secret_mode(int(source_chat_id)) or marked)
-    except Exception:
-        out["source_secret"] = bool(marked)
-    for dst_chat_id, mode, finance_enabled in _durable_forward_targets(source_chat_id):
-        dst = int(dst_chat_id)
-        dst_finance = False
-        if finance_enabled and text:
-            try:
-                dst_finance = bool(is_finance_mode(dst) and looks_like_amount(text))
-            except Exception:
-                dst_finance = False
-        dst_secret = False
-        try:
-            dst_secret = bool(is_total_secret_mode(dst))
-        except Exception:
-            pass
-        out["forward_targets"].append({
-            "dst_chat_id": dst,
-            "mode": str(mode),
-            "finance_expected": dst_finance,
-            "secret_expected": dst_secret,
-        })
-    return out
-
-
-def _durable_expected_from_task_or_payload(task: dict | None, payload: dict) -> dict:
-    try:
-        expected = (task or {}).get("expected_effects")
-        if isinstance(expected, dict):
-            return expected
-    except Exception:
-        pass
-    return _durable_expected_effects(payload)
-
-
-def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
-    """Return explicit effect status. No repairs, no replay, no side effects."""
-    expected = expected if isinstance(expected, dict) else _durable_expected_effects(payload)
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    report = {"complete": True, "missing": [], "ambiguous": []}
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return report
-    links = {}
-    try:
-        links = {int(dst): int(mid) for dst, mid in get_forward_links(source_chat_id, source_msg_id)}
-    except Exception:
-        links = {}
-    for target in expected.get("forward_targets", []) or []:
-        try:
-            dst = int(target.get("dst_chat_id"))
-        except Exception:
-            continue
-        dst_msg_id = links.get(dst)
-        if not dst_msg_id:
-            report["complete"] = False
-            # Missing link after a `running` task is ambiguous: Telegram may have accepted the
-            # copy immediately before Render died. v109 never auto-resends such a message.
-            report["ambiguous"].append(f"forward:{source_chat_id}:{source_msg_id}->{dst}")
-            continue
-        if bool(target.get("finance_expected")):
-            try:
-                rec = find_record_by_message_id(dst, dst_msg_id)
-            except Exception:
-                rec = None
-            if not isinstance(rec, dict):
-                report["complete"] = False
-                report["missing"].append(f"forward_finance:{dst}:{dst_msg_id}")
-        if bool(target.get("secret_expected")):
-            try:
-                ok = any(
-                    isinstance(r, dict)
-                    and int(r.get("source_msg_id") or 0) == int(dst_msg_id)
-                    and int(r.get("forward_source_msg_id") or source_msg_id) == int(source_msg_id)
-                    for r in _secret_records(dst)
-                )
-            except Exception:
-                ok = False
-            if not ok:
-                report["complete"] = False
-                report["missing"].append(f"forward_secret:{dst}:{dst_msg_id}")
-    if bool(expected.get("source_finance")):
-        try:
-            ok = find_record_by_message_id(int(source_chat_id), int(source_msg_id)) is not None
-        except Exception:
-            ok = False
-        if not ok:
-            report["complete"] = False
-            report["missing"].append(f"source_finance:{source_chat_id}:{source_msg_id}")
-    if bool(expected.get("source_secret")):
-        try:
-            ok = any(int(r.get("source_msg_id") or 0) == int(source_msg_id) for r in _secret_records(source_chat_id) if isinstance(r, dict))
-        except Exception:
-            ok = False
-        if not ok:
-            report["complete"] = False
-            report["missing"].append(f"source_secret:{source_chat_id}:{source_msg_id}")
-    return report
-
-def _durable_forward_effect_complete(payload: dict, expected: dict | None = None) -> bool:
-    """Verify only forwarding effects explicitly expected for this task."""
-    expected = expected if isinstance(expected, dict) else _durable_expected_effects(payload)
-    report = _durable_effect_report(payload, expected)
-    # This helper intentionally considers only forwarding-related problems.
-    for item in (report.get("missing") or []) + (report.get("ambiguous") or []):
-        if str(item).startswith("forward"):
-            return False
-    return True
-
-def _durable_secret_effect_complete(payload: dict) -> bool:
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return True
-    text = str(raw.get("text") or raw.get("caption") or "")
-    secret_expected = False
-    try:
-        secret_expected = bool(is_total_secret_mode(source_chat_id))
-    except Exception:
-        pass
-    if not secret_expected:
-        try:
-            marked, _cleaned = _extract_secret_codeword(text)
-            secret_expected = bool(marked)
-        except Exception:
-            secret_expected = False
-    if not secret_expected:
-        return True
-    try:
-        return any(int(r.get("source_msg_id") or 0) == int(source_msg_id) for r in _secret_records(source_chat_id) if isinstance(r, dict))
-    except Exception:
-        return False
-
-
-def _durable_direct_finance_effect_complete(payload: dict, expected: dict | None = None) -> bool:
-    expected = expected if isinstance(expected, dict) else _durable_expected_effects(payload)
-    if not bool(expected.get("source_finance")):
-        return True
-    _raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    if source_chat_id is None or source_msg_id is None:
-        return True
-    try:
-        return find_record_by_message_id(source_chat_id, source_msg_id) is not None
-    except Exception:
-        return False
-
-def _durable_media_group_in_memory(payload: dict) -> bool:
-    _raw, source_chat_id, _source_msg_id, group_id = _durable_payload_message(payload)
-    if source_chat_id is None or not group_id:
-        return False
-    key = (int(source_chat_id), str(group_id))
-    try:
-        if key in _media_group_cache or key in _media_group_timers:
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _durable_payload_to_message(payload: dict):
-    """Recreate the Telegram Message object from the persisted raw update."""
-    try:
-        update = telebot.types.Update.de_json(payload)
-        for attr in ("message", "edited_message", "channel_post", "edited_channel_post"):
-            msg = getattr(update, attr, None)
-            if msg is not None:
-                return msg
-    except Exception as e:
-        log_error(f"DURABLE payload->message: {e}")
-    return None
-
-
-def _repair_missing_durable_forward(payload: dict) -> bool:
-    """Best-effort repair of missing forwarding directions without duplicating delivered ones.
-
-    Albums are normally sent together by the 0.8s collector. If that collector vanished because
-    Render deployed, each persisted album part can be resent individually to only the missing
-    destinations. The important invariant is no lost message; already-linked destinations are skipped.
-    """
-    raw, source_chat_id, source_msg_id, group_id = _durable_payload_message(payload)
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return True
-    targets = _durable_forward_targets(source_chat_id)
-    if not targets:
-        return True
-    # While the normal album collector still exists, let it preserve the album grouping.
-    if group_id and _durable_media_group_in_memory(payload):
-        return False
-    links = {}
-    try:
-        links = {int(dst): int(mid) for dst, mid in get_forward_links(source_chat_id, source_msg_id)}
-    except Exception:
-        links = {}
-    missing = [(int(dst), mode, bool(fin)) for dst, mode, fin in targets if int(dst) not in links]
-    if not missing:
-        return True
-    msg = _durable_payload_to_message(payload)
-    if msg is None:
-        return False
-    all_ok = True
-    for dst_chat_id, _mode, finance_enabled in missing:
-        try:
-            result = _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
-            if not result:
-                all_ok = False
-        except Exception as e:
-            all_ok = False
-            log_error(f"DURABLE FORWARD REPAIR {source_chat_id}:{source_msg_id}->{dst_chat_id}: {e}")
-    return bool(all_ok and _durable_forward_effect_complete(payload))
-
-
 def wait_durable_subtasks(chat_id, timeout: float = 20.0) -> bool:
-    """Drain state-changing child queues already spawned by the current content update."""
+    """Drain state-changing child queues already spawned by the current content update.
+
+    Forwarding is the important one: the message handler intentionally delegates it to
+    FORWARD_TASK_POOL, so declaring the MEGA task done before that worker finishes would
+    recreate the exact deploy-loss window v105 is meant to close.
+    """
     if chat_id is None:
         return True
     key = int(chat_id)
@@ -6460,121 +5927,46 @@ def wait_durable_subtasks(chat_id, timeout: float = 20.0) -> bool:
     return True
 
 
-def finalize_durable_task_after_business(update_id, chat_id, update_type: str = "other", payload: dict | None = None, expected_effects: dict | None = None) -> bool:
-    """Commit a task only after its explicitly-declared effects are visible.
-
-    v109 is verification-only here. It never replays the business handler and never sends
-    a missing Telegram copy from the finalizer. Missing/ambiguous effects stay recoverable
-    without producing duplicate finance records or duplicate forwarded messages.
-    """
+def finalize_durable_task_after_business(update_id, chat_id, update_type: str = "other") -> bool:
+    """Business is already complete: persist marker+all changes in one critical delta, then mark task done."""
     key = _mega_task_id(update_id)
     if not wait_durable_subtasks(chat_id, timeout=20.0):
         return False
-    callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
-    expected = expected_effects if isinstance(expected_effects, dict) else (_durable_expected_effects(payload) if isinstance(payload, dict) else {})
-    if isinstance(payload, dict) and callback_target is None:
-        report = _durable_effect_report(payload, expected)
-        if not bool(report.get("complete")):
-            bot_journal("durable_effects_pending", chat_id, f"update_id={key} missing={report.get('missing')} ambiguous={report.get('ambiguous')}")
-            return False
     try:
         mark_durable_update_processed(key, chat_id, update_type)
     except Exception as e:
         log_error(f"DURABLE MARKER FAILED update={key}: {e}")
         return False
     try:
-        critical_chats = set()
         if chat_id is None:
-            if OWNER_ID:
-                critical_chats.add(int(OWNER_ID))
+            # Persist root marker via a full delta pass over owner/current chat when possible.
+            cid = int(OWNER_ID) if OWNER_ID else None
         else:
-            critical_chats.add(int(chat_id))
-        if callback_target is not None:
-            critical_chats.add(int(callback_target))
-        for target in expected.get("forward_targets", []) or []:
-            try:
-                critical_chats.add(int(target.get("dst_chat_id")))
-            except Exception:
-                pass
-        if not critical_chats:
-            log_error(f"DURABLE CRITICAL DELTA FAILED update={key}: no chat scope")
+            cid = int(chat_id)
+        if cid is None or not persist_critical_delta_now(cid):
+            log_error(f"DURABLE CRITICAL DELTA FAILED update={key} chat={chat_id}")
             return False
-        for cid in sorted(critical_chats):
-            if not persist_critical_delta_now(cid):
-                log_error(f"DURABLE CRITICAL DELTA FAILED update={key} chat={cid}")
-                return False
     except Exception as e:
         log_error(f"DURABLE CRITICAL DELTA ERROR update={key}: {e}")
         return False
     return mega_task_finish(key, True)
 
-def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = "other", delay: float = 5.0, payload: dict | None = None, expected_effects: dict | None = None):
-    """Short verification-only retry. Never repeats business effects."""
+
+def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = "other", delay: float = 5.0):
     key = _mega_task_id(update_id)
-    payload_copy = _delta_json_clone(payload or {}) if isinstance(payload, dict) else None
-    expected_copy = _delta_json_clone(expected_effects or {}) if isinstance(expected_effects, dict) else None
-    attempts = {"n": 0}
     def _job():
         if mega_task_known_state(key) == "done":
             return
-        attempts["n"] += 1
-        if finalize_durable_task_after_business(key, chat_id, update_type, payload=payload_copy, expected_effects=expected_copy):
-            return
-        if attempts["n"] >= 3:
-            report = _durable_effect_report(payload_copy or {}, expected_copy or {}) if payload_copy else {}
-            reason = f"needs_review: durable effects not proven; missing={report.get('missing', [])}; ambiguous={report.get('ambiguous', [])}"
-            mega_task_finish(key, False, reason)
-            try:
-                if OWNER_ID:
-                    bot.send_message(int(OWNER_ID), f"⚠️ Задача {key} НЕ повторена автоматически и сохранена в MEGA/failed.\n{reason[:850]}")
-            except Exception:
-                pass
-            return
-        DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", 2.0 if payload_copy else 5.0, _job)
+        if not finalize_durable_task_after_business(key, chat_id, update_type):
+            # Keep retry bounded in frequency; the task remains running in MEGA and will also be
+            # checked after deploy. Re-scheduling is harmless because the business is NOT rerun here.
+            DELAYED_SCHEDULER.schedule(
+                f"mega-task-finalize:{key}",
+                15.0,
+                _job,
+            )
     DELAYED_SCHEDULER.cancel(f"mega-task-finalize:{key}")
     DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", max(0.5, float(delay)), _job)
-
-
-_TELEGRAM_UPDATE_CONTEXT = threading.local()
-
-
-def _current_telegram_update_context() -> dict:
-    try:
-        return dict(getattr(_TELEGRAM_UPDATE_CONTEXT, "value", {}) or {})
-    except Exception:
-        return {}
-
-
-def _durable_callback_target_chat(payload: dict) -> int | None:
-    """Only rare state-changing finance-window callbacks get cloud-task latency.
-
-    Navigation callbacks stay fast. These toggles are protected because replaying a toggle twice
-    after deploy could otherwise reverse the user's choice.
-    """
-    try:
-        cb = payload.get("callback_query") if isinstance(payload, dict) else None
-        if not isinstance(cb, dict):
-            return None
-        data_str = str(cb.get("data") or "")
-        msg = cb.get("message") or {}
-        chat_id = int(((msg.get("chat") or {}).get("id")))
-        if data_str == "info_finance_off" or data_str.startswith("main_close:"):
-            return chat_id
-        if not data_str.startswith("d:"):
-            return None
-        parts = data_str.split(":", 2)
-        if len(parts) < 3:
-            return None
-        cmd = parts[2]
-        prefixes = (
-            "qb_mode_normal_", "qb_mode_open_", "qb_mode_first_",
-            "qb_hidden_toggle_", "fin_mode_toggle_", "fin_mode_off_",
-        )
-        if not cmd.startswith(prefixes):
-            return None
-        return int(cmd.rsplit("_", 1)[1])
-    except Exception:
-        return None
 
 
 def durable_task_required(payload: dict) -> tuple[bool, str]:
@@ -6593,10 +5985,10 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
         msg = payload.get(key)
         if not isinstance(msg, dict):
             continue
-        media_group_id = str(msg.get("media_group_id") or "").strip()
-        # v106: albums are NOT allowed to live only in the 0.8s RAM collector.
-        # Classification continues below; when the chat has forwarding/finance/secret/wait state,
-        # each album part gets its own MEGA task before Telegram receives 2xx.
+        if msg.get("media_group_id"):
+            # Albums have their own delayed collector; keep their existing Telegram retry semantics
+            # rather than falsely marking one album part done before the collector fires.
+            return False, f"{key}:media_group_webhook_retry"
         text = str(msg.get("text") or msg.get("caption") or "").strip()
         first = text.split(maxsplit=1)[0].lower() if text else ""
         read_only_commands = {
@@ -6637,38 +6029,32 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
                     for k, v in (store or {}).items()
                 )
                 if waiting:
-                    return True, f"{key}:input_wait" + (":media_group" if media_group_id else "")
+                    return True, f"{key}:input_wait"
             except Exception:
                 pass
             try:
                 if is_finance_mode(chat_id):
-                    return True, f"{key}:finance" + (":media_group" if media_group_id else "")
+                    return True, f"{key}:finance"
             except Exception:
                 pass
             try:
                 if resolve_forward_targets(chat_id):
-                    ctype = _durable_raw_content_type(msg)
-                    # v107: every content-bearing update in a forwarding source gets a MEGA witness
-                    # before execution, irrespective of photo/video/audio/location/etc.
-                    return True, f"{key}:forward_all:{ctype}" + (":media_group" if media_group_id else "")
+                    return True, f"{key}:forward"
             except Exception:
                 pass
             try:
                 if is_total_secret_mode(chat_id):
-                    return True, f"{key}:secret" + (":media_group" if media_group_id else "")
+                    return True, f"{key}:secret"
             except Exception:
                 pass
 
         # Ordinary chat/navigation text does not need cloud task persistence.
         return False, f"{key}:noncritical_content"
 
-    # Navigation callbacks stay fast. Only the rare F39 finance/window mutations and the
-    # main-window close are write-before-execute durable tasks; they also get a persisted
-    # update-id marker, so Telegram retry after a deploy cannot toggle the setting twice.
+    # Callback-кнопки намеренно НЕ кладём в MEGA-task: большинство из них навигация/переключатели,
+    # а часть запускает свои фоновые очереди. Их защищает v104 webhook retry, зато кнопки не получают
+    # дополнительных сетевых задержек MEGA и не возникает риск повторного toggle после deploy.
     if isinstance(payload.get("callback_query"), dict):
-        target_chat = _durable_callback_target_chat(payload)
-        if target_chat is not None:
-            return True, f"callback:critical_finance_window:{target_chat}"
         return False, "callback:webhook_retry_only"
     return False, "noncritical_update"
 
@@ -6690,12 +6076,9 @@ def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type
                 context["current_view_day"] = str(store.get("current_view_day"))
         except Exception as e:
             log_error(f"MEGA TASK context capture update={key}: {e}")
-    callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
-    if callback_target is not None:
-        context["callback_target_chat_id"] = int(callback_target)
     return {
         "kind": "telegram_bot_durable_task",
-        "schema_version": 4,
+        "schema_version": 2,
         "bot_version": VERSION,
         "task_id": key,
         "update_id": int(update_id) if str(update_id).lstrip("-").isdigit() else str(update_id),
@@ -6703,16 +6086,6 @@ def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type
         "chat_id": chat_id,
         "update_type": str(update_type or "other"),
         "reason": str(reason or "critical_update"),
-        "source_message_id": (_durable_payload_message(payload)[2] if isinstance(payload, dict) else None),
-        "media_group_id": (_durable_payload_message(payload)[3] if isinstance(payload, dict) else None),
-        "content_type": _durable_raw_content_type(_durable_payload_message(payload)[0] if isinstance(payload, dict) else None),
-        # Diagnostic snapshot: lets us see exactly which directions existed when Telegram update arrived.
-        # Runtime completion still validates current persisted links, so old task files stay compatible.
-        "forward_targets": [
-            {"dst_chat_id": int(dst), "mode": str(mode), "finance_enabled": bool(fin)}
-            for dst, mode, fin in _durable_forward_targets(_durable_payload_message(payload)[1] if isinstance(payload, dict) else None)
-        ],
-        "expected_effects": _durable_expected_effects(payload if isinstance(payload, dict) else {}),
         "context": context,
         "payload": _delta_json_clone(payload or {}),
     }
@@ -6964,98 +6337,54 @@ def mega_task_refresh_registry() -> dict:
         return mega_task_registry_stats()
 
 
-def _mega_task_effect_exists(payload: dict, expected_effects: dict | None = None) -> bool:
-    """True only if every explicitly expected effect is already proven."""
+def _mega_task_effect_exists(payload: dict) -> bool:
+    """Conservative duplicate guard for the most dangerous case: finance/forward message replay."""
     try:
-        report = _durable_effect_report(payload, expected_effects if isinstance(expected_effects, dict) else None)
-        return bool(report.get("complete"))
+        msg = None
+        for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
+            if isinstance((payload or {}).get(key), dict):
+                msg = payload[key]
+                break
+        if not isinstance(msg, dict):
+            return False
+        source_chat = int(((msg.get("chat") or {}).get("id")))
+        source_msg = int(msg.get("message_id") or 0)
+        if not source_msg:
+            return False
+        for cid_s, store in ((data or {}).get("chats", {}) or {}).items():
+            if not isinstance(store, dict):
+                continue
+            for rec in (store.get("records", []) or []):
+                if not isinstance(rec, dict):
+                    continue
+                if int(rec.get("forward_source_chat_id") or 0) == source_chat and int(rec.get("forward_source_msg_id") or 0) == source_msg:
+                    return True
+                # direct finance message in its own chat
+                try:
+                    cid = int(cid_s)
+                except Exception:
+                    cid = 0
+                if cid == source_chat and int(rec.get("source_msg_id") or 0) == source_msg:
+                    return True
+        return False
     except Exception:
         return False
 
-
-def _repair_safe_missing_finance_effects(payload: dict, expected_effects: dict | None = None) -> bool:
-    """Repair only finance effects that are intrinsically idempotent in v109.
-
-    Never sends Telegram messages. A forwarded-finance repair is allowed only when the
-    destination Telegram link already exists. Direct finance uses source message_id as its
-    unique operation key, so add_record_to_chat returns the existing record on replay.
-    """
-    expected = expected_effects if isinstance(expected_effects, dict) else _durable_expected_effects(payload)
-    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
-    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
-        return False
-    msg = _durable_payload_to_message(payload)
-    if msg is None:
-        return False
-    if bool(expected.get("source_finance")):
-        try:
-            if find_record_by_message_id(source_chat_id, source_msg_id) is None:
-                handle_finance_text(msg)
-        except Exception as e:
-            log_error(f"DURABLE SAFE DIRECT FINANCE REPAIR {source_chat_id}:{source_msg_id}: {e}")
-    links = {}
-    try:
-        links = {int(dst): int(mid) for dst, mid in get_forward_links(source_chat_id, source_msg_id)}
-    except Exception:
-        links = {}
-    text = _message_text_for_finance(msg)
-    for target in expected.get("forward_targets", []) or []:
-        if not bool(target.get("finance_expected")):
-            continue
-        try:
-            dst = int(target.get("dst_chat_id"))
-        except Exception:
-            continue
-        dst_msg_id = links.get(dst)
-        if not dst_msg_id:
-            continue  # ambiguous Telegram send: never auto-resend
-        try:
-            if find_record_by_message_id(dst, dst_msg_id) is None:
-                owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
-                sync_forwarded_finance_message(dst, dst_msg_id, text, owner_id, source_msg=msg)
-        except Exception as e:
-            log_error(f"DURABLE SAFE FORWARD FINANCE REPAIR {source_chat_id}:{source_msg_id}->{dst}:{dst_msg_id}: {e}")
-    return bool(_durable_effect_report(payload, expected).get("complete"))
 
 def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str = "other"):
     """Single execution path used by live webhook and MEGA startup recovery."""
     update = telebot.types.Update.de_json(payload)
     if update_chat_id is None:
         update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
-    previous_ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
-    critical_callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
-    _TELEGRAM_UPDATE_CONTEXT.value = {
-        "update_id": update_id,
-        "chat_id": update_chat_id,
-        "update_type": str(update_type or "other"),
-        "critical_callback": critical_callback_target is not None,
-        "critical_callback_target": critical_callback_target,
-        "deferred_quick_chats": set(),
-    }
-    try:
-        with state_chat_context(update_chat_id):
-            if update_chat_id is None:
-                bot.process_new_updates([update])
-            else:
-                with locked_chat(update_chat_id):
-                    bot.process_new_updates([update])
-    finally:
-        if previous_ctx is None:
-            try:
-                delattr(_TELEGRAM_UPDATE_CONTEXT, "value")
-            except Exception:
-                pass
+    with state_chat_context(update_chat_id):
+        if update_chat_id is None:
+            bot.process_new_updates([update])
         else:
-            _TELEGRAM_UPDATE_CONTEXT.value = previous_ctx
+            with locked_chat(update_chat_id):
+                bot.process_new_updates([update])
 
 
 def _mega_task_recover_one(update_id, state: str, remote_path: str):
-    """Recover without replaying uncertain `running` business operations.
-
-    pending = business never started -> may execute once.
-    running = business may have partially/fully executed -> inspect and repair only safe
-    idempotent finance effects; never resend Telegram copies and never rerun callbacks/handlers.
-    """
     key = _mega_task_id(update_id)
     if mega_task_known_state(key) == "done":
         return
@@ -7073,37 +6402,26 @@ def _mega_task_recover_one(update_id, state: str, remote_path: str):
         restore_mega_task_context(task)
         chat_id = (task or {}).get("chat_id")
         update_type = str((task or {}).get("update_type") or "recovered")
-        expected = _durable_expected_from_task_or_payload(task, payload)
+        # Strongest duplicate guard: a processed marker restored from global/delta means the
+        # business state was already durably committed before the previous process died.
         if durable_update_processed(key):
             mega_task_finish(key, True, "processed_marker_present")
             with _MEGA_TASK_LOCK:
                 _mega_task_counters["skipped_done"] += 1
             return
-        if state == "running":
-            # First inspect. Then repair finance only where no duplicate Telegram send is possible.
-            if not _mega_task_effect_exists(payload, expected):
-                _repair_safe_missing_finance_effects(payload, expected)
-            if _mega_task_effect_exists(payload, expected):
-                if finalize_durable_task_after_business(key, chat_id, update_type, payload=payload, expected_effects=expected):
-                    with _MEGA_TASK_LOCK:
-                        _mega_task_counters["skipped_done"] += 1
-                return
-            report = _durable_effect_report(payload, expected)
-            reason = f"needs_review_running: business not replayed; missing={report.get('missing', [])}; ambiguous={report.get('ambiguous', [])}"
-            mega_task_finish(key, False, reason)
-            bot_journal("mega_task_needs_review", chat_id, f"update_id={key} {reason}")
-            try:
-                if OWNER_ID:
-                    bot.send_message(int(OWNER_ID), f"⚠️ Задача {key} после перезапуска НЕ повторена, чтобы не создать дубль.\n{reason[:850]}")
-            except Exception:
-                pass
+        # Older/in-between running tasks may predate the marker. Finance/forward records have
+        # enough evidence to prove the effect exists; persist a marker before declaring done.
+        if state == "running" and _mega_task_effect_exists(payload):
+            if finalize_durable_task_after_business(key, chat_id, update_type):
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters["skipped_done"] += 1
+            else:
+                schedule_durable_task_finalize_retry(key, chat_id, update_type, 5.0)
             return
-        # A persisted `pending` task was never claimed by a worker: this is the only recovery
-        # state where executing the original handler is safe.
         _execute_telegram_payload(payload, key, chat_id, update_type)
-        finalized = finalize_durable_task_after_business(key, chat_id, update_type, payload=payload, expected_effects=expected)
+        finalized = finalize_durable_task_after_business(key, chat_id, update_type)
         if not finalized:
-            schedule_durable_task_finalize_retry(key, chat_id, update_type, 1.0, payload=payload, expected_effects=expected)
+            schedule_durable_task_finalize_retry(key, chat_id, update_type, 5.0)
         with _MEGA_TASK_LOCK:
             _mega_task_counters["recovered"] += 1
         bot_journal("mega_task_recovered", chat_id, f"update_id={key} state={state} finalized={finalized}")
@@ -7115,6 +6433,7 @@ def _mega_task_recover_one(update_id, state: str, remote_path: str):
                 bot.send_message(int(OWNER_ID), f"⚠️ MEGA-задача {key} не восстановлена автоматически:\n{str(e)[:700]}")
         except Exception:
             pass
+
 
 def schedule_mega_task_recovery(delay: float | None = None):
     """After data restore, replay pending/uncertain tasks independently of normal bot queues."""
@@ -7154,27 +6473,6 @@ def mega_task_requeue_failed(limit: int = 20) -> int:
         schedule_mega_task_recovery(0.3)
     return moved
 
-
-
-def schedule_restored_secret_media_recovery(delay: float = 3.0):
-    """After deploy, resume secret-media uploads whose record survived but MEGA media did not."""
-    def _job():
-        try:
-            for cid in secret_chats():
-                try:
-                    pending_media = any(
-                        isinstance(r, dict) and r.get("file_id") and not r.get("mega_media_path")
-                        for r in _secret_records(cid)
-                    )
-                    if pending_media:
-                        if not BACKUP_TASK_POOL.submit(f"secret-media-recover:{cid}", upload_chat_secrets_to_mega, cid):
-                            schedule_secret_mega_upload(cid, BACKUP_BUSY_RETRY_SECONDS)
-                except Exception as e:
-                    log_error(f"SECRET MEDIA RECOVERY chat={cid}: {e}")
-        except Exception as e:
-            log_error(f"schedule_restored_secret_media_recovery: {e}")
-    DELAYED_SCHEDULER.cancel("secret-media-startup-recovery")
-    DELAYED_SCHEDULER.schedule("secret-media-startup-recovery", max(0.5, float(delay)), _job)
 
 def current_month_key() -> str:
     return now_local().strftime("%Y-%m")
@@ -8288,694 +7586,6 @@ def _mega_download_remote_path(remote_path: str) -> str | None:
         log_error(f"_mega_download_remote_path({remote_path}): {e}")
     return None
 
-
-
-# ─────────────────────────────────────────────────────────────
-# v108: BOOT / SHUTDOWN protection + maximum Render/runtime watcher
-# ─────────────────────────────────────────────────────────────
-try:
-    GRACEFUL_SHUTDOWN_SECONDS = max(5.0, min(240.0, float(os.getenv("GRACEFUL_SHUTDOWN_SECONDS", "25") or "25")))
-except Exception:
-    GRACEFUL_SHUTDOWN_SECONDS = 25.0
-try:
-    BOOT_SYNC_RECOVERY_SECONDS = max(5.0, min(180.0, float(os.getenv("BOOT_SYNC_RECOVERY_SECONDS", "45") or "45")))
-except Exception:
-    BOOT_SYNC_RECOVERY_SECONDS = 45.0
-try:
-    BOOT_RECOVERY_RETRY_SECONDS = max(1.0, min(60.0, float(os.getenv("BOOT_RECOVERY_RETRY_SECONDS", "5") or "5")))
-except Exception:
-    BOOT_RECOVERY_RETRY_SECONDS = 5.0
-try:
-    RUNTIME_WATCHER_HISTORY_KEEP = max(20, min(500, int(os.getenv("RUNTIME_WATCHER_HISTORY_KEEP", "100") or "100")))
-except Exception:
-    RUNTIME_WATCHER_HISTORY_KEEP = 100
-try:
-    RUNTIME_WATCHER_HEARTBEAT_SECONDS = max(60.0, min(3600.0, float(os.getenv("RUNTIME_WATCHER_HEARTBEAT_SECONDS", "300") or "300")))
-except Exception:
-    RUNTIME_WATCHER_HEARTBEAT_SECONDS = 300.0
-
-_RUNTIME_LOCK = threading.RLock()
-_RUNTIME_SHUTDOWN_LOCK = threading.Lock()
-_RUNTIME_EVENTS = deque(maxlen=120)
-_RUNTIME_PREVIOUS = {}
-_RUNTIME_REMOTE_DIR_NAME = "runtime"
-_RUNTIME_LATEST_NAME = "runtime_latest.json"
-_RUNTIME_STARTED_MONO = time.monotonic()
-_RUNTIME_STARTED_AT = now_local().isoformat(timespec="seconds")
-_RUNTIME_STATE = {
-    "phase": "module_loaded",
-    "ready": False,
-    "shutting_down": False,
-    "started_at": _RUNTIME_STARTED_AT,
-    "ready_at": "",
-    "boot_completed_at": "",
-    "boot_duration_seconds": None,
-    "restore_attempted": False,
-    "restore_ok": None,
-    "restore_detail": "",
-    "task_recovery_started_at": "",
-    "task_recovery_finished_at": "",
-    "task_recovery_remaining": 0,
-    "task_recovery_recovered": 0,
-    "last_webhook_at": "",
-    "last_webhook_update_id": "",
-    "last_webhook_type": "",
-    "last_webhook_chat_id": None,
-    "webhook_received": 0,
-    "webhook_blocked_boot": 0,
-    "webhook_blocked_shutdown": 0,
-    "shutdown_started_at": "",
-    "shutdown_finished_at": "",
-    "shutdown_signal": "",
-    "shutdown_drain_ok": None,
-    "shutdown_delta_ok": None,
-    "last_error": "",
-    "previous_reason": "first_seen",
-}
-
-
-def _runtime_render_env() -> dict:
-    keys = (
-        "RENDER_INSTANCE_ID", "RENDER_GIT_COMMIT", "RENDER_SERVICE_ID",
-        "RENDER_SERVICE_NAME", "RENDER_SERVICE_TYPE", "RENDER_REGION",
-        "RENDER_EXTERNAL_HOSTNAME",
-    )
-    return {k: str(os.getenv(k, "") or "") for k in keys}
-
-
-def runtime_event(name: str, detail: str = "", level: str = "INFO"):
-    row = {
-        "ts": now_local().isoformat(timespec="milliseconds"),
-        "event": str(name or "event"),
-        "detail": str(detail or "")[:1000],
-        "level": str(level or "INFO")[:16],
-    }
-    with _RUNTIME_LOCK:
-        _RUNTIME_EVENTS.append(row)
-        _RUNTIME_STATE["last_event_at"] = row["ts"]
-        _RUNTIME_STATE["last_event"] = row["event"]
-        if level.upper() in {"ERROR", "CRITICAL"}:
-            _RUNTIME_STATE["last_error"] = row["detail"]
-    try:
-        bot_journal("runtime_" + row["event"], None, row["detail"], level)
-    except Exception:
-        pass
-
-
-def runtime_set_phase(phase: str, detail: str = ""):
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["phase"] = str(phase)
-    runtime_event("phase", f"{phase}: {detail}" if detail else str(phase))
-
-
-def runtime_is_ready() -> bool:
-    with _RUNTIME_LOCK:
-        return bool(_RUNTIME_STATE.get("ready")) and not bool(_RUNTIME_STATE.get("shutting_down"))
-
-
-def runtime_is_shutting_down() -> bool:
-    with _RUNTIME_LOCK:
-        return bool(_RUNTIME_STATE.get("shutting_down"))
-
-
-def _runtime_memory_stats() -> dict:
-    out = {"rss_mb": None, "peak_rss_mb": None, "limit_mb": None, "rss_percent_limit": None}
-    try:
-        status = Path("/proc/self/status").read_text(errors="ignore") if os.path.exists("/proc/self/status") else ""
-        for line in status.splitlines():
-            if line.startswith("VmRSS:"):
-                out["rss_mb"] = round(float(line.split()[1]) / 1024.0, 1)
-            elif line.startswith("VmHWM:"):
-                out["peak_rss_mb"] = round(float(line.split()[1]) / 1024.0, 1)
-    except Exception:
-        pass
-    # Render runs in a cgroup.  Read the real container limit instead of hard-coding 512 MB.
-    try:
-        raw = None
-        for candidate in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
-            if os.path.exists(candidate):
-                raw = Path(candidate).read_text(errors="ignore").strip()
-                if raw:
-                    break
-        if raw and raw.lower() != "max":
-            limit = int(raw)
-            # Ignore host-sized sentinel values from old cgroup implementations.
-            if 0 < limit < (1 << 60):
-                out["limit_mb"] = round(limit / 1024.0 / 1024.0, 1)
-                if out.get("rss_mb") is not None and out["limit_mb"] > 0:
-                    out["rss_percent_limit"] = round(100.0 * float(out["rss_mb"]) / float(out["limit_mb"]), 1)
-    except Exception:
-        pass
-    return out
-
-
-def _runtime_disk_stats() -> dict:
-    try:
-        usage = shutil.disk_usage(os.getcwd())
-        return {
-            "total_mb": round(usage.total / 1024 / 1024, 1),
-            "used_mb": round(usage.used / 1024 / 1024, 1),
-            "free_mb": round(usage.free / 1024 / 1024, 1),
-        }
-    except Exception:
-        return {"total_mb": None, "used_mb": None, "free_mb": None}
-
-
-def _runtime_pool_stats() -> dict:
-    pools = (
-        WEBHOOK_TASK_POOL, FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL,
-        BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, JOURNAL_TASK_POOL,
-        DELAYED_TASK_POOL, DOZVON_TASK_POOL,
-    )
-    return {p.name: p.stats() for p in pools}
-
-
-def runtime_snapshot(extra: dict | None = None) -> dict:
-    with _RUNTIME_LOCK:
-        state = dict(_RUNTIME_STATE)
-        events = list(_RUNTIME_EVENTS)
-        previous = dict(_RUNTIME_PREVIOUS) if isinstance(_RUNTIME_PREVIOUS, dict) else {}
-    snap = {
-        "kind": "telegram_bot_runtime_watcher",
-        "schema_version": 1,
-        "bot_version": VERSION,
-        "captured_at": now_local().isoformat(timespec="milliseconds"),
-        "state": state,
-        "render": _runtime_render_env(),
-        "process": {
-            "pid": os.getpid(),
-            "hostname": socket.gethostname(),
-            "python": sys.version.split()[0],
-            "platform": platform.platform(),
-            "threads": threading.active_count(),
-            "uptime_seconds": round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3),
-            **_runtime_memory_stats(),
-        },
-        "disk": _runtime_disk_stats(),
-        "queues": _runtime_pool_stats(),
-        "delayed": DELAYED_SCHEDULER.stats(),
-        "mega_tasks": mega_task_registry_stats() if "mega_task_registry_stats" in globals() else {},
-        "delta": {
-            "pending_chats": len(_delta_pending_chats) if "_delta_pending_chats" in globals() else 0,
-            "last_success_at": globals().get("_delta_last_success_at", ""),
-            "last_file": globals().get("_delta_last_file", ""),
-            "last_event_count": globals().get("_delta_last_event_count", 0),
-            "last_error": globals().get("_delta_last_error", ""),
-        },
-        "keep_alive": dict(KEEP_ALIVE_STATE) if "KEEP_ALIVE_STATE" in globals() else {},
-        "previous_runtime": previous,
-        "events": events,
-    }
-    if extra:
-        snap["extra"] = _delta_json_clone(extra)
-    return snap
-
-
-def runtime_remote_dir() -> str:
-    return f"{MEGA_BACKUP_DIR.rstrip('/')}/{_RUNTIME_REMOTE_DIR_NAME}"
-
-
-def runtime_latest_remote_path() -> str:
-    return f"{runtime_remote_dir().rstrip('/')}/{_RUNTIME_LATEST_NAME}"
-
-
-def runtime_load_previous_snapshot() -> dict:
-    global _RUNTIME_PREVIOUS
-    if not mega_is_configured():
-        return {}
-    local = None
-    try:
-        mega_ensure_remote_path(runtime_remote_dir())
-        local = _mega_download_remote_path(runtime_latest_remote_path())
-        prev = _load_json(local, {}) if local else {}
-        if not isinstance(prev, dict):
-            prev = {}
-        with _RUNTIME_LOCK:
-            _RUNTIME_PREVIOUS = prev
-        return prev
-    except Exception as e:
-        runtime_event("previous_snapshot_error", str(e), "WARN")
-        return {}
-    finally:
-        try:
-            if local:
-                shutil.rmtree(os.path.dirname(local), ignore_errors=True)
-        except Exception:
-            pass
-
-
-def _runtime_parse_ts(value):
-    try:
-        text = str(value or "").strip()
-        if not text:
-            return None
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def _runtime_seconds_between(a, b):
-    da, db = _runtime_parse_ts(a), _runtime_parse_ts(b)
-    if not da or not db:
-        return None
-    try:
-        # Avoid aware/naive mismatch from historical watcher files.
-        if (da.tzinfo is None) != (db.tzinfo is None):
-            da = da.replace(tzinfo=None)
-            db = db.replace(tzinfo=None)
-        return (db - da).total_seconds()
-    except Exception:
-        return None
-
-
-def runtime_classify_previous(prev: dict) -> str:
-    """Best-effort diagnosis. It deliberately says *probable* when Render provides no exact reason."""
-    if not isinstance(prev, dict) or not prev:
-        return "first_seen"
-    prev_state = prev.get("state") or {}
-    prev_render = prev.get("render") or {}
-    cur_render = _runtime_render_env()
-    prev_commit = str(prev_render.get("RENDER_GIT_COMMIT") or "")
-    cur_commit = str(cur_render.get("RENDER_GIT_COMMIT") or "")
-    prev_instance = str(prev_render.get("RENDER_INSTANCE_ID") or "")
-    cur_instance = str(cur_render.get("RENDER_INSTANCE_ID") or "")
-    graceful = bool(prev_state.get("shutdown_finished_at")) or str(prev_state.get("phase") or "") in {"stopped", "shutdown_complete"}
-    signal_name = str(prev_state.get("shutdown_signal") or "")
-
-    # A new git SHA is the strongest local evidence of a code deploy.
-    if prev_commit and cur_commit and prev_commit != cur_commit:
-        return "deploy_new_commit_graceful" if graceful else "deploy_new_commit_ungraceful"
-
-    # Estimate whether the previous service had already been idle around Render's free-tier sleep window.
-    last_webhook = prev_state.get("last_webhook_at")
-    shutdown_at = prev_state.get("shutdown_started_at") or prev.get("captured_at")
-    idle_before_shutdown = _runtime_seconds_between(last_webhook, shutdown_at)
-    idle_to_new_start = _runtime_seconds_between(last_webhook, _RUNTIME_STARTED_AT)
-    probable_idle = bool(
-        (idle_before_shutdown is not None and idle_before_shutdown >= 13.5 * 60)
-        or (not graceful and idle_to_new_start is not None and idle_to_new_start >= 13.5 * 60)
-    )
-
-    if graceful:
-        if probable_idle and signal_name in {"SIGTERM", ""}:
-            return "probable_render_idle_spin_down_graceful"
-        if signal_name == "SIGINT":
-            return "manual_or_local_stop_same_commit"
-        return "planned_restart_same_commit"
-    if prev_instance and cur_instance and prev_instance != cur_instance:
-        if probable_idle:
-            return "probable_render_idle_spin_down_or_idle_restart"
-        return "new_instance_same_commit_crash_restart_or_maintenance"
-    return "process_restart_or_unknown"
-
-
-def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = True) -> bool:
-    if not mega_is_configured():
-        return False
-    tmp = None
-    try:
-        snap = runtime_snapshot({"event": event})
-        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
-        safe_event = mega_safe_name(event, "event")
-        tmp = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_{stamp}_{safe_event}.json")
-        _atomic_json_dump(tmp, snap)
-        mega_ensure_remote_path(runtime_remote_dir())
-        ok = mega_put_replace(tmp, runtime_remote_dir(), _RUNTIME_LATEST_NAME)
-        if immutable_event:
-            events_dir = runtime_remote_dir().rstrip("/") + "/events"
-            mega_ensure_remote_path(events_dir)
-            event_local = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_{stamp}_{safe_event}.json")
-            if event_local != tmp:
-                shutil.copy2(tmp, event_local)
-            _mega_run("mega-put", [event_local, events_dir], check=True, timeout=MEGA_TIMEOUT)
-            try:
-                _mega_prune_remote_history(events_dir, "runtime_*.json", RUNTIME_WATCHER_HISTORY_KEEP)
-            except Exception:
-                pass
-        return bool(ok)
-    except Exception as e:
-        runtime_event("watcher_mega_error", str(e), "WARN")
-        return False
-    finally:
-        try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-
-
-def runtime_mark_webhook(payload: dict | None = None, blocked: str = ""):
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["webhook_received"] = int(_RUNTIME_STATE.get("webhook_received", 0) or 0) + 1
-        _RUNTIME_STATE["last_webhook_at"] = now_local().isoformat(timespec="milliseconds")
-        if blocked == "boot":
-            _RUNTIME_STATE["webhook_blocked_boot"] = int(_RUNTIME_STATE.get("webhook_blocked_boot", 0) or 0) + 1
-        elif blocked == "shutdown":
-            _RUNTIME_STATE["webhook_blocked_shutdown"] = int(_RUNTIME_STATE.get("webhook_blocked_shutdown", 0) or 0) + 1
-        if isinstance(payload, dict):
-            _RUNTIME_STATE["last_webhook_update_id"] = payload.get("update_id", "")
-            if "edited_message" in payload:
-                typ = "edited_message"
-            elif "message" in payload:
-                typ = "message"
-            elif "callback_query" in payload:
-                typ = "callback_query"
-            elif "channel_post" in payload:
-                typ = "channel_post"
-            elif "edited_channel_post" in payload:
-                typ = "edited_channel_post"
-            else:
-                typ = "other"
-            _RUNTIME_STATE["last_webhook_type"] = typ
-            try:
-                _RUNTIME_STATE["last_webhook_chat_id"] = _extract_update_chat_id(payload)
-            except Exception:
-                pass
-
-
-def _runtime_watcher_should_yield_to_critical_mega() -> bool:
-    """Watcher is diagnostic and must never intentionally compete with business persistence."""
-    try:
-        for pool in (DELTA_TASK_POOL, BACKUP_TASK_POOL):
-            st = pool.stats() or {}
-            if int(st.get("pending", 0) or 0) > 0 or int(st.get("active", 0) or 0) > 0:
-                return True
-        mt = mega_task_registry_stats() or {}
-        if int(mt.get("processing", 0) or 0) > 0:
-            return True
-    except Exception:
-        return False
-    return False
-
-
-def _runtime_heartbeat_job():
-    if runtime_is_shutting_down():
-        return
-    next_delay = RUNTIME_WATCHER_HEARTBEAT_SECONDS
-    try:
-        if _runtime_watcher_should_yield_to_critical_mega():
-            runtime_event("watcher_heartbeat_deferred", "critical MEGA work has priority")
-            next_delay = min(60.0, RUNTIME_WATCHER_HEARTBEAT_SECONDS)
-        else:
-            GENERAL_TASK_POOL.submit("runtime-heartbeat-upload", runtime_upload_snapshot, "heartbeat", False)
-    finally:
-        try:
-            DELAYED_SCHEDULER.schedule("runtime-heartbeat", next_delay, _runtime_heartbeat_job)
-        except Exception:
-            pass
-
-
-def runtime_mark_ready(detail: str = ""):
-    with _RUNTIME_LOCK:
-        if _RUNTIME_STATE.get("ready"):
-            return
-        _RUNTIME_STATE["ready"] = True
-        _RUNTIME_STATE["phase"] = "ready"
-        _RUNTIME_STATE["ready_at"] = now_local().isoformat(timespec="seconds")
-        _RUNTIME_STATE["boot_completed_at"] = _RUNTIME_STATE["ready_at"]
-        _RUNTIME_STATE["boot_duration_seconds"] = round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3)
-    runtime_event("ready", detail or "BOOT completed")
-    # Watcher is diagnostic only: a MEGA error here must not make the bot unavailable.
-    GENERAL_TASK_POOL.submit("runtime-ready-snapshot", runtime_upload_snapshot, "boot_ready", True)
-    try:
-        DELAYED_SCHEDULER.schedule("runtime-heartbeat", RUNTIME_WATCHER_HEARTBEAT_SECONDS, _runtime_heartbeat_job)
-    except Exception:
-        pass
-    # Recreate only the automatic finance windows that were persisted as open.
-    if not RESTORE_GUARD_ACTIVE:
-        try:
-            schedule_startup_main_windows(delay=1.0)
-        except Exception as e:
-            runtime_event("startup_windows_error", str(e), "WARN")
-    try:
-        schedule_restored_secret_media_recovery(1.5)
-    except Exception as e:
-        runtime_event("secret_media_resume_error", str(e), "WARN")
-
-
-def _runtime_pending_recovery_rows() -> list[tuple[str, str, str]]:
-    rows = []
-    with _MEGA_TASK_LOCK:
-        for key, row in _mega_task_registry.items():
-            if str((row or {}).get("state")) in {"pending", "running"}:
-                rows.append((key, str(row.get("state")), str(row.get("path") or "")))
-    return sorted(rows, key=lambda x: (0, int(x[0])) if str(x[0]).isdigit() else (1, str(x[0])))
-
-
-def runtime_recover_tasks_blocking(max_seconds: float | None = None) -> dict:
-    if not mega_tasks_active():
-        return mega_task_registry_stats()
-    max_seconds = BOOT_SYNC_RECOVERY_SECONDS if max_seconds is None else max(0.0, float(max_seconds))
-    deadline = time.monotonic() + max_seconds
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["task_recovery_started_at"] = now_local().isoformat(timespec="seconds")
-    runtime_set_phase("task_recovery", "восстанавливаю pending/running из MEGA")
-    while time.monotonic() < deadline:
-        stats = mega_task_refresh_registry()
-        rows = _runtime_pending_recovery_rows()
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["task_recovery_remaining"] = len(rows)
-        if not rows:
-            with _RUNTIME_LOCK:
-                _RUNTIME_STATE["task_recovery_finished_at"] = now_local().isoformat(timespec="seconds")
-            return stats
-        progressed = False
-        for key, state, path in rows[:MEGA_TASK_RECOVERY_LIMIT]:
-            if time.monotonic() >= deadline:
-                break
-            before = mega_task_known_state(key)
-            _mega_task_recover_one(key, state, path)
-            after = mega_task_known_state(key)
-            progressed = progressed or after != before
-        if not progressed:
-            time.sleep(0.25)
-    mega_task_refresh_registry()
-    rows = _runtime_pending_recovery_rows()
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["task_recovery_remaining"] = len(rows)
-    return mega_task_registry_stats()
-
-
-def runtime_continue_boot_recovery_background():
-    """Keep webhook gated until old durable tasks are resolved; health endpoint stays alive."""
-    while not runtime_is_shutting_down():
-        try:
-            runtime_recover_tasks_blocking(max_seconds=max(5.0, BOOT_SYNC_RECOVERY_SECONDS))
-            rows = _runtime_pending_recovery_rows() if mega_tasks_active() else []
-            if not rows:
-                runtime_mark_ready("старые MEGA-задачи проверены/восстановлены")
-                return
-            runtime_event("boot_recovery_wait", f"осталось задач: {len(rows)}", "WARN")
-        except Exception as e:
-            runtime_event("boot_recovery_error", str(e), "ERROR")
-        time.sleep(BOOT_RECOVERY_RETRY_SECONDS)
-
-
-def runtime_queue_drain_status() -> dict:
-    critical = (WEBHOOK_TASK_POOL, FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL)
-    stats = {p.name: p.stats() for p in critical}
-    # KeyedTaskPool.pending includes active jobs today, but keep both counters explicit for diagnostics.
-    stats["critical_pending"] = sum(int(v.get("pending", 0) or 0) for v in stats.values() if isinstance(v, dict))
-    stats["critical_active"] = sum(int(v.get("active", 0) or 0) for v in stats.values() if isinstance(v, dict))
-    return stats
-
-
-def _runtime_force_delta_flush() -> bool:
-    """Capture all changed compact chat/root metadata once before a graceful exit."""
-    global _delta_generation
-    if RESTORE_GUARD_ACTIVE or not mega_is_configured():
-        return False
-    try:
-        with _delta_state_lock:
-            for cid in (data.get("chats", {}) or {}).keys():
-                try:
-                    int_cid = int(cid)
-                except Exception:
-                    continue
-                _delta_generation += 1
-                _delta_pending_chats.add(int_cid)
-                _delta_chat_generation[int_cid] = _delta_generation
-        if not _delta_pending_chats:
-            return True
-        return bool(_run_delta_batch())
-    except Exception as e:
-        runtime_event("shutdown_delta_error", str(e), "ERROR")
-        return False
-
-
-def runtime_graceful_shutdown(signal_name: str = "SIGTERM"):
-    with _RUNTIME_LOCK:
-        if _RUNTIME_STATE.get("shutdown_finished_at"):
-            return
-    if not _RUNTIME_SHUTDOWN_LOCK.acquire(blocking=False):
-        return
-    try:
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["shutting_down"] = True
-            _RUNTIME_STATE["ready"] = False
-            _RUNTIME_STATE["phase"] = "shutting_down"
-            _RUNTIME_STATE["shutdown_started_at"] = now_local().isoformat(timespec="seconds")
-            _RUNTIME_STATE["shutdown_signal"] = str(signal_name)
-        runtime_event("shutdown_start", f"signal={signal_name}")
-        try:
-            DELAYED_SCHEDULER.cancel("runtime-heartbeat")
-        except Exception:
-            pass
-
-        deadline = time.monotonic() + GRACEFUL_SHUTDOWN_SECONDS
-        drain_ok = False
-        while time.monotonic() < deadline:
-            drain = runtime_queue_drain_status()
-            if int(drain.get("critical_pending", 0) or 0) <= 0:
-                drain_ok = True
-                break
-            time.sleep(0.05)
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["shutdown_drain_ok"] = bool(drain_ok)
-        runtime_event("shutdown_drain", f"ok={drain_ok}; {runtime_queue_drain_status()}")
-
-        try:
-            save_data(data, full=True)
-        except Exception as e:
-            runtime_event("shutdown_local_save_error", str(e), "ERROR")
-        delta_ok = _runtime_force_delta_flush()
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["shutdown_delta_ok"] = bool(delta_ok)
-            _RUNTIME_STATE["phase"] = "shutdown_complete"
-            _RUNTIME_STATE["shutdown_finished_at"] = now_local().isoformat(timespec="seconds")
-        runtime_event("shutdown_complete", f"delta_ok={delta_ok}; drain_ok={drain_ok}")
-        runtime_upload_snapshot("shutdown", True)
-    finally:
-        _RUNTIME_SHUTDOWN_LOCK.release()
-
-
-def _runtime_signal_handler(signum, frame):
-    try:
-        name = signal.Signals(signum).name
-    except Exception:
-        name = str(signum)
-    try:
-        runtime_graceful_shutdown(name)
-    finally:
-        raise SystemExit(0)
-
-
-def runtime_install_signal_handlers():
-    try:
-        signal.signal(signal.SIGTERM, _runtime_signal_handler)
-        signal.signal(signal.SIGINT, _runtime_signal_handler)
-        runtime_event("signal_handlers", "SIGTERM/SIGINT installed")
-    except Exception as e:
-        runtime_event("signal_handler_error", str(e), "WARN")
-
-
-def _fmt_runtime_age(seconds) -> str:
-    try:
-        sec = max(0, int(float(seconds)))
-    except Exception:
-        return "—"
-    d, sec = divmod(sec, 86400)
-    h, sec = divmod(sec, 3600)
-    m, sec = divmod(sec, 60)
-    if d:
-        return f"{d}д {h:02d}:{m:02d}:{sec:02d}"
-    return f"{h:02d}:{m:02d}:{sec:02d}"
-
-
-def build_runtime_watcher_text() -> str:
-    snap = runtime_snapshot()
-    st = snap.get("state") or {}
-    ren = snap.get("render") or {}
-    proc = snap.get("process") or {}
-    disk = snap.get("disk") or {}
-    mega = snap.get("mega_tasks") or {}
-    prev = snap.get("previous_runtime") or {}
-    prev_state = prev.get("state") or {}
-    prev_render = prev.get("render") or {}
-    queues = snap.get("queues") or {}
-    status = "🟢 READY" if runtime_is_ready() else ("🟠 SHUTDOWN" if runtime_is_shutting_down() else "🟡 BOOT / RECOVERY")
-    commit = str(ren.get("RENDER_GIT_COMMIT") or "—")
-    instance = str(ren.get("RENDER_INSTANCE_ID") or "—")
-    lines = [
-        "🖥 Render / Сервер — Watcher",
-        f"Состояние: {status}",
-        f"Фаза: {st.get('phase') or '—'}",
-        f"Версия: {VERSION}",
-        f"Uptime: {_fmt_runtime_age(proc.get('uptime_seconds'))}",
-        f"Старт: {st.get('started_at') or '—'}",
-        f"READY: {st.get('ready_at') or '—'}",
-        f"BOOT: {st.get('boot_duration_seconds') if st.get('boot_duration_seconds') is not None else '—'} сек",
-        "",
-        "Render:",
-        f"Instance: {instance[-28:] if instance != '—' else instance}",
-        f"Commit: {commit[:12] if commit != '—' else commit}",
-        f"Service: {ren.get('RENDER_SERVICE_NAME') or ren.get('RENDER_SERVICE_ID') or '—'}",
-        f"Region/type: {(ren.get('RENDER_REGION') or '—')} / {(ren.get('RENDER_SERVICE_TYPE') or '—')}",
-        f"PID/host: {proc.get('pid')} / {proc.get('hostname')}",
-        "",
-        "Ресурсы:",
-        f"RAM сейчас: {proc.get('rss_mb') if proc.get('rss_mb') is not None else '—'} MB; пик: {proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—'} MB",
-        f"RAM лимит cgroup: {proc.get('limit_mb') if proc.get('limit_mb') is not None else '—'} MB; использование: {proc.get('rss_percent_limit') if proc.get('rss_percent_limit') is not None else '—'}%",
-        f"Диск: занято {disk.get('used_mb') if disk.get('used_mb') is not None else '—'} MB; свободно {disk.get('free_mb') if disk.get('free_mb') is not None else '—'} MB",
-        f"Потоков Python: {proc.get('threads')}",
-        "",
-        "BOOT / Telegram gate:",
-        f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}",
-        f"Recovery: start {st.get('task_recovery_started_at') or '—'} | finish {st.get('task_recovery_finished_at') or '—'} | осталось {st.get('task_recovery_remaining', 0)}",
-        f"Webhook получено: {st.get('webhook_received', 0)}",
-        f"Последний: {st.get('last_webhook_at') or '—'} | {st.get('last_webhook_type') or '—'} | update {st.get('last_webhook_update_id') or '—'} | chat {st.get('last_webhook_chat_id') or '—'}",
-        f"Отклонено BOOT: {st.get('webhook_blocked_boot', 0)} | SHUTDOWN: {st.get('webhook_blocked_shutdown', 0)}",
-        "",
-        "Очереди P/A | done err rej | max wait:",
-    ]
-    for name in ("webhook", "finance", "forward", "delta", "backup", "export", "general", "journal", "delayed", "dozvon"):
-        q = queues.get(name) or {}
-        lines.append(
-            f"{name}: {q.get('pending', 0)}/{q.get('active', 0)} | "
-            f"{q.get('completed', 0)} {q.get('failed', 0)} {q.get('rejected', 0)} | {q.get('max_wait', 0)}с"
-        )
-    delta = snap.get('delta') or {}
-    keep = snap.get('keep_alive') or {}
-    lines.extend([
-        "",
-        "MEGA durable tasks / delta:",
-        f"tasks: pending {mega.get('pending', 0)} | running {mega.get('running', 0)} | failed {mega.get('failed', 0)} | done {mega.get('done', 0)} | processing {mega.get('processing', 0)}",
-        f"task counters: saved {mega.get('persisted', 0)} | recovered {mega.get('recovered', 0)} | done {mega.get('completed', 0)} | skip {mega.get('skipped_done', 0)} | save err {mega.get('persist_errors', 0)} | final err {mega.get('finalize_errors', 0)}",
-        f"task last error: {str(mega.get('last_error') or 'нет')[:220]}",
-        f"delta: pending chats {delta.get('pending_chats', 0)} | last {delta.get('last_success_at') or '—'} | events {delta.get('last_event_count', 0)}",
-        f"delta file: {os.path.basename(str(delta.get('last_file') or '—'))}",
-        f"delta error: {str(delta.get('last_error') or 'нет')[:220]}",
-        f"keep-alive: last ok {keep.get('last_ok_at') or keep.get('last_success_at') or '—'} | last error {str(keep.get('last_error') or 'нет')[:160]}",
-        "",
-        "SHUTDOWN:",
-        f"start {st.get('shutdown_started_at') or '—'} | finish {st.get('shutdown_finished_at') or '—'} | signal {st.get('shutdown_signal') or '—'}",
-        f"drain={st.get('shutdown_drain_ok')} | final delta={st.get('shutdown_delta_ok')}",
-        "",
-        "Предыдущий запуск:",
-        f"Классификация: {st.get('previous_reason') or '—'}",
-        f"Предыдущий state: {prev_state.get('phase') or '—'}",
-        f"Предыдущий snapshot: {prev.get('captured_at') or '—'}",
-        f"Предыдущий старт: {prev_state.get('started_at') or '—'}",
-        f"Предыдущий shutdown: {prev_state.get('shutdown_finished_at') or 'не зафиксирован'}",
-        f"Предыдущий signal: {prev_state.get('shutdown_signal') or '—'}",
-        f"Предыдущий instance: {str(prev_render.get('RENDER_INSTANCE_ID') or '—')[-28:]}",
-        f"Предыдущий commit: {str(prev_render.get('RENDER_GIT_COMMIT') or '—')[:12]}",
-        "",
-        f"Последняя ошибка Watcher: {str(st.get('last_error') or 'нет')[:300]}",
-    ])
-    return wm_owner("\n".join(lines), 12)
-
-
-def build_runtime_events_text(limit: int = 14) -> str:
-    with _RUNTIME_LOCK:
-        rows = list(_RUNTIME_EVENTS)[-max(1, int(limit)):]
-    lines = ["📜 Runtime события (последние)"]
-    if not rows:
-        lines.append("Событий пока нет.")
-    for row in rows:
-        lines.append(f"{row.get('ts','')} [{row.get('level','')}] {row.get('event','')} — {row.get('detail','')[:180]}")
-    return wm_owner("\n".join(lines), 13)
 
 def mega_upload_latest_global_backup(force: bool = False) -> bool:
     """Безопасный latest_global: проверка усечения, история и замена без предварительного удаления."""
@@ -13950,9 +12560,7 @@ def cmd_forward_copy_edit(msg):
         "text", "photo", "video", "animation",
         "audio", "voice", "video_note",
         "sticker", "location", "venue", "contact",
-        "dice", "poll",
-        # v107: additional Telegram content which can still be copied/forwarded by message_id.
-        "game", "story", "paid_media", "invoice"
+        "dice", "poll"
     ]
 )
 def on_any_message(msg):
@@ -15342,25 +13950,28 @@ def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -
     return True
 
 def _has_visible_fin_mode_selected(chat_id: int) -> bool:
-    """v108: visible auto-window selection is independent from hidden accounting."""
+    """True если включён один из трёх видимых режимов В24: как обычно / 3️⃣ / 🥇."""
     try:
-        return bool(is_finance_mode(chat_id) and finance_window_mode(chat_id) in {"normal", "open", "first"})
+        if not is_finance_mode(chat_id) or is_hidden_finance_mode(chat_id):
+            return False
+        if is_quick_balance_enabled(chat_id):
+            return get_quick_balance_behavior(chat_id) in {"open", "first"}
+        return get_quick_balance_behavior(chat_id) == "normal" or not is_quick_balance_enabled(chat_id)
     except Exception:
         return False
 
 
 def ensure_hidden_finance_for_forward_dst(dst_chat_id: int):
-    """💰 forwarding enables hidden accounting without touching an already selected visible window mode."""
+    """Если включили 💰учёт пересылки в чат, этот чат должен принимать финзаписи скрыто."""
     try:
         dst_chat_id = int(dst_chat_id)
-        was_finance = is_finance_mode(dst_chat_id)
-        if not was_finance:
-            set_finance_mode(dst_chat_id, True)
-            set_finance_window_mode(dst_chat_id, "off", persist_now=False)
-        if not is_hidden_finance_mode(dst_chat_id):
-            set_hidden_finance_mode(dst_chat_id, True)
-        _persist_finance_window_mode_critical(dst_chat_id)
-        bot_journal("forward_finance_auto_hidden", dst_chat_id, "💰 учёт пересылки включил скрытые финансы; оконный режим сохранён")
+        if is_hidden_finance_mode(dst_chat_id):
+            return
+        set_finance_mode(dst_chat_id, True)
+        set_quick_balance_behavior(dst_chat_id, "normal")
+        set_quick_balance_enabled(dst_chat_id, False)
+        set_hidden_finance_mode(dst_chat_id, True)
+        bot_journal("forward_finance_auto_hidden", dst_chat_id, "💰 учёт пересылки включил скрытые финансы")
     except Exception as e:
         log_error(f"ensure_hidden_finance_for_forward_dst({dst_chat_id}): {e}")
 
@@ -16083,34 +14694,15 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, reply_markup=pre_copy_markup, purpose="forward_copy_message")
         dst_msg_id = sent.message_id
         trace.step(f"доставлено в целевой чат message_id={dst_msg_id}")
-    except Exception as e_copy:
-        # If Telegram changed a basic group into a supergroup, do not lose the migration hint
-        # behind a later unsupported manual fallback.
-        migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_copy)
-        if migrated_id is not None:
-            trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
-            try:
-                trace.finish("старый chat_id заменён на supergroup")
-            except Exception:
-                pass
-            return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
-
-        # v107: forward_message is a broad Bot API fallback for content classes for which
-        # copy_message or our hand-written send_* fallback may not exist yet.  It may show
-        # Telegram's original-forward attribution, but it is preferable to silently losing data.
-        trace.step("copy_message не сработал — пробует Telegram forward_message")
+    except Exception:
+        trace.step("copy_message не сработал — пробует fallback send")
         try:
-            sent_forward = _tg_call_retry(
-                bot.forward_message,
-                dst_chat_id,
-                source_chat_id,
-                msg.message_id,
-                purpose="forward_message_fallback"
-            )
-            dst_msg_id = sent_forward.message_id
-            trace.step(f"forward_message-доставка успешна message_id={dst_msg_id}")
-        except Exception as e_forward:
-            migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_forward)
+            sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=reply_to_target_id)
+            dst_msg_id = sent_msg.message_id
+            trace.step(f"fallback-доставка успешна message_id={dst_msg_id}")
+        except Exception as e_send:
+            # Telegram group -> supergroup: переносим ID во всех настройках и повторяем ровно один раз.
+            migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_send)
             if migrated_id is not None:
                 trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
                 try:
@@ -16118,27 +14710,9 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                 except Exception:
                     pass
                 return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
-
-            trace.step("forward_message не сработал — пробует ручной send_* fallback")
-            try:
-                sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=reply_to_target_id)
-                dst_msg_id = sent_msg.message_id
-                trace.step(f"ручная fallback-доставка успешна message_id={dst_msg_id}")
-            except Exception as e_send:
-                migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_send)
-                if migrated_id is not None:
-                    trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
-                    try:
-                        trace.finish("старый chat_id заменён на supergroup")
-                    except Exception:
-                        pass
-                    return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
-                # Preserve the most useful Telegram error in diagnostics when manual fallback merely
-                # says "unsupported content_type".
-                final_error = e_forward if "Unsupported fallback content_type" in str(e_send) else e_send
-                trace.fail(final_error)
-                _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, final_error)
-                return None
+            trace.fail(e_send)
+            _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, e_send)
+            return None
 
     trace.step("сохраняет связь оригинал → копия")
     _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
@@ -16165,14 +14739,7 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                 if not _ui_ok and forward_copy_edit_mode(source_chat_id) != "normal":
                     schedule_forward_copy_edit_ui_retry(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec, delay=0.8)
             elif text_has_any_digit(text_for_finance):
-                try:
-                    _dst_fin_mode = bool(is_finance_mode(dst_chat_id))
-                except Exception:
-                    _dst_fin_mode = False
-                if _dst_fin_mode:
-                    log_error(f"[FWD FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
-                else:
-                    bot_journal("forward_finance_not_expected", dst_chat_id, f"src={source_chat_id}:{msg.message_id} dst_msg={dst_msg_id}")
+                log_error(f"[FWD FINANCE NOT RECORDED] {get_chat_display_name(source_chat_id)}:{msg.message_id} -> {get_chat_display_name(dst_chat_id)}:{dst_msg_id} text={text_for_finance[:220]!r}")
         except Exception as e:
             log_error(f"_forward_single_to_target finance sync {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
 
@@ -17298,8 +15865,6 @@ def build_main_keyboard(day_key: str, chat_id=None):
             IB("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"),
         )
 
-    # v108 / окно Ф91 (основное О1): явное закрытие без выключения финансового режима.
-    kb.row(IB("❌ Закрыть", callback_data=f"main_close:{day_key}"))
     return kb
 
 
@@ -18367,38 +16932,36 @@ def build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: 
 
 
 def finance_mode_compact_icon(chat_id: int) -> str:
-    """v108: hidden finance and visible auto-window mode are shown independently."""
+    """Короткий знак режима для В24 в списке чатов. Скрытый режим независим и дописывается обезьянкой."""
     try:
         if not is_finance_mode(chat_id):
             return "❌"
         hidden_prefix = "🙈" if is_hidden_finance_mode(chat_id) else ""
-        mode = finance_window_mode(chat_id)
-        if mode == "first":
-            return hidden_prefix + "✅🥇"
-        if mode == "open":
-            return hidden_prefix + "✅3️⃣"
-        if mode == "normal":
-            return hidden_prefix + "✅🔟"
-        return hidden_prefix + "✅"
+        if is_quick_balance_enabled(chat_id):
+            behavior = get_quick_balance_behavior(chat_id)
+            if behavior == "first":
+                return hidden_prefix + "✅🥇"
+            if behavior == "open":
+                return hidden_prefix + "✅3️⃣"
+        return hidden_prefix + "✅🔟"
     except Exception:
         return "❌"
 
 
 def finance_mode_state_lines(chat_id: int) -> list[str]:
-    """F39/v108: hidden accounting is independent; exactly one of the three visible modes may be active, or none."""
+    """Строки В25: скрытые финансы независимы от трёх видимых режимов."""
     fin_on = is_finance_mode(chat_id)
     hidden_on = bool(fin_on and is_hidden_finance_mode(chat_id))
-    mode = finance_window_mode(chat_id) if fin_on else "off"
+    qb_on = bool(fin_on and is_quick_balance_enabled(chat_id))
+    behavior = get_quick_balance_behavior(chat_id) if fin_on else "normal"
     return [
         f"Чат: {chat_button_title(chat_id)}",
         "",
         f"{'✅' if fin_on else '❌'} Фин режим",
-        f"{'🙈' if hidden_on else '❌'} Скрытые финансы — независимо",
-        f"{'✅🔟' if (fin_on and mode == 'normal') else '❌'} Как обычно — окно через 10 сообщений",
-        f"{'✅3️⃣' if (fin_on and mode == 'open') else '❌'} Быстрый остаток — открывать окно",
-        f"{'✅🥇' if (fin_on and mode == 'first') else '❌'} Быстрый остаток — всегда первым",
-        "",
-        "Повторное нажатие активного режима окна выключает только окно; скрытые финансы остаются.",
+        f"{'🙈' if hidden_on else '❌'} Скрытые финансы",
+        f"{'✅🔟' if (fin_on and (not qb_on or behavior == 'normal')) else '❌'} Как обычно — окно через 10 сообщений",
+        f"{'✅3️⃣' if (fin_on and qb_on and behavior == 'open') else '❌'} Быстрый остаток — открывать окно",
+        f"{'✅🥇' if (fin_on and qb_on and behavior == 'first') else '❌'} Быстрый остаток — всегда первым",
     ]
 
 
@@ -18460,8 +17023,9 @@ def build_quick_balance_chat_menu(day_key: str):
     for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
         if owner_item and int_cid == owner_item[0]:
             continue
-        mode = finance_window_mode(int_cid) if is_finance_mode(int_cid) else "off"
-        icon = "✅🥇" if mode == "first" else ("✅3️⃣" if mode == "open" else ("✅🔟" if mode == "normal" else "❌"))
+        visible_qb = bool(is_finance_mode(int_cid) and is_quick_balance_enabled(int_cid))
+        behavior = get_quick_balance_behavior(int_cid) if visible_qb else "normal"
+        icon = "✅🥇" if visible_qb and behavior == "first" else ("✅3️⃣" if visible_qb and behavior == "open" else ("✅" if visible_qb else "❌"))
         buttons.append(IB(
             f'{icon} {chat_button_title(int_cid, title)}',
             callback_data=f"d:{day_key}:qb_cfg_{int_cid}"
@@ -18470,8 +17034,9 @@ def build_quick_balance_chat_menu(day_key: str):
     add_buttons_in_rows(kb, buttons, 2)
 
     if owner_item:
-        mode = finance_window_mode(owner_item[0]) if is_finance_mode(owner_item[0]) else "off"
-        icon = "✅🥇" if mode == "first" else ("✅3️⃣" if mode == "open" else ("✅🔟" if mode == "normal" else "❌"))
+        visible_qb = bool(is_finance_mode(owner_item[0]) and is_quick_balance_enabled(owner_item[0]))
+        behavior = get_quick_balance_behavior(owner_item[0]) if visible_qb else "normal"
+        icon = "✅🥇" if visible_qb and behavior == "first" else ("✅3️⃣" if visible_qb and behavior == "open" else ("✅" if visible_qb else "❌"))
         kb.row(IB(
             f'{icon} {chat_button_title(owner_item[0], owner_item[1])}',
             callback_data=f"d:{day_key}:qb_cfg_{owner_item[0]}"
@@ -18484,12 +17049,13 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
     fin_on = is_finance_mode(target_chat_id)
     hidden_on = bool(fin_on and is_hidden_finance_mode(target_chat_id))
-    mode = finance_window_mode(target_chat_id) if fin_on else "off"
+    enabled = bool(fin_on and is_quick_balance_enabled(target_chat_id))
+    behavior = get_quick_balance_behavior(target_chat_id) if fin_on else "normal"
 
     fin_icon = "✅" if fin_on else "❌"
-    normal_icon = "✅🔟" if (fin_on and mode == "normal") else "❌"
-    open_icon = "✅3️⃣" if (fin_on and mode == "open") else "❌"
-    first_icon = "✅🥇" if (fin_on and mode == "first") else "❌"
+    normal_icon = "✅🔟" if (fin_on and (not enabled or behavior == "normal")) else "❌"
+    open_icon = "✅3️⃣" if (fin_on and enabled and behavior == "open") else "❌"
+    first_icon = "✅🥇" if (fin_on and enabled and behavior == "first") else "❌"
 
     hidden_icon = "🙈" if hidden_on else "❌"
     finwin_icon = "🪟✅" if fin_on else "🪟❌"
@@ -18512,45 +17078,6 @@ def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
 
 def build_finance_mode_config_text(target_chat_id: int) -> str:
     return "💰 Фин режим / В24\n" + "\n".join(finance_mode_state_lines(target_chat_id))
-
-def _apply_finance_window_mode_choice(chat_id: int, selected_mode: str) -> str:
-    """F39/v108: the three visible modes are mutually exclusive; clicking the active one turns only windows off."""
-    chat_id = int(chat_id)
-    selected_mode = str(selected_mode or "off")
-    if selected_mode not in {"normal", "open", "first"}:
-        selected_mode = "off"
-    was_finance = is_finance_mode(chat_id)
-    if not was_finance:
-        set_finance_mode(chat_id, True)
-        # Explicitly enabling finance always starts with hidden accounting ON.
-        set_hidden_finance_mode(chat_id, True)
-    current = finance_window_mode(chat_id)
-    if current == selected_mode:
-        set_finance_window_mode(chat_id, "off", persist_now=False)
-        delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-        _persist_finance_window_mode_critical(chat_id)
-        return "off"
-
-    # Switching visible mode: remove the old automatic windows first, but leave hidden finance untouched.
-    delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-    set_finance_window_mode(chat_id, selected_mode, persist_now=False)
-    try:
-        store = get_chat_store(chat_id)
-        day_key = store.get("current_view_day") or today_key()
-        if selected_mode == "normal":
-            store["main_window_msg_count"] = 0
-            recreate_main_window_now(chat_id, day_key)
-        else:
-            store["balance_panel_msg_count"] = 0
-            send_minimized_balance_panel(chat_id)
-            if selected_mode == "first":
-                schedule_quick_balance_first_recreate(chat_id, 60.0)
-    except Exception as e:
-        log_error(f"_apply_finance_window_mode_choice({chat_id},{selected_mode}): {e}")
-    _finance_window_state(chat_id)["auto_reopen_on_boot"] = True
-    _persist_finance_window_mode_critical(chat_id)
-    return selected_mode
-
 
 def build_hidden_finance_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -19681,7 +18208,7 @@ def build_owner_instruction_text() -> str:
         "📤 Пересылка\n"
         "Меню пересылки задаёт связанные чаты и финансовую обработку копий. Режим «как у владельца» создаёт отдельный owner scope: настройки такого владельца сохраняются независимо.\n\n"
         "💾 Сохранение\n"
-        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup. В v106 содержательные message/edited_message, включая части Telegram-альбомов, сначала фиксируются маленьким task-файлом в MEGA. Задача пересылки не получает done, пока для исходного сообщения не подтверждены все требуемые направления и, при включённом финучёте, финансовая запись назначения. При deploy pending/running поднимаются из MEGA; потерянный RAM-коллектор альбома ремонтируется по сохранённому update. Callback-кнопки навигации остаются быстрыми."
+        "После финансового изменения данные сначала сохраняются, затем ставится быстрый backup, после чего обновляются связанные открытые окна и планируется полный backup. В v105 содержательные message/edited_message сначала фиксируются маленьким task-файлом в MEGA, затем выполняются; перед статусом done итог и idempotency-marker синхронно попадают в delta. Callback-кнопки остаются быстрыми и защищаются Telegram webhook retry без лишней MEGA-задержки."
     )
 
 def build_owner_instruction_keyboard(chat_id: int):
@@ -19935,7 +18462,6 @@ def build_info_keyboard(chat_id: int):
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
         )
-        kb.row(IB("🖥 Render / Сервер", callback_data="runtime_watcher"))
         if active_bot_behavior_profile() in {"v93_current", "v92_current", "v91_current", "v90_current"}:
             kb.row(IB("🧩 Delta / snapshots", callback_data="info_delta_status"))
         if is_primary_owner(chat_id):
@@ -21700,43 +20226,6 @@ def on_callback(call):
                 save_data(data)
             return
 
-        if data_str.startswith("main_close:"):
-            # v108 / Ф91: close the actual automatic finance window and remember that it was closed.
-            try:
-                day_key = data_str.split(":", 1)[1] or today_key()
-            except Exception:
-                day_key = today_key()
-            cancel_pending_window_commands(chat_id, delete_prompt=False)
-            mid = int(call.message.message_id)
-            try:
-                bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
-            try:
-                aw = get_or_create_active_windows(chat_id)
-                for key, value in list(aw.items()):
-                    try:
-                        if int(value or 0) == mid:
-                            aw.pop(key, None)
-                    except Exception:
-                        pass
-                store = get_chat_store(chat_id)
-                if int(store.get("balance_panel_id") or 0) == mid:
-                    store["balance_panel_id"] = None
-                    store["balance_panel_mode"] = "mini"
-                unregister_open_window(chat_id, mid)
-                state = _finance_window_state(chat_id)
-                state["main_windows"] = {str(k): int(v) for k, v in aw.items() if v}
-                state["balance_panel_id"] = int(store.get("balance_panel_id")) if store.get("balance_panel_id") else None
-                # Manual close means: do not recreate this window merely because Render restarted.
-                state["auto_reopen_on_boot"] = False
-                state["updated_at"] = now_local().isoformat(timespec="seconds")
-                save_data(data, chat_ids=[chat_id])
-                _persist_finance_window_mode_critical(chat_id)
-            except Exception as e:
-                log_error(f"main_close({chat_id},{day_key}): {e}")
-            return
-
         if data_str in {"aux_close", "info_close"}:
             cancel_pending_window_commands(chat_id, delete_prompt=False)
             try:
@@ -22496,38 +20985,6 @@ def on_callback(call):
             kbd.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
             safe_edit(bot, call, delta_status_text(), reply_markup=kbd)
             return
-        if data_str == "runtime_watcher":
-            if not is_owner_chat(chat_id):
-                return
-            kbw = types.InlineKeyboardMarkup(row_width=2)
-            kbw.row(IB("🔄 Обновить", callback_data="runtime_watcher"), IB("📜 События", callback_data="runtime_events"))
-            kbw.row(IB("☁️ Снимок Watcher в MEGA", callback_data="runtime_snapshot_now"))
-            kbw.row(IB("🚦 Очереди", callback_data="info_queues"), IB("🧩 Delta", callback_data="info_delta_status"))
-            kbw.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB("❌ Закрыть", callback_data="info_close"))
-            safe_edit(bot, call, build_runtime_watcher_text(), reply_markup=kbw)
-            return
-        if data_str == "runtime_events":
-            if not is_owner_chat(chat_id):
-                return
-            kbe = types.InlineKeyboardMarkup(row_width=2)
-            kbe.row(IB("🔄 Обновить", callback_data="runtime_events"), IB("🖥 Watcher", callback_data="runtime_watcher"))
-            kbe.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB("❌ Закрыть", callback_data="info_close"))
-            safe_edit(bot, call, build_runtime_events_text(), reply_markup=kbe)
-            return
-        if data_str == "runtime_snapshot_now":
-            if not is_owner_chat(chat_id):
-                return
-            ok = GENERAL_TASK_POOL.submit("runtime-manual-snapshot", runtime_upload_snapshot, "manual", True)
-            try:
-                bot.answer_callback_query(call.id, "Снимок Watcher поставлен в MEGA-очередь" if ok else "Очередь занята", show_alert=False)
-            except Exception:
-                pass
-            kbw = types.InlineKeyboardMarkup(row_width=2)
-            kbw.row(IB("🔄 Обновить", callback_data="runtime_watcher"), IB("📜 События", callback_data="runtime_events"))
-            kbw.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
-            safe_edit(bot, call, build_runtime_watcher_text(), reply_markup=kbw)
-            return
-
         if data_str == "info_queues":
             if not is_owner_chat(chat_id):
                 try:
@@ -22578,18 +21035,14 @@ def on_callback(call):
         if data_str == "info_finance_off":
             try:
                 if is_finance_mode(chat_id):
-                    set_finance_window_mode(chat_id, "off", persist_now=False)
-                    delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
                     set_hidden_finance_mode(chat_id, False)
+                    set_quick_balance_behavior(chat_id, "normal")
+                    set_quick_balance_enabled(chat_id, False)
                     set_finance_mode(chat_id, False)
                     state_text = "выключен"
                 else:
                     set_finance_mode(chat_id, True)
-                    set_finance_window_mode(chat_id, "off", persist_now=False)
-                    set_hidden_finance_mode(chat_id, True)
-                    delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-                    state_text = "включён (скрытые финансы ВКЛ)"
-                _persist_finance_window_mode_critical(chat_id)
+                    state_text = "включён"
                 open_info_window(chat_id)
                 bot.answer_callback_query(call.id, f"Фин режим {state_text}", show_alert=False)
             except Exception as e:
@@ -23482,22 +21935,58 @@ def on_callback(call):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
-            _apply_finance_window_mode_choice(tgt, "normal")
-            safe_edit(bot, call, build_finance_mode_config_text(tgt), reply_markup=build_finance_mode_config_menu(day_key, tgt))
+            set_hidden_finance_mode(tgt, False)
+            set_finance_mode(tgt, True)
+            set_quick_balance_behavior(tgt, "normal")
+            set_quick_balance_enabled(tgt, False)
+            try:
+                get_chat_store(tgt)["main_window_msg_count"] = 0
+                save_data(data)
+            except Exception:
+                pass
+            try:
+                if is_finance_mode(tgt) and not is_hidden_finance_mode(tgt):
+                    recreate_main_window_now(tgt, get_chat_store(tgt).get("current_view_day") or today_key())
+            except Exception as e:
+                log_error(f"qb_mode_normal recreate main window {get_chat_display_name(tgt)}: {e}")
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
             return
         if cmd.startswith("qb_mode_open_"):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
-            _apply_finance_window_mode_choice(tgt, "open")
-            safe_edit(bot, call, build_finance_mode_config_text(tgt), reply_markup=build_finance_mode_config_menu(day_key, tgt))
+            set_hidden_finance_mode(tgt, False)
+            set_quick_balance_behavior(tgt, "open")
+            set_quick_balance_enabled(tgt, True)
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
             return
         if cmd.startswith("qb_mode_first_"):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
-            _apply_finance_window_mode_choice(tgt, "first")
-            safe_edit(bot, call, build_finance_mode_config_text(tgt), reply_markup=build_finance_mode_config_menu(day_key, tgt))
+            set_hidden_finance_mode(tgt, False)
+            set_quick_balance_behavior(tgt, "first")
+            set_quick_balance_enabled(tgt, True)
+            schedule_quick_balance_first_recreate(tgt, 60.0)
+            # Не трогаем личное окно владельца при изменении настроек другого чата.
+            safe_edit(
+                bot,
+                call,
+                build_finance_mode_config_text(tgt),
+                reply_markup=build_finance_mode_config_menu(day_key, tgt)
+            )
             return
         if cmd.startswith("qb_hidden_toggle_"):
             tgt = int(cmd.split("_")[-1])
@@ -23511,7 +22000,6 @@ def on_callback(call):
             else:
                 # Выключаем только скрытый режим. Остальные выбранные режимы остаются как были.
                 set_hidden_finance_mode(tgt, False)
-            _persist_finance_window_mode_critical(tgt)
             safe_edit(
                 bot,
                 call,
@@ -23553,17 +22041,16 @@ def on_callback(call):
             if answer_removed_chat(call, tgt):
                 return
             if is_finance_mode(tgt):
-                set_finance_window_mode(tgt, "off", persist_now=False)
-                delete_auto_finance_windows_for_chat(tgt, persist_now=False)
                 set_hidden_finance_mode(tgt, False)
+                set_quick_balance_behavior(tgt, "normal")
+                set_quick_balance_enabled(tgt, False)
                 set_finance_mode(tgt, False)
             else:
                 set_finance_mode(tgt, True)
-                set_finance_window_mode(tgt, "off", persist_now=False)
-                # v108 ТЗ: включили финрежим -> скрытые финансы автоматически ВКЛ; три оконных режима остаются ВЫКЛ.
+                set_quick_balance_behavior(tgt, "normal")
+                set_quick_balance_enabled(tgt, False)
+                # По ТЗ при простом включении финрежима включаем скрытый режим, остальные режимы остаются ❌.
                 set_hidden_finance_mode(tgt, True)
-                delete_auto_finance_windows_for_chat(tgt, persist_now=False)
-            _persist_finance_window_mode_critical(tgt)
             safe_edit(
                 bot,
                 call,
@@ -23575,12 +22062,11 @@ def on_callback(call):
             tgt = int(cmd.split("_")[-1])
             if answer_removed_chat(call, tgt):
                 return
-            set_finance_window_mode(tgt, "off", persist_now=False)
-            delete_auto_finance_windows_for_chat(tgt, persist_now=False)
             set_hidden_finance_mode(tgt, False)
             set_finance_mode(tgt, False)
+            set_quick_balance_behavior(tgt, "normal")
+            set_quick_balance_enabled(tgt, False)
             save_data(data)
-            _persist_finance_window_mode_critical(tgt)
             safe_edit(
                 bot,
                 call,
@@ -23709,28 +22195,6 @@ def send_csv_wedthu(chat_id: int, day_key: str):
     except Exception as e:
         log_error(f"send_csv_wedthu: {e}")
 
-
-def finance_operation_key(chat_id: int, source_msg_id, ledger: str = "main") -> str:
-    """Stable idempotency key for a finance effect created from a Telegram message."""
-    try:
-        mid = int(source_msg_id)
-    except Exception:
-        return ""
-    return f"finance:{int(chat_id)}:{str(ledger or 'main')}:{mid}"
-
-
-def find_record_by_operation_key(chat_id: int, operation_key: str):
-    if not operation_key:
-        return None
-    try:
-        store = get_chat_store(int(chat_id))
-        for r in store.get("records", []) or []:
-            if isinstance(r, dict) and str(r.get("operation_key") or "") == str(operation_key):
-                return r
-    except Exception:
-        pass
-    return None
-
 def add_record_to_chat(
     chat_id: int,
     amount: float,
@@ -23758,19 +22222,6 @@ def add_record_to_chat(
             or source_msg_id
         )
 
-        # v109 exact-once guard. A restored/retried Telegram update with the same source
-        # message must return the existing finance effect instead of adding the amount again.
-        operation_key = finance_operation_key(chat_id, source_msg_id, "main")
-        if source_msg_id is not None:
-            for existing in store.get("records", []) or []:
-                if not isinstance(existing, dict):
-                    continue
-                if (operation_key and str(existing.get("operation_key") or "") == operation_key) or int(existing.get("source_msg_id") or 0) == int(source_msg_id):
-                    if operation_key and not existing.get("operation_key"):
-                        existing["operation_key"] = operation_key
-                    bot_journal("finance_duplicate_blocked", chat_id, f"source_msg_id={source_msg_id} operation_key={operation_key}")
-                    return existing
-
         rec = {
             "id": rid,
             "short_id": "",
@@ -23783,7 +22234,6 @@ def add_record_to_chat(
             "msg_id": source_msg_id,
             "origin_msg_id": source_msg_id,
             "day_key": day_key,
-            "operation_key": operation_key,
         }
         if usd_amount is not None:
             rec["usd_amount"] = float(usd_amount or 0)
@@ -23843,11 +22293,6 @@ def set_active_window_id(chat_id: int, day_key: str, message_id: int):
     aw[day_key] = message_id
     register_open_window(chat_id, message_id, "main_day", code="О1", day_key=day_key)
     save_data(data)
-    try:
-        _finance_window_state(chat_id)["auto_reopen_on_boot"] = True
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
-    except Exception:
-        pass
 def get_active_window_id(chat_id: int, day_key: str):
     aw = get_or_create_active_windows(chat_id)
     return aw.get(day_key)
@@ -23860,10 +22305,6 @@ def clear_active_window_id(chat_id: int, day_key: str):
             if old_mid:
                 unregister_open_window(chat_id, old_mid)
             save_data(data)
-            try:
-                _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
-            except Exception:
-                pass
     except Exception as e:
         log_error(f"clear_active_window_id({chat_id},{day_key}): {e}")
 
@@ -23883,7 +22324,8 @@ def close_previous_main_window_before_back(chat_id: int, day_key: str, current_m
     except Exception as e:
         log_error(f"close_previous_main_window_before_back({chat_id},{day_key}): {e}")
 def update_or_send_day_window(chat_id: int, day_key: str):
-    # v108: hidden accounting is independent from explicitly selected visible window modes/manual opening.
+    if is_hidden_finance_mode(chat_id) and not is_owner_chat(chat_id):
+        return
     if is_owner_chat(chat_id):
         backup_window_for_owner(chat_id, day_key)
         schedule_balance_panel_refresh(chat_id, 0.5)
@@ -23935,72 +22377,40 @@ def is_finance_mode(chat_id):
     return store.get("finance_mode", False)
 
 def set_finance_mode(chat_id: int, enabled: bool):
-    """v108: finance accounting and visible finance windows are separate states.
-
-    A fresh OFF -> ON transition always enables hidden finance and starts with all three
-    automatic window modes OFF.  Visible modes are selected independently in F39.
-    """
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
     enabled = bool(enabled)
-    was_enabled = bool(store.get("finance_mode", False))
     store["finance_mode"] = enabled
-    settings = store.setdefault("settings", {})
 
     if enabled:
         finance_active_chats.add(chat_id)
-        if not was_enabled:
-            # User requirement: enabling finance = hidden finance ON, no visible auto window yet.
-            settings["hidden_finance"] = True
+        # Фин-режим сам по себе = "как обычно": основное окно через 10 сообщений,
+        # без быстрого остатка. Быстрый остаток включается только если владелец
+        # явно выбрал режим в меню быстрого остатка (quick_balance_user_selected=True).
+        settings = store.setdefault("settings", {})
+        settings.setdefault("quick_balance_user_selected", False)
+        if not settings.get("quick_balance_user_selected", False):
             settings["quick_balance_enabled"] = False
             settings["quick_balance_behavior"] = "normal"
-            settings["quick_balance_user_selected"] = True
-            state = store.get("finance_window_state")
-            if not isinstance(state, dict):
-                state = {}
-            state.update({
-                "mode": "off",
-                "main_windows": {},
-                "balance_panel_id": None,
-                "balance_panel_mode": "mini",
-                "current_view_day": str(store.get("current_view_day") or today_key()),
-                "auto_reopen_on_boot": False,
-                "updated_at": now_local().isoformat(timespec="seconds"),
-            })
-            store["finance_window_state"] = state
-            # Remove stale automatic windows left from a previous finance session.
-            try:
-                delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-            except Exception:
-                pass
+            panel_id = store.get("balance_panel_id")
+            if panel_id:
+                try:
+                    bot.delete_message(chat_id, panel_id)
+                except Exception:
+                    pass
+            store["balance_panel_id"] = None
+            store["balance_panel_mode"] = "normal"
     else:
         finance_active_chats.discard(chat_id)
-        settings["hidden_finance"] = False
-        settings["quick_balance_enabled"] = False
-        settings["quick_balance_behavior"] = "normal"
-        settings["quick_balance_user_selected"] = True
-        state = store.get("finance_window_state")
-        if not isinstance(state, dict):
-            state = {}
-        state.update({
-            "mode": "off",
-            "main_windows": {},
-            "balance_panel_id": None,
-            "balance_panel_mode": "mini",
-            "auto_reopen_on_boot": False,
-            "updated_at": now_local().isoformat(timespec="seconds"),
-        })
-        store["finance_window_state"] = state
-        try:
-            delete_auto_finance_windows_for_chat(chat_id, persist_now=False)
-        except Exception:
-            pass
-
-    save_data(data, chat_ids=[chat_id])
-    try:
-        schedule_quick_backup(chat_id, 0.5)
-    except Exception:
-        pass
+        panel_id = store.get("balance_panel_id")
+        if panel_id:
+            try:
+                bot.delete_message(chat_id, panel_id)
+            except Exception:
+                pass
+        store["balance_panel_id"] = None
+        store["balance_panel_mode"] = "mini"
+    save_data(data)
     schedule_config_backup_for_chats(chat_id)
 
 def require_finance(chat_id: int) -> bool:
@@ -25298,31 +23708,21 @@ def collect_finance_chat_ids():
 
 
 def schedule_startup_main_windows(delay: float = 3.0):
-    """v108: restore only automatic finance windows that were actually open before deploy."""
+    """После deploy/рестарта создаёт или обновляет основное окно у владельца и финчатов, кроме скрытых."""
     def _job():
         try:
             for cid in collect_finance_chat_ids():
                 try:
+                    if is_hidden_finance_mode(cid) and not is_owner_chat(cid):
+                        continue
                     if is_chat_bot_removed(cid):
                         continue
                     store = get_chat_store(cid)
-                    state = _finance_window_state(cid)
-                    mode = finance_window_mode(cid)
-                    if mode == "off" or not bool(state.get("auto_reopen_on_boot", False)):
-                        continue
                     day_key = store.get("current_view_day") or today_key()
-                    if mode == "normal":
-                        update_or_send_day_window(cid, day_key)
-                    elif mode in {"open", "first"}:
-                        if store.get("balance_panel_id"):
-                            refresh_balance_panel_now(cid)
-                        else:
-                            send_minimized_balance_panel(cid)
-                        if mode == "first":
-                            schedule_quick_balance_first_recreate(cid, 60.0)
-                    time.sleep(0.20)
+                    update_or_send_day_window(cid, day_key)
+                    time.sleep(0.25)
                 except Exception as e:
-                    log_error(f"startup_finance_window({get_chat_display_name(cid)}): {e}")
+                    log_error(f"startup_main_window({get_chat_display_name(cid)}): {e}")
         except Exception as e:
             log_error(f"schedule_startup_main_windows job: {e}")
 
@@ -25406,19 +23806,8 @@ def _run_full_chat_backup(chat_id: int):
 
 
 def schedule_quick_backup(chat_id: int, delay: float | None = None):
-    """Debounce delta for one chat. Critical toggle callbacks defer async delta until their sync commit.
-
-    Without this tiny guard, an async delta could persist the toggled state a fraction of a second
-    before its idempotency marker. A deploy in that microscopic gap could replay the toggle twice.
-    """
+    """Debounce delta для конкретного чата; разные чаты объединяются общим delta batch."""
     chat_id = int(chat_id)
-    try:
-        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
-        if isinstance(ctx, dict) and ctx.get("critical_callback"):
-            ctx.setdefault("deferred_quick_chats", set()).add(chat_id)
-            return
-    except Exception:
-        pass
     if RESTORE_GUARD_ACTIVE:
         return
     if delay is None:
@@ -25535,9 +23924,8 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             _safe_stabilize("currency_ledger_snapshot", lambda: _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store)))
             _safe_stabilize("save_data", lambda: save_data(data, chat_ids=[chat_id]))
 
-            trace.step("проверяет скрытый финрежим и независимый режим окна")
+            trace.step("проверяет скрытый финрежим")
             hidden = is_finance_output_suppressed(chat_id)
-            visible_window_mode = finance_window_mode(chat_id)
 
         # v90: сразу после подтверждённой SQLite ставим маленький delta, ДО Telegram-окон.
         # Поэтому медленное редактирование интерфейса не откладывает аварийную копию.
@@ -25551,27 +23939,20 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
         )
 
         # Ниже тяжёлые Telegram-вызовы уже вне chat_lock.
-        # v108: hidden finance suppresses ordinary finance chatter, but it no longer disables
-        # a separately selected automatic window mode.  The three visible modes remain exclusive.
-        if visible_window_mode == "normal":
-            # Refresh an existing О1, but do not create an unscheduled one here; the 10-message
-            # counter owns creation/recreation for this mode.
-            if get_active_window_id(chat_id, day_key):
-                if is_owner_chat(chat_id):
-                    trace.step("обновляет существующее окно владельца")
-                    _safe_stabilize("owner_window", lambda: backup_window_for_owner(chat_id, day_key, None))
-                else:
-                    trace.step("обновляет существующее окно дня")
-                    _safe_stabilize("day_window", lambda: update_or_send_day_window(chat_id, day_key))
-        elif visible_window_mode in {"open", "first"}:
-            trace.step("обновляет выбранный быстрый остаток")
-            _safe_stabilize("quick_balance_now", lambda: refresh_balance_panel_now(chat_id))
-            _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
-
         if not hidden:
-            # Manually opened totals/auxiliary financial views can still refresh when finance is not hidden.
+            if is_owner_chat(chat_id):
+                trace.step("обновляет окно владельца")
+                _safe_stabilize("owner_window", lambda: backup_window_for_owner(chat_id, day_key, None))
+            else:
+                trace.step("обновляет окно дня")
+                _safe_stabilize("day_window", lambda: update_or_send_day_window(chat_id, day_key))
+
             trace.step("обновляет общий итог")
             _safe_stabilize("refresh_total", lambda: refresh_total_message_if_any(chat_id))
+
+            trace.step("обновляет быстрый остаток")
+            _safe_stabilize("quick_balance_now", lambda: refresh_balance_panel_now(chat_id))
+            _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         # Реестр обновляем даже для скрытого финрежима: сам скрытый чат может не показывать финансы,
         # но открытое у владельца окно этого чата обязано синхронизироваться.
@@ -25742,7 +24123,8 @@ def recreate_main_window_now(chat_id: int, day_key: str):
 
 
 def force_new_day_window(chat_id: int, day_key: str):
-    # v108: hidden accounting no longer forbids an explicitly requested visible main window.
+    if is_hidden_finance_mode(chat_id) and not is_owner_chat(chat_id):
+        return
     txt, _ = render_day_window(chat_id, day_key)
     kb = build_main_keyboard(day_key, chat_id)
     sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
@@ -26064,9 +24446,7 @@ def keep_alive_task():
 @bot.channel_post_handler(content_types=[
     "text", "photo", "video", "animation", "audio",
     "voice", "video_note", "document",
-    "sticker", "location", "venue", "contact", "dice", "poll",
-    # v107: keep forwarding coverage aligned with ordinary messages.
-    "game", "story", "paid_media", "invoice"
+    "sticker", "location", "venue", "contact", "dice", "poll"
 ])
 def on_any_channel_post(msg):
     try:
@@ -26535,25 +24915,7 @@ def index():
 
 @app.route("/healthz", methods=["GET"])
 def healthz():
-    # Liveness only: Render must not restart a healthy process merely because MEGA is temporarily unavailable.
-    return {
-        "ok": True,
-        "version": VERSION,
-        "phase": _RUNTIME_STATE.get("phase"),
-        "ready": runtime_is_ready(),
-        "shutting_down": runtime_is_shutting_down(),
-    }, 200
-
-
-@app.route("/readyz", methods=["GET"])
-def readyz():
-    code = 200 if runtime_is_ready() else 503
-    return {
-        "ok": runtime_is_ready(),
-        "version": VERSION,
-        "phase": _RUNTIME_STATE.get("phase"),
-        "task_recovery_remaining": _RUNTIME_STATE.get("task_recovery_remaining", 0),
-    }, code
+    return "OK", 200
 
 
 @app.route("/keepalive", methods=["GET", "HEAD"])
@@ -26567,9 +24929,6 @@ def keepalive_endpoint():
         "time": _journal_ts(),
         "profile": active_bot_behavior_profile(),
         "keep_alive": KEEP_ALIVE_ENABLED,
-        "ready": runtime_is_ready(),
-        "phase": _RUNTIME_STATE.get("phase"),
-        "uptime_seconds": round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 1),
     }, 200
 
 
@@ -26642,16 +25001,6 @@ def telegram_webhook():
         log_error(f"WEBHOOK: get_json failed: {e}")
         return "BAD REQUEST", 400
 
-    # v108 BOOT/SHUTDOWN gate: do not execute a new Telegram update against partially restored
-    # state or while the old Render instance is draining.  503 keeps the update retryable.
-    if runtime_is_shutting_down():
-        runtime_mark_webhook(payload if isinstance(payload, dict) else None, blocked="shutdown")
-        return "SHUTTING DOWN", 503
-    if not runtime_is_ready():
-        runtime_mark_webhook(payload if isinstance(payload, dict) else None, blocked="boot")
-        return "BOOTING", 503
-    runtime_mark_webhook(payload if isinstance(payload, dict) else None)
-
     try:
         if isinstance(payload, dict):
             if "edited_message" in payload:
@@ -26678,17 +25027,14 @@ def telegram_webhook():
         # стоит за другой задачей этого чата. Секретные таймеры не меняются.
         _protect_pending_ui_timers_on_receipt(payload)
 
-        # Persisted idempotency marker wins even if Render died after committing state but before HTTP 200.
-        if durable_update_processed(update_id):
-            with _MEGA_TASK_LOCK:
-                _mega_task_counters["skipped_done"] += 1
-            return "OK", 200
-
-        # v105/v108: critical content and rare state-mutating F39 callbacks first get a durable card.
-        # Only after confirmed pending persistence may the update enter a RAM worker.
+        # v105: критическое содержимое сначала получает маленькую durable-card в MEGA.
+        # Только после подтверждённой записи pending задача может войти в RAM worker.
         durable_cloud, durable_reason = durable_task_required(payload)
-        durable_expected = _durable_expected_effects(payload) if durable_cloud else {}
         if durable_cloud:
+            if durable_update_processed(update_id):
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters["skipped_done"] += 1
+                return "OK", 200
             cloud_state = mega_task_known_state(update_id)
             if cloud_state == "done":
                 with _MEGA_TASK_LOCK:
@@ -26700,12 +25046,11 @@ def telegram_webhook():
                 schedule_mega_task_recovery(0.2)
                 return "TASK RUNNING", 503
             if cloud_state == "failed":
-                # v109: failed means manual review. Automatic Telegram retry must not replay
-                # a potentially-applied finance operation or toggle.
-                return "TASK NEEDS REVIEW", 200
+                if not _mega_task_move(update_id, "failed", "pending"):
+                    return "TASK RETRY PENDING", 503
+                cloud_state = "pending"
             if cloud_state != "pending":
                 task_payload = _build_mega_task_payload(update_id, payload, update_chat_id, update_type, durable_reason)
-                durable_expected = _durable_expected_from_task_or_payload(task_payload, payload)
                 if not _mega_task_upload_new_pending(update_id, task_payload):
                     # Не исполняем критическую команду без внешнего свидетеля. Telegram повторит update.
                     return "TASK BACKUP UNAVAILABLE", 503
@@ -26733,11 +25078,12 @@ def telegram_webhook():
                     _execute_telegram_payload(payload, update_id, update_chat_id, update_type)
                     success = True
                     if durable_cloud:
-                        finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type, payload=payload, expected_effects=durable_expected)
+                        finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type)
                         if not finalized:
-                            # Verification-only retry. It never repeats business effects.
-                            schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 1.0, payload=payload, expected_effects=durable_expected)
-                            log_error(f"MEGA TASK FINALIZE DEFERRED update={update_id}; durable effects still pending")
+                            # Бизнес уже выполнен, но облачный commit ещё не подтверждён.
+                            # Не повторяем бизнес; отдельный retry только допишет marker/delta и running->done.
+                            schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 5.0)
+                            log_error(f"MEGA TASK FINALIZE DEFERRED update={update_id}; business already completed")
                 except Exception as exc:
                     error_text = str(exc)
                     if durable_cloud and durable_started:
@@ -26791,36 +25137,13 @@ def set_webhook():
         
 def main():
     global data
-    runtime_install_signal_handlers()
-    runtime_set_phase("boot_local_load", "загружаю локальное состояние")
     restored = False
     data = load_data()
-    runtime_set_phase("boot_mega_restore", "проверяю global + delta в MEGA")
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["restore_attempted"] = True
     try:
         restored = mega_autorestore_if_needed()
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["restore_ok"] = bool(restored or not RESTORE_GUARD_ACTIVE)
-            _RUNTIME_STATE["restore_detail"] = "MEGA restore applied" if restored else ("restore guard active" if RESTORE_GUARD_ACTIVE else "local state retained")
     except Exception as e:
         log_error(f"main mega_autorestore_if_needed: {e}")
         restored = False
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["restore_ok"] = False
-            _RUNTIME_STATE["restore_detail"] = str(e)[:500]
-        runtime_event("boot_restore_error", str(e), "ERROR")
-
-    # Previous runtime snapshot lives outside Render and survives sleep/redeploy/restart.
-    runtime_set_phase("boot_watcher_previous", "читаю предыдущий runtime snapshot")
-    try:
-        prev_runtime = runtime_load_previous_snapshot()
-        prev_reason = runtime_classify_previous(prev_runtime)
-        with _RUNTIME_LOCK:
-            _RUNTIME_STATE["previous_reason"] = prev_reason
-        runtime_event("previous_runtime", prev_reason)
-    except Exception as e:
-        runtime_event("previous_runtime_error", str(e), "WARN")
     if not RESTORE_GUARD_ACTIVE:
         migrate_legacy_owner_secrets()
     try:
@@ -26889,11 +25212,9 @@ def main():
             _ensure_secret_media_numbers(int(cid))
         except Exception:
             pass
-    # После MEGA restore повторно поднимаем индекс пересылки и компактное состояние окон в память.
-    # Новые webhook ещё закрыты BOOT-gate до полной проверки durable tasks.
-    runtime_set_phase("boot_runtime_state", "восстанавливаю индексы и окна")
+    # После MEGA restore повторно поднимаем индекс пересылки в память.
+    # Это позволяет редактировать старые сообщения сразу после деплоя.
     _restore_runtime_state_from_data(data)
-    restore_finance_window_runtime_state()
     if not RESTORE_GUARD_ACTIVE:
         save_data(data)
         data["forward_rules"] = load_forward_rules()
@@ -26907,10 +25228,8 @@ def main():
         initialize_delta_baseline(data)
     except Exception as e:
         log_error(f"initialize_delta_baseline: {e}")
-    # Durable tasks are checked BEFORE READY.  A short synchronous pass recovers most work;
-    # if something remains, Flask starts but webhook answers 503 until background recovery finishes.
-    runtime_set_phase("boot_task_registry", "читаю MEGA tasks pending/running")
-    boot_recovery_remaining = 0
+    # v105: загрузить реестр durable tasks только ПОСЛЕ восстановления global+delta,
+    # но ДО начала приёма новых webhook. Сами pending/running выполняются отдельным worker позже.
     if mega_tasks_active():
         try:
             task_stats = mega_task_refresh_registry()
@@ -26919,32 +25238,18 @@ def main():
                 f"running={task_stats.get('running', 0)} failed={task_stats.get('failed', 0)} "
                 f"done={task_stats.get('done', 0)}"
             )
-            runtime_recover_tasks_blocking(BOOT_SYNC_RECOVERY_SECONDS)
-            boot_recovery_remaining = len(_runtime_pending_recovery_rows())
         except Exception as e:
-            log_error(f"mega_task_refresh/recovery startup: {e}")
-            runtime_event("boot_task_recovery_error", str(e), "ERROR")
-            try:
-                boot_recovery_remaining = len(_runtime_pending_recovery_rows())
-            except Exception:
-                boot_recovery_remaining = 1
-    with _RUNTIME_LOCK:
-        _RUNTIME_STATE["task_recovery_remaining"] = int(boot_recovery_remaining)
+            log_error(f"mega_task_refresh_registry startup: {e}")
     if OWNER_ID:
         try:
             finance_active_chats.add(int(OWNER_ID))
         except Exception:
             pass
     log_info(f"Данные загружены из SQLite ({DB_FILE}). Версия бота: {VERSION}")
-    runtime_set_phase("boot_webhook", "устанавливаю Telegram webhook")
     set_webhook()
+    if mega_tasks_active():
+        schedule_mega_task_recovery(MEGA_TASK_RECOVERY_DELAY_SECONDS)
     start_keep_alive_thread()
-
-    if boot_recovery_remaining > 0:
-        runtime_set_phase("boot_recovery_background", f"осталось {boot_recovery_remaining}; webhook временно 503")
-        threading.Thread(target=runtime_continue_boot_recovery_background, name="boot-task-recovery", daemon=True).start()
-    else:
-        runtime_mark_ready("global/delta восстановлены; pending/running durable tasks проверены")
     owner_id = None
     if OWNER_ID:
         try:
@@ -26962,20 +25267,13 @@ def main():
                     f"Активная версия: {active_bot_behavior_profile_info().get('title')}\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
                     f"MEGA-задачи: pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\n"
-                    f"BOOT: {'READY' if runtime_is_ready() else 'RECOVERY'}; предыдущий запуск: {_RUNTIME_STATE.get('previous_reason', '—')}\n"
-                    f"Watcher: Инфо → 🖥 Render / Сервер; heartbeat MEGA каждые {int(RUNTIME_WATCHER_HEARTBEAT_SECONDS)}с\n"
                     f"Бэкап v91: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; full после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с"
                 )
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
-    try:
-        app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
-    finally:
-        # Covers a normal Flask/process exit. SIGTERM/SIGINT already run the same routine first.
-        try:
-            runtime_graceful_shutdown("APP_EXIT")
-        except Exception as e:
-            log_error(f"final graceful shutdown: {e}")
+    if not RESTORE_GUARD_ACTIVE:
+        schedule_startup_main_windows(delay=3.0)
+    app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
 if __name__ == "__main__":
     main()
 # BOT FILE: bot_v101_mega_restore_forward_finance_durable.py
