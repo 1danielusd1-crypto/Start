@@ -1,4 +1,4 @@
-# v121
+# v122
 import os
 import io
 import json
@@ -679,8 +679,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v121_forward_outcome_all_excel"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v121_forward_outcome_all_excel.py"
+VERSION = "bot_v122_excel_notes_balances_finance_witness"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v122_excel_notes_balances_finance_witness.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -3707,6 +3707,8 @@ WINDOW_MARKER_CONSTANTS = {
     'runtime_events': 'Ф169',
     'runtime_snapshot_now': 'Ф170',
     'excel_style_toggle': 'Ф171',
+    'excel_style_menu': 'Ф171',
+    'excel_style_set:*': 'Ф171',
     'runtime_export': 'Ф172',
     'info_close': 'Ф85',
     'info_finance_off': 'Ф86',
@@ -4893,19 +4895,39 @@ def backup_excel_all_label() -> str:
 
 
 def excel_table_style(chat_id: int) -> str:
-    """Формат ВСЕХ XLSX: old сохраняет старый вид, new — цветные суммы + Excel-примечания."""
+    """Формат ВСЕХ XLSX: old / new_comments / new_notes.
+
+    Legacy value ``new`` from v119-v121 is migrated logically to ``new_notes`` so
+    existing users immediately get the requested Excel Notes behaviour after deploy.
+    """
     try:
-        mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("excel_table_style") or "new").strip().lower()
+        raw = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("excel_table_style") or "new_notes").strip().lower()
     except Exception:
-        mode = "new"
-    return mode if mode in {"old", "new"} else "new"
+        raw = "new_notes"
+    aliases = {
+        "new": "new_notes",
+        "notes": "new_notes",
+        "note": "new_notes",
+        "comments": "new_comments",
+        "comment": "new_comments",
+    }
+    mode = aliases.get(raw, raw)
+    return mode if mode in {"old", "new_comments", "new_notes"} else "new_notes"
 
 
 def set_excel_table_style(chat_id: int, mode: str) -> str:
     chat_id = int(chat_id)
-    mode = str(mode or "new").strip().lower()
-    if mode not in {"old", "new"}:
-        mode = "new"
+    raw = str(mode or "new_notes").strip().lower()
+    aliases = {
+        "new": "new_notes",
+        "notes": "new_notes",
+        "note": "new_notes",
+        "comments": "new_comments",
+        "comment": "new_comments",
+    }
+    mode = aliases.get(raw, raw)
+    if mode not in {"old", "new_comments", "new_notes"}:
+        mode = "new_notes"
     store = get_chat_store(chat_id)
     store.setdefault("settings", {})["excel_table_style"] = mode
     save_data(data, chat_ids=[chat_id])
@@ -4917,11 +4939,64 @@ def set_excel_table_style(chat_id: int, mode: str) -> str:
 
 
 def toggle_excel_table_style(chat_id: int) -> str:
-    return set_excel_table_style(chat_id, "old" if excel_table_style(chat_id) == "new" else "new")
+    """Compatibility helper: cycle OLD -> Comments -> Notes -> OLD."""
+    order = ["old", "new_comments", "new_notes"]
+    current = excel_table_style(chat_id)
+    try:
+        next_mode = order[(order.index(current) + 1) % len(order)]
+    except Exception:
+        next_mode = "new_notes"
+    return set_excel_table_style(chat_id, next_mode)
+
+
+def excel_table_style_caption(chat_id: int) -> str:
+    mode = excel_table_style(chat_id)
+    if mode == "old":
+        return "СТАРОЕ"
+    if mode == "new_comments":
+        return "НОВОЕ • КОММЕНТАРИИ"
+    return "НОВОЕ • ПРИМЕЧАНИЯ"
+
+
+def excel_annotation_mode(chat_id: int) -> str | None:
+    mode = excel_table_style(chat_id)
+    if mode == "new_comments":
+        return "comments"
+    if mode == "new_notes":
+        return "notes"
+    return None
 
 
 def excel_table_style_label(chat_id: int) -> str:
-    return "📊 Excel: НОВОЕ" if excel_table_style(chat_id) == "new" else "📊 Excel: СТАРОЕ"
+    # Main INFO button intentionally stays short; selection is inside its submenu.
+    return "📊 Excel"
+
+
+def build_excel_style_text(chat_id: int) -> str:
+    return wm_owner(
+        "📊 Excel\n\n"
+        "Выбери формат для всех XLSX-файлов бота.\n"
+        "• Старая — прежняя простая таблица.\n"
+        "• Новая в комментариях — цветная таблица + современные Excel Comments.\n"
+        "• Новая в примечаниях — цветная таблица + классические Excel Notes (Примечания).\n\n"
+        f"Сейчас: {excel_table_style_caption(chat_id)}",
+        9,
+    )
+
+
+def build_excel_style_keyboard(chat_id: int):
+    mode = excel_table_style(chat_id)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    choices = [
+        ("old", "Старая"),
+        ("new_comments", "Новая в комментариях"),
+        ("new_notes", "Новая в примечаниях"),
+    ]
+    for value, label in choices:
+        mark = "✅" if mode == value else "⬜"
+        kb.row(IB(f"{mark} {label}", callback_data=f"excel_style_set:{value}"))
+    kb.row(IB("🔙 Назад в Инфо", callback_data="journal_back"))
+    return kb
 
 
 def _backup_target_all_state(target: str) -> tuple[int, int]:
@@ -6250,7 +6325,7 @@ def build_info_text(chat_id: int) -> str:
             f"Финансовые сутки: с {finance_day_start_label(chat_id)}",
             f"Диспетчер: pending {UPDATE_DISPATCHER.stats().get('pending', 0)}",
             f"Таймер ввода: {_format_duration_short(internal_timer_seconds('input_wait'))}; окна: {_format_duration_short(internal_timer_seconds('window_auto_return'))}",
-            f"Excel все файлы: {'НОВОЕ' if excel_table_style(chat_id) == 'new' else 'СТАРОЕ'}",
+            f"Excel все файлы: {excel_table_style_caption(chat_id)}",
         ])
         if version_mode_feature("mega_priority"):
             lines.append(f"MEGA: {'приоритетный' if mega_backup_priority_enabled(chat_id) else 'обычный'} режим")
@@ -8097,6 +8172,17 @@ def _durable_note_forward_decision(source_chat_id: int, direct: bool = False):
             pass
 
 
+def _durable_note_source_consumed(reason: str):
+    """Tell the durable finalizer that the handler consumed this source before finance/forward routes."""
+    try:
+        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
+        if not isinstance(ctx, dict):
+            return
+        ctx["source_consumed_reason"] = str(reason or "handler_consumed")
+    except Exception:
+        pass
+
+
 def _durable_execution_context_snapshot() -> dict:
     try:
         ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
@@ -8106,6 +8192,7 @@ def _durable_execution_context_snapshot() -> dict:
             "forward_decision_reached": bool(ctx.get("forward_decision_reached")),
             "forward_direct": bool(ctx.get("forward_direct")),
             "actual_forward_targets": _delta_json_clone(ctx.get("actual_forward_targets") or []),
+            "source_consumed_reason": str(ctx.get("source_consumed_reason") or ""),
         }
     except Exception:
         return {}
@@ -8147,6 +8234,14 @@ def _durable_expected_after_execution(base_expected: dict | None, execution_ctx:
         })
     expected["forward_targets"] = rebuilt
     expected["forward_decision_actual"] = bool(execution_ctx.get("forward_decision_reached"))
+    consumed_reason = str(execution_ctx.get("source_consumed_reason") or "").strip()
+    if consumed_reason:
+        # The real handler returned before ordinary finance/secret/forward processing.
+        # This is metadata-only suppression and never creates or deletes a financial record.
+        expected["source_finance"] = False
+        expected["source_secret"] = False
+        expected["forward_targets"] = []
+        expected["source_consumed_reason"] = consumed_reason
     return _durable_normalize_expected_for_route(payload or {}, expected)
 
 
@@ -8858,14 +8953,19 @@ def schedule_mega_task_recovery(delay: float | None = None):
 
 
 def schedule_safe_failed_task_repairs(delay: float = 6.0, limit: int = 20):
-    """Background-only repair for FAILED tasks that can be fixed without replaying Telegram sends.
+    """Repair FAILED tasks only when completion can be proven without replaying business work.
 
-    No business handler is replayed. Eligible repairs are metadata-only forward_secret gaps
-    or old secret-route tasks that become complete after removing an impossible source_finance witness.
+    Besides the existing metadata-only repairs, v122 recognizes an old false-positive trio
+    11 -> 22 -> 33 from the hidden secret-sequence handler.  The trio is repaired only when
+    all three failed tasks belong to the same chat + same Telegram user, arrived in order
+    within the handler's 10-second window, and each failure is only a source_finance witness.
+    No finance record is created/deleted and no Telegram message is replayed.
     """
     if not mega_tasks_active():
         return
+
     def _scan():
+        loaded = []
         try:
             mega_task_refresh_registry()
             with _MEGA_TASK_LOCK:
@@ -8874,7 +8974,7 @@ def schedule_safe_failed_task_repairs(delay: float = 6.0, limit: int = 20):
                     for k, row in _mega_task_registry.items()
                     if row.get("state") == "failed"
                 ][:max(1, int(limit))]
-            repaired = 0
+
             for key, remote_path in rows:
                 local = None
                 try:
@@ -8885,39 +8985,137 @@ def schedule_safe_failed_task_repairs(delay: float = 6.0, limit: int = 20):
                         continue
                     expected = _durable_expected_from_task_or_payload(task, payload)
                     report = _durable_effect_report(payload, expected)
-                    missing = [str(x) for x in (report.get("missing") or [])]
-                    ambiguous = [str(x) for x in (report.get("ambiguous") or [])]
-                    # v117: after safe secret-route reclassification an old failed task may
-                    # already be complete. Moving failed->done does not replay its business handler.
-                    eligible = bool(report.get("complete")) or (
-                        (not ambiguous)
-                        and bool(missing)
-                        and all(x.startswith("forward_secret:") for x in missing)
-                    )
-                    if not eligible:
-                        continue
-                    if finalize_durable_task_after_business(
-                        key, (task or {}).get("chat_id"), str((task or {}).get("update_type") or "recovered"),
-                        payload=payload, expected_effects=expected,
-                    ):
-                        repaired += 1
-                        reason = "reclassified_complete" if bool(report.get("complete")) else f"missing={missing}"
-                        bot_journal("mega_task_failed_safe_repaired", (task or {}).get("chat_id"), f"update_id={key} {reason}")
+                    loaded.append({
+                        "key": key,
+                        "task": task,
+                        "payload": payload,
+                        "expected": expected,
+                        "report": report,
+                    })
                 except Exception as e:
-                    log_error(f"SAFE FAILED TASK REPAIR update={key}: {e}")
+                    log_error(f"SAFE FAILED TASK LOAD update={key}: {e}")
                 finally:
                     try:
                         if local:
                             shutil.rmtree(os.path.dirname(local), ignore_errors=True)
                     except Exception:
                         pass
+
+            repaired = 0
+            repaired_keys = set()
+
+            # Existing v117-v121 safe repairs.
+            for item in loaded:
+                key = item["key"]
+                task = item["task"]
+                payload = item["payload"]
+                expected = item["expected"]
+                report = item["report"]
+                missing = [str(x) for x in (report.get("missing") or [])]
+                ambiguous = [str(x) for x in (report.get("ambiguous") or [])]
+                eligible = bool(report.get("complete")) or (
+                    (not ambiguous)
+                    and bool(missing)
+                    and all(x.startswith("forward_secret:") for x in missing)
+                )
+                if not eligible:
+                    continue
+                try:
+                    if finalize_durable_task_after_business(
+                        key, (task or {}).get("chat_id"), str((task or {}).get("update_type") or "recovered"),
+                        payload=payload, expected_effects=expected,
+                    ):
+                        repaired += 1
+                        repaired_keys.add(str(key))
+                        reason = "reclassified_complete" if bool(report.get("complete")) else f"missing={missing}"
+                        bot_journal("mega_task_failed_safe_repaired", (task or {}).get("chat_id"), f"update_id={key} {reason}")
+                except Exception as e:
+                    log_error(f"SAFE FAILED TASK REPAIR update={key}: {e}")
+
+            # v122: repair ONLY a fully proven legacy hidden sequence 11 -> 22 -> 33.
+            seq_candidates = []
+            for item in loaded:
+                if str(item["key"]) in repaired_keys:
+                    continue
+                report = item["report"]
+                missing = [str(x) for x in (report.get("missing") or [])]
+                ambiguous = [str(x) for x in (report.get("ambiguous") or [])]
+                if ambiguous or len(missing) != 1 or not missing[0].startswith("source_finance:"):
+                    continue
+                try:
+                    raw, src_chat_id, msg_id, _group = _durable_payload_message(item["payload"])
+                    text = str((raw or {}).get("text") or "").strip()
+                    if text not in {"11", "22", "33"}:
+                        continue
+                    user_id = int(((raw or {}).get("from") or {}).get("id") or 0)
+                    src_chat_id = int(src_chat_id)
+                    msg_id = int(msg_id)
+                    if not user_id or not src_chat_id or not msg_id:
+                        continue
+                    created = str((item["task"] or {}).get("created_at") or "")
+                    dt = datetime.fromisoformat(created) if created else None
+                    ts = float(dt.timestamp()) if dt else 0.0
+                    if not ts:
+                        continue
+                    seq_candidates.append({
+                        **item,
+                        "text": text,
+                        "src_chat_id": src_chat_id,
+                        "user_id": user_id,
+                        "msg_id": msg_id,
+                        "ts": ts,
+                    })
+                except Exception:
+                    continue
+
+            by_owner = {}
+            for item in seq_candidates:
+                by_owner.setdefault((item["src_chat_id"], item["user_id"]), []).append(item)
+            for group in by_owner.values():
+                group.sort(key=lambda x: (x["ts"], x["msg_id"]))
+                for idx in range(max(0, len(group) - 2)):
+                    trio = group[idx:idx + 3]
+                    if [x["text"] for x in trio] != ["11", "22", "33"]:
+                        continue
+                    if not (trio[0]["msg_id"] < trio[1]["msg_id"] < trio[2]["msg_id"]):
+                        continue
+                    if trio[2]["ts"] - trio[0]["ts"] > 10.0:
+                        continue
+                    for item in trio:
+                        key = item["key"]
+                        if str(key) in repaired_keys:
+                            continue
+                        expected = _delta_json_clone(item["expected"] or {})
+                        expected["source_finance"] = False
+                        expected["source_secret"] = False
+                        expected["forward_targets"] = []
+                        expected["source_consumed_reason"] = "legacy_secret_sequence_trio"
+                        try:
+                            if finalize_durable_task_after_business(
+                                key,
+                                (item["task"] or {}).get("chat_id"),
+                                str((item["task"] or {}).get("update_type") or "recovered"),
+                                payload=item["payload"],
+                                expected_effects=expected,
+                            ):
+                                repaired += 1
+                                repaired_keys.add(str(key))
+                                bot_journal(
+                                    "mega_task_failed_safe_repaired",
+                                    (item["task"] or {}).get("chat_id"),
+                                    f"update_id={key} legacy_secret_sequence_trio",
+                                )
+                        except Exception as e:
+                            log_error(f"SAFE SECRET-SEQUENCE FAILED REPAIR update={key}: {e}")
+                    break
+
             if repaired:
                 log_info(f"[MEGA TASKS] safe failed repairs={repaired}")
         except Exception as e:
             log_error(f"schedule_safe_failed_task_repairs: {e}")
+
     DELAYED_SCHEDULER.cancel("mega-task-safe-failed-repair")
     DELAYED_SCHEDULER.schedule("mega-task-safe-failed-repair", max(1.0, float(delay)), _scan)
-
 
 def mega_task_requeue_failed(limit: int = 20) -> int:
     """Manual owner action only: move a bounded number of failed tasks back to pending."""
@@ -9107,15 +9305,13 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
                 prev_day = day_key
 
     rows = [
-        ["month", month_key],
-        ["chat", payload.get("chat_name")],
-        ["opening_balance", payload.get("opening_balance")],
-        ["total_income", payload.get("total_income")],
-        ["total_expense", payload.get("total_expense")],
-        ["closing_balance", payload.get("closing_balance")],
+        ["Месяц", month_key],
+        ["Чат", payload.get("chat_name")],
+        ["Остаток с прошлого раза", "", payload.get("opening_balance"), ""],
         [],
         ["Дата", "Описание", "Приход", "Расход", "ID", "Номер", "Время", "Автор"],
     ]
+    data_start_row = 6
     prev_day = None
     for r in payload.get("records", []):
         day_key = str(r.get("day_key") or "")[:10]
@@ -9130,6 +9326,13 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         ])
         if day_key:
             prev_day = day_key
+    data_end_row = max(data_start_row, len(rows))
+    rows.append([])
+    income_row = len(rows) + 1
+    rows.append(["", "Приход за период", {"formula": f"SUM(C{data_start_row}:C{data_end_row})", "value": payload.get("total_income")}, ""])
+    expense_row = len(rows) + 1
+    rows.append(["", "Расход за период", "", {"formula": f"SUM(D{data_start_row}:D{data_end_row})", "value": payload.get("total_expense")}])
+    rows.append(["", "Остаток на руках", {"formula": f"C3+C{income_row}-D{expense_row}", "value": payload.get("closing_balance")}, ""])
     _write_excel_by_selected_style(xlsx_path, rows, chat_id, sheet_name="Месяц", category_layout=False)
 
     return {"json": json_path, "csv": csv_path, "xlsx": xlsx_path}
@@ -12724,6 +12927,95 @@ def _xlsx_record_row(date_value, amount, note):
     return [date_value, note or "", income, expense]
 
 
+def _opening_balance_before_exact(store: dict, start_day: str, start_rid: int | None = 0) -> float:
+    """Balance immediately before an export boundary, using the same `records` ledger as bot balance."""
+    start_day = str(start_day or "")[:10]
+    try:
+        start_rid = int(start_rid or 0)
+    except Exception:
+        start_rid = 0
+    total = 0.0
+    records = sorted((store or {}).get("records", []) or [], key=record_sort_key)
+    for rec in records:
+        day_key = _record_day_key(rec)
+        if day_key < start_day:
+            try:
+                total += float(rec.get("amount", 0) or 0)
+            except Exception:
+                pass
+            continue
+        if day_key > start_day:
+            break
+        # start_day itself: rid==0 means balance before the first record of the day.
+        if not start_rid:
+            break
+        if _record_int_id(rec) == start_rid:
+            break
+        try:
+            total += float(rec.get("amount", 0) or 0)
+        except Exception:
+            pass
+    return float(total)
+
+def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float) -> list[list]:
+    """Add opening balance, period totals and real closing cash balance to 4-column XLSX."""
+    src = [list(r or []) for r in (rows or [])]
+    if not src:
+        src = [["Дата", "Описание", "Приход", "Расход"]]
+    header = src[0]
+    body = src[1:]
+    opening = float(opening_balance or 0.0)
+    income_total = 0.0
+    expense_total = 0.0
+    for row in body:
+        try:
+            val = row[2] if len(row) > 2 else ""
+            if _excel_nonempty(val) and not isinstance(val, dict):
+                income_total += float(val)
+        except Exception:
+            pass
+        try:
+            val = row[3] if len(row) > 3 else ""
+            if _excel_nonempty(val) and not isinstance(val, dict):
+                expense_total += float(val)
+        except Exception:
+            pass
+    out = [header, ["", "Остаток с прошлого раза", opening, ""], []]
+    data_start_row = 4
+    out.extend(body)
+    data_end_row = max(data_start_row, len(out))
+    out.append([])
+    income_row = len(out) + 1
+    out.append(["", "Приход за период", {"formula": f"SUM(C{data_start_row}:C{data_end_row})", "value": income_total}, ""])
+    expense_row = len(out) + 1
+    out.append(["", "Расход за период", "", {"formula": f"SUM(D{data_start_row}:D{data_end_row})", "value": expense_total}])
+    closing = opening + income_total - expense_total
+    out.append(["", "Остаток на руках", {"formula": f"C2+C{income_row}-D{expense_row}", "value": closing}, ""])
+    return out
+
+
+def _period_export_bounds(store: dict, mode: str, day_key: str) -> tuple[str, str]:
+    mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
+    if mode == "all_real":
+        mode = "all"
+    base = datetime.strptime(str(day_key)[:10], "%Y-%m-%d")
+    if mode == "day":
+        return day_key, day_key
+    if mode == "week":
+        return (base - timedelta(days=6)).strftime("%Y-%m-%d"), day_key
+    if mode == "month":
+        return base.replace(day=1).strftime("%Y-%m-%d"), day_key
+    if mode == "wedthu":
+        start = base
+        while start.weekday() != 2:
+            start -= timedelta(days=1)
+        return start.strftime("%Y-%m-%d"), (start + timedelta(days=1)).strftime("%Y-%m-%d")
+    keys = sorted(((store or {}).get("daily_records", {}) or {}).keys())
+    if keys:
+        return keys[0], keys[-1]
+    return day_key, day_key
+
+
 
 TABL_LSX_CATEGORIES = [
     "Продукты",
@@ -12804,9 +13096,29 @@ def _xlsx_cell_xml2(row_idx: int, col_idx: int, value, style: int = 0) -> str:
     return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(text)}</t></is></c>'
 
 
-def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_name: str = "4 недели", comments: dict | None = None, freeze_rows: int = 3, widths: list[float] | None = None) -> None:
-    # Минимальный XLSX без внешних библиотек; comments={(row,col): text} создаёт классические Excel-примечания.
+def _write_tabl_lsx_xlsx(
+    path: str,
+    rows: list[list],
+    styles: list[list],
+    sheet_name: str = "4 недели",
+    comments: dict | None = None,
+    freeze_rows: int = 3,
+    widths: list[float] | None = None,
+    annotation_mode: str | None = "notes",
+) -> None:
+    """Minimal XLSX writer with two genuinely different annotation types.
+
+    annotation_mode="notes"    -> classic Excel Notes (legacy comments XML + VML ObjectType=Note)
+    annotation_mode="comments" -> modern threaded Excel Comments (threadedComments + person)
+    annotation_mode=None        -> no annotations
+    """
     comments = comments or {}
+    annotation_mode = str(annotation_mode or "").strip().lower() or None
+    if annotation_mode not in {None, "notes", "comments"}:
+        annotation_mode = "notes"
+    if not comments:
+        annotation_mode = None
+
     max_cols = max((len(r) for r in rows), default=1)
     widths = list(widths or ([13, 16, 28] + [20] * max(0, max_cols - 3)))
     if len(widths) < max_cols:
@@ -12826,7 +13138,7 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
         f'<col min="{i}" max="{i}" width="{min(widths[i-1] if i-1 < len(widths) else 18, 34)}" customWidth="1"/>'
         for i in range(1, max_cols + 1)
     )
-    legacy_drawing = '<legacyDrawing r:id="rId2"/>' if comments else ""
+    legacy_drawing = '<legacyDrawing r:id="rId2"/>' if annotation_mode == "notes" else ""
     sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheetViews><sheetView workbookViewId="0">{f'<pane ySplit="{freeze_rows}" topLeftCell="A{freeze_rows + 1}" activePane="bottomLeft" state="frozen"/>' if freeze_rows else ''}</sheetView></sheetViews>
@@ -12836,15 +13148,20 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
     workbook_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets><sheet name="{_xlsx_xml_escape(sheet_name)[:31]}" sheetId="1" r:id="rId1"/></sheets>
+<calcPr calcId="191029" fullCalcOnLoad="1" forceFullCalc="1"/>
 </workbook>'''
     rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>'''
-    workbook_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+
+    person_rel = ''
+    if annotation_mode == "comments":
+        person_rel = '\n<Relationship Id="rId3" Type="http://schemas.microsoft.com/office/2017/10/relationships/person" Target="persons/person.xml"/>'
+    workbook_rels_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>{person_rel}
 </Relationships>'''
 
     category_colors = [
@@ -12875,9 +13192,12 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
 
     content_types_extra = ""
     sheet_rels_xml = None
-    comments_xml = None
+    notes_xml = None
     vml_xml = None
-    if comments:
+    threaded_xml = None
+    persons_xml = None
+
+    if annotation_mode == "notes":
         content_types_extra = '''<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>
 <Override PartName="/xl/comments1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>'''
         comment_nodes = []
@@ -12889,7 +13209,7 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
             shapes.append(f'''<v:shape id="_x0000_s{1024+idx}" type="#_x0000_t202" style="position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:144pt;height:79.5pt;z-index:{idx};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">
 <v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox style="mso-direction-alt:auto"><div style="text-align:left"/></v:textbox>
 <x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>{max(0,int(col_idx)-1)}, 15, {max(0,int(row_idx)-1)}, 2, {int(col_idx)+2}, 15, {int(row_idx)+4}, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>{max(0,int(row_idx)-1)}</x:Row><x:Column>{max(0,int(col_idx)-1)}</x:Column></x:ClientData></v:shape>''')
-        comments_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        notes_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>Telegram Finance Bot</author></authors><commentList>{''.join(comment_nodes)}</commentList></comments>'''
         vml_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
@@ -12898,6 +13218,27 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>
 <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>
+</Relationships>'''
+
+    elif annotation_mode == "comments":
+        content_types_extra = '''<Override PartName="/xl/threadedComments/threadedComment1.xml" ContentType="application/vnd.ms-excel.threadedcomments+xml"/>
+<Override PartName="/xl/persons/person.xml" ContentType="application/vnd.ms-excel.person+xml"/>'''
+        person_id = "{7C441D5B-9D3A-4B84-95C4-5BCE02D746A1}"
+        comment_nodes = []
+        comment_time = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        for row_idx, col_idx in sorted(comments.keys()):
+            ref = f"{_xlsx_col_name(int(col_idx))}{int(row_idx)}"
+            safe_text = _xlsx_xml_escape(str(comments[(row_idx, col_idx)] or ""))
+            comment_nodes.append(
+                f'<threadedComment ref="{ref}" dT="{comment_time}" personId="{person_id}"><text>{safe_text}</text></threadedComment>'
+            )
+        threaded_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ThreadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">{''.join(comment_nodes)}</ThreadedComments>'''
+        persons_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<personList xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/person"><person displayName="Telegram Finance Bot" id="{person_id}" userId="telegram-finance-bot" providerId="None"/></personList>'''
+        sheet_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/>
 </Relationships>'''
 
     content_types_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -12916,11 +13257,14 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
         z.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
         z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
         z.writestr("xl/styles.xml", styles_xml)
-        if comments:
+        if sheet_rels_xml:
             z.writestr("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels_xml)
-            z.writestr("xl/comments1.xml", comments_xml)
+        if annotation_mode == "notes":
+            z.writestr("xl/comments1.xml", notes_xml)
             z.writestr("xl/drawings/vmlDrawing1.vml", vml_xml)
-
+        elif annotation_mode == "comments":
+            z.writestr("xl/threadedComments/threadedComment1.xml", threaded_xml)
+            z.writestr("xl/persons/person.xml", persons_xml)
 
 def _excel_nonempty(value) -> bool:
     if value is None:
@@ -12937,7 +13281,7 @@ def _excel_category_color_index(note: str) -> int:
         return 0
 
 def _modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
-    """Modern 4-column/backup Excel: colored amounts + classic Excel notes on expenses."""
+    """Modern 4-column/backup Excel: colored amounts + annotations on expenses."""
     max_cols = max((len(r) for r in rows), default=4)
     styles = []
     comments = {}
@@ -12960,6 +13304,13 @@ def _modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], 
             styles.append(st)
             continue
         note = str(row[1] if len(row) > 1 else "").strip()
+        note_key = note.casefold()
+        if note_key in {"остаток с прошлого раза", "остаток на руках"}:
+            styles.append([6] * max_cols)
+            continue
+        if note_key in {"приход за период", "расход за период"}:
+            styles.append([5] * max_cols)
+            continue
         income = row[2] if len(row) > 2 else ""
         expense = row[3] if len(row) > 3 else ""
         if _excel_nonempty(income) and len(st) > 2:
@@ -12974,7 +13325,7 @@ def _modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], 
     return styles, comments, header_row, widths
 
 def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
-    """Modern category/stat Excel: each expense column gets its own fill and note."""
+    """Modern category/stat Excel: each expense column gets its own fill and annotation."""
     max_cols = max((len(r) for r in rows), default=4)
     styles = []
     comments = {}
@@ -12998,7 +13349,7 @@ def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list]
         if label in {"сумма по статьям", "расход"}:
             styles.append([5] * max_cols)
             continue
-        if label in {"приход", "остаток на руках", "на руках:"}:
+        if label in {"приход", "остаток с прошлого раза", "остаток на руках", "на руках:"}:
             styles.append([6] * max_cols)
             continue
         st = [4] * max_cols
@@ -13016,8 +13367,9 @@ def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list]
     return styles, comments, header_row, widths
 
 def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sheet_name: str = "Данные", category_layout: bool = False) -> None:
-    """Single switch used by every XLSX export. OLD remains byte-layout compatible; NEW is visibly colored and commented."""
-    if excel_table_style(int(chat_id)) != "new":
+    """Single switch used by every XLSX export: OLD / modern Comments / modern Notes."""
+    mode = excel_table_style(int(chat_id))
+    if mode == "old":
         _write_simple_xlsx(path, rows, sheet_name=sheet_name)
         return
     if category_layout:
@@ -13026,14 +13378,14 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
         styles, comments, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
     _write_tabl_lsx_xlsx(
         path, rows, styles, sheet_name=sheet_name, comments=comments,
-        freeze_rows=freeze_rows, widths=widths,
+        freeze_rows=freeze_rows, widths=widths, annotation_mode=excel_annotation_mode(chat_id),
     )
 
 
 def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
-    modern_excel = excel_table_style(chat_id) == "new"
+    modern_excel = excel_table_style(chat_id) != "old"
     weeks = _tabl_lsx_weeks(reference_day or today_key(), 4)
     cols = ["Дата", "Приход/выдача", "Откуда/кому"] + TABL_LSX_CATEGORIES
     rows, styles = [], []
@@ -13049,7 +13401,7 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
         rows.append(cols)
         styles.append(([2, 2, 2] + [8 + i for i in range(len(TABL_LSX_CATEGORIES))]) if modern_excel else [2] * len(cols))
         opening = _tabl_lsx_opening_balance(store, start_key)
-        rows.append([fmt_date_ddmmyy(start_key), int(round(opening)), "остаток с прошлой недели"] + [""] * len(TABL_LSX_CATEGORIES))
+        rows.append([fmt_date_ddmmyy(start_key), int(round(opening)), "Остаток с прошлого раза"] + [""] * len(TABL_LSX_CATEGORIES))
         styles.append([7, 7, 7] + [4] * len(TABL_LSX_CATEGORIES))
         income_total = 0.0
         expense_total = 0.0
@@ -13097,14 +13449,14 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
         total_row = ["Итог:", int(round(income_total)), ""] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in TABL_LSX_CATEGORIES]
         rows.append(total_row); styles.append([5] * len(cols))
         rows.append(["расход:", int(round(expense_total))] + [""] * (len(cols) - 2)); styles.append([5] * len(cols))
-        rows.append(["на руках:", int(round(opening + income_total - expense_total))] + [""] * (len(cols) - 2)); styles.append([6] * len(cols))
+        rows.append(["Остаток на руках", int(round(opening + income_total - expense_total))] + [""] * (len(cols) - 2)); styles.append([6] * len(cols))
         rows.append([]); styles.append([])
     os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
     start_all, end_all = weeks[0][0], weeks[-1][1]
-    mode_tag = "new" if modern_excel else "old"
+    mode_tag = excel_table_style(chat_id)
     fname = f"tabl_lsx_{mode_tag}_{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{start_all}_{end_all}.xlsx"
     path = os.path.join(MEGA_LOCAL_TMP_DIR, fname)
-    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name="4 недели", comments=comments if modern_excel else None)
+    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name="4 недели", comments=comments if modern_excel else None, annotation_mode=excel_annotation_mode(chat_id))
     return path
 
 
@@ -13124,7 +13476,7 @@ def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
-                caption=f"📊 Таблица LSX ({'НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ'}) за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}",
+                caption=f"📊 Таблица LSX ({excel_table_style_caption(target_chat_id)}) за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}",
                 timeout=120,
                 purpose="tabl_lsx_send_document",
             )
@@ -13156,7 +13508,11 @@ def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = N
             recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
             for r in recs_sorted:
                 rows.append(_xlsx_record_row(fmt_date_table(dk), r.get("amount", 0), r.get("note", "")))
-        _write_excel_by_selected_style(path, insert_blank_rows_between_days(rows, header_rows=1), chat_id, sheet_name="Данные", category_layout=False)
+        rows = insert_blank_rows_between_days(rows, header_rows=1)
+        first_key = sorted(daily.keys())[0] if daily else today_key()
+        opening = _opening_balance_before_exact(store, first_key, 0)
+        rows = _xlsx_simple_rows_with_balances(rows, opening)
+        _write_excel_by_selected_style(path, rows, chat_id, sheet_name="Данные", category_layout=False)
         return path
     except Exception as e:
         log_error(f"save_chat_xlsx({get_chat_display_name(chat_id)}): {e}")
@@ -16631,6 +16987,7 @@ def handle_secret_sequence(msg) -> bool:
         return False
     step = int(item.get("step", 0)) + 1
     message_ids = list(item.get("message_ids") or []) + [int(msg.message_id)]
+    _durable_note_source_consumed("secret_sequence")
     if step == 3:
         _secret_sequence_state.pop(key, None)
         open_secret_calendar(msg.chat.id, msg.chat.id, self_only=True)
@@ -20643,14 +21000,16 @@ def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: st
 
 
 def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
-    """Excel стат по пользовательскому образцу с настоящими Excel-формулами."""
+    """Excel stat with formulas, opening balance and real closing balance."""
     store = get_chat_store(target_chat_id)
     records = exact_record_range(store, start_key, start_rid, end_key, end_rid)
     cats_map = calc_categories_for_record_range(store, start_key, start_rid, end_key, end_rid)
     categories = get_ordered_category_names(cats=cats_map, store=store)
     clean_categories = [_clean_category_display_name(x) for x in categories]
     headers = ["Дата", "Описание", "Приход"] + clean_categories
-    rows = [headers]
+    opening = _opening_balance_before_exact(store, start_key, start_rid)
+    rows = [headers, ["", "Остаток с прошлого раза", opening] + [""] * len(categories), []]
+    data_start_row = 4
     income_total = 0.0
     expense_total = 0.0
     cat_totals = {cat: 0.0 for cat in categories}
@@ -20677,14 +21036,13 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
                 row[3 + idx] = int(round(value)) if float(value).is_integer() else value
         rows.append(row)
 
-    # Data ends before the separator preceding totals. Blank day separators are intentionally included in SUM ranges.
-    data_last_row = max(2, len(rows))
+    data_last_row = max(data_start_row, len(rows))
     rows.append([])
     sum_row_num = len(rows) + 1
-    sum_row = ["", "Сумма по статьям", {"formula": f"SUM(C2:C{data_last_row})", "value": income_total}]
+    sum_row = ["", "Сумма по статьям", {"formula": f"SUM(C{data_start_row}:C{data_last_row})", "value": income_total}]
     for idx, cat in enumerate(categories, start=4):
         col = _xlsx_col_name(idx)
-        sum_row.append({"formula": f"SUM({col}2:{col}{data_last_row})", "value": cat_totals.get(cat, 0.0)})
+        sum_row.append({"formula": f"SUM({col}{data_start_row}:{col}{data_last_row})", "value": cat_totals.get(cat, 0.0)})
     rows.append(sum_row)
     rows.append([])
 
@@ -20698,8 +21056,8 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
     rows.append(["", "Расход", {"formula": expense_formula, "value": expense_total}] + [""] * len(categories))
     income_row_num = len(rows) + 1
     rows.append(["", "Приход", {"formula": f"C{sum_row_num}", "value": income_total}] + [""] * len(categories))
-    balance_row_num = len(rows) + 1
-    rows.append(["", "Остаток на руках", {"formula": f"C{income_row_num}-C{expense_row_num}", "value": income_total - expense_total}] + [""] * len(categories))
+    closing = opening + income_total - expense_total
+    rows.append(["", "Остаток на руках", {"formula": f"C2+C{income_row_num}-C{expense_row_num}", "value": closing}] + [""] * len(categories))
     return rows
 
 def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str):
@@ -20732,7 +21090,10 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                 except Exception:
                     parsed_amount = 0.0
                 xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            _write_excel_by_selected_style(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), target_chat_id, sheet_name="Точный период", category_layout=False)
+            xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
+            opening = _opening_balance_before_exact(get_chat_store(target_chat_id), start_key, int(start_rid))
+            xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False)
         else:
             with open(tmp_name, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
@@ -20748,7 +21109,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         display_name = f"{chat_name}_({start_label}-{end_label})_{'excel_стат' if file_type == 'xlsxstat' else 'точный'}.{ext}"
         store = get_chat_store(target_chat_id)
         caption = (
-            f"🎯 {(('Excel стат ' if file_type == 'xlsxstat' else 'Excel ') + ('НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ')) if ext == 'xlsx' else 'CSV'} — точный период\n"
+            f"🎯 {(('Excel стат ' if file_type == 'xlsxstat' else 'Excel ') + excel_table_style_caption(target_chat_id)) if ext == 'xlsx' else 'CSV'} — точный период\n"
             f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}\n"
             f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}"
         )
@@ -21945,7 +22306,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                         bot.send_document,
                         recipient_chat_id,
                         fobj,
-                        caption=f"📂 {'Excel ' + ('НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ') if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                        caption=f"📂 {'Excel ' + excel_table_style_caption(target_chat_id) if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
                         timeout=120,
                         purpose="export_send_document"
                     )
@@ -21971,25 +22332,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         if file_type == "xlsxstat":
             trace.step("создаёт Excel по статьям с формулами")
             store = get_chat_store(target_chat_id)
-            base = datetime.strptime(day_key, "%Y-%m-%d")
-            if mode == "day":
-                start_key = end_key = day_key
-            elif mode == "week":
-                start_key = (base - timedelta(days=6)).strftime("%Y-%m-%d")
-                end_key = day_key
-            elif mode == "month":
-                start_key = base.replace(day=1).strftime("%Y-%m-%d")
-                end_key = day_key
-            elif mode == "wedthu":
-                start_dt = base
-                while start_dt.weekday() != 2:
-                    start_dt -= timedelta(days=1)
-                start_key = start_dt.strftime("%Y-%m-%d")
-                end_key = (start_dt + timedelta(days=1)).strftime("%Y-%m-%d")
-            else:
-                keys = sorted((store.get("daily_records", {}) or {}).keys())
-                start_key = keys[0] if keys else day_key
-                end_key = keys[-1] if keys else day_key
+            start_key, end_key = _period_export_bounds(store, mode, day_key)
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
             _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Статьи", category_layout=True)
         elif ext == "xlsx":
@@ -22002,7 +22345,12 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                     log_error(f"xlsx export amount parse skip: chat={get_chat_display_name(target_chat_id)} amount={amount_v!r} note={note_v!r}: {e_amount}")
                     parsed_amount = 0.0
                 xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            _write_excel_by_selected_style(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), target_chat_id, sheet_name="Экспорт", category_layout=False)
+            xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
+            store = get_chat_store(target_chat_id)
+            start_key, _end_key = _period_export_bounds(store, mode, day_key)
+            opening = _opening_balance_before_exact(store, start_key, 0)
+            xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Экспорт", category_layout=False)
         else:
             trace.step("создаёт временный CSV файл")
             with open(tmp_name, "w", newline="", encoding="utf-8") as f:
@@ -22018,7 +22366,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
-                caption=f"📂 {('Excel статьи ' + ('НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ')) if file_type == 'xlsxstat' else (('Excel ' + ('НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ')) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
+                caption=f"📂 {('Excel статьи ' + excel_table_style_caption(target_chat_id)) if file_type == 'xlsxstat' else (('Excel ' + excel_table_style_caption(target_chat_id)) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
                 timeout=120,
                 purpose="export_send_document"
             )
@@ -22956,7 +23304,7 @@ def build_info_keyboard(chat_id: int):
         else:
             kb.row(IB(bot_behavior_profile_label(), callback_data="version_menu"))
         kb.row(IB("⏱ Внутренние таймеры", callback_data="internal_timers"))
-        kb.row(IB(excel_table_style_label(chat_id), callback_data="excel_style_toggle"))
+        kb.row(IB(excel_table_style_label(chat_id), callback_data="excel_style_menu"))
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
@@ -25512,16 +25860,22 @@ def on_callback(call):
             bot_journal("mega_priority_toggle", chat_id, f"enabled={new_state}")
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nБэкап MEGA: {mode_text}", reply_markup=build_info_keyboard(chat_id))
             return
-        if data_str == "excel_style_toggle":
+        if data_str in {"excel_style_toggle", "excel_style_menu"}:
             if not is_owner_chat(chat_id):
                 return
-            mode = toggle_excel_table_style(chat_id)
-            bot_journal("excel_style_toggle", chat_id, f"mode={mode}")
+            safe_edit(bot, call, build_excel_style_text(chat_id), reply_markup=build_excel_style_keyboard(chat_id))
+            return
+        if data_str.startswith("excel_style_set:"):
+            if not is_owner_chat(chat_id):
+                return
+            selected = data_str.split(":", 1)[1].strip().lower()
+            mode = set_excel_table_style(chat_id, selected)
+            bot_journal("excel_style_set", chat_id, f"mode={mode}")
             try:
-                bot.answer_callback_query(call.id, "Excel: НОВОЕ" if mode == "new" else "Excel: СТАРОЕ", show_alert=False)
+                bot.answer_callback_query(call.id, f"Excel: {excel_table_style_caption(chat_id)}", show_alert=False)
             except Exception:
                 pass
-            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            safe_edit(bot, call, build_excel_style_text(chat_id), reply_markup=build_excel_style_keyboard(chat_id))
             return
         if data_str == "info_instruction":
             if not is_owner_chat(chat_id):
@@ -30156,4 +30510,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# v121
+# v122
