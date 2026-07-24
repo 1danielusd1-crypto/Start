@@ -1,4 +1,4 @@
-# v119
+# v121
 import os
 import io
 import json
@@ -81,6 +81,37 @@ class KeyedTaskPool:
                 self._active_keys.add(key)
                 self._ready.put(key)
         return True
+
+    def submit_unique(self, key, func, *args, **kwargs) -> bool:
+        """Submit only when this logical key has no active/queued task.
+
+        Used for heavy interactive file exports: repeated button presses must coalesce
+        instead of building a long queue of the same ZIP/XLSX/journal job. Existing
+        submit() semantics remain unchanged for finance/forward/business queues.
+        """
+        key = str(key)
+        with self._lock:
+            if key in self._active_keys or bool(self._by_key.get(key)):
+                return False
+            if self._pending >= self.max_pending:
+                self._rejected += 1
+                return False
+            self._by_key[key].append((func, args, kwargs, time.time()))
+            self._pending += 1
+            self._submitted += 1
+            self._active_keys.add(key)
+            self._ready.put(key)
+        return True
+
+    def key_status(self, key) -> dict:
+        """Small introspection helper for UI status; no queue mutation."""
+        key = str(key)
+        with self._lock:
+            q = self._by_key.get(key)
+            return {
+                "active": key in self._active_keys,
+                "queued": len(q) if q else 0,
+            }
 
     def _worker(self):
         while True:
@@ -597,8 +628,28 @@ def _forward_delete_with_finance_priority(source_chat_id: int, source_msg_id: in
 
 
 def schedule_forward_any_message(source_chat_id: int, msg):
-    """Пересылка: порядок по исходному чату сохраняется; finance имеет приоритет."""
+    """Пересылка: порядок по исходному чату сохраняется; finance имеет приоритет.
+
+    v121 keeps an explicit live outcome for the asynchronous worker. This prevents a
+    successful handler from becoming MEGA/failed merely because forwarding was skipped
+    by design or an album was still waiting for its delayed media-group flush.
+    """
+    try:
+        if getattr(getattr(msg, "from_user", None), "is_bot", False):
+            _forward_outcome_skip(source_chat_id, msg, "bot_sender")
+            return
+        if getattr(msg, "edit_date", None):
+            _forward_outcome_skip(source_chat_id, msg, "edited_source")
+            return
+    except Exception:
+        pass
     _durable_note_forward_decision(int(source_chat_id), direct=False)
+    try:
+        mid = int(getattr(msg, "message_id", 0) or 0)
+        if mid:
+            _forward_outcome_update(source_chat_id, mid, state="scheduled")
+    except Exception:
+        pass
     if not FORWARD_TASK_POOL.submit(int(source_chat_id), _forward_with_finance_priority, source_chat_id, msg):
         log_error(f"FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
         _forward_with_finance_priority(source_chat_id, msg)
@@ -628,8 +679,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v119_excel_runtime_exact_edit"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v119_excel_runtime_exact_edit.py"
+VERSION = "bot_v121_forward_outcome_all_excel"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v121_forward_outcome_all_excel.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -768,6 +819,64 @@ restore_mode = None
 _media_group_cache = {}
 _media_group_timers = {}
 FORWARD_MEDIA_GROUP_DELAY = 0.8
+
+# v121: live exact-once witness for asynchronous forwarding.
+# Durable tasks are created before the forward worker runs; therefore a completed handler
+# must distinguish "not forwarded by design", "still pending", "delivered", and "failed".
+_FORWARD_OUTCOME_LOCK = threading.RLock()
+_FORWARD_OUTCOMES = {}
+_FORWARD_OUTCOME_MAX = 2500
+
+def _forward_outcome_key(source_chat_id: int, source_msg_id: int):
+    return (int(source_chat_id), int(source_msg_id))
+
+def _forward_outcome_prune_locked():
+    if len(_FORWARD_OUTCOMES) <= _FORWARD_OUTCOME_MAX:
+        return
+    ordered = sorted(
+        _FORWARD_OUTCOMES.items(),
+        key=lambda kv: float((kv[1] or {}).get("updated_at", 0.0) or 0.0),
+    )
+    for key, _item in ordered[: max(1, len(ordered) - _FORWARD_OUTCOME_MAX)]:
+        _FORWARD_OUTCOMES.pop(key, None)
+
+def _forward_outcome_update(source_chat_id: int, source_msg_id: int, state: str | None = None, dst_chat_id: int | None = None, dst_state: str | None = None, dst_msg_id: int | None = None, error: str = ""):
+    try:
+        key = _forward_outcome_key(source_chat_id, source_msg_id)
+        with _FORWARD_OUTCOME_LOCK:
+            item = _FORWARD_OUTCOMES.setdefault(key, {"state": "", "targets": {}, "updated_at": time.time()})
+            if state:
+                item["state"] = str(state)
+            if dst_chat_id is not None:
+                dst = int(dst_chat_id)
+                target = item.setdefault("targets", {}).setdefault(dst, {})
+                if dst_state:
+                    target["state"] = str(dst_state)
+                if dst_msg_id:
+                    target["dst_msg_id"] = int(dst_msg_id)
+                if error:
+                    target["error"] = str(error)[:500]
+            item["updated_at"] = time.time()
+            _forward_outcome_prune_locked()
+    except Exception:
+        pass
+
+def _forward_outcome_snapshot(source_chat_id: int, source_msg_id: int) -> dict:
+    try:
+        key = _forward_outcome_key(source_chat_id, source_msg_id)
+        with _FORWARD_OUTCOME_LOCK:
+            return copy.deepcopy(_FORWARD_OUTCOMES.get(key) or {})
+    except Exception:
+        return {}
+
+def _forward_outcome_skip(source_chat_id: int, msg, reason: str):
+    try:
+        mid = int(getattr(msg, "message_id", 0) or 0)
+        if mid:
+            _forward_outcome_update(source_chat_id, mid, state=f"skip:{reason}")
+            bot_journal("forward_not_expected", source_chat_id, f"msg={mid} reason={reason}")
+    except Exception:
+        pass
 _forward_state_timer = None
 _owner_json_restore_prompts = {}
 _owner_json_restore_prompt_lock = threading.RLock()
@@ -1641,7 +1750,7 @@ BOT_BEHAVIOR_PROFILES = {
     },
 }
 
-# v119: Ф132 показывает все версии этого проекта, которые реально были собраны в чате.
+# v120: Ф132 показывает все версии этого проекта, которые реально были собраны в чате.
 # Для v98+ это совместимые runtime-профили внутри текущего безопасного ядра: выбор
 # меняет профиль/настройки интерфейса, но НЕ откатывает SQLite/MEGA схему и exact-once защиту.
 def _modern_behavior_profile(title: str, description: str) -> dict:
@@ -1650,6 +1759,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v120_current": _modern_behavior_profile("v120 Single-flight exports / forward witness", "Повторные нажатия экспорта не копятся в очереди; видимое время формирования; исправление ложного ambiguous forward для worker-skip."),
     "v119_current": _modern_behavior_profile("v119 Excel / runtime export / exact edit", "Новый Excel с заливками и примечаниями, экспорт runtime из MEGA, исправление ложного source_finance при редактировании."),
     "v118_current": _modern_behavior_profile("v118 Runtime slots / restart forensics", "Rotating runtime slots, корректный watcher_mega_ok и диагностика рестартов Render."),
     "v117_current": _modern_behavior_profile("v117 Secret routes / Telegram maintenance", "Исправление secret-route witness и отдельная throttled maintenance-очередь Telegram edits."),
@@ -1675,7 +1785,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v119_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v120_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -2542,12 +2652,234 @@ def _journal_stream_mega_rows_to_file(fh, limit: int = 3000) -> int:
     return count
 
 
+
+# ─────────────────────────────────────────────────────────────
+# v120: single-flight interactive file exports + visible elapsed time
+# ─────────────────────────────────────────────────────────────
+# EXPORT_TASK_POOL has one worker by default. Previously every button press created
+# another full ZIP/journal job, so 3 taps could mean 3 expensive MEGA scans in a row.
+# The gate below allows only one owner-requested file build/send job at a time and
+# coalesces repeated taps without touching finance/forward/business queues.
+_INTERACTIVE_FILE_JOB_KEY = "interactive-file-global"
+_FILE_JOB_LOCK = threading.RLock()
+_FILE_JOB_STATE = {}
+_FILE_JOB_CONTEXT = threading.local()
+
+
+def _file_job_elapsed_text(seconds: float) -> str:
+    try:
+        total = max(0, int(seconds or 0))
+    except Exception:
+        total = 0
+    h, rem = divmod(total, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h:d}:{m:02d}:{sec:02d}" if h else f"{m:d}:{sec:02d}"
+
+
+def _file_job_current() -> dict:
+    try:
+        return getattr(_FILE_JOB_CONTEXT, "value", None) or {}
+    except Exception:
+        return {}
+
+
+def _file_job_busy_info() -> dict:
+    with _FILE_JOB_LOCK:
+        st = dict(_FILE_JOB_STATE.get(_INTERACTIVE_FILE_JOB_KEY) or {})
+    if not st:
+        return {}
+    started = float(st.get("started_monotonic") or st.get("queued_monotonic") or time.monotonic())
+    st["elapsed"] = max(0.0, time.monotonic() - started)
+    return st
+
+
+def _file_job_progress(phase: str, current=None, total=None, force: bool = False):
+    """Update one temporary Telegram status message at a throttled rate."""
+    ctx = _file_job_current()
+    if not ctx:
+        return
+    key = str(ctx.get("key") or _INTERACTIVE_FILE_JOB_KEY)
+    now_m = time.monotonic()
+    with _FILE_JOB_LOCK:
+        st = _FILE_JOB_STATE.get(key)
+        if not isinstance(st, dict):
+            return
+        st["phase"] = str(phase or "работаю")
+        if current is not None:
+            st["current"] = current
+        if total is not None:
+            st["total"] = total
+        last = float(st.get("last_ui_monotonic") or 0.0)
+        if not force and (now_m - last) < 8.0:
+            return
+        st["last_ui_monotonic"] = now_m
+        chat_id = int(st.get("chat_id"))
+        msg_id = st.get("status_msg_id")
+        label = str(st.get("label") or "Файл")
+        started = float(st.get("started_monotonic") or st.get("queued_monotonic") or now_m)
+        elapsed = _file_job_elapsed_text(now_m - started)
+        cur = st.get("current")
+        tot = st.get("total")
+    progress = ""
+    if cur is not None and tot is not None:
+        progress = f"\nПрогресс: {cur}/{tot}"
+    text = f"⏳ {label}\nВремя: {elapsed}\nЭтап: {phase}{progress}\nПовторные нажатия не ставятся в очередь."
+    try:
+        if msg_id:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=int(msg_id))
+    except Exception:
+        pass
+
+
+
+def _file_job_tick(key: str):
+    """Keep elapsed time moving even when the builder is inside one long blocking call."""
+    key = str(key)
+    with _FILE_JOB_LOCK:
+        st = _FILE_JOB_STATE.get(key)
+        if not isinstance(st, dict):
+            return
+        chat_id = int(st.get("chat_id"))
+        msg_id = st.get("status_msg_id")
+        label = str(st.get("label") or "Файл")
+        phase = str(st.get("phase") or "работаю")
+        started = float(st.get("started_monotonic") or st.get("queued_monotonic") or time.monotonic())
+        elapsed = _file_job_elapsed_text(time.monotonic() - started)
+        cur = st.get("current")
+        tot = st.get("total")
+    progress = f"\nПрогресс: {cur}/{tot}" if cur is not None and tot is not None else ""
+    try:
+        if msg_id:
+            bot.edit_message_text(
+                f"⏳ {label}\nВремя: {elapsed}\nЭтап: {phase}{progress}\nПовторные нажатия не ставятся в очередь.",
+                chat_id=chat_id,
+                message_id=int(msg_id),
+            )
+    except Exception:
+        pass
+    with _FILE_JOB_LOCK:
+        alive = isinstance(_FILE_JOB_STATE.get(key), dict)
+    if alive:
+        DELAYED_SCHEDULER.schedule(f"file-job-tick:{key}", 10.0, _file_job_tick, key)
+
+
+def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
+    key = str(job_meta.get("key") or _INTERACTIVE_FILE_JOB_KEY)
+    previous = getattr(_FILE_JOB_CONTEXT, "value", None)
+    _FILE_JOB_CONTEXT.value = {"key": key}
+    ok = False
+    error_text = ""
+    try:
+        with _FILE_JOB_LOCK:
+            st = _FILE_JOB_STATE.get(key)
+            if isinstance(st, dict):
+                st["started_monotonic"] = time.monotonic()
+                st["phase"] = "запуск"
+        _file_job_progress("запуск", force=True)
+        result = func(*args, **kwargs)
+        ok = (result is not False)
+        if not ok:
+            error_text = "операция завершилась без подтверждения"
+    except Exception as exc:
+        error_text = str(exc)[:300]
+        try:
+            log_error(f"INTERACTIVE FILE JOB {job_meta.get('kind')}: {exc}")
+        except Exception:
+            pass
+    finally:
+        now_m = time.monotonic()
+        with _FILE_JOB_LOCK:
+            st = _FILE_JOB_STATE.get(key)
+            if isinstance(st, dict):
+                chat_id = int(st.get("chat_id"))
+                msg_id = st.get("status_msg_id")
+                label = str(st.get("label") or "Файл")
+                started = float(st.get("started_monotonic") or st.get("queued_monotonic") or now_m)
+                elapsed = _file_job_elapsed_text(now_m - started)
+            else:
+                chat_id = int(job_meta.get("chat_id") or 0)
+                msg_id = None
+                label = str(job_meta.get("label") or "Файл")
+                elapsed = "0:00"
+        try:
+            if msg_id:
+                final = (f"✅ {label}\nГотово за {elapsed}." if ok else f"⚠️ {label}\nЗавершено за {elapsed}.\n{error_text or 'Telegram не подтвердил отправку.'}")
+                bot.edit_message_text(final, chat_id=chat_id, message_id=int(msg_id))
+                delete_message_later(chat_id, int(msg_id), 90 if ok else 180)
+        except Exception:
+            pass
+        try:
+            bot_journal("file_job_done" if ok else "file_job_uncertain", chat_id, f"kind={job_meta.get('kind')} elapsed={elapsed} error={error_text}")
+        except Exception:
+            pass
+        try:
+            DELAYED_SCHEDULER.cancel(f"file-job-tick:{key}")
+        except Exception:
+            pass
+        with _FILE_JOB_LOCK:
+            _FILE_JOB_STATE.pop(key, None)
+        if previous is None:
+            try:
+                delattr(_FILE_JOB_CONTEXT, "value")
+            except Exception:
+                pass
+        else:
+            _FILE_JOB_CONTEXT.value = previous
+
+
+def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
+    """Start one heavy user-requested file job; duplicate taps are coalesced."""
+    chat_id = int(chat_id)
+    key = _INTERACTIVE_FILE_JOB_KEY
+    with _FILE_JOB_LOCK:
+        existing = _FILE_JOB_STATE.get(key)
+        if isinstance(existing, dict):
+            started = float(existing.get("started_monotonic") or existing.get("queued_monotonic") or time.monotonic())
+            elapsed = _file_job_elapsed_text(time.monotonic() - started)
+            return False, f"Уже выполняется: {existing.get('label','файл')} · {elapsed}"
+        meta = {
+            "key": key,
+            "chat_id": chat_id,
+            "kind": str(kind),
+            "label": str(label),
+            "queued_monotonic": time.monotonic(),
+            "started_monotonic": 0.0,
+            "phase": "в очереди",
+            "status_msg_id": None,
+            "last_ui_monotonic": 0.0,
+        }
+        _FILE_JOB_STATE[key] = meta
+    try:
+        status = bot.send_message(chat_id, f"⏳ {label}\nВремя: 0:00\nЭтап: в очереди\nПовторные нажатия не ставятся в очередь.")
+        with _FILE_JOB_LOCK:
+            if isinstance(_FILE_JOB_STATE.get(key), dict):
+                _FILE_JOB_STATE[key]["status_msg_id"] = int(getattr(status, "message_id", 0) or 0) or None
+    except Exception:
+        pass
+    ok = EXPORT_TASK_POOL.submit_unique(key, _interactive_file_job_runner, dict(meta), func, args, kwargs)
+    if not ok:
+        with _FILE_JOB_LOCK:
+            _FILE_JOB_STATE.pop(key, None)
+        return False, "Экспорт уже занят"
+    try:
+        DELAYED_SCHEDULER.cancel(f"file-job-tick:{key}")
+        DELAYED_SCHEDULER.schedule(f"file-job-tick:{key}", 10.0, _file_job_tick, key)
+    except Exception:
+        pass
+    try:
+        bot_journal("file_job_queued", chat_id, f"kind={kind} label={label}")
+    except Exception:
+        pass
+    return True, "Запущено"
+
+
 def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
     """Build/send diagnostics inside EXPORT_TASK_POOL; never block Telegram webhook workers."""
     if not is_owner_chat(chat_id):
         send_and_auto_delete(chat_id, "📓 Журнал доступен только владельцу.", HELPER_DELETE_DELAY)
         return
     bot_journal("journal_export_requested", chat_id, f"limit={limit}; streaming=1; memory_guard=1")
+    _file_job_progress("фиксирую свежий журнал в MEGA", force=True)
     try:
         journal_flush_to_mega(True)
     except Exception:
@@ -2566,7 +2898,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
             fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
-            fh.write("v119: runtime slots + legacy candidate recovery + Runtime ZIP export; LOW-RAM remains active.\n\n")
+            fh.write("v120: single-flight file exports + elapsed status + forward witness worker-skip fix; LOW-RAM remains active.\n\n")
             fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
@@ -2580,6 +2912,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             except Exception as e:
                 fh.write(f"runtime events unavailable: {e}\n")
             fh.write("\n==================== ACTION JOURNAL (MEGA STREAM) ====================\n")
+            _file_job_progress("читаю журнал из MEGA", force=True)
             remote_count = _journal_stream_mega_rows_to_file(fh, int(limit))
             fh.write(f"\n[MEGA rows streamed: {remote_count}]\n")
             fh.write("\n==================== CURRENT PROCESS TAIL ====================\n")
@@ -2596,14 +2929,17 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("probable_render_idle_*: probable sleep/wake estimate.\n")
             fh.write("process_restart_or_unknown + high RAM/no SIGTERM: suspect OOM/hard kill.\n")
             fh.write("v117: secret messages no longer demand impossible source-finance witnesses; retro Telegram UI work is isolated and throttled.\n")
+        _file_job_progress("отправляю файл в Telegram", force=True)
         with open(tmp_path, "rb") as fh:
             _tg_call_retry(
                 bot.send_document,
                 chat_id,
                 fh,
-                caption="📓 Максимальный журнал: Render + бот + очереди + MEGA (stable streaming v117)",
+                caption="📓 Максимальный журнал: Render + бот + очереди + MEGA (single-flight v120)",
+                timeout=120,
                 purpose="journal_send_document",
             )
+        return True
     finally:
         try:
             if tmp_path and os.path.exists(tmp_path):
@@ -2629,19 +2965,17 @@ _o9_secret_wait_timers = {}
 
 
 def send_journal_file_to_owner(chat_id: int, limit: int = 3000):
-    """Queue a maximum journal export and return immediately to Telegram."""
+    """Queue one maximum journal export; repeated taps are coalesced."""
     if not is_owner_chat(chat_id):
         send_and_auto_delete(chat_id, "📓 Журнал доступен только владельцу.", HELPER_DELETE_DELAY)
         return False
-    key = int(chat_id)
-    ok = EXPORT_TASK_POOL.submit(key, _send_journal_file_to_owner_sync, int(chat_id), int(limit))
+    ok, info = submit_interactive_file_job(int(chat_id), "journal", "Диагностический журнал", _send_journal_file_to_owner_sync, int(chat_id), int(limit))
     if not ok:
-        send_and_auto_delete(chat_id, "⚠️ Очередь экспорта занята. Повтори через несколько секунд.", 8)
+        try:
+            send_and_auto_delete(chat_id, f"⏳ {info}. Новая копия в очередь не добавлена.", 10)
+        except Exception:
+            pass
         return False
-    try:
-        bot_journal("journal_export_queued", chat_id, f"limit={limit}")
-    except Exception:
-        pass
     return True
 
 def _secret_notes_list() -> list:
@@ -4559,7 +4893,7 @@ def backup_excel_all_label() -> str:
 
 
 def excel_table_style(chat_id: int) -> str:
-    """Формат /tabl_lsx: old сохраняет старый вид, new — суммы + цвет + Excel-примечания."""
+    """Формат ВСЕХ XLSX: old сохраняет старый вид, new — цветные суммы + Excel-примечания."""
     try:
         mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("excel_table_style") or "new").strip().lower()
     except Exception:
@@ -5916,7 +6250,7 @@ def build_info_text(chat_id: int) -> str:
             f"Финансовые сутки: с {finance_day_start_label(chat_id)}",
             f"Диспетчер: pending {UPDATE_DISPATCHER.stats().get('pending', 0)}",
             f"Таймер ввода: {_format_duration_short(internal_timer_seconds('input_wait'))}; окна: {_format_duration_short(internal_timer_seconds('window_auto_return'))}",
-            f"Excel /tabl_lsx: {'НОВОЕ' if excel_table_style(chat_id) == 'new' else 'СТАРОЕ'}",
+            f"Excel все файлы: {'НОВОЕ' if excel_table_style(chat_id) == 'new' else 'СТАРОЕ'}",
         ])
         if version_mode_feature("mega_priority"):
             lines.append(f"MEGA: {'приоритетный' if mega_backup_priority_enabled(chat_id) else 'обычный'} режим")
@@ -7330,6 +7664,21 @@ def _durable_normalize_expected_for_route(payload: dict, expected: dict | None) 
     if secret_route and bool(adjusted.get("source_finance")):
         adjusted["source_finance"] = False
         adjusted["source_finance_suppressed_by_secret_route"] = True
+
+    # v120: mirror forward_any_message() skip predicates for old persisted tasks too.
+    # This is metadata reclassification only: no Telegram resend and no finance mutation.
+    # It safely clears false ambiguous forwards created when the async forward worker
+    # intentionally skipped bot-authored or edited source messages.
+    if isinstance(raw, dict):
+        try:
+            sender = raw.get("from") or {}
+            sender_is_bot = bool(sender.get("is_bot")) if isinstance(sender, dict) else False
+        except Exception:
+            sender_is_bot = False
+        edited_source = bool(raw.get("edit_date"))
+        if sender_is_bot or edited_source:
+            adjusted["forward_targets"] = []
+            adjusted["forward_suppressed_by_worker_skip"] = "bot_sender" if sender_is_bot else "edited_source"
     return adjusted
 
 
@@ -7344,12 +7693,78 @@ def _durable_expected_from_task_or_payload(task: dict | None, payload: dict) -> 
     return _durable_normalize_expected_for_route(payload, _durable_expected_effects(payload))
 
 
+def _durable_live_forward_outcome(payload: dict) -> dict:
+    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload or {})
+    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
+        return {}
+    return _forward_outcome_snapshot(int(source_chat_id), int(source_msg_id))
+
+def _durable_apply_live_forward_outcome(payload: dict, expected: dict | None) -> dict:
+    """Use only concrete live worker evidence; never guesses a Telegram delivery.
+
+    skip:* means the worker deliberately did not send. delivered carries the Telegram
+    destination message id and can safely rebuild a missing local forward index. Failed or
+    pending targets remain expected and therefore cannot be silently lost.
+    """
+    adjusted = _delta_json_clone(expected or {}) if isinstance(expected, dict) else {}
+    raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload or {})
+    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
+        return adjusted
+    outcome = _forward_outcome_snapshot(int(source_chat_id), int(source_msg_id))
+    state = str(outcome.get("state") or "")
+    if state.startswith("skip:") or state == "no_targets":
+        adjusted["forward_targets"] = []
+        adjusted["forward_suppressed_by_live_outcome"] = state
+        return adjusted
+    targets = outcome.get("targets") or {}
+    for dst_raw, info in list(targets.items()):
+        try:
+            dst = int(dst_raw)
+            info = info or {}
+            if str(info.get("state") or "") != "delivered":
+                continue
+            dst_msg_id = int(info.get("dst_msg_id") or 0)
+            if not dst_msg_id:
+                continue
+            current = {int(d): int(m) for d, m in get_forward_links(int(source_chat_id), int(source_msg_id))}
+            if int(current.get(dst) or 0) != dst_msg_id:
+                _store_forward_link(int(source_chat_id), int(source_msg_id), dst, dst_msg_id)
+                try:
+                    _persist_forward_index_in_data(data)
+                    save_data(data, root_only=True)
+                except Exception as e:
+                    log_error(f"[FORWARD OUTCOME LINK REPAIR] {source_chat_id}:{source_msg_id}->{dst}:{dst_msg_id}: {e}")
+        except Exception as e:
+            log_error(f"durable live forward outcome repair: {e}")
+    return adjusted
+
+def _durable_forward_work_still_pending(payload: dict) -> bool:
+    """True only when this live process has positive evidence that forwarding is not finished yet."""
+    try:
+        raw, source_chat_id, source_msg_id, group_id = _durable_payload_message(payload or {})
+        if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
+            return False
+        if group_id and _durable_media_group_in_memory(payload):
+            return True
+        outcome = _forward_outcome_snapshot(int(source_chat_id), int(source_msg_id))
+        state = str(outcome.get("state") or "")
+        if state in {"scheduled", "dispatching", "media_group_pending"}:
+            return True
+        for info in (outcome.get("targets") or {}).values():
+            if str((info or {}).get("state") or "") in {"pending", "attempted"}:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
     """Return explicit effect status. No repairs, no replay, no side effects."""
     expected = _durable_normalize_expected_for_route(
         payload,
         expected if isinstance(expected, dict) else _durable_expected_effects(payload),
     )
+    expected = _durable_apply_live_forward_outcome(payload, expected)
     raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
     report = {"complete": True, "missing": [], "ambiguous": []}
     if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
@@ -7553,6 +7968,10 @@ def finalize_durable_task_after_business(update_id, chat_id, update_type: str = 
         expected_effects if isinstance(expected_effects, dict) else (_durable_expected_effects(payload) if isinstance(payload, dict) else {}),
     )
     if isinstance(payload, dict) and callback_target is None:
+        expected = _durable_apply_live_forward_outcome(payload, expected)
+        if _durable_forward_work_still_pending(payload):
+            bot_journal("durable_forward_pending", chat_id, f"update_id={key}; live asynchronous forward still active")
+            return False
         # Safe metadata-only repair is allowed because it never resends Telegram content.
         try:
             _repair_safe_missing_forward_secret_effects(payload, expected)
@@ -7598,12 +8017,18 @@ def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = 
     key = _mega_task_id(update_id)
     payload_copy = _delta_json_clone(payload or {}) if isinstance(payload, dict) else None
     expected_copy = _delta_json_clone(expected_effects or {}) if isinstance(expected_effects, dict) else None
-    attempts = {"n": 0}
+    attempts = {"n": 0, "started": time.monotonic()}
     def _job():
         if mega_task_known_state(key) == "done":
             return
-        attempts["n"] += 1
+        live_pending = bool(payload_copy and _durable_forward_work_still_pending(payload_copy))
+        pending_age = time.monotonic() - attempts["started"]
+        if not live_pending or pending_age >= 30.0:
+            attempts["n"] += 1
         if finalize_durable_task_after_business(key, chat_id, update_type, payload=payload_copy, expected_effects=expected_copy):
+            return
+        if live_pending and pending_age < 30.0:
+            DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", 1.0, _job)
             return
         if attempts["n"] >= 3:
             report = _durable_effect_report(payload_copy or {}, expected_copy or {}) if payload_copy else {}
@@ -8705,7 +9130,7 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         ])
         if day_key:
             prev_day = day_key
-    _write_simple_xlsx(xlsx_path, rows, sheet_name="Месяц")
+    _write_excel_by_selected_style(xlsx_path, rows, chat_id, sheet_name="Месяц", category_layout=False)
 
     return {"json": json_path, "csv": csv_path, "xlsx": xlsx_path}
 
@@ -10370,7 +10795,9 @@ def send_runtime_export_zip(recipient_chat_id: int, start_dt=None, end_dt=None):
     downloaded_dirs = []
     try:
         bot_journal("runtime_export_start", recipient_chat_id, f"start={start_dt} end={end_dt}")
+        _file_job_progress("индексирую Runtime в MEGA", force=True)
         indexed, selected = _runtime_export_select_paths(start_dt, end_dt, max_downloads=360 if start_dt else 240)
+        _file_job_progress("скачиваю JSON из MEGA", 0, len(selected), force=True)
         stamp = now_local().strftime("%Y%m%d_%H%M%S")
         zip_path = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_export_{stamp}.zip")
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
@@ -10398,8 +10825,14 @@ def send_runtime_export_zip(recipient_chat_id: int, start_dt=None, end_dt=None):
                 pass
             for kind, remote, _dt in selected:
                 local = _mega_download_remote_path(remote)
+                # Runtime slots rotate while export is running. A slot can disappear between
+                # listing and download; retry once instead of turning a harmless rotation into noise.
+                if not local and str(kind) == "slot":
+                    time.sleep(0.35)
+                    local = _mega_download_remote_path(remote)
                 if not local:
                     fail_count += 1
+                    _file_job_progress("скачиваю JSON из MEGA", ok_count + fail_count, len(selected))
                     continue
                 downloaded_dirs.append(os.path.dirname(local))
                 try:
@@ -10407,6 +10840,8 @@ def send_runtime_export_zip(recipient_chat_id: int, start_dt=None, end_dt=None):
                     ok_count += 1
                 except Exception:
                     fail_count += 1
+                _file_job_progress("скачиваю JSON из MEGA", ok_count + fail_count, len(selected))
+        _file_job_progress("ZIP собран, готовлю отправку", force=True)
         fobj = file_bytesio_named(zip_path, os.path.basename(zip_path))
         if not fobj:
             raise RuntimeError("runtime ZIP was not created")
@@ -10415,14 +10850,19 @@ def send_runtime_export_zip(recipient_chat_id: int, start_dt=None, end_dt=None):
             f"Индекс: {len(indexed)} файлов; JSON внутри: {ok_count}; ошибок скачивания: {fail_count}.\n"
             f"{'Период: ' + str(start_dt) + ' — ' + str(end_dt) if start_dt else 'Период: последние доступные + полный индекс.'}"
         )
-        _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, purpose="runtime_export_send")
+        _file_job_progress("отправляю ZIP в Telegram", force=True)
+        # pyTelegramBotAPI supports a per-request timeout. Runtime ZIP can legitimately
+        # need more than the library's 30s default on a slow uplink.
+        _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, timeout=120, purpose="runtime_export_send")
         bot_journal("runtime_export_done", recipient_chat_id, f"indexed={len(indexed)} downloaded={ok_count} failed={fail_count}")
+        return True
     except Exception as e:
         log_error(f"send_runtime_export_zip: {e}")
         try:
             send_and_auto_delete(recipient_chat_id, f"❌ Runtime ZIP: {str(e)[:220]}", 20)
         except Exception:
             pass
+        return False
     finally:
         for folder in set(downloaded_dirs):
             try:
@@ -12349,17 +12789,29 @@ def _xlsx_cell_xml2(row_idx: int, col_idx: int, value, style: int = 0) -> str:
         value = ""
     ref = f"{_xlsx_col_name(col_idx)}{row_idx}"
     s_attr = f' s="{int(style)}"' if int(style or 0) else ""
+    if isinstance(value, dict) and value.get("formula"):
+        formula = _xlsx_xml_escape(str(value.get("formula") or "").lstrip("="))
+        cached = value.get("value", 0)
+        try:
+            cached = float(cached)
+            cached = int(cached) if cached.is_integer() else cached
+        except Exception:
+            cached = 0
+        return f'<c r="{ref}"{s_attr}><f>{formula}</f><v>{cached}</v></c>'
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return f'<c r="{ref}"{s_attr}><v>{float(value):.2f}</v></c>'
     text = str(value)
     return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(text)}</t></is></c>'
 
 
-def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_name: str = "4 недели", comments: dict | None = None) -> None:
+def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_name: str = "4 недели", comments: dict | None = None, freeze_rows: int = 3, widths: list[float] | None = None) -> None:
     # Минимальный XLSX без внешних библиотек; comments={(row,col): text} создаёт классические Excel-примечания.
     comments = comments or {}
     max_cols = max((len(r) for r in rows), default=1)
-    widths = [13, 16, 28] + [20] * max(0, max_cols - 3)
+    widths = list(widths or ([13, 16, 28] + [20] * max(0, max_cols - 3)))
+    if len(widths) < max_cols:
+        widths.extend([18] * (max_cols - len(widths)))
+    freeze_rows = max(0, int(freeze_rows or 0))
     sheet_rows = []
     for r_idx, row in enumerate(rows, start=1):
         cells = []
@@ -12368,7 +12820,7 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
             value = row[c_idx - 1] if c_idx - 1 < len(row) else ""
             style = st_row[c_idx - 1] if c_idx - 1 < len(st_row) else 0
             cells.append(_xlsx_cell_xml2(r_idx, c_idx, value, style=style))
-        height = ' ht="22" customHeight="1"' if r_idx <= 2 else ""
+        height = ' ht="22" customHeight="1"' if r_idx <= max(1, freeze_rows) else ""
         sheet_rows.append(f'<row r="{r_idx}"{height}>' + "".join(cells) + '</row>')
     cols_xml = "".join(
         f'<col min="{i}" max="{i}" width="{min(widths[i-1] if i-1 < len(widths) else 18, 34)}" customWidth="1"/>'
@@ -12377,7 +12829,7 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
     legacy_drawing = '<legacyDrawing r:id="rId2"/>' if comments else ""
     sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+<sheetViews><sheetView workbookViewId="0">{f'<pane ySplit="{freeze_rows}" topLeftCell="A{freeze_rows + 1}" activePane="bottomLeft" state="frozen"/>' if freeze_rows else ''}</sheetView></sheetViews>
 <cols>{cols_xml}</cols>
 <sheetData>{''.join(sheet_rows)}</sheetData>{legacy_drawing}
 </worksheet>'''
@@ -12470,6 +12922,114 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
             z.writestr("xl/drawings/vmlDrawing1.vml", vml_xml)
 
 
+def _excel_nonempty(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+def _excel_category_color_index(note: str) -> int:
+    try:
+        category = _tabl_lsx_category(note)
+        return TABL_LSX_CATEGORIES.index(category) if category in TABL_LSX_CATEGORIES else TABL_LSX_CATEGORIES.index("прочие")
+    except Exception:
+        return 0
+
+def _modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
+    """Modern 4-column/backup Excel: colored amounts + classic Excel notes on expenses."""
+    max_cols = max((len(r) for r in rows), default=4)
+    styles = []
+    comments = {}
+    header_row = 1
+    data_started = False
+    for r_idx, row in enumerate(rows, start=1):
+        row = list(row or [])
+        normalized0 = str(row[0] if row else "").strip().casefold()
+        normalized1 = str(row[1] if len(row) > 1 else "").strip().casefold()
+        is_header = normalized0 in {"дата", "date"} and normalized1 in {"описание", "description", "amount"}
+        if is_header:
+            header_row = r_idx
+            data_started = True
+            styles.append([2] * max_cols)
+            continue
+        st = [4] * max_cols if any(_excel_nonempty(v) for v in row) else [0] * max_cols
+        if not data_started:
+            if r_idx == 1 and any(_excel_nonempty(v) for v in row):
+                st = [1] + [4] * max(0, max_cols - 1)
+            styles.append(st)
+            continue
+        note = str(row[1] if len(row) > 1 else "").strip()
+        income = row[2] if len(row) > 2 else ""
+        expense = row[3] if len(row) > 3 else ""
+        if _excel_nonempty(income) and len(st) > 2:
+            st[2] = 7
+        if _excel_nonempty(expense) and len(st) > 3:
+            cat_idx = _excel_category_color_index(note)
+            st[3] = 19 + cat_idx
+            if note:
+                comments[(r_idx, 4)] = note
+        styles.append(st)
+    widths = [13, 38, 15, 15] + [14] * max(0, max_cols - 4)
+    return styles, comments, header_row, widths
+
+def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
+    """Modern category/stat Excel: each expense column gets its own fill and note."""
+    max_cols = max((len(r) for r in rows), default=4)
+    styles = []
+    comments = {}
+    header_row = 1
+    header_found = False
+    for r_idx, row in enumerate(rows, start=1):
+        row = list(row or [])
+        first = str(row[0] if row else "").strip().casefold()
+        second = str(row[1] if len(row) > 1 else "").strip().casefold()
+        is_header = first in {"дата", "date"} and second in {"описание", "description", "приход/выдача"}
+        if is_header:
+            header_row = r_idx
+            header_found = True
+            st = [2] * min(3, max_cols) + [8 + ((c - 3) % len(TABL_LSX_CATEGORIES)) for c in range(3, max_cols)]
+            styles.append(st)
+            continue
+        if not any(_excel_nonempty(v) for v in row):
+            styles.append([0] * max_cols)
+            continue
+        label = second
+        if label in {"сумма по статьям", "расход"}:
+            styles.append([5] * max_cols)
+            continue
+        if label in {"приход", "остаток на руках", "на руках:"}:
+            styles.append([6] * max_cols)
+            continue
+        st = [4] * max_cols
+        note = str(row[1] if len(row) > 1 else "").strip()
+        if header_found:
+            if len(row) > 2 and _excel_nonempty(row[2]):
+                st[2] = 7
+            for c in range(3, max_cols):
+                if c < len(row) and _excel_nonempty(row[c]):
+                    st[c] = 19 + ((c - 3) % len(TABL_LSX_CATEGORIES))
+                    if note:
+                        comments[(r_idx, c + 1)] = note
+        styles.append(st)
+    widths = [13, 36, 15] + [18] * max(0, max_cols - 3)
+    return styles, comments, header_row, widths
+
+def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sheet_name: str = "Данные", category_layout: bool = False) -> None:
+    """Single switch used by every XLSX export. OLD remains byte-layout compatible; NEW is visibly colored and commented."""
+    if excel_table_style(int(chat_id)) != "new":
+        _write_simple_xlsx(path, rows, sheet_name=sheet_name)
+        return
+    if category_layout:
+        styles, comments, freeze_rows, widths = _modern_category_excel_styles_comments(rows)
+    else:
+        styles, comments, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
+    _write_tabl_lsx_xlsx(
+        path, rows, styles, sheet_name=sheet_name, comments=comments,
+        freeze_rows=freeze_rows, widths=widths,
+    )
+
+
 def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
@@ -12553,8 +13113,10 @@ def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
     path = None
     try:
         trace.step("собирает последние 4 недели Чт–Ср")
+        _file_job_progress("собираю Excel", force=True)
         path = create_tabl_lsx_file(target_chat_id, today_key())
         trace.step("отправляет Excel")
+        _file_job_progress("отправляю Excel в Telegram", force=True)
         display = os.path.basename(path)
         fobj = file_bytesio_named(path, display)
         if fobj:
@@ -12563,9 +13125,11 @@ def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
                 recipient_chat_id,
                 fobj,
                 caption=f"📊 Таблица LSX ({'НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ'}) за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}",
+                timeout=120,
                 purpose="tabl_lsx_send_document",
             )
         trace.finish("таблица готова")
+        return True
     except Exception as e:
         log_error(f"send_tabl_lsx_for_chat({target_chat_id}): {e}")
         send_and_auto_delete(recipient_chat_id, "❌ Не удалось создать /tabl_lsx.", 15)
@@ -12573,6 +13137,7 @@ def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
             trace.fail(e)
         except Exception:
             pass
+        return False
     finally:
         if path:
             try:
@@ -12591,7 +13156,7 @@ def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = N
             recs_sorted = sorted(daily.get(dk, []) or [], key=record_sort_key)
             for r in recs_sorted:
                 rows.append(_xlsx_record_row(fmt_date_table(dk), r.get("amount", 0), r.get("note", "")))
-        _write_simple_xlsx(path, insert_blank_rows_between_days(rows, header_rows=1), sheet_name="Данные")
+        _write_excel_by_selected_style(path, insert_blank_rows_between_days(rows, header_rows=1), chat_id, sheet_name="Данные", category_layout=False)
         return path
     except Exception as e:
         log_error(f"save_chat_xlsx({get_chat_display_name(chat_id)}): {e}")
@@ -14931,11 +15496,17 @@ def forward_secret_message_now(msg):
     """Секретный режим удаляет оригинал, поэтому пересылку делаем до удаления."""
     try:
         source_chat_id = int(msg.chat.id)
+        source_msg_id = int(getattr(msg, "message_id", 0) or 0)
         _durable_note_forward_decision(source_chat_id, direct=True)
-        if not resolve_forward_targets(source_chat_id):
+        targets = resolve_forward_targets(source_chat_id)
+        if not targets:
+            if source_msg_id:
+                _forward_outcome_update(source_chat_id, source_msg_id, state="no_targets")
             return
-        for dst_chat_id, mode, finance_enabled in resolve_forward_targets(source_chat_id):
+        for dst_chat_id, mode, finance_enabled in targets:
             _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
+        if source_msg_id:
+            _forward_outcome_update(source_chat_id, source_msg_id, state="completed")
     except Exception as e:
         log_error(f"forward_secret_message_now({getattr(getattr(msg, 'chat', None), 'id', '?')}): {e}")
 
@@ -18422,6 +18993,10 @@ def _fallback_send_single(dst_chat_id: int, msg, reply_to_message_id=None):
 
 
 def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool, _migration_retry: bool = False):
+    try:
+        _forward_outcome_update(source_chat_id, int(getattr(msg, "message_id", 0) or 0), state="dispatching", dst_chat_id=int(dst_chat_id), dst_state="attempted")
+    except Exception:
+        pass
     trace_chat_id = int(source_chat_id) if is_process_trace_enabled(source_chat_id) else (int(dst_chat_id) if is_process_trace_enabled(dst_chat_id) else int(source_chat_id))
     trace = ProcessTrace(trace_chat_id, f"Пересылка: {get_chat_display_name(source_chat_id)} → {get_chat_display_name(dst_chat_id)}").start()
     trace.step(f"получено сообщение {getattr(msg, 'message_id', '?')} type={getattr(msg, 'content_type', '?')}")
@@ -18533,11 +19108,13 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                 # says "unsupported content_type".
                 final_error = e_forward if "Unsupported fallback content_type" in str(e_send) else e_send
                 trace.fail(final_error)
+                _forward_outcome_update(source_chat_id, int(getattr(msg, "message_id", 0) or 0), dst_chat_id=int(dst_chat_id), dst_state="failed", error=str(final_error))
                 _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, final_error)
                 return None
 
     trace.step("сохраняет связь оригинал → копия")
     _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
+    _forward_outcome_update(source_chat_id, int(msg.message_id), dst_chat_id=int(dst_chat_id), dst_state="delivered", dst_msg_id=int(dst_msg_id))
     # После успешной Telegram-доставки индекс фиксируем сразу, не ждём debounce 0.25с.
     try:
         _persist_forward_index_in_data(data)
@@ -18599,7 +19176,21 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
     messages = sorted(messages, key=lambda m: m.message_id)
     targets = resolve_forward_targets(source_chat_id)
     if not targets:
+        for src_msg in messages:
+            try:
+                _forward_outcome_update(source_chat_id, int(src_msg.message_id), state="no_targets")
+            except Exception:
+                pass
         return
+
+    # Keep every album item explicitly pending until ALL destination loops are finished.
+    # A destination may finish much earlier than the next one; marking the whole message
+    # completed after the first target used to let the durable verifier race the worker.
+    for src_msg in messages:
+        try:
+            _forward_outcome_update(source_chat_id, int(src_msg.message_id), state="dispatching")
+        except Exception:
+            pass
 
     media = []
     for msg in messages:
@@ -18618,6 +19209,11 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
         pass
 
     for dst_chat_id, mode, finance_enabled in targets:
+        for src_msg in messages:
+            try:
+                _forward_outcome_update(source_chat_id, int(src_msg.message_id), dst_chat_id=int(dst_chat_id), dst_state="attempted")
+            except Exception:
+                pass
         sent_ids = []
         reply_to_target_id = resolve_reply_target_message_id(source_chat_id, group_reply_source_id, dst_chat_id) if group_reply_source_id else None
         if media:
@@ -18645,6 +19241,7 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
         if len(sent_ids) == len(messages):
             for src_msg, dst_msg_id in zip(messages, sent_ids):
                 _store_forward_link(source_chat_id, src_msg.message_id, dst_chat_id, dst_msg_id)
+                _forward_outcome_update(source_chat_id, int(src_msg.message_id), dst_chat_id=int(dst_chat_id), dst_state="delivered", dst_msg_id=int(dst_msg_id))
                 bump_quick_balance_recreate_counter(dst_chat_id)
                 text_for_finance = _message_text_for_finance(src_msg)
                 if finance_enabled and text_for_finance:
@@ -18669,6 +19266,14 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
         for src_msg in messages:
             _forward_single_to_target(source_chat_id, src_msg, dst_chat_id, finance_enabled)
 
+    # Only now all destination loops have returned. Individual target states still retain
+    # delivered/failed evidence, so "completed" does not hide a failed destination.
+    for src_msg in messages:
+        try:
+            _forward_outcome_update(source_chat_id, int(src_msg.message_id), state="completed")
+        except Exception:
+            pass
+
 
 def _collect_media_group_for_forward(source_chat_id: int, msg):
     cache_key = (int(source_chat_id), str(msg.media_group_id))
@@ -18690,21 +19295,32 @@ def _collect_media_group_for_forward(source_chat_id: int, msg):
 
 def forward_any_message(source_chat_id: int, msg):
     try:
+        source_msg_id = int(getattr(msg, "message_id", 0) or 0)
         if getattr(getattr(msg, "from_user", None), "is_bot", False):
+            _forward_outcome_skip(source_chat_id, msg, "bot_sender")
             return
         if getattr(msg, "edit_date", None):
+            _forward_outcome_skip(source_chat_id, msg, "edited_source")
             return
 
         targets = resolve_forward_targets(source_chat_id)
         if not targets:
+            if source_msg_id:
+                _forward_outcome_update(source_chat_id, source_msg_id, state="no_targets")
             return
 
         if getattr(msg, "media_group_id", None) and getattr(msg, "content_type", None) in ("photo", "video", "document", "audio"):
+            if source_msg_id:
+                _forward_outcome_update(source_chat_id, source_msg_id, state="media_group_pending")
             _collect_media_group_for_forward(source_chat_id, msg)
             return
 
+        if source_msg_id:
+            _forward_outcome_update(source_chat_id, source_msg_id, state="dispatching")
         for dst_chat_id, mode, finance_enabled in targets:
             _forward_single_to_target(source_chat_id, msg, dst_chat_id, finance_enabled)
+        if source_msg_id:
+            _forward_outcome_update(source_chat_id, source_msg_id, state="completed")
 
     except Exception as e:
         log_error(f"forward_any_message fatal: {e}")
@@ -20094,11 +20710,12 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         file_type = str(file_type or "csv").lower()
         if file_type not in {"csv", "xlsx", "xlsxstat"}:
             file_type = "csv"
+        _file_job_progress("собираю данные", force=True)
         rows = _exact_export_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
         if not rows:
             send_and_auto_delete(recipient_chat_id, "Нет записей в выбранном точном диапазоне.", 10)
             trace.finish("экспорт завершён без данных")
-            return
+            return True
         ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         tmp_name = os.path.join(
             MEGA_LOCAL_TMP_DIR,
@@ -20106,7 +20723,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         )
         if file_type == "xlsxstat":
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
-            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Excel стат")
+            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Excel стат", category_layout=True)
         elif ext == "xlsx":
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
             for date_v, amount_v, note_v in rows:
@@ -20115,7 +20732,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                 except Exception:
                     parsed_amount = 0.0
                 xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            _write_simple_xlsx(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), sheet_name="Точный период")
+            _write_excel_by_selected_style(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), target_chat_id, sheet_name="Точный период", category_layout=False)
         else:
             with open(tmp_name, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
@@ -20131,23 +20748,27 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         display_name = f"{chat_name}_({start_label}-{end_label})_{'excel_стат' if file_type == 'xlsxstat' else 'точный'}.{ext}"
         store = get_chat_store(target_chat_id)
         caption = (
-            f"🎯 {'Excel стат' if file_type == 'xlsxstat' else ('Excel' if ext == 'xlsx' else 'CSV')} — точный период\n"
+            f"🎯 {(('Excel стат ' if file_type == 'xlsxstat' else 'Excel ') + ('НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ')) if ext == 'xlsx' else 'CSV'} — точный период\n"
             f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}\n"
             f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}"
         )
         fobj = file_bytesio_named(tmp_name, display_name)
         if fobj:
+            _file_job_progress("отправляю файл в Telegram", force=True)
             _tg_call_retry(
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
                 caption=caption,
+                timeout=120,
                 purpose="exact_export_send_document",
             )
         trace.finish("точный экспорт завершён")
+        return True
     except Exception as exc:
         trace.fail(exc)
         log_error(f"send_exact_range_export({target_chat_id}): {exc}")
+        return False
     finally:
         if tmp_name:
             try:
@@ -21302,6 +21923,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
     trace = ProcessTrace(recipient_chat_id, f"Экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
     try:
         trace.step("читает режим периода")
+        _file_job_progress("собираю экспорт", force=True)
         file_type = str(file_type or "csv").lower().lstrip(".")
         raw_mode = str(mode or "all")
         if raw_mode.startswith("xlsxstat_"):
@@ -21323,11 +21945,12 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                         bot.send_document,
                         recipient_chat_id,
                         fobj,
-                        caption=f"📂 {'Excel' if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                        caption=f"📂 {'Excel ' + ('НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ') if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                        timeout=120,
                         purpose="export_send_document"
                     )
                 trace.finish("экспорт завершён")
-                return
+                return True
 
         trace.step("собирает строки за выбранный период")
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
@@ -21336,7 +21959,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             trace.step("строк нет — отправляет уведомление")
             send_info(recipient_chat_id, f"Нет данных {label}.")
             trace.finish("экспорт завершён без данных")
-            return
+            return True
         if not rows and ext == "xlsx":
             trace.step("строк нет — создаёт пустой Excel с заголовками")
         tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}")
@@ -21368,7 +21991,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 start_key = keys[0] if keys else day_key
                 end_key = keys[-1] if keys else day_key
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
-            _write_simple_xlsx(tmp_name, xlsx_rows, sheet_name="Статьи")
+            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Статьи", category_layout=True)
         elif ext == "xlsx":
             trace.step("создаёт временный Excel файл")
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
@@ -21379,7 +22002,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                     log_error(f"xlsx export amount parse skip: chat={get_chat_display_name(target_chat_id)} amount={amount_v!r} note={note_v!r}: {e_amount}")
                     parsed_amount = 0.0
                 xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            _write_simple_xlsx(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), sheet_name="Экспорт")
+            _write_excel_by_selected_style(tmp_name, insert_blank_rows_between_days(xlsx_rows, header_rows=1), target_chat_id, sheet_name="Экспорт", category_layout=False)
         else:
             trace.step("создаёт временный CSV файл")
             with open(tmp_name, "w", newline="", encoding="utf-8") as f:
@@ -21388,13 +22011,15 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 write_csv_rows_with_day_gaps(w, rows, 3)
 
         trace.step("отправляет файл в Telegram")
+        _file_job_progress("отправляю файл в Telegram", force=True)
         fobj = file_bytesio_named(tmp_name, display_name)
         if fobj:
             _tg_call_retry(
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
-                caption=f"📂 {'Excel статьи' if file_type == 'xlsxstat' else ('Excel' if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
+                caption=f"📂 {('Excel статьи ' + ('НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ')) if file_type == 'xlsxstat' else (('Excel ' + ('НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ')) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
+                timeout=120,
                 purpose="export_send_document"
             )
         trace.step("удаляет временный файл")
@@ -21403,9 +22028,11 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         except Exception:
             pass
         trace.finish("экспорт завершён")
+        return True
     except Exception as e:
         trace.fail(e)
         log_error(f"send_export_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
+        return False
 
 def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start: str, end: str, owner_day_key: str):
     store = get_chat_store(target_chat_id)
@@ -22221,7 +22848,7 @@ def build_version_menu_text() -> str:
         "🧩 Переключение версий / режимов",
         *bot_file_identity_lines(),
         "",
-        "v98–v119 переключают совместимый профиль внутри текущего безопасного ядра v119. Код, SQLite/MEGA-схема и exact-once защита не откатываются. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
+        "v98–v120 переключают совместимый профиль внутри текущего безопасного ядра v120. Код, SQLite/MEGA-схема и exact-once защита не откатываются. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
         "",
         "Кнопка выбора версии всегда остаётся в ИНФО, даже в режиме v81.",
         "",
@@ -22258,7 +22885,7 @@ def keep_alive_status_text() -> str:
         f"Последняя ошибка: {state.get('last_error') or 'нет'}",
         f"Успешных циклов: {state.get('ok_count', 0)}, ошибок: {state.get('fail_count', 0)}",
         "",
-        "Для внешнего монитора используйте GET/HEAD /keepalive. v119 отдельно показывает self-ping и реальный внешний запрос.",
+        "Для внешнего монитора используйте GET/HEAD /keepalive. v120 отдельно показывает self-ping и реальный внешний запрос.",
     ]
     return wm_owner("\n".join(lines), 9)
 
@@ -24935,9 +25562,9 @@ def on_callback(call):
         if data_str == "runtime_export":
             if not is_owner_chat(chat_id):
                 return
-            ok = EXPORT_TASK_POOL.submit(f"runtime-export:{chat_id}", send_runtime_export_zip, chat_id, None, None)
+            ok, info = submit_interactive_file_job(chat_id, "runtime", "Runtime / Watcher ZIP", send_runtime_export_zip, chat_id, None, None)
             try:
-                bot.answer_callback_query(call.id, "Готовлю Runtime ZIP в фоне" if ok else "Очередь экспорта занята", show_alert=False)
+                bot.answer_callback_query(call.id, "Готовлю Runtime ZIP; время показываю в сообщении" if ok else info[:180], show_alert=False)
             except Exception:
                 pass
             return
@@ -25231,7 +25858,14 @@ def on_callback(call):
                 else:
                     file_type = "xlsx" if action.startswith("xlsx_") else "csv"
                     mode = action.replace("csv_", "").replace("xlsx_", "")
-                send_export_for_chat_to(chat_id, target_chat_id, mode, view_day, file_type)
+                ok, info = submit_interactive_file_job(
+                    chat_id, "period_export", f"{'Excel' if file_type.startswith('xlsx') else 'CSV'} экспорт",
+                    send_export_for_chat_to, chat_id, target_chat_id, mode, view_day, file_type,
+                )
+                try:
+                    bot.answer_callback_query(call.id, "Готовлю файл; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                except Exception:
+                    pass
                 return
             return
 
@@ -25376,19 +26010,14 @@ def on_callback(call):
         if data_str.startswith("exp_send:"):
             try:
                 _, start_key, start_rid, end_key, end_rid, file_type, return_day_key = data_str.split(":")
-                try:
-                    bot.answer_callback_query(call.id, "Готовлю файл…", show_alert=False)
-                except Exception:
-                    pass
-                try:
-                    send_and_auto_delete(chat_id, "⏳ Готовлю точный экспорт в фоне…", 12)
-                except Exception:
-                    pass
-                if not EXPORT_TASK_POOL.submit(
-                    f"export:{chat_id}", send_exact_range_export,
+                ok, info = submit_interactive_file_job(
+                    chat_id, "exact_export", f"Точный экспорт {str(file_type).upper()}", send_exact_range_export,
                     chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type,
-                ):
-                    send_and_auto_delete(chat_id, "⛔ Очередь экспортов переполнена.", 12)
+                )
+                try:
+                    bot.answer_callback_query(call.id, "Готовлю файл; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                except Exception:
+                    pass
             except Exception as e:
                 log_error(f"exp_send: {e}")
             return
@@ -25753,7 +26382,14 @@ def on_callback(call):
                 mode = cmd.replace("csv_", "").replace("xlsx_", "")
             if mode == "all_real":
                 mode = "all"
-            send_export_for_chat_to(chat_id, chat_id, mode, day_key, file_type)
+            ok, info = submit_interactive_file_job(
+                chat_id, "period_export", f"{'Excel' if file_type.startswith('xlsx') else 'CSV'} экспорт",
+                send_export_for_chat_to, chat_id, chat_id, mode, day_key, file_type,
+            )
+            try:
+                bot.answer_callback_query(call.id, "Готовлю файл; время показываю в сообщении" if ok else info[:180], show_alert=False)
+            except Exception:
+                pass
             return
         if cmd == "reset":
             # Кнопка обнуления убрана из о1. Старые/зависшие кнопки не запускают reset;
@@ -26854,13 +27490,9 @@ def cmd_runtime_export(msg):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", 8)
         return
     start_dt, end_dt = _runtime_export_parse_range(getattr(msg, "text", "") or "")
-    try:
-        notice = bot.send_message(chat_id, "⏳ Собираю Runtime/Watcher из MEGA в ZIP. Кнопки бота при этом не блокируются.")
-        delete_message_later(chat_id, notice.message_id, 25)
-    except Exception:
-        pass
-    if not EXPORT_TASK_POOL.submit(f"runtime-export:{chat_id}", send_runtime_export_zip, chat_id, start_dt, end_dt):
-        send_and_auto_delete(chat_id, "⛔ Очередь экспорта занята.", 12)
+    ok, info = submit_interactive_file_job(chat_id, "runtime", "Runtime / Watcher ZIP", send_runtime_export_zip, chat_id, start_dt, end_dt)
+    if not ok:
+        send_and_auto_delete(chat_id, f"⏳ {info}. Новая копия в очередь не добавлена.", 12)
 
 
 @bot.message_handler(commands=["tabl_lsx"])
@@ -26878,13 +27510,9 @@ def cmd_tabl_lsx(msg):
         return
     if not require_finance(chat_id):
         return
-    try:
-        notice = bot.send_message(chat_id, "⏳ Готовлю /tabl_lsx в фоне…")
-        delete_message_later(chat_id, notice.message_id, 20)
-    except Exception:
-        pass
-    if not EXPORT_TASK_POOL.submit(f"tabl-lsx:{chat_id}", send_tabl_lsx_for_chat, chat_id, chat_id):
-        send_and_auto_delete(chat_id, "⛔ Очередь Excel переполнена.", 12)
+    ok, info = submit_interactive_file_job(chat_id, "tabl_lsx", "Excel /tabl_lsx", send_tabl_lsx_for_chat, chat_id, chat_id)
+    if not ok:
+        send_and_auto_delete(chat_id, f"⏳ {info}. Новая копия в очередь не добавлена.", 12)
 
 
 @bot.message_handler(commands=["xlsx", "excel"])
@@ -26902,7 +27530,34 @@ def cmd_xlsx(msg):
         return
     if not require_finance(chat_id):
         return
-    send_export_for_chat_to(chat_id, chat_id, "all", today_key(), "xlsx")
+    ok, info = submit_interactive_file_job(chat_id, "xlsx", "Excel за всё время", send_export_for_chat_to, chat_id, chat_id, "all", today_key(), "xlsx")
+    if not ok:
+        send_and_auto_delete(chat_id, f"⏳ {info}. Новая копия в очередь не добавлена.", 10)
+
+def _send_csv_current_chat_job(chat_id: int):
+    """v120: original /csv behavior, but executed inside the single-flight export lane."""
+    try:
+        _file_job_progress("обновляю CSV", force=True)
+        export_global_csv(data)
+        save_chat_json(chat_id)
+        per_csv = chat_csv_file(chat_id)
+        sent = None
+        if os.path.exists(per_csv):
+            _file_job_progress("отправляю CSV в Telegram", force=True)
+            with open(per_csv, "rb") as f:
+                sent = _tg_call_retry(bot.send_document, chat_id, f, caption="📂 CSV этого чата", timeout=120, purpose="manual_csv_export")
+        if OWNER_ID and chat_id == int(OWNER_ID):
+            meta = _load_csv_meta()
+            if sent and getattr(sent, "document", None):
+                meta["file_id_csv"] = sent.document.file_id
+            meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
+            _save_csv_meta(meta)
+        send_backup_to_channel(chat_id)
+        return True
+    except Exception as e:
+        log_error(f"_send_csv_current_chat_job: {e}")
+        return False
+
 
 @bot.message_handler(commands=["csv"])
 def cmd_csv(msg):
@@ -26923,20 +27578,9 @@ def cmd_csv(msg):
         return
     if not require_finance(chat_id):
         return
-    export_global_csv(data)
-    save_chat_json(chat_id)
-    per_csv = chat_csv_file(chat_id)
-    sent = None
-    if os.path.exists(per_csv):
-        with open(per_csv, "rb") as f:
-            sent = bot.send_document(chat_id, f, caption="📂 CSV этого чата")
-    if OWNER_ID and chat_id == int(OWNER_ID):
-        meta = _load_csv_meta()
-        if sent and getattr(sent, "document", None):
-            meta["file_id_csv"] = sent.document.file_id
-        meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
-        _save_csv_meta(meta)
-    send_backup_to_channel(chat_id)
+    ok, info = submit_interactive_file_job(chat_id, "csv", "CSV этого чата", _send_csv_current_chat_job, chat_id)
+    if not ok:
+        send_and_auto_delete(chat_id, f"⏳ {info}. Новая копия в очередь не добавлена.", 10)
 def _send_json_snapshot_job(chat_id: int):
     started = time.time()
     try:
@@ -26946,12 +27590,15 @@ def _send_json_snapshot_job(chat_id: int):
         raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         buf = io.BytesIO(raw)
         buf.name = f"{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{now_local().strftime('%Y%m%d_%H%M%S')}.json"
-        sent = _tg_call_retry(bot.send_document, chat_id, buf, caption="🧾 JSON этого чата — последние операции сверху", purpose="manual_json_export")
+        _file_job_progress("отправляю JSON в Telegram", force=True)
+        sent = _tg_call_retry(bot.send_document, chat_id, buf, caption="🧾 JSON этого чата — последние операции сверху", timeout=120, purpose="manual_json_export")
         elapsed = time.time() - started
         bot_journal("json_export_sent", chat_id, f"bytes={len(raw)} message_id={getattr(sent, 'message_id', '')} elapsed={elapsed:.3f}s")
+        return True
     except Exception as e:
         bot_journal("json_export_error", chat_id, f"elapsed={time.time()-started:.3f}s error={e}", "ERROR")
         send_and_auto_delete(chat_id, "❌ Не удалось создать JSON. Ошибка записана в журнал.", 15)
+        return False
 
 
 @bot.message_handler(commands=["json"])
@@ -26970,8 +27617,9 @@ def cmd_json(msg):
     if not require_finance(chat_id):
         return
     bot_journal("json_command", chat_id, f"message_id={getattr(msg, 'message_id', '')}")
-    if not EXPORT_TASK_POOL.submit(f"json:{chat_id}", _send_json_snapshot_job, chat_id):
-        send_and_auto_delete(chat_id, "⛔ Очередь JSON занята. Повторите команду.", 10)
+    ok, info = submit_interactive_file_job(chat_id, "json", "JSON снимок чата", _send_json_snapshot_job, chat_id)
+    if not ok:
+        send_and_auto_delete(chat_id, f"⏳ {info}. Новая копия в очередь не добавлена.", 10)
 
 @bot.message_handler(commands=["reset"])
 def cmd_reset(msg):
@@ -28953,6 +29601,19 @@ def cmd_journal(msg):
         return
     send_journal_file_to_owner(chat_id, 3000)
 
+def _send_sqlite_dump_job(chat_id: int):
+    """Send the working SQLite snapshot through the same no-duplicate file lane."""
+    try:
+        _file_job_progress("отправляю SQLite в Telegram", force=True)
+        with open(DB_FILE, "rb") as f:
+            _tg_call_retry(bot.send_document, chat_id, f, caption=f"🗄 SQLite база: {os.path.basename(DB_FILE)}", timeout=120, purpose="manual_sqlite_export")
+        return True
+    except Exception as e:
+        log_error(f"_send_sqlite_dump_job: {e}")
+        send_and_auto_delete(chat_id, f"❌ Не удалось отправить SQLite: {e}", HELPER_DELETE_DELAY)
+        return False
+
+
 @bot.message_handler(commands=["sqlite", "db"])
 def cmd_sqlite_dump(msg):
     try:
@@ -28971,12 +29632,9 @@ def cmd_sqlite_dump(msg):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
 
-    try:
-        with open(DB_FILE, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"🗄 SQLite база: {os.path.basename(DB_FILE)}")
-    except Exception as e:
-        log_error(f"cmd_sqlite_dump: {e}")
-        send_and_auto_delete(chat_id, f"❌ Не удалось отправить SQLite: {e}", HELPER_DELETE_DELAY)
+    ok, info = submit_interactive_file_job(chat_id, "sqlite", "SQLite база", _send_sqlite_dump_job, chat_id)
+    if not ok:
+        send_and_auto_delete(chat_id, f"⏳ {info}. Новая копия в очередь не добавлена.", 10)
 
 
 def start_keep_alive_thread():
@@ -29498,4 +30156,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# v119
+# v121
