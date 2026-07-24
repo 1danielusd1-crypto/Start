@@ -1,5 +1,5 @@
-# BOT FILE: bot_v114_lowram_sqlite_mega_core.py
-# BOT VERSION: bot_v114_lowram_sqlite_mega_core
+# BOT FILE: bot_v115_stable_lowram_core.py
+# BOT VERSION: bot_v115_stable_lowram_core
 # PURPOSE: deploy-safe Telegram finance bot — exact-once finance effects, non-replaying recovery, BOOT/SHUTDOWN and Render watcher
 # ─────────────────────────────────────────────────────────────
 import os
@@ -623,7 +623,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v114_lowram_sqlite_mega_core"
+VERSION = "bot_v115_stable_lowram_core"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v112_runtime_forensics_stability.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -2106,13 +2106,14 @@ def _safe_diag_call(name: str, func, default=None):
 
 
 def _journal_read_file_rows(limit: int = 20000) -> list[dict]:
-    """Читает локальный журнал. В v111 он при BOOT предварительно дополняется историей из MEGA."""
+    """Читает только хвост локального журнала, не загружая весь файл в RAM."""
     if not os.path.exists(BOT_JOURNAL_FILE):
         return []
     rows = []
     try:
+        max_rows = max(1, int(limit))
         with open(BOT_JOURNAL_FILE, "r", encoding="utf-8") as f:
-            raw = f.readlines()[-max(1, int(limit)):]
+            raw = deque(f, maxlen=max_rows)
         for line in raw:
             try:
                 item = json.loads(line)
@@ -2278,7 +2279,12 @@ def _journal_read_mega_rows(limit: int = 20000) -> list[dict]:
         return []
     remote_dir = _journal_durable_remote_dir()
     try:
-        files = _mega_find_remote_files(remote_dir, "journal_*.json", BOT_JOURNAL_DURABLE_RESTORE_FILES)
+        # BOOT/recent-tail reads should not enumerate dozens of MEGA files.
+        # Full export has its own streaming reader and may use a larger window.
+        estimated_files = max(3, int(max(1, int(limit)) / max(1, BOT_JOURNAL_DURABLE_FLUSH_ROWS)) + 3)
+        files = _mega_find_remote_files(
+            remote_dir, "journal_*.json", min(BOT_JOURNAL_DURABLE_RESTORE_FILES, estimated_files)
+        )
     except Exception:
         return []
     chunks = []
@@ -2342,6 +2348,25 @@ def journal_durable_stats() -> dict:
         "remote_dir": _journal_durable_remote_dir(),
     })
     return out
+
+
+def _journal_warm_tail_job():
+    """Post-READY warm-up only; never delays BOOT or Telegram availability."""
+    try:
+        if runtime_is_shutting_down():
+            return
+        if _runtime_watcher_should_yield_to_critical_mega():
+            DELAYED_SCHEDULER.schedule("journal-warm-tail", 30.0, _journal_warm_tail_job)
+            return
+        pressure = _runtime_memory_pressure()
+        if str(pressure.get("level")) in {"high", "critical"}:
+            DELAYED_SCHEDULER.schedule("journal-warm-tail", 60.0, _journal_warm_tail_job)
+            return
+        jr = journal_restore_from_mega(40)
+        runtime_event("journal_warm_tail", f"remote_rows={jr.get('remote_rows',0)} merged_rows={jr.get('merged_rows',0)}")
+    except Exception as e:
+        runtime_event("journal_warm_tail_error", str(e), "WARN")
+
 
 
 def _journal_render_safe_env() -> dict:
@@ -2483,7 +2508,7 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 3000):
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
             fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
-            fh.write("v113: BOOT держит в RAM только короткий хвост; полная история экспортируется потоково из MEGA.\n\n")
+            fh.write("v115: BOOT не ждёт журнал MEGA; полная история экспортируется потоково, хвост прогревается после READY.\n\n")
             fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
@@ -2512,13 +2537,13 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 3000):
             fh.write("planned_restart_same_commit: same commit + graceful SIGTERM.\n")
             fh.write("probable_render_idle_*: probable sleep/wake estimate.\n")
             fh.write("process_restart_or_unknown + high RAM/no SIGTERM: suspect OOM/hard kill.\n")
-            fh.write("v113 heartbeat is intentionally tiny and full previous_runtime chains are not retained.\n")
+            fh.write("v115: heartbeat is tiny, journal BOOT restore is deferred, and full previous_runtime chains are not retained.\n")
         with open(tmp_path, "rb") as fh:
             _tg_call_retry(
                 bot.send_document,
                 chat_id,
                 fh,
-                caption="📓 Максимальный журнал: Render + бот + очереди + MEGA (streaming v113)",
+                caption="📓 Максимальный журнал: Render + бот + очереди + MEGA (stable streaming v115)",
                 purpose="journal_send_document",
             )
     finally:
@@ -6709,14 +6734,14 @@ def mega_remote_month_dir(month_key: str) -> str:
 
 
 def _copy_file_for_mega(src_path: str, dst_name: str) -> str | None:
-    """Копия во временный файл с красивым именем, потому что mega-put имя не переименовывает."""
+    """Потоковая копия во временный файл для MEGA без чтения всего файла в RAM."""
     try:
         if not src_path or not os.path.exists(src_path):
             return None
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
         dst_path = os.path.join(MEGA_LOCAL_TMP_DIR, dst_name)
         with open(src_path, "rb") as src, open(dst_path, "wb") as dst:
-            dst.write(src.read())
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
         return dst_path
     except Exception as e:
         log_error(f"_copy_file_for_mega({src_path},{dst_name}): {e}")
@@ -6760,16 +6785,83 @@ def _mega_prune_remote_history(remote_dir: str, pattern: str, keep: int) -> int:
     return removed
 
 
-def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None = None) -> bool:
-    """Безопасно обновляет файл в MEGA без схемы rm->put.
+def _mega_promote_remote_candidate(
+    remote_candidate: str,
+    remote_final: str,
+    *,
+    history_dir: str | None = None,
+    archive_name: str | None = None,
+) -> bool:
+    """Safely promote a candidate using only MEGAcmd operations it handles reliably.
 
-    1) новый файл целиком загружается как уникальный candidate;
-    2) прежний активный файл переносится в history;
-    3) candidate одним move становится активным;
-    4) хранится ограниченное число предыдущих версий.
+    MEGAcmd `mv` can rename when destination does not exist and can move into an
+    existing folder.  Some installed builds reject a single move that both crosses
+    folders and renames (the v113 `must be a valid folder` spam).  Therefore we:
+      1) rename old final inside its current folder;
+      2) rename candidate -> final inside that same folder;
+      3) only then move the archived old file into the existing history folder.
 
-    Если процесс упадёт на шаге 1, старый файл не тронут. Если на шаге 2/3 —
-    старый уже находится в history, а candidate остаётся в MEGA.
+    If candidate promotion fails, best-effort rollback restores the old final.
+    """
+    final_parent = remote_final.rsplit("/", 1)[0] or "/"
+    final_name = remote_final.rsplit("/", 1)[-1]
+    candidate_parent = remote_candidate.rsplit("/", 1)[0] or "/"
+    if candidate_parent.rstrip("/") != final_parent.rstrip("/"):
+        raise RuntimeError("candidate and final must be in the same MEGA folder")
+    mega_ensure_remote_path(final_parent)
+
+    stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
+    if archive_name:
+        safe_archive_name = os.path.basename(str(archive_name))
+    else:
+        stem, ext = os.path.splitext(final_name)
+        safe_archive_name = f"{mega_safe_name(stem, 'file')}__{stamp}{ext or '.json'}"
+    remote_old_temp = final_parent.rstrip("/") + "/" + safe_archive_name
+    old_moved = False
+
+    mv_old = _mega_run("mega-mv", [remote_final, remote_old_temp], check=False, timeout=60)
+    if mv_old.returncode == 0:
+        old_moved = True
+    else:
+        err = (mv_old.stderr or mv_old.stdout or "")[:500]
+        if not _mega_remote_missing_error(err):
+            log_error(f"[MEGA PROMOTE] cannot stage previous {remote_final}: {err}")
+            return False
+
+    mv_new = _mega_run("mega-mv", [remote_candidate, remote_final], check=False, timeout=60)
+    if mv_new.returncode != 0:
+        err = (mv_new.stderr or mv_new.stdout or "")[:500]
+        if old_moved:
+            _mega_run("mega-mv", [remote_old_temp, remote_final], check=False, timeout=60)
+        log_error(f"[MEGA PROMOTE] candidate activation failed {remote_candidate} -> {remote_final}: {err}")
+        return False
+
+    if old_moved:
+        if history_dir:
+            try:
+                mega_ensure_remote_path(history_dir)
+                moved = _mega_run("mega-mv", [remote_old_temp, history_dir], check=False, timeout=60)
+                if moved.returncode != 0:
+                    err = (moved.stderr or moved.stdout or "")[:500]
+                    log_error(f"[MEGA PROMOTE] history move deferred for {remote_old_temp}: {err}")
+            except Exception as e:
+                log_error(f"[MEGA PROMOTE] history move deferred for {remote_old_temp}: {e}")
+        else:
+            _mega_run("mega-rm", [remote_old_temp], check=False, timeout=30)
+    return True
+
+
+def mega_put_replace(
+    local_path: str,
+    remote_dir: str,
+    remote_name: str | None = None,
+    *,
+    archive_previous: bool = True,
+) -> bool:
+    """Safely update a MEGA file without rm->put and without cross-folder rename.
+
+    Heartbeat callers may set archive_previous=False: runtime_latest then keeps no
+    30-second history copies because immutable runtime events already have /events.
     """
     if not mega_is_configured() or not local_path or not os.path.exists(local_path):
         return False
@@ -6783,31 +6875,32 @@ def mega_put_replace(local_path: str, remote_dir: str, remote_name: str | None =
         candidate_local = _copy_file_for_mega(local_path, candidate_name)
         if not candidate_local:
             return False
-
-        # Сначала candidate. Активный remote_file пока существует без изменений.
         _mega_run("mega-put", [candidate_local, remote_dir], check=True, timeout=MEGA_TIMEOUT)
         remote_candidate = remote_dir.rstrip("/") + "/" + candidate_name
         remote_file = remote_dir.rstrip("/") + "/" + final_name
 
-        history_dir = remote_dir.rstrip("/") + "/history"
-        mega_ensure_remote_path(history_dir)
-        archive_name = f"{mega_safe_name(stem, 'file')}__{stamp}{ext or '.json'}"
-        remote_archive = history_dir.rstrip("/") + "/" + archive_name
+        history_dir = None
+        archive_name = None
+        if archive_previous:
+            history_dir = remote_dir.rstrip("/") + "/history"
+            mega_ensure_remote_path(history_dir)
+            archive_name = f"{mega_safe_name(stem, 'file')}__{stamp}{ext or '.json'}"
 
-        # Отсутствие старого файла нормально. Любая другая ошибка оставляет старый файл на месте
-        # и не пытается насильно его удалить.
-        mv_old = _mega_run("mega-mv", [remote_file, remote_archive], check=False, timeout=60)
-        if mv_old.returncode != 0:
-            err = (mv_old.stderr or mv_old.stdout or "")[:500]
-            if not _mega_remote_missing_error(err):
-                log_error(f"[MEGA SAFE REPLACE] archive blocked for {remote_file}: {err}")
-                return False
-
-        _mega_run("mega-mv", [remote_candidate, remote_file], check=True, timeout=60)
-        try:
-            _mega_prune_remote_history(history_dir, f"{mega_safe_name(stem, 'file')}__*{ext or '.json'}", MEGA_FILE_HISTORY_KEEP)
-        except Exception:
-            pass
+        ok = _mega_promote_remote_candidate(
+            remote_candidate, remote_file,
+            history_dir=history_dir, archive_name=archive_name,
+        )
+        if not ok:
+            return False
+        if archive_previous and history_dir:
+            try:
+                _mega_prune_remote_history(
+                    history_dir,
+                    f"{mega_safe_name(stem, 'file')}__*{ext or '.json'}",
+                    MEGA_FILE_HISTORY_KEEP,
+                )
+            except Exception:
+                pass
         return True
     except Exception as e:
         log_error(f"[MEGA SAFE REPLACE ERROR] {local_path} -> {remote_dir}: {e}")
@@ -9164,6 +9257,7 @@ _RUNTIME_LOCK = threading.RLock()
 _RUNTIME_SHUTDOWN_LOCK = threading.Lock()
 _RUNTIME_EVENTS = deque(maxlen=40)
 _RUNTIME_PREVIOUS = {}
+_RUNTIME_HEARTBEAT_OK_SEQ = 0
 _RUNTIME_REMOTE_DIR_NAME = "runtime"
 _RUNTIME_LATEST_NAME = "runtime_latest.json"
 _RUNTIME_STARTED_MONO = time.monotonic()
@@ -9492,7 +9586,24 @@ def runtime_load_previous_snapshot() -> dict:
     local = None
     try:
         mega_ensure_remote_path(runtime_remote_dir())
-        local = _mega_download_remote_path(runtime_latest_remote_path())
+        try:
+            local = _mega_download_remote_path(runtime_latest_remote_path())
+        except Exception:
+            local = None
+        # A hard kill can theoretically land between staging old latest and promoting
+        # the new candidate. In that narrow window runtime_latest may be absent while
+        # a staged previous/candidate file still exists. Recover the newest fallback.
+        if not local:
+            fallbacks = []
+            for pattern in ("runtime_latest__*.json", "candidate_runtime_latest_*.json"):
+                try:
+                    fallbacks.extend(_mega_find_remote_files(runtime_remote_dir(), pattern, limit=3))
+                except Exception:
+                    pass
+            if fallbacks:
+                remote_fallback = sorted(set(fallbacks), reverse=True)[0]
+                local = _mega_download_remote_path(remote_fallback)
+                runtime_event("previous_snapshot_fallback", os.path.basename(remote_fallback), "WARN")
         prev = _load_json(local, {}) if local else {}
         if not isinstance(prev, dict):
             prev = {}
@@ -9595,7 +9706,7 @@ def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = Tru
         tmp = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_{stamp}_{safe_event}.json")
         _atomic_json_dump(tmp, snap)
         mega_ensure_remote_path(runtime_remote_dir())
-        ok = mega_put_replace(tmp, runtime_remote_dir(), _RUNTIME_LATEST_NAME)
+        ok = mega_put_replace(tmp, runtime_remote_dir(), _RUNTIME_LATEST_NAME, archive_previous=(str(event) != "heartbeat"))
         if immutable_event:
             events_dir = runtime_remote_dir().rstrip("/") + "/events"
             mega_ensure_remote_path(events_dir)
@@ -9611,7 +9722,18 @@ def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = Tru
         with _RUNTIME_LOCK:
             _RUNTIME_STATE["last_runtime_snapshot_ok_at"] = now_local().isoformat(timespec="milliseconds")
             _RUNTIME_STATE["last_runtime_snapshot_error"] = ""
-        runtime_event("watcher_mega_ok", f"event={event}; elapsed={elapsed}s; immutable={bool(immutable_event)}")
+        if str(event) == "heartbeat":
+            global _RUNTIME_HEARTBEAT_OK_SEQ
+            try:
+                _RUNTIME_HEARTBEAT_OK_SEQ += 1
+            except Exception:
+                _RUNTIME_HEARTBEAT_OK_SEQ = 1
+            # runtime_latest itself is the durable 30s heartbeat. Do not create a second
+            # durable journal upload for every successful heartbeat. Keep a sparse trace.
+            if (_RUNTIME_HEARTBEAT_OK_SEQ % 10) == 0 or elapsed >= 3.0 or str(pressure.get("level")) != "normal":
+                runtime_event("watcher_mega_ok", f"event={event}; elapsed={elapsed}s; immutable={bool(immutable_event)}")
+        else:
+            runtime_event("watcher_mega_ok", f"event={event}; elapsed={elapsed}s; immutable={bool(immutable_event)}")
         return bool(ok)
     except Exception as e:
         elapsed = round(time.monotonic() - started, 3)
@@ -9670,6 +9792,58 @@ def _runtime_watcher_should_yield_to_critical_mega() -> bool:
         return False
     return False
 
+def _lowram_business_busy() -> bool:
+    try:
+        for pool_name in ("WEBHOOK_TASK_POOL", "FINANCE_TASK_POOL", "FORWARD_TASK_POOL", "DELTA_TASK_POOL", "BACKUP_TASK_POOL"):
+            pool = globals().get(pool_name)
+            if pool is None:
+                continue
+            st = pool.stats() or {}
+            if int(st.get("pending", 0) or 0) > 0 or int(st.get("active", 0) or 0) > 0:
+                return True
+        mt = mega_task_registry_stats() or {}
+        return int(mt.get("processing", 0) or 0) > 0
+    except Exception:
+        return True
+
+
+def _lowram_idle_sweep_job():
+    """Return forgotten cold chat histories to SQLite only while the bot is idle."""
+    try:
+        if runtime_is_shutting_down():
+            return
+        if LOWRAM_ENABLED and not _lowram_business_busy():
+            def _loaded_fields_count():
+                total = 0
+                try:
+                    for store in ((data or {}).get("chats", {}) or {}).values():
+                        if isinstance(store, dict):
+                            total += sum(1 for k in LOWRAM_COLD_KEYS if dict.__contains__(store, k))
+                except Exception:
+                    pass
+                return total
+            loaded_before = _loaded_fields_count()
+            if loaded_before > 0:
+                _lowram_flush_all_hot(evict=True)
+                try:
+                    import gc
+                    gc.collect()
+                except Exception:
+                    pass
+                loaded_after = _loaded_fields_count()
+                mem = _runtime_memory_stats()
+                runtime_event(
+                    "lowram_idle_evict",
+                    f"loaded_fields={loaded_before}->{loaded_after} rss={mem.get('rss_mb','?')}MB",
+                )
+    except Exception as e:
+        runtime_event("lowram_idle_evict_error", str(e), "WARN")
+    finally:
+        try:
+            DELAYED_SCHEDULER.schedule("lowram-idle-sweep", 45.0, _lowram_idle_sweep_job)
+        except Exception:
+            pass
+
 
 def _runtime_heartbeat_job():
     if runtime_is_shutting_down():
@@ -9714,6 +9888,14 @@ def runtime_mark_ready(detail: str = ""):
         schedule_restored_secret_media_recovery(1.5)
     except Exception as e:
         runtime_event("secret_media_resume_error", str(e), "WARN")
+    try:
+        DELAYED_SCHEDULER.schedule("journal-warm-tail", 12.0, _journal_warm_tail_job)
+    except Exception:
+        pass
+    try:
+        DELAYED_SCHEDULER.schedule("lowram-idle-sweep", 45.0, _lowram_idle_sweep_job)
+    except Exception:
+        pass
 
 
 def _runtime_pending_recovery_rows() -> list[tuple[str, str, str]]:
@@ -9822,6 +10004,8 @@ def runtime_graceful_shutdown(signal_name: str = "SIGTERM"):
         runtime_event("shutdown_start", f"signal={signal_name}")
         try:
             DELAYED_SCHEDULER.cancel("runtime-heartbeat")
+            DELAYED_SCHEDULER.cancel("journal-warm-tail")
+            DELAYED_SCHEDULER.cancel("lowram-idle-sweep")
         except Exception:
             pass
 
@@ -10049,7 +10233,7 @@ def _lowram_gunzip_file(src: str, dst: str):
     return dst
 
 def mega_upload_latest_database_backup(force: bool = False) -> bool:
-    """Primary v114 snapshot: SQLite file -> gzip -> MEGA. No full Python state copy."""
+    """Primary v115 snapshot: SQLite file -> gzip -> MEGA. No full Python state copy."""
     if not mega_is_configured(): return False
     if RESTORE_GUARD_ACTIVE and not force:
         log_error(f"[MEGA DB SNAPSHOT BLOCKED] {RESTORE_GUARD_REASON}"); return False
@@ -10071,9 +10255,11 @@ def mega_upload_latest_database_backup(force: bool = False) -> bool:
             _mega_run("mega-put", [gz, lowram_database_remote_dir()], check=True, timeout=MEGA_TIMEOUT)
             remote_candidate = lowram_database_remote_dir().rstrip("/") + "/" + os.path.basename(gz)
             remote_latest = lowram_database_remote_latest()
-            archived = history + "/bot_state_" + re.sub(r"[^0-9]", "", created_at)[:14] + ".sqlite3.gz"
-            _mega_run("mega-mv", [remote_latest, archived], check=False, timeout=60)
-            _mega_run("mega-mv", [remote_candidate, remote_latest], check=True, timeout=60)
+            archive_name = "bot_state_" + re.sub(r"[^0-9]", "", created_at)[:14] + ".sqlite3.gz"
+            if not _mega_promote_remote_candidate(
+                remote_candidate, remote_latest, history_dir=history, archive_name=archive_name
+            ):
+                raise RuntimeError("cannot activate latest SQLite snapshot in MEGA")
             # Baseline reads each chat's record list one at a time from SQLite.
             initialize_delta_baseline(data)
             global _global_snapshot_pending, _global_snapshot_last_success_monotonic, _global_snapshot_last_success_at
@@ -10267,17 +10453,19 @@ def mega_upload_latest_global_backup(force: bool = False) -> bool:
             remote_candidate = MEGA_BACKUP_DIR.rstrip("/") + "/" + candidate_name
             remote_latest = mega_remote_file_path(MEGA_LATEST_GLOBAL_NAME)
 
-            # Старый latest не удаляем: переносим в историю. Даже если следующий шаг упадёт,
-            # предыдущий полный файл останется доступен для autorestore.
+            # v115: rename old latest in-place, activate candidate, then move the old
+            # renamed copy into the existing history folder. This avoids MEGAcmd builds
+            # that reject cross-folder move+rename in one command.
+            archive_name = None
             if current_path and current_stats:
                 old_stamp = re.sub(r"[^0-9]", "", current_stats.get("created_at", ""))[:14] or stamp
-                archived = mega_history_remote_dir().rstrip("/") + f"/global_{old_stamp}_{current_stats.get('record_count',0)}r_{stamp}.json"
-                mv = _mega_run("mega-mv", [remote_latest, archived], check=False, timeout=60)
-                if mv.returncode != 0:
-                    log_error(f"[MEGA] could not archive previous latest: {(mv.stderr or mv.stdout or '')[:300]}")
-
-            # Активируем новый latest одним move, без окна delete->put.
-            _mega_run("mega-mv", [remote_candidate, remote_latest], check=True, timeout=60)
+                archive_name = f"global_{old_stamp}_{current_stats.get('record_count',0)}r_{stamp}.json"
+            if not _mega_promote_remote_candidate(
+                remote_candidate, remote_latest,
+                history_dir=mega_history_remote_dir() if archive_name else None,
+                archive_name=archive_name,
+            ):
+                raise RuntimeError("cannot activate latest_global.json in MEGA")
             # Полный снимок успешно активирован: фиксируем baseline именно из candidate,
             # а не из более нового live-state, который мог измениться во время загрузки.
             initialize_delta_baseline(candidate_payload)
@@ -28139,14 +28327,10 @@ def main():
         runtime_event("previous_runtime", prev_reason)
     except Exception as e:
         runtime_event("previous_runtime_error", str(e), "WARN")
-    # v111: восстановить журнал ПРЕДЫДУЩИХ процессов до READY. Это позволяет видеть
-    # историю до sleep/restart/deploy даже после очистки ephemeral filesystem Render.
-    runtime_set_phase("boot_journal_restore", "поднимаю журнал предыдущих процессов из MEGA")
-    try:
-        jr = journal_restore_from_mega(200)
-        runtime_event("journal_restored", f"remote_rows={jr.get('remote_rows',0)} merged_rows={jr.get('merged_rows',0)}")
-    except Exception as e:
-        runtime_event("journal_restore_error", str(e), "WARN")
+    # v115: full durable history remains in MEGA, but BOOT must not spend tens of seconds
+    # downloading journal chunks. Recent history is warmed after READY; TXT export streams
+    # the complete durable history directly from MEGA.
+    runtime_set_phase("boot_journal_deferred", "история журнала в MEGA; прогрев после READY")
     journal_start_durable_loop()
 
     if not RESTORE_GUARD_ACTIVE:
