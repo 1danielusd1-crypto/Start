@@ -1,4 +1,4 @@
-# bot_v116_stable_lowram_exact_effects
+# bot_v117_secret_routes_telegram_maintenance
 import os
 import io
 import json
@@ -293,6 +293,13 @@ GENERAL_TASK_POOL = KeyedTaskPool(
     "general",
     _env_int("GENERAL_WORKERS", 1, 1, 6),
     _env_int("GENERAL_MAX_PENDING", 500, 50, 2000),
+)
+# v117: slow cosmetic retro-updates must never block business callbacks/general work.
+# One low-priority worker is intentionally isolated from finance/forward/webhook/export.
+MAINTENANCE_TASK_POOL = KeyedTaskPool(
+    "maintenance",
+    _env_int("MAINTENANCE_WORKERS", 1, 1, 1),
+    _env_int("MAINTENANCE_MAX_PENDING", 100, 10, 500),
 )
 JOURNAL_TASK_POOL = KeyedTaskPool(
     "journal",
@@ -621,8 +628,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v116_stable_lowram_exact_effects"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v116_stable_lowram_exact_effects.py"
+VERSION = "bot_v117_secret_routes_telegram_maintenance"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v117_secret_routes_telegram_maintenance.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -2524,7 +2531,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
             fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
-            fh.write("v116: LOW-RAM cleanup fixed; journal export is background; durable forwarding verifies actual handler decisions.\n\n")
+            fh.write("v117: secret-route durable witness fixed; retro UI edits are throttled in maintenance; LOW-RAM remains active.\n\n")
             fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
@@ -2553,13 +2560,13 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("planned_restart_same_commit: same commit + graceful SIGTERM.\n")
             fh.write("probable_render_idle_*: probable sleep/wake estimate.\n")
             fh.write("process_restart_or_unknown + high RAM/no SIGTERM: suspect OOM/hard kill.\n")
-            fh.write("v116: heartbeat is tiny, journal export is background, LOW-RAM cleanup is fixed, and full previous_runtime chains are not retained.\n")
+            fh.write("v117: secret messages no longer demand impossible source-finance witnesses; retro Telegram UI work is isolated and throttled.\n")
         with open(tmp_path, "rb") as fh:
             _tg_call_retry(
                 bot.send_document,
                 chat_id,
                 fh,
-                caption="📓 Максимальный журнал: Render + бот + очереди + MEGA (stable streaming v116)",
+                caption="📓 Максимальный журнал: Render + бот + очереди + MEGA (stable streaming v117)",
                 purpose="journal_send_document",
             )
     finally:
@@ -7176,15 +7183,9 @@ def _durable_expected_effects(payload: dict) -> dict:
         waiting = any(str(k).endswith("_wait") and bool(v) for k, v in (store or {}).items())
     except Exception:
         waiting = False
-    try:
-        out["source_finance"] = bool(
-            (not waiting)
-            and is_finance_mode(int(source_chat_id))
-            and text
-            and looks_like_amount(text)
-        )
-    except Exception:
-        out["source_finance"] = False
+    # v117: secret routing consumes the source message before ordinary source finance.
+    # Therefore `5🙊` expects source_secret, but must NOT expect source_finance.
+    # Destination finance is independent and is still evaluated below for forwarded copies.
     try:
         marked, _cleaned = _extract_secret_codeword(text)
     except Exception:
@@ -7193,6 +7194,16 @@ def _durable_expected_effects(payload: dict) -> dict:
         out["source_secret"] = bool(is_total_secret_mode(int(source_chat_id)) or marked)
     except Exception:
         out["source_secret"] = bool(marked)
+    try:
+        out["source_finance"] = bool(
+            (not waiting)
+            and (not out["source_secret"])
+            and is_finance_mode(int(source_chat_id))
+            and text
+            and looks_like_amount(text)
+        )
+    except Exception:
+        out["source_finance"] = False
     for dst_chat_id, mode, finance_enabled in _durable_forward_targets(source_chat_id):
         dst = int(dst_chat_id)
         dst_finance = False
@@ -7215,19 +7226,47 @@ def _durable_expected_effects(payload: dict) -> dict:
     return out
 
 
+def _durable_normalize_expected_for_route(payload: dict, expected: dict | None) -> dict:
+    """Remove impossible witnesses implied by an older durable task schema.
+
+    Older v115/v116 tasks could persist both source_secret=True and source_finance=True
+    for a marked secret such as ``5🙊``. The real handler consumes the source message in
+    the secret route before ordinary source finance. This only removes that impossible
+    source-finance expectation; it never adds money records or sends Telegram content.
+    """
+    adjusted = _delta_json_clone(expected or {}) if isinstance(expected, dict) else {}
+    raw, _source_chat_id, _source_msg_id, _group_id = _durable_payload_message(payload or {})
+    text = str((raw or {}).get("text") or (raw or {}).get("caption") or "").strip() if isinstance(raw, dict) else ""
+    marked = False
+    if text:
+        try:
+            marked, _cleaned = _extract_secret_codeword(text)
+        except Exception:
+            marked = False
+    secret_route = bool(adjusted.get("source_secret")) or bool(marked)
+    if secret_route and bool(adjusted.get("source_finance")):
+        adjusted["source_finance"] = False
+        adjusted["source_finance_suppressed_by_secret_route"] = True
+    return adjusted
+
+
 def _durable_expected_from_task_or_payload(task: dict | None, payload: dict) -> dict:
     try:
         expected = (task or {}).get("expected_effects")
         if isinstance(expected, dict):
-            return _durable_adjust_expected_for_captured_wait(task, payload, _delta_json_clone(expected))
+            adjusted = _durable_adjust_expected_for_captured_wait(task, payload, _delta_json_clone(expected))
+            return _durable_normalize_expected_for_route(payload, adjusted)
     except Exception:
         pass
-    return _durable_expected_effects(payload)
+    return _durable_normalize_expected_for_route(payload, _durable_expected_effects(payload))
 
 
 def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
     """Return explicit effect status. No repairs, no replay, no side effects."""
-    expected = expected if isinstance(expected, dict) else _durable_expected_effects(payload)
+    expected = _durable_normalize_expected_for_route(
+        payload,
+        expected if isinstance(expected, dict) else _durable_expected_effects(payload),
+    )
     raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
     report = {"complete": True, "missing": [], "ambiguous": []}
     if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
@@ -7426,7 +7465,10 @@ def finalize_durable_task_after_business(update_id, chat_id, update_type: str = 
     if not wait_durable_subtasks(chat_id, timeout=20.0):
         return False
     callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
-    expected = expected_effects if isinstance(expected_effects, dict) else (_durable_expected_effects(payload) if isinstance(payload, dict) else {})
+    expected = _durable_normalize_expected_for_route(
+        payload or {},
+        expected_effects if isinstance(expected_effects, dict) else (_durable_expected_effects(payload) if isinstance(payload, dict) else {}),
+    )
     if isinstance(payload, dict) and callback_target is None:
         # Safe metadata-only repair is allowed because it never resends Telegram content.
         try:
@@ -7597,7 +7639,7 @@ def _durable_expected_after_execution(base_expected: dict | None, execution_ctx:
         })
     expected["forward_targets"] = rebuilt
     expected["forward_decision_actual"] = bool(execution_ctx.get("forward_decision_reached"))
-    return expected
+    return _durable_normalize_expected_for_route(payload or {}, expected)
 
 
 def _durable_adjust_expected_for_captured_wait(task: dict | None, payload: dict, expected: dict) -> dict:
@@ -8131,7 +8173,10 @@ def _repair_safe_missing_finance_effects(payload: dict, expected_effects: dict |
     destination Telegram link already exists. Direct finance uses source message_id as its
     unique operation key, so add_record_to_chat returns the existing record on replay.
     """
-    expected = expected_effects if isinstance(expected_effects, dict) else _durable_expected_effects(payload)
+    expected = _durable_normalize_expected_for_route(
+        payload,
+        expected_effects if isinstance(expected_effects, dict) else _durable_expected_effects(payload),
+    )
     raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
     if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
         return False
@@ -8302,8 +8347,8 @@ def schedule_mega_task_recovery(delay: float | None = None):
 def schedule_safe_failed_task_repairs(delay: float = 6.0, limit: int = 20):
     """Background-only repair for FAILED tasks that can be fixed without replaying Telegram sends.
 
-    Only tasks with no ambiguous forward and only missing forward_secret metadata are eligible.
-    This specifically heals old v114/v115 false failures such as forward_secret:<chat>:<msg>.
+    No business handler is replayed. Eligible repairs are metadata-only forward_secret gaps
+    or old secret-route tasks that become complete after removing an impossible source_finance witness.
     """
     if not mega_tasks_active():
         return
@@ -8329,14 +8374,22 @@ def schedule_safe_failed_task_repairs(delay: float = 6.0, limit: int = 20):
                     report = _durable_effect_report(payload, expected)
                     missing = [str(x) for x in (report.get("missing") or [])]
                     ambiguous = [str(x) for x in (report.get("ambiguous") or [])]
-                    if ambiguous or not missing or not all(x.startswith("forward_secret:") for x in missing):
+                    # v117: after safe secret-route reclassification an old failed task may
+                    # already be complete. Moving failed->done does not replay its business handler.
+                    eligible = bool(report.get("complete")) or (
+                        (not ambiguous)
+                        and bool(missing)
+                        and all(x.startswith("forward_secret:") for x in missing)
+                    )
+                    if not eligible:
                         continue
                     if finalize_durable_task_after_business(
                         key, (task or {}).get("chat_id"), str((task or {}).get("update_type") or "recovered"),
                         payload=payload, expected_effects=expected,
                     ):
                         repaired += 1
-                        bot_journal("mega_task_failed_safe_repaired", (task or {}).get("chat_id"), f"update_id={key} missing={missing}")
+                        reason = "reclassified_complete" if bool(report.get("complete")) else f"missing={missing}"
+                        bot_journal("mega_task_failed_safe_repaired", (task or {}).get("chat_id"), f"update_id={key} {reason}")
                 except Exception as e:
                     log_error(f"SAFE FAILED TASK REPAIR update={key}: {e}")
                 finally:
@@ -9789,6 +9842,7 @@ def runtime_heartbeat_snapshot(event: str = "heartbeat") -> dict:
             "forward": FORWARD_TASK_POOL.stats().get("pending", 0),
             "delta": DELTA_TASK_POOL.stats().get("pending", 0),
             "backup": BACKUP_TASK_POOL.stats().get("pending", 0),
+            "maintenance": MAINTENANCE_TASK_POOL.stats().get("pending", 0),
         },
     }
 
@@ -9807,7 +9861,7 @@ def _runtime_disk_stats() -> dict:
 def _runtime_pool_stats() -> dict:
     pools = (
         WEBHOOK_TASK_POOL, FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL,
-        BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, JOURNAL_TASK_POOL,
+        BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL,
         DELAYED_TASK_POOL, DOZVON_TASK_POOL,
     )
     return {p.name: p.stats() for p in pools}
@@ -16745,8 +16799,36 @@ def forward_copy_edit_mode_label(chat_id: int) -> str:
     }.get(mode, "💰Перес: обычно")
 
 
-def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None) -> int:
-    """Update existing bot copies from owner's open day through today, without touching originals."""
+try:
+    FORWARD_COPY_RETRO_MIN_GAP_SECONDS = max(0.5, min(10.0, float(os.getenv("FORWARD_COPY_RETRO_MIN_GAP_SECONDS", "3.2") or "3.2")))
+except Exception:
+    FORWARD_COPY_RETRO_MIN_GAP_SECONDS = 3.2
+_FORWARD_COPY_RETRO_LOCK = threading.RLock()
+_FORWARD_COPY_RETRO_GENERATION = {}
+
+
+def _begin_forward_copy_retro_refresh(owner_chat_id: int) -> int:
+    scope = int(owner_scope_id(int(owner_chat_id)))
+    with _FORWARD_COPY_RETRO_LOCK:
+        generation = int(_FORWARD_COPY_RETRO_GENERATION.get(scope, 0) or 0) + 1
+        _FORWARD_COPY_RETRO_GENERATION[scope] = generation
+        return generation
+
+
+def _forward_copy_retro_is_stale(owner_chat_id: int, generation: int | None) -> bool:
+    if generation is None:
+        return False
+    scope = int(owner_scope_id(int(owner_chat_id)))
+    with _FORWARD_COPY_RETRO_LOCK:
+        return int(_FORWARD_COPY_RETRO_GENERATION.get(scope, 0) or 0) != int(generation)
+
+
+def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None, generation: int | None = None) -> int:
+    """Slow isolated retro-update of existing bot copies.
+
+    Cosmetic historical edits never run in webhook/general queues. They are spaced out and
+    a newer toggle invalidates an older generation, preventing Telegram 429 edit storms.
+    """
     owner_chat_id = int(owner_chat_id)
     scope = owner_scope_id(owner_chat_id)
     mode = mode or forward_copy_edit_mode(scope)
@@ -16755,9 +16837,22 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None
     if start_key > end_key:
         start_key, end_key = end_key, start_key
     changed = 0
+    attempted = 0
+    last_edit_mono = 0.0
+    stopped_stale = False
+    try:
+        bot_journal("forward_copy_retro_start", owner_chat_id, f"mode={mode} generation={generation} gap={FORWARD_COPY_RETRO_MIN_GAP_SECONDS}s")
+    except Exception:
+        pass
     for cid in collect_all_known_chat_ids(include_owner=True):
+        if _forward_copy_retro_is_stale(owner_chat_id, generation):
+            stopped_stale = True
+            break
         store = get_chat_store(int(cid))
         for rec in list(store.get("records", []) or []):
+            if _forward_copy_retro_is_stale(owner_chat_id, generation):
+                stopped_stale = True
+                break
             src = rec.get("forward_source_chat_id")
             if src is None:
                 continue
@@ -16770,27 +16865,44 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None
                 msg_id = int(rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or 0)
                 if not msg_id:
                     continue
+                if last_edit_mono > 0:
+                    wait = FORWARD_COPY_RETRO_MIN_GAP_SECONDS - (time.monotonic() - last_edit_mono)
+                    if wait > 0:
+                        time.sleep(wait)
+                if _forward_copy_retro_is_stale(owner_chat_id, generation):
+                    stopped_stale = True
+                    break
                 base_text = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
                 display_text = _forward_copy_display_text(base_text, rec, mode)
                 markup = _forward_copy_edit_keyboard(mode)
                 ct = str(rec.get("forward_copy_content_type") or "text")
+                attempted += 1
+                last_edit_mono = time.monotonic()
                 if ct == "text":
-                    _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_text")
+                    _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=2, purpose="forward_copy_retro_text_maintenance")
                 elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
-                    _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_caption")
+                    _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=2, purpose="forward_copy_retro_caption_maintenance")
                 else:
-                    _tg_call_retry(bot.edit_message_reply_markup, int(cid), msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_markup")
+                    _tg_call_retry(bot.edit_message_reply_markup, int(cid), msg_id, reply_markup=markup, attempts=2, purpose="forward_copy_retro_markup_maintenance")
                 changed += 1
             except Exception as e:
                 err = str(e).lower()
                 if "message is not modified" in err:
                     changed += 1
                 elif "message to edit not found" in err or "message_id_invalid" in err or "message not found" in err:
-                    # Stale copy: keep the financial record but remove impossible Telegram binding.
                     rec["forward_copy_deleted"] = True
                 else:
                     log_error(f"refresh_existing_forward_copy_ui {cid}:{rec.get('id')}: {e}")
+        if stopped_stale:
+            break
     save_data(data)
+    try:
+        bot_journal(
+            "forward_copy_retro_done", owner_chat_id,
+            f"mode={mode} generation={generation} attempted={attempted} changed={changed} stale={stopped_stale}",
+        )
+    except Exception:
+        pass
     return changed
 
 
@@ -21459,7 +21571,7 @@ def all_task_pool_stats() -> list[dict]:
     return [
         WEBHOOK_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
         DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
-        JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
+        MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
     ]
 
 
@@ -23389,9 +23501,16 @@ def on_callback(call):
             except Exception:
                 pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
-            if not GENERAL_TASK_POOL.submit(f"fwdcopy-retro:{owner_scope_id(chat_id)}", refresh_existing_forward_copy_ui, chat_id, new_mode):
-                refresh_existing_forward_copy_ui(chat_id, new_mode)
-            bot_journal("forward_copy_edit_mode", chat_id, f"mode={new_mode}")
+            retro_generation = _begin_forward_copy_retro_refresh(chat_id)
+            retro_queued = MAINTENANCE_TASK_POOL.submit(
+                f"fwdcopy-retro:{owner_scope_id(chat_id)}",
+                refresh_existing_forward_copy_ui,
+                chat_id, new_mode, retro_generation,
+            )
+            if not retro_queued:
+                # Cosmetic history refresh may be skipped under pressure; never block the button.
+                log_error(f"FORWARD COPY RETRO MAINTENANCE QUEUE FULL: chat={chat_id} mode={new_mode}")
+            bot_journal("forward_copy_edit_mode", chat_id, f"mode={new_mode} retro_queued={retro_queued} generation={retro_generation}")
             return
 
         if guard_non_owner_finance_for_callback(chat_id, data_str):
@@ -28167,6 +28286,7 @@ def build_diag_text() -> str:
         f"Очередь финансов: {FINANCE_TASK_POOL.stats()['pending']}",
         f"Очередь delta: {DELTA_TASK_POOL.stats()['pending']}",
         f"Очередь backup: {BACKUP_TASK_POOL.stats()['pending']}",
+        f"Очередь maintenance: {MAINTENANCE_TASK_POOL.stats()['pending']}",
         f"BACKUP_CHAT_ID: {'есть' if BACKUP_CHAT_ID else 'нет'}",
         f"Бэкап в канал: {'ВКЛ' if backup_flags.get('channel', True) else 'ВЫКЛ'}",
         f"MEGA: {'ВКЛ' if MEGA_ENABLED else 'ВЫКЛ'} / {'настроено' if mega_is_configured() else 'не настроено'}",
@@ -28754,7 +28874,7 @@ def main():
             except Exception as exc:
                 log_error(f"LOWRAM initial DB snapshot: {exc}")
         threading.Thread(target=_seed_primary_db_snapshot, name="lowram-db-seed", daemon=True).start()
-    # Never replay failed business work automatically. Only heal metadata-only forward_secret gaps.
+    # Never replay failed business work automatically. Heal only metadata-only/reclassified-safe gaps.
     try:
         schedule_safe_failed_task_repairs(8.0, 20)
     except Exception as exc:
@@ -28798,4 +28918,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# bot_v116_stable_lowram_exact_effects
+# bot_v117_secret_routes_telegram_maintenance
