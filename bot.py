@@ -1,4 +1,4 @@
-# bot_v117_secret_routes_telegram_maintenance
+# bot_v118_runtime_slots_restart_forensics
 import os
 import io
 import json
@@ -628,8 +628,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v117_secret_routes_telegram_maintenance"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v117_secret_routes_telegram_maintenance.py"
+VERSION = "bot_v118_runtime_slots_restart_forensics"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v118_runtime_slots_restart_forensics.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -2531,7 +2531,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
             fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
-            fh.write("v117: secret-route durable witness fixed; retro UI edits are throttled in maintenance; LOW-RAM remains active.\n\n")
+            fh.write("v118: runtime watcher uses redundant MEGA slots; restart forensics survives failed MEGA rename; LOW-RAM remains active.\n\n")
             fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
@@ -9589,9 +9589,14 @@ try:
     RUNTIME_WATCHER_HEARTBEAT_SECONDS = max(20.0, min(3600.0, float(os.getenv("RUNTIME_WATCHER_HEARTBEAT_SECONDS", "30") or "30")))
 except Exception:
     RUNTIME_WATCHER_HEARTBEAT_SECONDS = 30.0
+try:
+    RUNTIME_WATCHER_SLOT_COUNT = max(2, min(5, int(os.getenv("RUNTIME_WATCHER_SLOT_COUNT", "3") or "3")))
+except Exception:
+    RUNTIME_WATCHER_SLOT_COUNT = 3
 
 _RUNTIME_LOCK = threading.RLock()
 _RUNTIME_SHUTDOWN_LOCK = threading.Lock()
+_RUNTIME_UPLOAD_LOCK = threading.Lock()
 _RUNTIME_EVENTS = deque(maxlen=40)
 _RUNTIME_PREVIOUS = {}
 _RUNTIME_HEARTBEAT_OK_SEQ = 0
@@ -9628,8 +9633,12 @@ _RUNTIME_STATE = {
     "shutdown_delta_ok": None,
     "last_error": "",
     "previous_reason": "first_seen",
+    "previous_snapshot_source": "",
     "last_runtime_snapshot_ok_at": "",
     "last_runtime_snapshot_error": "",
+    "last_runtime_slot": "",
+    "last_runtime_slot_at": "",
+    "runtime_slot_failures": 0,
     "fatal_main_exception": "",
     "fatal_thread_exception": "",
 }
@@ -9914,43 +9923,47 @@ def runtime_remote_dir() -> str:
 
 
 def runtime_latest_remote_path() -> str:
+    """Legacy v108-v117 path. v118 no longer writes this file."""
     return f"{runtime_remote_dir().rstrip('/')}/{_RUNTIME_LATEST_NAME}"
 
 
-def runtime_load_previous_snapshot() -> dict:
-    global _RUNTIME_PREVIOUS
-    if not mega_is_configured():
-        return {}
+def _runtime_slot_name(index: int) -> str:
+    idx = int(index) % max(2, int(RUNTIME_WATCHER_SLOT_COUNT))
+    return f"runtime_slot_{idx}.json"
+
+
+def _runtime_slot_remote_path(index: int) -> str:
+    return f"{runtime_remote_dir().rstrip('/')}/{_runtime_slot_name(index)}"
+
+
+def _runtime_snapshot_sort_ts(snap: dict) -> float:
+    """Sortable timestamp for choosing the newest durable runtime breadcrumb."""
+    if not isinstance(snap, dict):
+        return 0.0
+    candidates = [
+        snap.get("captured_at"),
+        ((snap.get("state") or {}).get("last_runtime_snapshot_ok_at") if isinstance(snap.get("state"), dict) else None),
+        ((snap.get("state") or {}).get("last_event_at") if isinstance(snap.get("state"), dict) else None),
+        ((snap.get("state") or {}).get("started_at") if isinstance(snap.get("state"), dict) else None),
+    ]
+    for value in candidates:
+        try:
+            dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+            return float(dt.timestamp())
+        except Exception:
+            continue
+    return 0.0
+
+
+def _runtime_load_remote_snapshot(remote_path: str) -> dict:
     local = None
     try:
-        mega_ensure_remote_path(runtime_remote_dir())
-        try:
-            local = _mega_download_remote_path(runtime_latest_remote_path())
-        except Exception:
-            local = None
-        # A hard kill can theoretically land between staging old latest and promoting
-        # the new candidate. In that narrow window runtime_latest may be absent while
-        # a staged previous/candidate file still exists. Recover the newest fallback.
+        local = _mega_download_remote_path(remote_path)
         if not local:
-            fallbacks = []
-            for pattern in ("runtime_latest__*.json", "candidate_runtime_latest_*.json"):
-                try:
-                    fallbacks.extend(_mega_find_remote_files(runtime_remote_dir(), pattern, limit=3))
-                except Exception:
-                    pass
-            if fallbacks:
-                remote_fallback = sorted(set(fallbacks), reverse=True)[0]
-                local = _mega_download_remote_path(remote_fallback)
-                runtime_event("previous_snapshot_fallback", os.path.basename(remote_fallback), "WARN")
-        prev = _load_json(local, {}) if local else {}
-        if not isinstance(prev, dict):
-            prev = {}
-        prev = _runtime_previous_summary(prev)
-        with _RUNTIME_LOCK:
-            _RUNTIME_PREVIOUS = prev
-        return prev
-    except Exception as e:
-        runtime_event("previous_snapshot_error", str(e), "WARN")
+            return {}
+        snap = _load_json(local, {})
+        return snap if isinstance(snap, dict) else {}
+    except Exception:
         return {}
     finally:
         try:
@@ -9959,6 +9972,124 @@ def runtime_load_previous_snapshot() -> dict:
         except Exception:
             pass
 
+
+def _runtime_write_redundant_slot(local_snapshot: str, event: str = "snapshot") -> tuple[bool, str]:
+    """Write one of 2-5 alternating runtime slots without MEGA rename/promote.
+
+    v113-v117 showed that `mega-mv old_file new_filename` is not reliable on the
+    installed MEGAcmd build ("must be a valid folder").  v118 therefore keeps
+    multiple fixed slots.  Updating one slot is rm+put; the other slots remain
+    untouched, so a hard kill between the two commands still leaves a recent
+    durable breadcrumb for the next process.
+    """
+    interval = max(20.0, float(RUNTIME_WATCHER_HEARTBEAT_SECONDS))
+    slot_index = int(time.time() // interval) % max(2, int(RUNTIME_WATCHER_SLOT_COUNT))
+    slot_name = _runtime_slot_name(slot_index)
+    remote_slot = _runtime_slot_remote_path(slot_index)
+    alias_local = os.path.join(MEGA_LOCAL_TMP_DIR, slot_name)
+    try:
+        if os.path.abspath(alias_local) != os.path.abspath(local_snapshot):
+            shutil.copy2(local_snapshot, alias_local)
+        rm = _mega_run("mega-rm", [remote_slot], check=False, timeout=30)
+        if rm.returncode != 0:
+            err = (rm.stderr or rm.stdout or "")[:500]
+            if not _mega_remote_missing_error(err):
+                with _RUNTIME_LOCK:
+                    _RUNTIME_STATE["runtime_slot_failures"] = int(_RUNTIME_STATE.get("runtime_slot_failures", 0) or 0) + 1
+                log_error(f"[RUNTIME SLOT] cannot remove {remote_slot}: {err}")
+                return False, slot_name
+        _mega_run("mega-put", [alias_local, runtime_remote_dir()], check=True, timeout=MEGA_TIMEOUT)
+        now_ts = now_local().isoformat(timespec="milliseconds")
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE["last_runtime_slot"] = slot_name
+            _RUNTIME_STATE["last_runtime_slot_at"] = now_ts
+        return True, slot_name
+    except Exception as e:
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE["runtime_slot_failures"] = int(_RUNTIME_STATE.get("runtime_slot_failures", 0) or 0) + 1
+        log_error(f"[RUNTIME SLOT] write failed {slot_name}: {e}")
+        return False, slot_name
+    finally:
+        try:
+            if alias_local != local_snapshot and os.path.exists(alias_local):
+                os.remove(alias_local)
+        except Exception:
+            pass
+
+
+def runtime_load_previous_snapshot() -> dict:
+    """Load the newest trustworthy previous runtime snapshot.
+
+    Priority is not based on filenames: v118 reads all current rotating slots and
+    a few immutable runtime events, then chooses the newest `captured_at`.  The
+    stale legacy `runtime_latest.json` is used only as a last-resort fallback.
+    """
+    global _RUNTIME_PREVIOUS
+    if not mega_is_configured():
+        return {}
+    try:
+        mega_ensure_remote_path(runtime_remote_dir())
+        remote_candidates: list[tuple[str, str]] = []
+
+        try:
+            for remote in _mega_find_remote_files(runtime_remote_dir(), "runtime_slot_*.json", limit=10):
+                remote_candidates.append(("slot", remote))
+        except Exception:
+            pass
+
+        events_dir = runtime_remote_dir().rstrip("/") + "/events"
+        try:
+            for remote in _mega_find_remote_files(events_dir, "runtime_*.json", limit=8):
+                remote_candidates.append(("event", remote))
+        except Exception:
+            pass
+
+        best_snap = {}
+        best_source = ""
+        best_ts = 0.0
+        seen = set()
+        for source_kind, remote in remote_candidates:
+            if remote in seen:
+                continue
+            seen.add(remote)
+            snap = _runtime_load_remote_snapshot(remote)
+            ts = _runtime_snapshot_sort_ts(snap)
+            if snap and ts >= best_ts:
+                best_snap = snap
+                best_ts = ts
+                best_source = f"{source_kind}:{os.path.basename(remote)}"
+
+        # Legacy fallback is intentionally last.  In v113-v117 it could stay stale
+        # for many hours because MEGA promotion failed while the watcher still logged
+        # a misleading success.
+        if not best_snap:
+            legacy_paths = [runtime_latest_remote_path()]
+            try:
+                legacy_paths.extend(_mega_find_remote_files(runtime_remote_dir(), "runtime_latest__*.json", limit=3))
+                legacy_paths.extend(_mega_find_remote_files(runtime_remote_dir(), "candidate_runtime_latest_*.json", limit=3))
+            except Exception:
+                pass
+            for remote in legacy_paths:
+                snap = _runtime_load_remote_snapshot(remote)
+                ts = _runtime_snapshot_sort_ts(snap)
+                if snap and ts >= best_ts:
+                    best_snap = snap
+                    best_ts = ts
+                    best_source = f"legacy:{os.path.basename(remote)}"
+
+        prev = _runtime_previous_summary(best_snap) if isinstance(best_snap, dict) else {}
+        with _RUNTIME_LOCK:
+            _RUNTIME_PREVIOUS = prev
+            _RUNTIME_STATE["previous_snapshot_source"] = best_source
+        if prev:
+            runtime_event(
+                "previous_snapshot_loaded",
+                f"source={best_source or 'unknown'} captured_at={prev.get('captured_at','')} bot={prev.get('bot_version','')}",
+            )
+        return prev
+    except Exception as e:
+        runtime_event("previous_snapshot_error", str(e), "WARN")
+        return {}
 
 def _runtime_parse_ts(value):
     try:
@@ -10028,51 +10159,88 @@ def runtime_classify_previous(prev: dict) -> str:
 def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = True) -> bool:
     if not mega_is_configured():
         return False
+    heartbeat = str(event) == "heartbeat"
+    # Never let diagnostic uploads pile up. Heartbeats are disposable; boot/shutdown/
+    # fatal snapshots get a short chance to wait for the current watcher upload.
+    acquired = _RUNTIME_UPLOAD_LOCK.acquire(timeout=0.05 if heartbeat else 5.0)
+    if not acquired:
+        if not heartbeat:
+            runtime_event("watcher_upload_busy", f"event={event}; another runtime upload is active", "WARN")
+        return False
+
     tmp = None
     started = time.monotonic()
     try:
         pressure = _runtime_memory_pressure()
-        if str(event) == "heartbeat":
+        if heartbeat:
             if str(pressure.get("level")) in {"high", "critical"}:
                 _runtime_emergency_trim("heartbeat_memory_pressure")
             snap = runtime_heartbeat_snapshot(event)
         else:
             snap = runtime_snapshot({"event": event})
+
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
         stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
         safe_event = mega_safe_name(event, "event")
         tmp = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_{stamp}_{safe_event}.json")
         _atomic_json_dump(tmp, snap)
         mega_ensure_remote_path(runtime_remote_dir())
-        ok = mega_put_replace(tmp, runtime_remote_dir(), _RUNTIME_LATEST_NAME, archive_previous=(str(event) != "heartbeat"))
+
+        # Immutable events are written first.  Even if the rotating slot update then
+        # fails, boot/shutdown/fatal evidence remains available to the next process.
+        event_ok = True
         if immutable_event:
             events_dir = runtime_remote_dir().rstrip("/") + "/events"
             mega_ensure_remote_path(events_dir)
-            event_local = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_{stamp}_{safe_event}.json")
-            if event_local != tmp:
-                shutil.copy2(tmp, event_local)
-            _mega_run("mega-put", [event_local, events_dir], check=True, timeout=MEGA_TIMEOUT)
             try:
-                _mega_prune_remote_history(events_dir, "runtime_*.json", RUNTIME_WATCHER_HISTORY_KEEP)
-            except Exception:
-                pass
+                _mega_run("mega-put", [tmp, events_dir], check=True, timeout=MEGA_TIMEOUT)
+                try:
+                    _mega_prune_remote_history(events_dir, "runtime_*.json", RUNTIME_WATCHER_HISTORY_KEEP)
+                except Exception:
+                    pass
+            except Exception as e:
+                event_ok = False
+                log_error(f"[RUNTIME EVENT] upload failed event={event}: {e}")
+
+        slot_ok, slot_name = _runtime_write_redundant_slot(tmp, event)
         elapsed = round(time.monotonic() - started, 3)
+        durable_ok = bool(slot_ok and event_ok)
+
         with _RUNTIME_LOCK:
-            _RUNTIME_STATE["last_runtime_snapshot_ok_at"] = now_local().isoformat(timespec="milliseconds")
-            _RUNTIME_STATE["last_runtime_snapshot_error"] = ""
-        if str(event) == "heartbeat":
+            if durable_ok:
+                _RUNTIME_STATE["last_runtime_snapshot_ok_at"] = now_local().isoformat(timespec="milliseconds")
+                _RUNTIME_STATE["last_runtime_snapshot_error"] = ""
+            else:
+                _RUNTIME_STATE["last_runtime_snapshot_error"] = (
+                    f"slot_ok={slot_ok}; event_ok={event_ok}; slot={slot_name}"
+                )[:500]
+
+        if not durable_ok:
+            runtime_event(
+                "watcher_mega_error",
+                f"event={event}; elapsed={elapsed}s; slot={slot_name}; slot_ok={slot_ok}; event_ok={event_ok}",
+                "WARN",
+            )
+            return False
+
+        if heartbeat:
             global _RUNTIME_HEARTBEAT_OK_SEQ
             try:
                 _RUNTIME_HEARTBEAT_OK_SEQ += 1
             except Exception:
                 _RUNTIME_HEARTBEAT_OK_SEQ = 1
-            # runtime_latest itself is the durable 30s heartbeat. Do not create a second
-            # durable journal upload for every successful heartbeat. Keep a sparse trace.
+            # Sparse journal trace; the rotating slot itself is updated every heartbeat.
             if (_RUNTIME_HEARTBEAT_OK_SEQ % 10) == 0 or elapsed >= 3.0 or str(pressure.get("level")) != "normal":
-                runtime_event("watcher_mega_ok", f"event={event}; elapsed={elapsed}s; immutable={bool(immutable_event)}")
+                runtime_event(
+                    "watcher_mega_ok",
+                    f"event={event}; elapsed={elapsed}s; slot={slot_name}; immutable={bool(immutable_event)}",
+                )
         else:
-            runtime_event("watcher_mega_ok", f"event={event}; elapsed={elapsed}s; immutable={bool(immutable_event)}")
-        return bool(ok)
+            runtime_event(
+                "watcher_mega_ok",
+                f"event={event}; elapsed={elapsed}s; slot={slot_name}; immutable={bool(immutable_event)}",
+            )
+        return True
     except Exception as e:
         elapsed = round(time.monotonic() - started, 3)
         with _RUNTIME_LOCK:
@@ -10085,7 +10253,10 @@ def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = Tru
                 os.remove(tmp)
         except Exception:
             pass
-
+        try:
+            _RUNTIME_UPLOAD_LOCK.release()
+        except Exception:
+            pass
 
 def runtime_mark_webhook(payload: dict | None = None, blocked: str = ""):
     with _RUNTIME_LOCK:
@@ -21731,11 +21902,13 @@ def keep_alive_status_text() -> str:
         f"Автоматический режим: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}",
         f"Интервал: {KEEP_ALIVE_INTERVAL_SECONDS} сек.",
         f"APP_URL: {APP_URL or 'не задан'}",
-        f"Последний успешный ping: {state.get('last_ok_at') or 'ещё не было'}",
+        f"Последний успешный цикл: {state.get('last_ok_at') or 'ещё не было'}",
+        f"Self-ping бота: {state.get('self_ping_at') or 'ещё не было'}",
+        f"Внешний монитор: {state.get('external_monitor_at') or 'НЕ ОБНАРУЖЕН'}",
         f"Последняя ошибка: {state.get('last_error') or 'нет'}",
         f"Успешных циклов: {state.get('ok_count', 0)}, ошибок: {state.get('fail_count', 0)}",
         "",
-        "Важно: внутренний self-ping поддерживает активность процесса, пока он запущен. Для тарифа хостинга с принудительным сном нужен внешний HTTP-монитор, который обращается к /keepalive.",
+        "Для внешнего монитора используйте GET/HEAD /keepalive. v118 отдельно показывает self-ping и реальный внешний запрос.",
     ]
     return wm_owner("\n".join(lines), 9)
 
@@ -27868,6 +28041,11 @@ KEEP_ALIVE_STATE = {
     "ok_count": 0,
     "fail_count": 0,
     "telegram_ok_at": None,
+    # v118 distinguishes the bot's own loopback request from a truly external monitor.
+    "self_ping_at": None,
+    "external_ping_at": None,
+    "external_monitor_at": None,
+    "last_keepalive_user_agent": "",
 }
 _keep_alive_thread = None
 _keep_alive_thread_lock = threading.RLock()
@@ -28445,18 +28623,26 @@ def readyz():
 
 @app.route("/keepalive", methods=["GET", "HEAD"])
 def keepalive_endpoint():
-    KEEP_ALIVE_STATE["external_ping_at"] = _journal_ts()
+    ping_at = _journal_ts()
+    user_agent = str(request.headers.get("User-Agent", "") or "")[:240]
+    KEEP_ALIVE_STATE["external_ping_at"] = ping_at  # backward-compatible: any HTTP hit to /keepalive
+    KEEP_ALIVE_STATE["last_keepalive_user_agent"] = user_agent
+    if user_agent == f"{VERSION}-keepalive":
+        KEEP_ALIVE_STATE["self_ping_at"] = ping_at
+    else:
+        KEEP_ALIVE_STATE["external_monitor_at"] = ping_at
     if request.method == "HEAD":
         return "", 200
     return {
         "ok": True,
         "version": VERSION,
-        "time": _journal_ts(),
+        "time": ping_at,
         "profile": active_bot_behavior_profile(),
         "keep_alive": KEEP_ALIVE_ENABLED,
         "ready": runtime_is_ready(),
         "phase": _RUNTIME_STATE.get("phase"),
         "uptime_seconds": round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 1),
+        "external_monitor_seen": bool(KEEP_ALIVE_STATE.get("external_monitor_at")),
     }, 200
 
 
@@ -28901,7 +29087,7 @@ def main():
                     f"Приоритет: ФИНАНСЫ → ПЕРЕСЫЛКА; forward yield максимум {FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS:g}с\n"
                     f"Журнал: {'ВКЛ' if is_journal_registration_enabled() else 'ВЫКЛ'}; durable MEGA: {'ВКЛ' if BOT_JOURNAL_DURABLE_ENABLED else 'ВЫКЛ'}; keep-alive: {'ВКЛ' if KEEP_ALIVE_ENABLED else 'ВЫКЛ'}\n"
                     f"MEGA-задачи: pending {mega_task_registry_stats().get('pending', 0)}, running {mega_task_registry_stats().get('running', 0)}, failed {mega_task_registry_stats().get('failed', 0)}\n"
-                    f"BOOT: {'READY' if runtime_is_ready() else 'RECOVERY'}; Watcher: Инфо → 🖥 Render / Сервер; heartbeat {RUNTIME_WATCHER_HEARTBEAT_SECONDS:g}с\n"
+                    f"BOOT: {'READY' if runtime_is_ready() else 'RECOVERY'}; Watcher: Инфо → 🖥 Render / Сервер; heartbeat {RUNTIME_WATCHER_HEARTBEAT_SECONDS:g}с; MEGA slots {RUNTIME_WATCHER_SLOT_COUNT}\n"
                     f"Бэкап: delta {MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS:g}с; SQLite snapshot после {int(MEGA_GLOBAL_QUIET_SECONDS)}с тишины / максимум {int(MEGA_GLOBAL_MAX_INTERVAL_SECONDS)}с\n"
                     f"/start"
                 )
@@ -28918,4 +29104,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# bot_v117_secret_routes_telegram_maintenance
+# bot_v118_runtime_slots_restart_forensics
