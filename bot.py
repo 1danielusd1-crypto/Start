@@ -1,4 +1,4 @@
-# bot_v118_runtime_slots_restart_forensics
+# v119
 import os
 import io
 import json
@@ -628,8 +628,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v118_runtime_slots_restart_forensics"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v118_runtime_slots_restart_forensics.py"
+VERSION = "bot_v119_excel_runtime_exact_edit"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v119_excel_runtime_exact_edit.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -1640,7 +1640,42 @@ BOT_BEHAVIOR_PROFILES = {
         "description": "Интерфейс и осторожное поведение v81 без новых кнопок; выбор версии остаётся доступен.",
     },
 }
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v97_current"
+
+# v119: Ф132 показывает все версии этого проекта, которые реально были собраны в чате.
+# Для v98+ это совместимые runtime-профили внутри текущего безопасного ядра: выбор
+# меняет профиль/настройки интерфейса, но НЕ откатывает SQLite/MEGA схему и exact-once защиту.
+def _modern_behavior_profile(title: str, description: str) -> dict:
+    cfg = dict(BOT_BEHAVIOR_PROFILES["v97_current"])
+    cfg.update({"title": str(title), "description": str(description), "info_layout": "v87"})
+    return cfg
+
+_MODERN_BEHAVIOR_PROFILES = {
+    "v119_current": _modern_behavior_profile("v119 Excel / runtime export / exact edit", "Новый Excel с заливками и примечаниями, экспорт runtime из MEGA, исправление ложного source_finance при редактировании."),
+    "v118_current": _modern_behavior_profile("v118 Runtime slots / restart forensics", "Rotating runtime slots, корректный watcher_mega_ok и диагностика рестартов Render."),
+    "v117_current": _modern_behavior_profile("v117 Secret routes / Telegram maintenance", "Исправление secret-route witness и отдельная throttled maintenance-очередь Telegram edits."),
+    "v116_current": _modern_behavior_profile("v116 Stable LOW-RAM / exact effects", "LOW-RAM cleanup, exact-effects forwarding и журнал через отдельный EXPORT pool."),
+    "v115_current": _modern_behavior_profile("v115 Stable LOW-RAM core", "Стабилизация LOW-RAM, SQLite snapshots и fallback runtime recovery."),
+    "v114_current": _modern_behavior_profile("v114 LOW-RAM SQLite / MEGA core", "Cold history в SQLite и уменьшение RAM без удаления пользовательских функций."),
+    "v113_current": _modern_behavior_profile("v113 Memory guard stability", "Контроль памяти Render и аварийная очистка диагностических данных."),
+    "v112_current": _modern_behavior_profile("v112 Runtime forensics stability", "Durable runtime heartbeat, exception hooks и исправленный atomic JSON dump."),
+    "v111_current": _modern_behavior_profile("v111 Durable journal / Render history", "Append-only журнал действий в MEGA и история между restart/deploy."),
+    "v110_current": _modern_behavior_profile("v110 Finance priority / max diagnostics", "FINANCE → FORWARD приоритет и расширенная диагностика задержек."),
+    "v109_current": _modern_behavior_profile("v109 Exact-once finance safe recovery", "Operation keys, no blind replay running-задач и защита от дублей финансов."),
+    "v108_current": _modern_behavior_profile("v108 BOOT/SHUTDOWN / fin windows", "BOOT/READY/SHUTDOWN watcher и восстановление финансовых окон."),
+    "v107_current": _modern_behavior_profile("v107 All forwarding durable", "Durable witness для всех пересылаемых типов контента."),
+    "v106_current": _modern_behavior_profile("v106 Deploy-safe all directions", "Deploy-safe пересылка и восстановление направлений без потери сообщений."),
+    "v105_current": _modern_behavior_profile("v105 MEGA durable tasks", "Внешние карточки критических Telegram update в MEGA до выполнения."),
+    "v104_current": _modern_behavior_profile("v104 Durable dispatcher / timers", "Диспетчер update, bounded queues и устойчивые внутренние таймеры."),
+    "v103_current": _modern_behavior_profile("v103 Compact MEGA delta safe", "Компактные delta без раздувания полной истории и safe full snapshot fallback."),
+    "v102_current": _modern_behavior_profile("v102 Supergroup migration / forward retry", "Автомиграция group→supergroup и одноразовый безопасный retry пересылки."),
+    "v101_current": _modern_behavior_profile("v101 MEGA restore / durable forward finance", "Повторный discovery restore и немедленное durable сохранение финансовой пересылки."),
+    "v100_current": _modern_behavior_profile("v100 Factory defaults / file identity", "Заводские настройки, имя файла/версии и улучшения Ф9998."),
+    "v99_current": _modern_behavior_profile("v99 Manual MEGA restore menu", "Ручное полное обновление состояния из MEGA через INFO."),
+    "v98_current": _modern_behavior_profile("v98 Buttons / Restore guard", "Рабочий /buttons и постоянный ручной override Restore guard."),
+}
+# Новые версии показываем первыми, затем исторические v97..v81.
+BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v119_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -2531,7 +2566,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
             fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
-            fh.write("v118: runtime watcher uses redundant MEGA slots; restart forensics survives failed MEGA rename; LOW-RAM remains active.\n\n")
+            fh.write("v119: runtime slots + legacy candidate recovery + Runtime ZIP export; LOW-RAM remains active.\n\n")
             fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
@@ -3337,6 +3372,8 @@ WINDOW_MARKER_CONSTANTS = {
     'runtime_watcher': 'Ф168',
     'runtime_events': 'Ф169',
     'runtime_snapshot_now': 'Ф170',
+    'excel_style_toggle': 'Ф171',
+    'runtime_export': 'Ф172',
     'info_close': 'Ф85',
     'info_finance_off': 'Ф86',
     'journal_back': 'Ф87',
@@ -3514,6 +3551,18 @@ def _marker_constant_pattern_matches(pattern: str, key: str) -> bool:
 
 def _window_marker_code(action_key: str, forced_group: str | None = None) -> str:
     key = _normalize_window_action(action_key)
+    # v119: stored windows inherit the marker of their real navigation callback.
+    # Example: stored:command_window_id:d:*:back_main -> Ф40 instead of noisy Ф9998.
+    if key.startswith("stored:"):
+        parts = key.split(":", 2)
+        if len(parts) == 3 and parts[2]:
+            inner_key = parts[2]
+            direct = WINDOW_MARKER_CONSTANTS.get(inner_key)
+            if direct:
+                return direct
+            for pattern, marker in sorted(WINDOW_MARKER_CONSTANTS.items(), key=lambda item: (item[0].count("*"), -len(item[0]))):
+                if "*" in pattern and _marker_constant_pattern_matches(pattern, inner_key):
+                    return marker
     code = WINDOW_MARKER_CONSTANTS.get(key)
     if code:
         return code
@@ -4507,6 +4556,38 @@ def toggle_backup_excel_all_enabled() -> bool:
 
 def backup_excel_all_label() -> str:
     return "ВКЛ" if backup_excel_all_enabled() else "ВЫКЛ"
+
+
+def excel_table_style(chat_id: int) -> str:
+    """Формат /tabl_lsx: old сохраняет старый вид, new — суммы + цвет + Excel-примечания."""
+    try:
+        mode = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("excel_table_style") or "new").strip().lower()
+    except Exception:
+        mode = "new"
+    return mode if mode in {"old", "new"} else "new"
+
+
+def set_excel_table_style(chat_id: int, mode: str) -> str:
+    chat_id = int(chat_id)
+    mode = str(mode or "new").strip().lower()
+    if mode not in {"old", "new"}:
+        mode = "new"
+    store = get_chat_store(chat_id)
+    store.setdefault("settings", {})["excel_table_style"] = mode
+    save_data(data, chat_ids=[chat_id])
+    try:
+        schedule_config_backup_for_chats(chat_id)
+    except Exception:
+        pass
+    return mode
+
+
+def toggle_excel_table_style(chat_id: int) -> str:
+    return set_excel_table_style(chat_id, "old" if excel_table_style(chat_id) == "new" else "new")
+
+
+def excel_table_style_label(chat_id: int) -> str:
+    return "📊 Excel: НОВОЕ" if excel_table_style(chat_id) == "new" else "📊 Excel: СТАРОЕ"
 
 
 def _backup_target_all_state(target: str) -> tuple[int, int]:
@@ -5786,6 +5867,7 @@ def build_help_text(chat_id: int) -> str:
             "/diag — диагностика бота",
             "/errors — последние ошибки",
             "/journal — скачать журнал действий бота",
+            "/runtime_export — скачать Runtime/Watcher файлы из MEGA одним ZIP",
             "/articles — описание статей: статья = ключевые слова",
             "/mega_status — статус MEGA/MEGAcmd",
             "/mega_backup_now — безопасно загрузить latest_global.json в MEGA",
@@ -5834,6 +5916,7 @@ def build_info_text(chat_id: int) -> str:
             f"Финансовые сутки: с {finance_day_start_label(chat_id)}",
             f"Диспетчер: pending {UPDATE_DISPATCHER.stats().get('pending', 0)}",
             f"Таймер ввода: {_format_duration_short(internal_timer_seconds('input_wait'))}; окна: {_format_duration_short(internal_timer_seconds('window_auto_return'))}",
+            f"Excel /tabl_lsx: {'НОВОЕ' if excel_table_style(chat_id) == 'new' else 'СТАРОЕ'}",
         ])
         if version_mode_feature("mega_priority"):
             lines.append(f"MEGA: {'приоритетный' if mega_backup_priority_enabled(chat_id) else 'обычный'} режим")
@@ -7665,6 +7748,11 @@ def _durable_adjust_expected_for_captured_wait(task: dict | None, payload: dict,
         if any(k in waits and waits.get(k) for k in deterministic):
             adjusted = _delta_json_clone(expected)
             adjusted["forward_targets"] = []
+            # Dedicated edit/input flows consume this text before ordinary finance parsing.
+            # Therefore a new record with source_msg_id of the answer is NOT an expected effect.
+            # This is the v119 fix for false needs_review such as update 451477187.
+            adjusted["source_finance"] = False
+            adjusted["source_finance_suppressed_by_captured_wait"] = True
             adjusted["forward_suppressed_by_captured_wait"] = True
             return adjusted
         text_up = str(raw.get("text") or "").strip().upper()
@@ -7738,7 +7826,7 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
             "/delta_status", "/health", "/ping", "/prev", "/next", "/balance",
             "/report", "/tabl_lsx", "/xlsx", "/excel", "/csv", "/json",
             "/mega_restore_now", "/mega_backup_now", "/diag", "/diagnostics",
-            "/errors", "/bot_errors", "/journal", "/log", "/logs", "/sqlite", "/db",
+            "/errors", "/bot_errors", "/journal", "/runtime_export", "/log", "/logs", "/sqlite", "/db",
             "/windows", "/okna", "/окна", "/owners", "/additional_owners",
             "/доп_владельцы", "/dozvon",
         }
@@ -10044,6 +10132,17 @@ def runtime_load_previous_snapshot() -> dict:
         except Exception:
             pass
 
+        # v119: v117 could leave hundreds of valid candidate_runtime_latest files when
+        # MEGA promote/rename failed.  They may be NEWER than the last immutable event, so
+        # always consider the newest few instead of looking at them only when no event exists.
+        try:
+            for remote in _mega_find_remote_files(runtime_remote_dir(), "candidate_runtime_latest_*.json", limit=8):
+                remote_candidates.append(("legacy_candidate", remote))
+            for remote in _mega_find_remote_files(runtime_remote_dir(), "runtime_latest__*.json", limit=4):
+                remote_candidates.append(("legacy_staged", remote))
+        except Exception:
+            pass
+
         best_snap = {}
         best_source = ""
         best_ts = 0.0
@@ -10064,11 +10163,6 @@ def runtime_load_previous_snapshot() -> dict:
         # a misleading success.
         if not best_snap:
             legacy_paths = [runtime_latest_remote_path()]
-            try:
-                legacy_paths.extend(_mega_find_remote_files(runtime_remote_dir(), "runtime_latest__*.json", limit=3))
-                legacy_paths.extend(_mega_find_remote_files(runtime_remote_dir(), "candidate_runtime_latest_*.json", limit=3))
-            except Exception:
-                pass
             for remote in legacy_paths:
                 snap = _runtime_load_remote_snapshot(remote)
                 ts = _runtime_snapshot_sort_ts(snap)
@@ -10154,6 +10248,196 @@ def runtime_classify_previous(prev: dict) -> str:
             return "probable_render_idle_spin_down_or_idle_restart"
         return "new_instance_same_commit_crash_restart_or_maintenance"
     return "process_restart_or_unknown"
+
+
+
+_RUNTIME_EXPORT_FILE_RE = re.compile(r"(?:candidate_runtime_latest_|runtime_latest__|runtime_)(\d{8})_(\d{6})")
+
+
+def _runtime_export_filename_dt(remote_path: str):
+    """Timestamp embedded in v111-v118 runtime filenames; used only for export filtering."""
+    m = _RUNTIME_EXPORT_FILE_RE.search(os.path.basename(str(remote_path or "")))
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+    except Exception:
+        return None
+
+
+def _runtime_export_parse_range(text: str):
+    """Parse /runtime_export [YYYY-MM-DD HH:MM [HH:MM]]; returns naive local datetimes or (None,None)."""
+    raw = str(text or "").strip()
+    parts = raw.split()
+    if parts and parts[0].lower().startswith("/runtime_export"):
+        parts = parts[1:]
+    if not parts or parts[0].lower() in {"all", "все"}:
+        return None, None
+    try:
+        day = datetime.strptime(parts[0], "%Y-%m-%d")
+    except Exception:
+        return None, None
+    start = day
+    end = day + timedelta(days=1)
+    if len(parts) >= 2:
+        try:
+            hh, mm = [int(x) for x in parts[1].split(":", 1)]
+            start = day.replace(hour=hh, minute=mm, second=0)
+        except Exception:
+            pass
+    if len(parts) >= 3:
+        try:
+            hh, mm = [int(x) for x in parts[2].split(":", 1)]
+            end = day.replace(hour=hh, minute=mm, second=59)
+            if end < start:
+                end += timedelta(days=1)
+        except Exception:
+            pass
+    return start, end
+
+
+def _runtime_export_select_paths(start_dt=None, end_dt=None, max_downloads: int = 360):
+    """Return complete index + bounded actual-download set. Never deletes or mutates MEGA."""
+    root = runtime_remote_dir()
+    events_dir = root.rstrip("/") + "/events"
+    indexed = []
+    groups = (
+        ("candidate", root, "candidate_runtime_latest_*.json"),
+        ("staged", root, "runtime_latest__*.json"),
+        ("slot", root, "runtime_slot_*.json"),
+        ("event", events_dir, "runtime_*.json"),
+    )
+    for kind, remote_dir, pattern in groups:
+        try:
+            for remote in _mega_find_remote_files(remote_dir, pattern):
+                dt = _runtime_export_filename_dt(remote)
+                if start_dt is not None and dt is not None and dt < start_dt:
+                    continue
+                if end_dt is not None and dt is not None and dt > end_dt:
+                    continue
+                indexed.append((kind, remote, dt))
+        except Exception as e:
+            log_error(f"runtime_export list {kind}: {e}")
+    # fixed legacy latest: add only when it actually exists in MEGA.
+    try:
+        for remote in _mega_find_remote_files(root, "runtime_latest.json", limit=1):
+            indexed.append(("legacy", remote, None))
+    except Exception:
+        pass
+    # Unique remote paths; newest first when timestamp known.
+    uniq = {}
+    for kind, remote, dt in indexed:
+        uniq[str(remote)] = (kind, str(remote), dt)
+    indexed = sorted(uniq.values(), key=lambda x: (x[2] or datetime.min, x[1]), reverse=True)
+
+    # Always keep fixed slots/events and sample candidates evenly when the period is large.
+    fixed = [x for x in indexed if x[0] in {"slot", "event", "legacy"}]
+    variable = [x for x in indexed if x[0] not in {"slot", "event", "legacy"}]
+    budget = max(20, int(max_downloads))
+    selected = fixed[: min(len(fixed), 120)]
+    remaining = max(0, budget - len(selected))
+    if len(variable) <= remaining:
+        selected.extend(variable)
+    elif remaining > 0:
+        # Even sampling keeps the whole requested time span represented, plus newest/oldest.
+        if remaining == 1:
+            selected.append(variable[0])
+        else:
+            chosen = set()
+            for i in range(remaining):
+                idx = round(i * (len(variable) - 1) / (remaining - 1))
+                chosen.add(int(idx))
+            selected.extend(variable[i] for i in sorted(chosen))
+    return indexed, selected[:budget]
+
+
+def _runtime_export_arcname(kind: str, remote_path: str) -> str:
+    folder = {
+        "candidate": "candidates",
+        "staged": "staged",
+        "slot": "slots",
+        "event": "events",
+        "legacy": "legacy",
+    }.get(str(kind), "other")
+    return f"{folder}/{os.path.basename(str(remote_path))}"
+
+
+def send_runtime_export_zip(recipient_chat_id: int, start_dt=None, end_dt=None):
+    """Background owner export of runtime breadcrumbs. Complete MEGA index + sampled actual JSONs in one ZIP."""
+    recipient_chat_id = int(recipient_chat_id)
+    workdir = tempfile.mkdtemp(prefix="runtime_export_")
+    zip_path = None
+    downloaded_dirs = []
+    try:
+        bot_journal("runtime_export_start", recipient_chat_id, f"start={start_dt} end={end_dt}")
+        indexed, selected = _runtime_export_select_paths(start_dt, end_dt, max_downloads=360 if start_dt else 240)
+        stamp = now_local().strftime("%Y%m%d_%H%M%S")
+        zip_path = os.path.join(MEGA_LOCAL_TMP_DIR, f"runtime_export_{stamp}.zip")
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        manifest_lines = [
+            f"version={VERSION}",
+            f"created={now_local().isoformat(timespec='seconds')}",
+            f"filter_start={start_dt or ''}",
+            f"filter_end={end_dt or ''}",
+            f"indexed_remote_files={len(indexed)}",
+            f"selected_for_download={len(selected)}",
+            "",
+            "ALL REMOTE FILES (complete index; * means selected for JSON download):",
+        ]
+        selected_set = {x[1] for x in selected}
+        for kind, remote, dt in indexed:
+            manifest_lines.append(f"{'*' if remote in selected_set else ' '} | {kind:9s} | {dt or ''} | {remote}")
+
+        ok_count = 0
+        fail_count = 0
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("manifest.txt", "\n".join(manifest_lines))
+            try:
+                z.writestr("current_runtime_snapshot.json", json.dumps(runtime_snapshot({"source": "runtime_export"}), ensure_ascii=False, indent=2, default=str))
+            except Exception:
+                pass
+            for kind, remote, _dt in selected:
+                local = _mega_download_remote_path(remote)
+                if not local:
+                    fail_count += 1
+                    continue
+                downloaded_dirs.append(os.path.dirname(local))
+                try:
+                    z.write(local, _runtime_export_arcname(kind, remote))
+                    ok_count += 1
+                except Exception:
+                    fail_count += 1
+        fobj = file_bytesio_named(zip_path, os.path.basename(zip_path))
+        if not fobj:
+            raise RuntimeError("runtime ZIP was not created")
+        caption = (
+            f"📦 Runtime MEGA ZIP\n"
+            f"Индекс: {len(indexed)} файлов; JSON внутри: {ok_count}; ошибок скачивания: {fail_count}.\n"
+            f"{'Период: ' + str(start_dt) + ' — ' + str(end_dt) if start_dt else 'Период: последние доступные + полный индекс.'}"
+        )
+        _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, purpose="runtime_export_send")
+        bot_journal("runtime_export_done", recipient_chat_id, f"indexed={len(indexed)} downloaded={ok_count} failed={fail_count}")
+    except Exception as e:
+        log_error(f"send_runtime_export_zip: {e}")
+        try:
+            send_and_auto_delete(recipient_chat_id, f"❌ Runtime ZIP: {str(e)[:220]}", 20)
+        except Exception:
+            pass
+    finally:
+        for folder in set(downloaded_dirs):
+            try:
+                shutil.rmtree(folder, ignore_errors=True)
+            except Exception:
+                pass
+        try:
+            shutil.rmtree(workdir, ignore_errors=True)
+        except Exception:
+            pass
+        if zip_path:
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
 
 
 def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = True) -> bool:
@@ -12071,7 +12355,9 @@ def _xlsx_cell_xml2(row_idx: int, col_idx: int, value, style: int = 0) -> str:
     return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(text)}</t></is></c>'
 
 
-def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_name: str = "4 недели") -> None:
+def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_name: str = "4 недели", comments: dict | None = None) -> None:
+    # Минимальный XLSX без внешних библиотек; comments={(row,col): text} создаёт классические Excel-примечания.
+    comments = comments or {}
     max_cols = max((len(r) for r in rows), default=1)
     widths = [13, 16, 28] + [20] * max(0, max_cols - 3)
     sheet_rows = []
@@ -12088,11 +12374,12 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
         f'<col min="{i}" max="{i}" width="{min(widths[i-1] if i-1 < len(widths) else 18, 34)}" customWidth="1"/>'
         for i in range(1, max_cols + 1)
     )
+    legacy_drawing = '<legacyDrawing r:id="rId2"/>' if comments else ""
     sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
 <cols>{cols_xml}</cols>
-<sheetData>{''.join(sheet_rows)}</sheetData>
+<sheetData>{''.join(sheet_rows)}</sheetData>{legacy_drawing}
 </worksheet>'''
     workbook_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -12107,23 +12394,69 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>'''
-    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+
+    category_colors = [
+        "FFC6EFCE", "FFDDEBF7", "FFFCE4D6", "FFE4DFEC", "FFFFF2CC", "FFD9EAD3",
+        "FFCFE2F3", "FFF4CCCC", "FFD0E0E3", "FFEAD1DC", "FFD9D2E9",
+    ]
+    extra_fills = "".join(
+        f'<fill><patternFill patternType="solid"><fgColor rgb="{rgb}"/></patternFill></fill>'
+        for rgb in category_colors
+    )
+    header_xfs = "".join(
+        f'<xf numFmtId="0" fontId="1" fillId="{7+i}" borderId="1" xfId="0" applyFill="1" applyFont="1"/>'
+        for i in range(len(category_colors))
+    )
+    data_xfs = "".join(
+        f'<xf numFmtId="0" fontId="0" fillId="{7+i}" borderId="1" xfId="0" applyFill="1"/>'
+        for i in range(len(category_colors))
+    )
+    styles_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="3"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font></fonts>
+<fills count="18"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF00E000"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC000"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFF9999"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9EAD3"/></patternFill></fill>{extra_fills}</fills>
+<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="30"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="6" borderId="1" xfId="0" applyFill="1" applyFont="1"/>{header_xfs}{data_xfs}</cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>'''
+
+    content_types_extra = ""
+    sheet_rels_xml = None
+    comments_xml = None
+    vml_xml = None
+    if comments:
+        content_types_extra = '''<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>
+<Override PartName="/xl/comments1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>'''
+        comment_nodes = []
+        shapes = []
+        for idx, ((row_idx, col_idx), text) in enumerate(sorted(comments.items()), start=1):
+            ref = f"{_xlsx_col_name(int(col_idx))}{int(row_idx)}"
+            safe_text = _xlsx_xml_escape(str(text or ""))
+            comment_nodes.append(f'<comment ref="{ref}" authorId="0"><text><t xml:space="preserve">{safe_text}</t></text></comment>')
+            shapes.append(f'''<v:shape id="_x0000_s{1024+idx}" type="#_x0000_t202" style="position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:144pt;height:79.5pt;z-index:{idx};visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto">
+<v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox style="mso-direction-alt:auto"><div style="text-align:left"/></v:textbox>
+<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>{max(0,int(col_idx)-1)}, 15, {max(0,int(row_idx)-1)}, 2, {int(col_idx)+2}, 15, {int(row_idx)+4}, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>{max(0,int(row_idx)-1)}</x:Row><x:Column>{max(0,int(col_idx)-1)}</x:Column></x:ClientData></v:shape>''')
+        comments_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>Telegram Finance Bot</author></authors><commentList>{''.join(comment_nodes)}</commentList></comments>'''
+        vml_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>{''.join(shapes)}</xml>'''
+        sheet_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/>
+</Relationships>'''
+
+    content_types_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="xml" ContentType="application/xml"/>{content_types_extra}
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>'''
-    styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<fonts count="3"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font></fonts>
-<fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF00E000"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC000"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFF9999"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9EAD3"/></patternFill></fill></fills>
-<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"/><right style="thin"/><top style="thin"/><bottom style="thin"/><diagonal/></border></borders>
-<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"/><xf numFmtId="0" fontId="1" fillId="4" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="5" borderId="1" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="6" borderId="1" xfId="0" applyFill="1" applyFont="1"/></cellXfs>
-<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
-</styleSheet>'''
+
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", content_types_xml)
         z.writestr("_rels/.rels", rels_xml)
@@ -12131,14 +12464,20 @@ def _write_tabl_lsx_xlsx(path: str, rows: list[list], styles: list[list], sheet_
         z.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
         z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
         z.writestr("xl/styles.xml", styles_xml)
+        if comments:
+            z.writestr("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels_xml)
+            z.writestr("xl/comments1.xml", comments_xml)
+            z.writestr("xl/drawings/vmlDrawing1.vml", vml_xml)
 
 
 def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
+    modern_excel = excel_table_style(chat_id) == "new"
     weeks = _tabl_lsx_weeks(reference_day or today_key(), 4)
     cols = ["Дата", "Приход/выдача", "Откуда/кому"] + TABL_LSX_CATEGORIES
     rows, styles = [], []
+    comments = {}
     title = f"сегодня {fmt_date_ddmmyy(today_key())} — {get_chat_display_name(chat_id)}"
     rows.append([title]); styles.append([1] + [0] * (len(cols) - 1))
     rows.append(["Таблица за последние 4 недели: четверг–среда"]); styles.append([1] + [0] * (len(cols) - 1))
@@ -12147,7 +12486,8 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
     for start_key, end_key in weeks:
         rows.append(["Неделя", f"{fmt_date_ddmmyy(start_key)} — {fmt_date_ddmmyy(end_key)}"])
         styles.append([3, 3] + [3] * (len(cols) - 2))
-        rows.append(cols); styles.append([2] * len(cols))
+        rows.append(cols)
+        styles.append(([2, 2, 2] + [8 + i for i in range(len(TABL_LSX_CATEGORIES))]) if modern_excel else [2] * len(cols))
         opening = _tabl_lsx_opening_balance(store, start_key)
         rows.append([fmt_date_ddmmyy(start_key), int(round(opening)), "остаток с прошлой недели"] + [""] * len(TABL_LSX_CATEGORIES))
         styles.append([7, 7, 7] + [4] * len(TABL_LSX_CATEGORIES))
@@ -12170,6 +12510,7 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
                     amount = 0.0
                 note = str(rec.get("note") or "").strip()
                 row = [fmt_date_ddmmyy(dk) if first_for_day else "", "", ""] + [""] * len(TABL_LSX_CATEGORIES)
+                row_styles = [3 if row[0] else 4, 4, 4] + [4] * len(TABL_LSX_CATEGORIES)
                 first_for_day = False
                 if amount >= 0:
                     income_total += amount
@@ -12179,12 +12520,20 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
                     value = abs(amount)
                     expense_total += value
                     cat = _tabl_lsx_category(note)
+                    cat_idx = TABL_LSX_CATEGORIES.index(cat)
                     cat_totals[cat] = cat_totals.get(cat, 0.0) + value
-                    col_idx = 3 + TABL_LSX_CATEGORIES.index(cat)
-                    shown = fmt_num_plain(value)
-                    row[col_idx] = (shown + (" " + note if note else "")).strip()
+                    col_idx = 3 + cat_idx
+                    if modern_excel:
+                        row[col_idx] = int(value) if float(value).is_integer() else value
+                        row_styles[col_idx] = 19 + cat_idx
+                        if note:
+                            # rows пока 0-based list; Excel-строка — следующая после append.
+                            comments[(len(rows) + 1, col_idx + 1)] = note
+                    else:
+                        shown = fmt_num_plain(value)
+                        row[col_idx] = (shown + (" " + note if note else "")).strip()
                 rows.append(row)
-                styles.append([3 if row[0] else 4, 4, 4] + [4] * len(TABL_LSX_CATEGORIES))
+                styles.append(row_styles)
         total_row = ["Итог:", int(round(income_total)), ""] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in TABL_LSX_CATEGORIES]
         rows.append(total_row); styles.append([5] * len(cols))
         rows.append(["расход:", int(round(expense_total))] + [""] * (len(cols) - 2)); styles.append([5] * len(cols))
@@ -12192,9 +12541,10 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
         rows.append([]); styles.append([])
     os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
     start_all, end_all = weeks[0][0], weeks[-1][1]
-    fname = f"tabl_lsx_{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{start_all}_{end_all}.xlsx"
+    mode_tag = "new" if modern_excel else "old"
+    fname = f"tabl_lsx_{mode_tag}_{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{start_all}_{end_all}.xlsx"
     path = os.path.join(MEGA_LOCAL_TMP_DIR, fname)
-    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name="4 недели")
+    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name="4 недели", comments=comments if modern_excel else None)
     return path
 
 
@@ -12212,7 +12562,7 @@ def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
-                caption=f"📊 Таблица LSX за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}",
+                caption=f"📊 Таблица LSX ({'НОВОЕ' if excel_table_style(target_chat_id) == 'new' else 'СТАРОЕ'}) за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}",
                 purpose="tabl_lsx_send_document",
             )
         trace.finish("таблица готова")
@@ -21868,10 +22218,10 @@ def bot_file_identity_lines() -> list[str]:
 def build_version_menu_text() -> str:
     active = active_bot_behavior_profile()
     lines = [
-        "🧩 Полное переключение версий",
+        "🧩 Переключение версий / режимов",
         *bot_file_identity_lines(),
         "",
-        "Выбор меняет структуру меню, доступные кнопки, интервалы интерфейса и совместимое поведение выбранной версии. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
+        "v98–v119 переключают совместимый профиль внутри текущего безопасного ядра v119. Код, SQLite/MEGA-схема и exact-once защита не откатываются. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
         "",
         "Кнопка выбора версии всегда остаётся в ИНФО, даже в режиме v81.",
         "",
@@ -21908,7 +22258,7 @@ def keep_alive_status_text() -> str:
         f"Последняя ошибка: {state.get('last_error') or 'нет'}",
         f"Успешных циклов: {state.get('ok_count', 0)}, ошибок: {state.get('fail_count', 0)}",
         "",
-        "Для внешнего монитора используйте GET/HEAD /keepalive. v118 отдельно показывает self-ping и реальный внешний запрос.",
+        "Для внешнего монитора используйте GET/HEAD /keepalive. v119 отдельно показывает self-ping и реальный внешний запрос.",
     ]
     return wm_owner("\n".join(lines), 9)
 
@@ -21979,6 +22329,7 @@ def build_info_keyboard(chat_id: int):
         else:
             kb.row(IB(bot_behavior_profile_label(), callback_data="version_menu"))
         kb.row(IB("⏱ Внутренние таймеры", callback_data="internal_timers"))
+        kb.row(IB(excel_table_style_label(chat_id), callback_data="excel_style_toggle"))
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
             IB("🚦 Очереди", callback_data="info_queues"),
@@ -24534,6 +24885,17 @@ def on_callback(call):
             bot_journal("mega_priority_toggle", chat_id, f"enabled={new_state}")
             safe_edit(bot, call, build_info_text(chat_id) + f"\n\nБэкап MEGA: {mode_text}", reply_markup=build_info_keyboard(chat_id))
             return
+        if data_str == "excel_style_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            mode = toggle_excel_table_style(chat_id)
+            bot_journal("excel_style_toggle", chat_id, f"mode={mode}")
+            try:
+                bot.answer_callback_query(call.id, "Excel: НОВОЕ" if mode == "new" else "Excel: СТАРОЕ", show_alert=False)
+            except Exception:
+                pass
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
+            return
         if data_str == "info_instruction":
             if not is_owner_chat(chat_id):
                 try:
@@ -24557,6 +24919,7 @@ def on_callback(call):
             kbw = types.InlineKeyboardMarkup(row_width=2)
             kbw.row(IB("🔄 Обновить", callback_data="runtime_watcher"), IB("📜 События", callback_data="runtime_events"))
             kbw.row(IB("☁️ Снимок Watcher в MEGA", callback_data="runtime_snapshot_now"))
+            kbw.row(IB("📦 Runtime ZIP", callback_data="runtime_export"))
             kbw.row(IB("🚦 Очереди", callback_data="info_queues"), IB("🧩 Delta", callback_data="info_delta_status"))
             kbw.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB("❌ Закрыть", callback_data="info_close"))
             safe_edit(bot, call, build_runtime_watcher_text(), reply_markup=kbw)
@@ -24569,6 +24932,15 @@ def on_callback(call):
             kbe.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"), IB("❌ Закрыть", callback_data="info_close"))
             safe_edit(bot, call, build_runtime_events_text(), reply_markup=kbe)
             return
+        if data_str == "runtime_export":
+            if not is_owner_chat(chat_id):
+                return
+            ok = EXPORT_TASK_POOL.submit(f"runtime-export:{chat_id}", send_runtime_export_zip, chat_id, None, None)
+            try:
+                bot.answer_callback_query(call.id, "Готовлю Runtime ZIP в фоне" if ok else "Очередь экспорта занята", show_alert=False)
+            except Exception:
+                pass
+            return
         if data_str == "runtime_snapshot_now":
             if not is_owner_chat(chat_id):
                 return
@@ -24579,6 +24951,7 @@ def on_callback(call):
                 pass
             kbw = types.InlineKeyboardMarkup(row_width=2)
             kbw.row(IB("🔄 Обновить", callback_data="runtime_watcher"), IB("📜 События", callback_data="runtime_events"))
+            kbw.row(IB("📦 Runtime ZIP", callback_data="runtime_export"))
             kbw.row(IB("🔙 Назад в Инфо", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:info"))
             safe_edit(bot, call, build_runtime_watcher_text(), reply_markup=kbw)
             return
@@ -26468,6 +26841,27 @@ def cmd_csv_day(chat_id: int, day_key: str):
             os.remove(tmp_name)
         except FileNotFoundError:
             pass
+
+@bot.message_handler(commands=["runtime_export"])
+def cmd_runtime_export(msg):
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    schedule_command_delete(msg)
+    chat_id = int(msg.chat.id)
+    if not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца.", 8)
+        return
+    start_dt, end_dt = _runtime_export_parse_range(getattr(msg, "text", "") or "")
+    try:
+        notice = bot.send_message(chat_id, "⏳ Собираю Runtime/Watcher из MEGA в ZIP. Кнопки бота при этом не блокируются.")
+        delete_message_later(chat_id, notice.message_id, 25)
+    except Exception:
+        pass
+    if not EXPORT_TASK_POOL.submit(f"runtime-export:{chat_id}", send_runtime_export_zip, chat_id, start_dt, end_dt):
+        send_and_auto_delete(chat_id, "⛔ Очередь экспорта занята.", 12)
+
 
 @bot.message_handler(commands=["tabl_lsx"])
 def cmd_tabl_lsx(msg):
@@ -29104,4 +29498,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# bot_v118_runtime_slots_restart_forensics
+# v119
