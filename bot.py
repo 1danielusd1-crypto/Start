@@ -1,4 +1,4 @@
-# v124
+# v125
 import os
 import io
 import json
@@ -679,8 +679,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v124_global_peres_version_menu_exports"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v124_global_peres_version_menu_exports.py"
+VERSION = "bot_v125_fast_peres_excel_notes_global"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v125_fast_peres_excel_notes_global.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -1759,6 +1759,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v125_current": _modern_behavior_profile("v125 Быстрый 💰Перес / Excel Примечания", "💰Перес обновляет только свежие копии за 3 дня без длинной очереди; режим Excel глобальный, Примечания отделены от Комментариев."),
     "v124_current": _modern_behavior_profile("v124 Global 💰Перес / версии / файлы", "Глобальный 💰Перес с ретро-обновлением старых копий, постраничный Ф132 и загрузки исходника/журнала в Ф89."),
     "v123_current": _modern_behavior_profile("v123 Edit consistency / 💰Перес safe", "Единая логика редактирования, exact edit witnesses и безопасное завершение 40-секундного окна 💰Перес."),
     "v122_current": _modern_behavior_profile("v122 Excel notes / balances / finance witness", "Примечания Excel, остатки и расширенные доказательства финансового редактирования."),
@@ -1789,7 +1790,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v124_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v125_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -2945,7 +2946,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("planned_restart_same_commit: same commit + graceful SIGTERM.\n")
             fh.write("probable_render_idle_*: probable sleep/wake estimate.\n")
             fh.write("process_restart_or_unknown + high RAM/no SIGTERM: suspect OOM/hard kill.\n")
-            fh.write("v124: global 💰Перес, legacy-copy retro UI, paginated version menu and current-version/source downloads.\n")
+            fh.write("v125: fast 3-day 💰Перес repaint, global Excel mode and verified Notes/Comments separation.\n")
         _file_job_progress("отправляю файл в Telegram", force=True)
         with open(tmp_path, "rb") as fh:
             _tg_call_retry(
@@ -5038,16 +5039,8 @@ def backup_excel_all_label() -> str:
     return "ВКЛ" if backup_excel_all_enabled() else "ВЫКЛ"
 
 
-def excel_table_style(chat_id: int) -> str:
-    """Формат ВСЕХ XLSX: old / new_comments / new_notes.
-
-    Legacy value ``new`` from v119-v121 is migrated logically to ``new_notes`` so
-    existing users immediately get the requested Excel Notes behaviour after deploy.
-    """
-    try:
-        raw = str(get_chat_store(int(chat_id)).setdefault("settings", {}).get("excel_table_style") or "new_notes").strip().lower()
-    except Exception:
-        raw = "new_notes"
+def _normalize_excel_table_style(value) -> str:
+    raw = str(value or "").strip().lower()
     aliases = {
         "new": "new_notes",
         "notes": "new_notes",
@@ -5056,27 +5049,57 @@ def excel_table_style(chat_id: int) -> str:
         "comment": "new_comments",
     }
     mode = aliases.get(raw, raw)
-    return mode if mode in {"old", "new_comments", "new_notes"} else "new_notes"
+    return mode if mode in {"old", "new_comments", "new_notes"} else ""
+
+
+def excel_table_style(chat_id: int) -> str:
+    """Глобальный формат ВСЕХ XLSX: old / new_comments / new_notes.
+
+    v124 хранил выбор отдельно в каждом чате. Из-за этого владелец мог выбрать
+    «Примечания» в INFO, а экспорт другого целевого чата всё ещё создавался в
+    его старом режиме «Комментарии». v125 хранит единственный глобальный выбор.
+    """
+    gs = data.setdefault("_global_settings", {})
+    mode = _normalize_excel_table_style(gs.get("excel_table_style_global"))
+    if not mode:
+        # One-time migration: owner/global choice wins over a stale per-target chat setting.
+        candidates = [gs.get("excel_table_style")]
+        try:
+            if OWNER_ID:
+                candidates.append(get_chat_store(int(OWNER_ID)).setdefault("settings", {}).get("excel_table_style"))
+        except Exception:
+            pass
+        try:
+            candidates.append(get_chat_store(int(chat_id)).setdefault("settings", {}).get("excel_table_style"))
+        except Exception:
+            pass
+        mode = next((_normalize_excel_table_style(v) for v in candidates if _normalize_excel_table_style(v)), "new_notes")
+        gs["excel_table_style_global"] = mode
+        gs["excel_table_style"] = mode
+    return mode
 
 
 def set_excel_table_style(chat_id: int, mode: str) -> str:
     chat_id = int(chat_id)
-    raw = str(mode or "new_notes").strip().lower()
-    aliases = {
-        "new": "new_notes",
-        "notes": "new_notes",
-        "note": "new_notes",
-        "comments": "new_comments",
-        "comment": "new_comments",
-    }
-    mode = aliases.get(raw, raw)
-    if mode not in {"old", "new_comments", "new_notes"}:
-        mode = "new_notes"
-    store = get_chat_store(chat_id)
-    store.setdefault("settings", {})["excel_table_style"] = mode
-    save_data(data, chat_ids=[chat_id])
+    mode = _normalize_excel_table_style(mode) or "new_notes"
+    gs = data.setdefault("_global_settings", {})
+    gs["excel_table_style_global"] = mode
+    gs["excel_table_style"] = mode  # rollback compatibility mirror
+
+    # Current v125 reads only the global switch. Mirror just the owner/control chats
+    # for rollback compatibility; do not rewrite every finance chat merely to change UI.
+    touched = []
+    for cid in (chat_id, int(OWNER_ID or 0)):
+        if not cid or cid in touched:
+            continue
+        try:
+            get_chat_store(cid).setdefault("settings", {})["excel_table_style"] = mode
+            touched.append(cid)
+        except Exception:
+            pass
+    save_data(data, chat_ids=touched or None, root_only=not bool(touched))
     try:
-        schedule_config_backup_for_chats(chat_id)
+        schedule_config_backup_for_chats(*(touched or [chat_id]), delay=1.0)
     except Exception:
         pass
     return mode
@@ -5112,17 +5135,16 @@ def excel_annotation_mode(chat_id: int) -> str | None:
 
 
 def excel_table_style_label(chat_id: int) -> str:
-    # Main INFO button intentionally stays short; selection is inside its submenu.
     return "📊 Excel"
 
 
 def build_excel_style_text(chat_id: int) -> str:
     return wm_owner(
         "📊 Excel\n\n"
-        "Выбери формат для всех XLSX-файлов бота.\n"
+        "Формат единый для ВСЕХ XLSX-файлов и всех чатов.\n"
         "• Старая — прежняя простая таблица.\n"
         "• Новая в комментариях — цветная таблица + современные Excel Comments.\n"
-        "• Новая в примечаниях — цветная таблица + классические Excel Notes (Примечания).\n\n"
+        "• Новая в примечаниях — цветная таблица + классические Excel Notes (Примечания); современные комментарии в файле отсутствуют.\n\n"
         f"Сейчас: {excel_table_style_caption(chat_id)}",
         9,
     )
@@ -13829,6 +13851,27 @@ def _write_tabl_lsx_xlsx(
             z.writestr("xl/threadedComments/threadedComment1.xml", threaded_xml)
             z.writestr("xl/persons/person.xml", persons_xml)
 
+
+def _validate_xlsx_annotation_package(path: str, annotation_mode: str | None) -> None:
+    """Fail closed if Notes and Comments OOXML parts ever get mixed.
+
+    Excel Notes are the legacy comments1.xml + VML note shapes. Modern Excel
+    Comments are threadedComments + persons. In notes mode the threaded parts
+    must be completely absent.
+    """
+    mode = str(annotation_mode or "").strip().lower() or None
+    if mode not in {None, "notes", "comments"}:
+        return
+    with zipfile.ZipFile(path, "r") as z:
+        names = set(z.namelist())
+    has_legacy_notes = "xl/comments1.xml" in names and "xl/drawings/vmlDrawing1.vml" in names
+    has_threaded_comments = "xl/threadedComments/threadedComment1.xml" in names or "xl/persons/person.xml" in names
+    if mode == "notes" and has_threaded_comments:
+        raise RuntimeError("XLSX notes mode contains threaded Comments parts")
+    if mode == "comments" and has_legacy_notes:
+        raise RuntimeError("XLSX comments mode contains legacy Notes parts")
+
+
 def _excel_nonempty(value) -> bool:
     if value is None:
         return False
@@ -13930,19 +13973,21 @@ def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list]
     return styles, comments, header_row, widths
 
 def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sheet_name: str = "Данные", category_layout: bool = False) -> None:
-    """Single switch used by every XLSX export: OLD / modern Comments / modern Notes."""
+    """Single GLOBAL switch used by every XLSX export: OLD / Comments / Notes."""
     mode = excel_table_style(int(chat_id))
     if mode == "old":
         _write_simple_xlsx(path, rows, sheet_name=sheet_name)
         return
     if category_layout:
-        styles, comments, freeze_rows, widths = _modern_category_excel_styles_comments(rows)
+        styles, annotations, freeze_rows, widths = _modern_category_excel_styles_comments(rows)
     else:
-        styles, comments, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
+        styles, annotations, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
+    annotation_mode = excel_annotation_mode(chat_id)
     _write_tabl_lsx_xlsx(
-        path, rows, styles, sheet_name=sheet_name, comments=comments,
-        freeze_rows=freeze_rows, widths=widths, annotation_mode=excel_annotation_mode(chat_id),
+        path, rows, styles, sheet_name=sheet_name, comments=annotations,
+        freeze_rows=freeze_rows, widths=widths, annotation_mode=annotation_mode,
     )
+    _validate_xlsx_annotation_package(path, annotation_mode)
 
 
 def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
@@ -14019,7 +14064,10 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
     mode_tag = excel_table_style(chat_id)
     fname = f"tabl_lsx_{mode_tag}_{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{start_all}_{end_all}.xlsx"
     path = os.path.join(MEGA_LOCAL_TMP_DIR, fname)
-    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name="4 недели", comments=comments if modern_excel else None, annotation_mode=excel_annotation_mode(chat_id))
+    annotation_mode = excel_annotation_mode(chat_id)
+    _write_tabl_lsx_xlsx(path, rows, styles, sheet_name="4 недели", comments=comments if modern_excel else None, annotation_mode=annotation_mode)
+    if modern_excel:
+        _validate_xlsx_annotation_package(path, annotation_mode)
     return path
 
 
@@ -18880,10 +18928,19 @@ def forward_copy_edit_mode_label(chat_id: int) -> str:
 
 
 try:
-    # v124: fast enough to look immediate, still isolated from finance/forward queues.
-    FORWARD_COPY_RETRO_MIN_GAP_SECONDS = max(0.25, min(5.0, float(os.getenv("FORWARD_COPY_RETRO_MIN_GAP_SECONDS", "0.45") or "0.45")))
+    # v125: cosmetic retro refresh is intentionally bounded. New copies always use the
+    # selected mode immediately; only recent history is repainted in the background.
+    FORWARD_COPY_RETRO_MIN_GAP_SECONDS = max(0.04, min(2.0, float(os.getenv("FORWARD_COPY_RETRO_MIN_GAP_SECONDS", "0.10") or "0.10")))
 except Exception:
-    FORWARD_COPY_RETRO_MIN_GAP_SECONDS = 0.45
+    FORWARD_COPY_RETRO_MIN_GAP_SECONDS = 0.10
+try:
+    FORWARD_COPY_RETRO_DAYS = max(1, min(7, int(os.getenv("FORWARD_COPY_RETRO_DAYS", "3") or "3")))
+except Exception:
+    FORWARD_COPY_RETRO_DAYS = 3
+try:
+    FORWARD_COPY_RETRO_MAX_PER_CHAT = max(3, min(30, int(os.getenv("FORWARD_COPY_RETRO_MAX_PER_CHAT", "12") or "12")))
+except Exception:
+    FORWARD_COPY_RETRO_MAX_PER_CHAT = 12
 _FORWARD_COPY_RETRO_LOCK = threading.RLock()
 _FORWARD_COPY_RETRO_GENERATION = {}
 
@@ -18970,47 +19027,98 @@ def _hydrate_legacy_forward_copy_metadata(chat_id: int, rec: dict, msg_id: int, 
     return changed
 
 
-def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None, generation: int | None = None) -> int:
-    """Globally update ALL known bot copies, including v92/v93 rows from before deploys.
+def _forward_copy_retro_record_is_recent(rec: dict, cutoff_key: str) -> bool:
+    """True only for records in the bounded recent-history repaint window."""
+    try:
+        day = str((rec or {}).get("day_key") or "")[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            return day >= cutoff_key
+    except Exception:
+        pass
+    # Legacy rows normally carry an ISO timestamp even when day_key was not persisted.
+    for key in ("timestamp", "created_at", "updated_at"):
+        try:
+            raw = str((rec or {}).get(key) or "")
+            m = re.search(r"(20\d{2}-\d{2}-\d{2})", raw)
+            if m:
+                return m.group(1) >= cutoff_key
+        except Exception:
+            pass
+    return False
 
-    Work remains in the maintenance queue and is generation-cancellable. Records inside each
-    chat are processed newest-first so visible/current messages change first; old history then
-    catches up without blocking finance, forwarding or webhook workers.
+
+def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None, generation: int | None = None) -> int:
+    """Quick repaint of only the newest bot copies.
+
+    v124 could walk 600+ historical messages and Telegram answered 429/retry_after≈40s,
+    making a cosmetic mode switch look frozen. v125 repaints at most the newest
+    FORWARD_COPY_RETRO_MAX_PER_CHAT copies per chat from the last
+    FORWARD_COPY_RETRO_DAYS calendar days, and interleaves chats round-robin.
+    Old history is left untouched; newly created copies always use the selected mode.
     """
     owner_chat_id = int(owner_chat_id)
     mode = mode or forward_copy_edit_mode(owner_chat_id)
+    try:
+        today_dt = datetime.strptime(today_key(), "%Y-%m-%d").date()
+        cutoff_key = (today_dt - timedelta(days=max(0, FORWARD_COPY_RETRO_DAYS - 1))).strftime("%Y-%m-%d")
+    except Exception:
+        cutoff_key = today_key()
+
     changed = 0
     attempted = 0
     hydrated = 0
-    last_edit_mono = 0.0
     stopped_stale = False
+    metadata_changed_chats = set()
+    rate_limited_chats = set()
+    candidates_by_chat = []
+
     try:
-        bot_journal("forward_copy_retro_start", owner_chat_id, f"GLOBAL mode={mode} generation={generation} gap={FORWARD_COPY_RETRO_MIN_GAP_SECONDS}s")
+        bot_journal(
+            "forward_copy_retro_start", owner_chat_id,
+            f"GLOBAL mode={mode} generation={generation} days={FORWARD_COPY_RETRO_DAYS} "
+            f"max_per_chat={FORWARD_COPY_RETRO_MAX_PER_CHAT} gap={FORWARD_COPY_RETRO_MIN_GAP_SECONDS}s",
+        )
     except Exception:
         pass
-    chat_ids = collect_all_known_chat_ids(include_owner=True)
-    # Owner/known active chats first, then the rest. No date cutoff: old pre-deploy records are included.
-    for cid in chat_ids:
+
+    # Candidate collection is local/SQLite memory work only; no Telegram API calls here.
+    for cid in collect_all_known_chat_ids(include_owner=True):
         if _forward_copy_retro_is_stale(owner_chat_id, generation):
             stopped_stale = True
             break
-        store = get_chat_store(int(cid))
-        rows = [rec for _ledger_key, rec in _finance_record_lists(store)]
-        rows.sort(key=record_sort_key, reverse=True)
-        chat_metadata_changed = False
-        seen_copy_messages = set()
-        for rec in rows:
+        try:
+            store = get_chat_store(int(cid))
+            rows = [rec for _ledger_key, rec in _finance_record_lists(store) if _forward_copy_retro_record_is_recent(rec, cutoff_key)]
+            rows.sort(key=record_sort_key, reverse=True)
+            seen = set()
+            picked = []
+            for rec in rows:
+                is_copy, msg_id, src_chat_id, src_msg_id = _forward_copy_record_identity(int(cid), rec)
+                if not is_copy or not msg_id or rec.get("forward_copy_deleted") or int(msg_id) in seen:
+                    continue
+                seen.add(int(msg_id))
+                picked.append((rec, int(msg_id), src_chat_id, src_msg_id))
+                if len(picked) >= FORWARD_COPY_RETRO_MAX_PER_CHAT:
+                    break
+            if picked:
+                candidates_by_chat.append((int(cid), picked))
+        except Exception as e:
+            log_error(f"refresh_existing_forward_copy_ui collect {cid}: {e}")
+
+    # Round-robin keeps edits to one Telegram chat spread out instead of bursting 100+
+    # calls into the same channel/group and triggering a 40-second retry_after.
+    max_depth = max((len(rows) for _cid, rows in candidates_by_chat), default=0)
+    last_edit_mono = 0.0
+    for depth in range(max_depth):
+        for cid, picked in candidates_by_chat:
+            if depth >= len(picked) or cid in rate_limited_chats:
+                continue
             if _forward_copy_retro_is_stale(owner_chat_id, generation):
                 stopped_stale = True
                 break
-            is_copy, msg_id, src_chat_id, src_msg_id = _forward_copy_record_identity(int(cid), rec)
-            if not is_copy or not msg_id or rec.get("forward_copy_deleted"):
-                continue
-            if int(msg_id) in seen_copy_messages:
-                continue
-            seen_copy_messages.add(int(msg_id))
-            if _hydrate_legacy_forward_copy_metadata(int(cid), rec, msg_id, src_chat_id, src_msg_id):
-                chat_metadata_changed = True
+            rec, msg_id, src_chat_id, src_msg_id = picked[depth]
+            if _hydrate_legacy_forward_copy_metadata(cid, rec, msg_id, src_chat_id, src_msg_id):
+                metadata_changed_chats.add(cid)
                 hydrated += 1
             try:
                 if last_edit_mono > 0:
@@ -19026,12 +19134,14 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None
                 ct = str(rec.get("forward_copy_content_type") or "text")
                 attempted += 1
                 last_edit_mono = time.monotonic()
+                # Cosmetic repaint must NEVER sleep 40s on Telegram 429. attempts=1 means
+                # a rate-limited old copy is simply skipped; live finance/forward stays free.
                 if ct == "text":
-                    _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=2, purpose="forward_copy_retro_text_maintenance")
+                    _tg_call_retry(bot.edit_message_text, display_text, chat_id=cid, message_id=msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_text_fast")
                 elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
-                    _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=2, purpose="forward_copy_retro_caption_maintenance")
+                    _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=cid, message_id=msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_caption_fast")
                 else:
-                    _tg_call_retry(bot.edit_message_reply_markup, int(cid), msg_id, reply_markup=markup, attempts=2, purpose="forward_copy_retro_markup_maintenance")
+                    _tg_call_retry(bot.edit_message_reply_markup, cid, msg_id, reply_markup=markup, attempts=1, purpose="forward_copy_retro_markup_fast")
                 changed += 1
             except Exception as e:
                 err = str(e).lower()
@@ -19039,32 +19149,44 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None
                     changed += 1
                 elif "message to edit not found" in err or "message_id_invalid" in err or "message not found" in err:
                     rec["forward_copy_deleted"] = True
-                    chat_metadata_changed = True
+                    metadata_changed_chats.add(cid)
+                elif is_telegram_429(e):
+                    # This is cosmetic history only. Do not retry/sleep and do not mark deleted.
+                    # Stop repainting this chat for the current toggle so we do not keep
+                    # hammering Telegram during its retry_after window.
+                    rate_limited_chats.add(cid)
+                    try:
+                        bot_journal("forward_copy_retro_rate_skip", cid, f"msg={msg_id} mode={mode}; chat paused after 429", "WARN")
+                    except Exception:
+                        pass
                 else:
                     log_error(f"refresh_existing_forward_copy_ui {cid}:{rec.get('id')}: {e}")
-        if chat_metadata_changed:
-            try:
-                # Keep the persistent mirror of the currently active ledger in sync as well.
-                _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store))
-                save_data(data, chat_ids=[int(cid)])
-            except Exception:
-                pass
-        try:
-            _lowram_release_chat(int(cid))
-        except Exception:
-            pass
         if stopped_stale:
             break
+
+    for cid in metadata_changed_chats:
+        try:
+            store = get_chat_store(cid)
+            _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store))
+            save_data(data, chat_ids=[cid])
+        except Exception:
+            pass
     try:
         _persist_forward_index_in_data(data)
         save_data(data, root_only=True)
     except Exception:
         pass
     try:
-        bot_journal("forward_copy_retro_done", owner_chat_id, f"GLOBAL mode={mode} generation={generation} attempted={attempted} changed={changed} hydrated={hydrated} stale={stopped_stale}")
+        total_candidates = sum(len(rows) for _cid, rows in candidates_by_chat)
+        bot_journal(
+            "forward_copy_retro_done", owner_chat_id,
+            f"GLOBAL mode={mode} generation={generation} cutoff={cutoff_key} candidates={total_candidates} "
+            f"attempted={attempted} changed={changed} hydrated={hydrated} rate_limited_chats={len(rate_limited_chats)} stale={stopped_stale}",
+        )
     except Exception:
         pass
     return changed
+
 
 def _strip_forward_copy_edit_command(text: str) -> str:
     raw = str(text or "").rstrip()
@@ -19202,7 +19324,7 @@ def _forward_copy_edit_wait_scheduler_key(chat_id: int) -> str:
 
 
 def _forward_copy_clean_copy_button(text: str):
-    """Compatibility helper kept for old code paths; v124 uses the main edit insert UX."""
+    """Compatibility helper kept for old code paths; v125 uses the main edit insert UX."""
     return IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(text or ""))[:256])
 
 
@@ -19218,11 +19340,22 @@ def _forward_copy_edit_prompt_text(rec: dict, current: str) -> str:
     )
 
 
-def _forward_copy_edit_prompt_keyboard(current: str, day_key: str | None = None):
+def _forward_copy_edit_prompt_keyboard(current: str, day_key: str | None = None, chat_id: int | None = None):
     kb = types.InlineKeyboardMarkup()
     day_key = str(day_key or today_key())[:10]
+    chat_type = ""
+    try:
+        if chat_id is not None:
+            chat_type = str((get_chat_store(int(chat_id)).get("info") or {}).get("type") or "").lower()
+    except Exception:
+        chat_type = ""
     if current:
-        kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(current))[:256]))
+        if chat_type == "channel":
+            # Telegram rejects switch_inline_query_current_chat inside channels (400).
+            # Fallback shows clean text in a temporary message instead of breaking Edit.
+            kb.row(IB("✍️ Показать текст", callback_data="fwdcopy_edit_copy"))
+        else:
+            kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(current))[:256]))
     kb.row(
         IB("❌ Закрыть", callback_data="fwdcopy_edit_cancel"),
         IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"),
@@ -19255,7 +19388,7 @@ def refresh_active_forward_copy_edit_prompt(chat_id: int, dst_msg_id: int, rec: 
                 _tg_call_retry(
                     bot.edit_message_text, prompt,
                     chat_id=chat_id, message_id=prompt_id,
-                    reply_markup=_forward_copy_edit_prompt_keyboard(current, rec.get("day_key")),
+                    reply_markup=_forward_copy_edit_prompt_keyboard(current, rec.get("day_key"), chat_id=chat_id),
                     purpose="forward_copy_edit_prompt_refresh",
                 )
             except Exception as e:
@@ -19321,10 +19454,10 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
     prompt = _forward_copy_edit_prompt_text(rec, current)
     sent = _tg_call_retry(
         bot.send_message, int(chat_id), prompt,
-        reply_markup=_forward_copy_edit_prompt_keyboard(current, rec.get("day_key")),
+        reply_markup=_forward_copy_edit_prompt_keyboard(current, rec.get("day_key"), chat_id=int(chat_id)),
         purpose="forward_copy_edit_prompt",
     )
-    # v124 uses the same insert/edit flow as the main edit window. Any Telegram @bot
+    # v125 uses the same insert/edit flow as the main edit window. Any Telegram @bot
     # prefix is removed by sanitize_telegram_inserted_text before finance parsing.
     force_msg_id = 0
 
@@ -24071,7 +24204,7 @@ def build_version_menu_text(page: int = 0) -> str:
         f"Сейчас: ✅ {active_cfg.get('title') or active}",
         f"Страница {page + 1}/{pages}",
         "",
-        "Это переключение совместимого профиля внутри текущего безопасного ядра v124. SQLite/MEGA, exact-once и финансовые данные не откатываются.",
+        "Это переключение совместимого профиля внутри текущего безопасного ядра v125. SQLite/MEGA, exact-once и финансовые данные не откатываются.",
         "",
     ]
     for key in keys:
@@ -25903,7 +26036,7 @@ def on_callback(call):
             if not retro_queued:
                 # Cosmetic history refresh may be skipped under pressure; never block the button.
                 log_error(f"FORWARD COPY RETRO MAINTENANCE QUEUE FULL: chat={chat_id} mode={new_mode}")
-            bot_journal("forward_copy_edit_mode", chat_id, f"mode={new_mode} retro_queued={retro_queued} generation={retro_generation}")
+            bot_journal("forward_copy_edit_mode", chat_id, f"mode={new_mode} retro_queued={retro_queued} generation={retro_generation} days={FORWARD_COPY_RETRO_DAYS} max_per_chat={FORWARD_COPY_RETRO_MAX_PER_CHAT}")
             return
 
         if guard_non_owner_finance_for_callback(chat_id, data_str):
@@ -31443,4 +31576,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# v124
+# v125
