@@ -1,4 +1,4 @@
-# v126
+# v127
 import os
 import io
 import json
@@ -679,8 +679,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v126_buttons_notes_stability"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v126_buttons_notes_stability.py"
+VERSION = "bot_v127_excel_notes_exact_validation"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v127_excel_notes_exact_validation.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -1759,6 +1759,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v127_current": _modern_behavior_profile("v127 Excel Notes exact validation", "Исправление ложной проверки expected/actual в Excel статьи и проверка текста каждого Примечания внутри XLSX."),
     "v126_current": _modern_behavior_profile("v126 Кнопки / Excel Примечания", "Аудит callback-кнопок, channel-safe вставка без Telegram 400 и Excel статьи с примечаниями без автора/современных комментариев."),
     "v125_current": _modern_behavior_profile("v125 Быстрый 💰Перес / Excel Примечания", "💰Перес обновляет только свежие копии за 3 дня без длинной очереди; режим Excel глобальный, Примечания отделены от Комментариев."),
     "v124_current": _modern_behavior_profile("v124 Global 💰Перес / версии / файлы", "Глобальный 💰Перес с ретро-обновлением старых копий, постраничный Ф132 и загрузки исходника/журнала в Ф89."),
@@ -1791,7 +1792,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v126_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v127_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -13984,6 +13985,75 @@ def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list]
     widths = [13, 36, 15] + [18] * max(0, max_cols - 3)
     return styles, comments, header_row, widths
 
+def _category_excel_expected_annotations(rows: list[list]) -> dict[tuple[int, int], str]:
+    """Return the exact expense cells that must carry an annotation in category Excel.
+
+    This mirrors _modern_category_excel_styles_comments(). Summary / balance rows
+    intentionally do not receive expense notes, even if they contain category totals.
+    """
+    expected: dict[tuple[int, int], str] = {}
+    header_found = False
+    skip_labels = {
+        "сумма по статьям", "расход", "приход",
+        "остаток с прошлого раза", "остаток на руках", "на руках:",
+    }
+    for r_idx, row in enumerate(rows or [], start=1):
+        row = list(row or [])
+        first = str(row[0] if row else "").strip().casefold()
+        second = str(row[1] if len(row) > 1 else "").strip().casefold()
+        is_header = first in {"дата", "date"} and second in {"описание", "description", "приход/выдача"}
+        if is_header:
+            header_found = True
+            continue
+        if not header_found or not any(_excel_nonempty(v) for v in row):
+            continue
+        if second in skip_labels:
+            continue
+        note_text = str(row[1] if len(row) > 1 else "").strip()
+        if not note_text:
+            continue
+        for c in range(3, len(row)):
+            if _excel_nonempty(row[c]):
+                expected[(r_idx, c + 1)] = note_text
+    return expected
+
+
+def _validate_xlsx_expected_notes(path: str, expected: dict[tuple[int, int], str]) -> None:
+    """Verify that every intended Excel Note cell contains the exact description text.
+
+    This checks the generated XLSX package itself, not only the in-memory mapping.
+    """
+    if not expected:
+        return
+    import xml.etree.ElementTree as ET
+    with zipfile.ZipFile(path, "r") as z:
+        names = set(z.namelist())
+        if "xl/comments1.xml" not in names:
+            raise RuntimeError("Excel статьи: файл не содержит xl/comments1.xml для Примечаний")
+        raw = z.read("xl/comments1.xml")
+    root = ET.fromstring(raw)
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    actual: dict[str, str] = {}
+    for node in root.findall(".//m:comment", ns):
+        ref = str(node.attrib.get("ref") or "")
+        text = "".join(node.itertext()).strip()
+        if ref:
+            actual[ref] = text
+    missing = []
+    wrong = []
+    for (row_idx, col_idx), text in expected.items():
+        ref = f"{_xlsx_col_name(int(col_idx))}{int(row_idx)}"
+        if ref not in actual:
+            missing.append(ref)
+        elif actual.get(ref, "") != str(text).strip():
+            wrong.append(ref)
+    if missing or wrong:
+        raise RuntimeError(
+            f"Excel статьи: повреждены примечания missing={missing[:8]} wrong={wrong[:8]} "
+            f"expected={len(expected)} actual={len(actual)}"
+        )
+
+
 def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sheet_name: str = "Данные", category_layout: bool = False) -> None:
     """Single GLOBAL switch used by every XLSX export: OLD / Comments / Notes."""
     mode = excel_table_style(int(chat_id))
@@ -13995,30 +14065,23 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
     else:
         styles, annotations, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
     annotation_mode = excel_annotation_mode(chat_id)
+    expected_annotations: dict[tuple[int, int], str] = {}
     if category_layout and annotation_mode == "notes":
-        expected = 0
-        header_seen = False
-        for row in rows or []:
-            row = list(row or [])
-            first = str(row[0] if row else "").strip().casefold()
-            second = str(row[1] if len(row) > 1 else "").strip().casefold()
-            if first in {"дата", "date"} and second in {"описание", "description", "приход/выдача"}:
-                header_seen = True
-                continue
-            if not header_seen:
-                continue
-            note_text = str(row[1] if len(row) > 1 else "").strip()
-            if not note_text:
-                continue
-            if any(_excel_nonempty(row[c]) for c in range(3, len(row))):
-                expected += 1
-        if expected and len(annotations) < expected:
-            raise RuntimeError(f"Excel статьи: потеря примечаний expected={expected} actual={len(annotations)}")
+        expected_annotations = _category_excel_expected_annotations(rows)
+        missing_map = [cell for cell, text in expected_annotations.items() if annotations.get(cell) != text]
+        extra_map = [cell for cell in annotations.keys() if cell not in expected_annotations]
+        if missing_map or extra_map:
+            raise RuntimeError(
+                f"Excel статьи: карта примечаний не совпала missing={missing_map[:8]} extra={extra_map[:8]} "
+                f"expected={len(expected_annotations)} actual={len(annotations)}"
+            )
     _write_tabl_lsx_xlsx(
         path, rows, styles, sheet_name=sheet_name, comments=annotations,
         freeze_rows=freeze_rows, widths=widths, annotation_mode=annotation_mode,
     )
     _validate_xlsx_annotation_package(path, annotation_mode)
+    if expected_annotations:
+        _validate_xlsx_expected_notes(path, expected_annotations)
 
 
 def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
@@ -31698,4 +31761,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# v126
+# v127
