@@ -679,8 +679,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v124_ui_versions_oldfinance_source"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v123_edit_consistency_peres_safe.py"
+VERSION = "bot_v124_peres_history_version_journal"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v124_peres_history_version_journal.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -1759,10 +1759,10 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
-    "v124_current": _modern_behavior_profile("v124 UI / versions / old finance / source", "Ф47 без backup-кнопок; рабочее переключение профилей; 💰Перес как обычное редактирование; поиск старых финансовых записей; скачивание текущего bot.py."),
-    "v123_current": _modern_behavior_profile("v123 Edit consistency / Перес safe", "Согласованное редактирование 💰Перес, exact edit witnesses и безопасная обработка edit-ввода."),
-    "v122_current": _modern_behavior_profile("v122 Excel notes / balances / finance witness", "Excel-примечания, остатки и finance witness."),
-    "v121_current": _modern_behavior_profile("v121 Forward outcome / all Excel", "Forward outcome и единый новый Excel для всех экспортов."),
+    "v124_current": _modern_behavior_profile("v124 Перес history / versions / journal", "Ф47 без backup-кнопок; рабочее Ф132; старые 💰Перес записи восстанавливаются; журнал версии и исходник бота скачиваются из Журнала."),
+    "v123_current": _modern_behavior_profile("v123 Edit consistency / Перес safe", "Единая durable-проверка редактирования, синхронизация бот-копий и финансовых записей."),
+    "v122_current": _modern_behavior_profile("v122 Excel notes / balances / finance witness", "Excel-примечания и остатки, дополнительные finance witnesses."),
+    "v121_current": _modern_behavior_profile("v121 Forward outcome / all Excel", "Forward outcome и единая логика Excel для всех экспортов."),
     "v120_current": _modern_behavior_profile("v120 Single-flight exports / forward witness", "Повторные нажатия экспорта не копятся в очереди; видимое время формирования; исправление ложного ambiguous forward для worker-skip."),
     "v119_current": _modern_behavior_profile("v119 Excel / runtime export / exact edit", "Новый Excel с заливками и примечаниями, экспорт runtime из MEGA, исправление ложного source_finance при редактировании."),
     "v118_current": _modern_behavior_profile("v118 Runtime slots / restart forensics", "Rotating runtime slots, корректный watcher_mega_ok и диагностика рестартов Render."),
@@ -2902,7 +2902,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
             fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
-            fh.write("v124: Ф47 без backup UI; version switch fixed; 💰Перес edit UX unified; legacy finance lookup; current bot.py download.\n\n")
+            fh.write("v124: Ф47 без backup; рабочее меню версий; 💰Перес all-history compatibility; version journal/source download.\n\n")
             fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
@@ -2983,33 +2983,138 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 3000):
     return True
 
 
-def _send_current_bot_source_sync(chat_id: int):
-    """Отправляет владельцу именно тот Python-файл, который сейчас запущен."""
+def _journal_stream_current_version_rows_to_file(fh, bot_version: str) -> tuple[int, str, str]:
+    """Stream every retained MEGA journal chunk belonging to one bot version, oldest->newest."""
+    if not BOT_JOURNAL_DURABLE_ENABLED or not mega_is_configured():
+        return 0, "", ""
+    remote_dir = _journal_durable_remote_dir()
     try:
-        path = os.path.abspath(__file__)
-        if not os.path.exists(path):
-            raise FileNotFoundError(path)
-        with open(path, "rb") as fh:
-            payload = io.BytesIO(fh.read())
-        payload.name = f"bot_{VERSION}.py"
-        _tg_call_retry(
-            bot.send_document, int(chat_id), payload,
-            caption=f"🐍 Текущий код бота\n{VERSION}\ncommit: {os.getenv('RENDER_GIT_COMMIT','')[:12] or 'local'}",
-            purpose="send_current_bot_source",
-        )
-        bot_journal("bot_source_downloaded", int(chat_id), f"version={VERSION}")
-    except Exception as e:
-        log_error(f"_send_current_bot_source_sync: {e}")
-        send_and_auto_delete(int(chat_id), f"❌ Не удалось отправить bot.py: {e}", 10)
+        files = _mega_find_remote_files(remote_dir, "journal_*.json", BOT_JOURNAL_DURABLE_REMOTE_KEEP)
+    except Exception:
+        files = []
+    matched = []
+    first_ts = ""
+    last_ts = ""
+    # Newest-first. One deployed version forms a contiguous segment, including process restarts.
+    # Stop at the first older-version chunk after this version is found.
+    found_current = False
+    total_files = len(files)
+    for index, remote in enumerate(files, 1):
+        local = None
+        try:
+            if index == 1 or (index % 10) == 0:
+                _file_job_progress("ищу первый деплой текущей версии в MEGA", current=index, total=total_files)
+            local = _mega_download_remote_path(remote)
+            doc = _load_json(local, {}) if local else {}
+            doc_version = str(doc.get("bot_version") or "") if isinstance(doc, dict) else ""
+            if doc_version != str(bot_version):
+                if found_current:
+                    break
+                continue
+            found_current = True
+            rows = doc.get("rows") or []
+            if not isinstance(rows, list):
+                continue
+            matched.append((str(doc.get("created_at") or ""), remote, rows))
+        except Exception as exc:
+            fh.write(f"[version journal chunk read error] {remote}: {exc}\\n")
+        finally:
+            try:
+                if local:
+                    shutil.rmtree(os.path.dirname(local), ignore_errors=True)
+            except Exception:
+                pass
+    matched.sort(key=lambda x: x[0])
+    seen = set()
+    count = 0
+    for _created, _remote, rows in matched:
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            key = _journal_row_key(r)
+            if key in seen:
+                continue
+            seen.add(key)
+            ts = str(r.get("ts") or "")
+            if ts and not first_ts:
+                first_ts = ts
+            if ts:
+                last_ts = ts
+            _journal_write_export_row(fh, r)
+            count += 1
+    return count, first_ts, last_ts
 
 
-def send_current_bot_source(chat_id: int):
-    ok, info = submit_interactive_file_job(
-        int(chat_id), "bot_source", "Код текущей версии бота", _send_current_bot_source_sync, int(chat_id)
-    )
-    if not ok and info:
-        send_and_auto_delete(int(chat_id), str(info), 8)
+def _send_current_version_journal_sync(chat_id: int):
+    if not is_owner_chat(chat_id):
+        return False
+    try:
+        journal_flush_to_mega(True)
+    except Exception:
+        pass
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix=f"journal_{VERSION}_", suffix=".txt")
+        os.close(fd)
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            fh.write("📚 ЖУРНАЛ ТЕКУЩЕЙ ВЕРСИИ С ПЕРВОГО СОХРАНЁННОГО ДЕПЛОЯ/ЗАПУСКА\\n")
+            fh.write(f"Версия: {VERSION}\\n")
+            fh.write(f"Текущий commit: {os.getenv('RENDER_GIT_COMMIT','')}\\n")
+            fh.write("Источник: все сохранённые durable journal chunks этой версии в MEGA.\\n\\n")
+            _file_job_progress("читаю всю историю текущей версии из MEGA", force=True)
+            count, first_ts, last_ts = _journal_stream_current_version_rows_to_file(fh, VERSION)
+            fh.write(f"\\n\\nИТОГ: строк={count}; первая={first_ts or 'не найдена'}; последняя={last_ts or 'не найдена'}\\n")
+        _file_job_progress("отправляю журнал версии в Telegram", force=True)
+        with open(tmp_path, "rb") as fh:
+            _tg_call_retry(bot.send_document, chat_id, fh, caption=f"📚 {VERSION} — журнал с первого сохранённого запуска", timeout=120, purpose="journal_current_version_send")
+        return True
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+def send_current_version_journal(chat_id: int):
+    ok, info = submit_interactive_file_job(int(chat_id), "journal_version", "Журнал текущей версии", _send_current_version_journal_sync, int(chat_id))
+    if not ok:
+        send_and_auto_delete(int(chat_id), f"⏳ {info}. Новая копия в очередь не добавлена.", 10)
     return ok
+
+
+def _send_running_bot_file_sync(chat_id: int):
+    if not is_owner_chat(chat_id):
+        return False
+    src_path = os.path.abspath(__file__) if "__file__" in globals() else ""
+    if not src_path or not os.path.isfile(src_path):
+        send_and_auto_delete(int(chat_id), "❌ Файл текущего бота на сервере не найден.", 12)
+        return False
+    _file_job_progress("читаю файл текущего деплоя", force=True)
+    tmp_dir = tempfile.mkdtemp(prefix="bot_source_")
+    tmp_copy = os.path.join(tmp_dir, f"{VERSION}.py")
+    try:
+        shutil.copy2(src_path, tmp_copy)
+        with open(tmp_copy, "rb") as fh:
+            _tg_call_retry(
+                bot.send_document,
+                int(chat_id),
+                fh,
+                caption=f"🐍 Текущий код: {VERSION}\ncommit: {os.getenv('RENDER_GIT_COMMIT','')[:12]}",
+                timeout=120,
+                purpose="current_bot_file_send",
+            )
+        return True
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def send_running_bot_file(chat_id: int):
+    ok, info = submit_interactive_file_job(int(chat_id), "bot_source", "Текущая версия бота", _send_running_bot_file_sync, int(chat_id))
+    if not ok:
+        send_and_auto_delete(int(chat_id), f"⏳ {info}. Новая копия в очередь не добавлена.", 10)
+    return ok
+
 
 def _secret_notes_list() -> list:
     try:
@@ -3747,8 +3852,9 @@ WINDOW_MARKER_CONSTANTS = {
     'info_finance_off': 'Ф86',
     'journal_back': 'Ф87',
     'journal_file': 'Ф88',
+    'journal_version_file': 'Ф173',
+    'journal_bot_file': 'Ф174',
     'journal_open': 'Ф89',
-    'journal_bot_source': 'Ф89A',
     'journal_toggle': 'Ф90',
     'legacy_common:*': 'Ф91',
     'legacy_owner:*': 'Ф92',
@@ -3792,6 +3898,7 @@ WINDOW_MARKER_CONSTANTS = {
     'main_articles_toggle': 'Ф130',
     'cat_main_edit:*': 'Ф131',
     'version_menu': 'Ф132',
+    'version_menu:*': 'Ф132',
     'version_select:*': 'Ф133',
     'version_back': 'Ф134',
     'main_financial_values_toggle': 'Ф135',
@@ -3822,6 +3929,7 @@ WINDOW_MARKER_CONSTANTS = {
     'forward_copy_edit_mode_toggle': 'Ф161',
     'fwdcopy_edit': 'Ф162',
     'fwdcopy_edit_cancel': 'Ф163',
+    'fwdcopy_edit_copy': 'Ф175',
     'd:*:usd_tx_toggle': 'Ф164',
 }
 
@@ -18717,60 +18825,81 @@ def _forward_copy_retro_is_stale(owner_chat_id: int, generation: int | None) -> 
 
 
 def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None, generation: int | None = None) -> int:
-    """Slow isolated retro-update of existing bot copies.
-
-    Cosmetic historical edits never run in webhook/general queues. They are spaced out and
-    a newer toggle invalidates an older generation, preventing Telegram 429 edit storms.
-    """
+    """Retro-update ALL recoverable historical forwarded finance copies, including pre-💰Перес records."""
     owner_chat_id = int(owner_chat_id)
     scope = owner_scope_id(owner_chat_id)
     mode = mode or forward_copy_edit_mode(scope)
-    start_key = str(get_chat_store(owner_chat_id).get("current_view_day") or today_key())[:10]
-    end_key = today_key()
-    if start_key > end_key:
-        start_key, end_key = end_key, start_key
     changed = 0
     attempted = 0
+    repaired = 0
     last_edit_mono = 0.0
     stopped_stale = False
     try:
-        bot_journal("forward_copy_retro_start", owner_chat_id, f"mode={mode} generation={generation} gap={FORWARD_COPY_RETRO_MIN_GAP_SECONDS}s")
+        bot_journal("forward_copy_retro_start", owner_chat_id, f"mode={mode} generation={generation} scope=all_history gap={FORWARD_COPY_RETRO_MIN_GAP_SECONDS}s")
     except Exception:
         pass
+
     for cid in collect_all_known_chat_ids(include_owner=True):
         if _forward_copy_retro_is_stale(owner_chat_id, generation):
             stopped_stale = True
             break
         store = get_chat_store(int(cid))
-        for rec in list(store.get("records", []) or []):
+        rows = list(store.get("records", []) or [])
+        rows.sort(key=record_sort_key, reverse=True)
+        for rec0 in rows:
             if _forward_copy_retro_is_stale(owner_chat_id, generation):
                 stopped_stale = True
                 break
-            src = rec.get("forward_source_chat_id")
-            if src is None:
+            try:
+                msg_id = int(
+                    rec0.get("forward_dst_msg_id")
+                    or rec0.get("source_msg_id")
+                    or rec0.get("origin_msg_id")
+                    or rec0.get("msg_id")
+                    or 0
+                )
+            except Exception:
+                msg_id = 0
+            if not msg_id:
+                continue
+
+            src_chat_id = None
+            try:
+                if rec0.get("forward_source_chat_id") is not None:
+                    src_chat_id = int(rec0.get("forward_source_chat_id"))
+            except Exception:
+                src_chat_id = None
+            if src_chat_id is None:
+                src_chat_id, _src_mid = _find_forward_origin_by_copied_message(int(cid), msg_id)
+            if src_chat_id is None:
                 continue
             try:
-                if owner_scope_id(int(src)) != scope:
+                if owner_scope_id(int(src_chat_id)) != scope:
                     continue
-                day_key = str(rec.get("day_key") or "")[:10]
-                if not (start_key <= day_key <= end_key):
-                    continue
-                msg_id = int(rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or 0)
-                if not msg_id:
-                    continue
-                if last_edit_mono > 0:
-                    wait = FORWARD_COPY_RETRO_MIN_GAP_SECONDS - (time.monotonic() - last_edit_mono)
-                    if wait > 0:
-                        time.sleep(wait)
-                if _forward_copy_retro_is_stale(owner_chat_id, generation):
-                    stopped_stale = True
-                    break
-                base_text = str(rec.get("source_finance_text") or "").strip() or compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
-                display_text = _forward_copy_display_text(base_text, rec, mode)
-                markup = _forward_copy_edit_keyboard(mode)
-                ct = str(rec.get("forward_copy_content_type") or "text")
-                attempted += 1
-                last_edit_mono = time.monotonic()
+            except Exception:
+                continue
+
+            rec = find_forward_copy_record(int(cid), msg_id, repair=True)
+            if not isinstance(rec, dict):
+                continue
+            if rec is not rec0 or not rec0.get("forwarded_by_bot"):
+                repaired += 1
+
+            if last_edit_mono > 0:
+                wait = FORWARD_COPY_RETRO_MIN_GAP_SECONDS - (time.monotonic() - last_edit_mono)
+                if wait > 0:
+                    time.sleep(wait)
+            if _forward_copy_retro_is_stale(owner_chat_id, generation):
+                stopped_stale = True
+                break
+
+            base_text = str(rec.get("source_finance_text") or "").strip() or compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+            display_text = _forward_copy_display_text(base_text, rec, mode)
+            markup = _forward_copy_edit_keyboard(mode)
+            ct = str(rec.get("forward_copy_content_type") or "text")
+            attempted += 1
+            last_edit_mono = time.monotonic()
+            try:
                 if ct == "text":
                     _tg_call_retry(bot.edit_message_text, display_text, chat_id=int(cid), message_id=msg_id, reply_markup=markup, attempts=2, purpose="forward_copy_retro_text_maintenance")
                 elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
@@ -18788,12 +18917,10 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None
                     log_error(f"refresh_existing_forward_copy_ui {cid}:{rec.get('id')}: {e}")
         if stopped_stale:
             break
+
     save_data(data)
     try:
-        bot_journal(
-            "forward_copy_retro_done", owner_chat_id,
-            f"mode={mode} generation={generation} attempted={attempted} changed={changed} stale={stopped_stale}",
-        )
+        bot_journal("forward_copy_retro_done", owner_chat_id, f"mode={mode} generation={generation} attempted={attempted} changed={changed} repaired={repaired} stale={stopped_stale}")
     except Exception:
         pass
     return changed
@@ -18935,42 +19062,31 @@ def _forward_copy_edit_wait_scheduler_key(chat_id: int) -> str:
 
 
 def _forward_copy_clean_copy_button(text: str):
-    """No-@bot edit helper.
-
-    Telegram switch_inline_query_current_chat must insert @bot.  CopyTextButton is the only
-    Bot API button that can expose arbitrary text without that tag, so use it when available.
-    Older pyTelegramBotAPI builds fall back to a callback that shows the same clean text.
-    """
-    value = str(text or "")[:256]
-    copy_cls = getattr(types, "CopyTextButton", None)
-    if copy_cls is not None:
-        try:
-            return IB("📋 Скопировать текст", copy_text=copy_cls(value))
-        except Exception:
-            pass
-    return IB("📋 Скопировать текст", callback_data="fwdcopy_edit_copy")
+    """v124: 💰Перес использует ту же вставку, что штатное редактирование в основном окне."""
+    return IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(text or ""))[:256])
 
 
 def _forward_copy_edit_prompt_text(rec: dict, current: str) -> str:
-    rid_label = rec.get("short_id") or ("R" + str(rec.get("id")))
+    rid = rec.get("short_id") or ("R" + str(rec.get("id")))
     return wm_common(
-        f"✏️ Редактирование записи {rid_label}\n\n"
-        f"Текущие данные:\n{current}\n\n"
+        "✏️ Редактирование записи " + str(rid) + "\n\n"
+        "Текущие данные:\n"
+        + str(current) + "\n\n"
         "✍️ Напишите новые данные.\n\n"
+        "Будет изменена эта бот-копия и связанная финансовая запись.\n\n"
         "⏳ Это сообщение и режим редактирования будут автоматически отменены через 40 секунд.",
         10,
     )
 
 
-def _forward_copy_edit_prompt_keyboard(current: str):
+def _forward_copy_edit_prompt_keyboard(current: str, day_key: str | None = None):
     kb = types.InlineKeyboardMarkup()
     if current:
-        # Тот же способ, что и в основном режиме редактирования. Возможный @бот
-        # удаляется sanitize_telegram_inserted_text перед применением значения.
-        kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(current))[:256]))
+        kb.row(_forward_copy_clean_copy_button(current))
+    back_day = str(day_key or today_key())[:10]
     kb.row(
         IB("❌ Закрыть", callback_data="fwdcopy_edit_cancel"),
-        IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{back_day}:back_main"),
     )
     return kb
 
@@ -18983,7 +19099,7 @@ def refresh_active_forward_copy_edit_prompt(chat_id: int, dst_msg_id: int, rec: 
         wait = store.get("forward_copy_edit_wait") or {}
         if wait.get("type") != "forward_copy_edit" or int(wait.get("dst_msg_id") or 0) != dst_msg_id:
             return False
-        rec = rec or find_record_by_message_id(chat_id, dst_msg_id)
+        rec = rec or find_forward_copy_record(chat_id, dst_msg_id, repair=True)
         if not isinstance(rec, dict):
             return False
         current = str(rec.get("source_finance_text") or "").strip()
@@ -19000,7 +19116,7 @@ def refresh_active_forward_copy_edit_prompt(chat_id: int, dst_msg_id: int, rec: 
                 _tg_call_retry(
                     bot.edit_message_text, prompt,
                     chat_id=chat_id, message_id=prompt_id,
-                    reply_markup=_forward_copy_edit_prompt_keyboard(current),
+                    reply_markup=_forward_copy_edit_prompt_keyboard(current, rec.get("day_key") or today_key()),
                     purpose="forward_copy_edit_prompt_refresh",
                 )
             except Exception as e:
@@ -19047,9 +19163,9 @@ def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int,
     DELAYED_SCHEDULER.schedule(_forward_copy_edit_wait_scheduler_key(int(chat_id)), float(delay), _job)
 
 def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
-    rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
+    rec = find_forward_copy_record(int(chat_id), int(dst_msg_id), repair=True)
     if not rec:
-        send_and_auto_delete(int(chat_id), "❌ Связанная финансовая запись не найдена.", 8)
+        send_and_auto_delete(int(chat_id), "❌ Связанная финансовая запись не найдена даже в старой истории.", 8)
         return False
     source_chat_id = _forward_copy_origin_source_chat(int(chat_id), int(dst_msg_id), rec)
     if source_chat_id is None:
@@ -19063,13 +19179,13 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
             current = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
 
     prompt = _forward_copy_edit_prompt_text(rec, current)
-    sent = _tg_call_retry(
-        bot.send_message, int(chat_id), prompt,
-        reply_markup=_forward_copy_edit_prompt_keyboard(current),
-        purpose="forward_copy_edit_prompt",
+    # v124: exactly like main record editing — reuse one edit window instead of spawning another.
+    prompt_id = send_or_edit_edit_prompt(
+        int(chat_id),
+        "forward_copy_edit_wait",
+        prompt,
+        reply_markup=_forward_copy_edit_prompt_keyboard(current, rec.get("day_key") or today_key()),
     )
-    # v123: no ForceReply/@bot helper.  switch_inline_query_current_chat always prefixes
-    # the username, therefore 💰Перес uses CopyTextButton (or a clean-text fallback).
     force_msg_id = 0
 
     get_chat_store(int(chat_id))["forward_copy_edit_wait"] = {
@@ -19077,14 +19193,14 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
         "dst_msg_id": int(dst_msg_id),
         "rid": int(rec.get("id")),
         "source_chat_id": int(source_chat_id),
-        "prompt_msg_id": int(sent.message_id),
+        "prompt_msg_id": int(prompt_id),
         "force_reply_msg_id": int(force_msg_id or 0),
         "insert_text": current,
         "countdown_base_text": prompt,
         "expires_at": time.time() + 40,
     }
     save_data(data, chat_ids=[int(chat_id)])
-    schedule_forward_copy_edit_wait_cancel(int(chat_id), int(sent.message_id), None)
+    schedule_forward_copy_edit_wait_cancel(int(chat_id), int(prompt_id), None)
     return True
 
 def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -> bool:
@@ -19094,7 +19210,7 @@ def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -
         amount, note = comp["amount"], comp["note"]
     except Exception:
         return False
-    rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
+    rec = find_forward_copy_record(int(chat_id), int(dst_msg_id), repair=True)
     if not rec:
         return False
     rid = int(rec.get("id"))
@@ -19105,7 +19221,7 @@ def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -
     with locked_chat(int(chat_id)):
         if not update_record_in_chat(int(chat_id), rid, amount, note, source_finance_text=str(comp.get("source_finance_text") or clean_text)):
             return False
-        rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
+        rec = find_forward_copy_record(int(chat_id), int(dst_msg_id), repair=True)
         if rec is not None:
             rec["source_finance_text"] = str(comp.get("source_finance_text") or clean_text)
             if comp.get("usd_amount") is not None:
@@ -19400,80 +19516,83 @@ def is_forward_delete_command(text: str) -> bool:
 
 
 def find_record_by_message_id(chat_id: int, msg_id: int):
-    """Находит и новые, и старые финансовые записи по Telegram message_id.
+    store = get_chat_store(chat_id)
+    for r in store.get("records", []):
+        if (
+            r.get("source_msg_id") == msg_id
+            or r.get("origin_msg_id") == msg_id
+            or r.get("msg_id") == msg_id
+        ):
+            return r
+    return None
 
-    Старые базы некоторых версий могли содержать запись только в daily_records
-    либо хранить message_id строкой. Поэтому поиск не ограничивается records и
-    сравнивает идентификаторы после приведения к int.
+
+
+
+def find_forward_copy_record(chat_id: int, msg_id: int, repair: bool = False):
+    """Find a forwarded finance record across old schemas.
+
+    v92+ records normally use the copied Telegram message id directly. Older snapshots can
+    lack forward_source_* metadata; the durable forward_index still lets us recover origin.
     """
-    chat_id = int(chat_id)
-    try:
-        wanted = int(msg_id)
-    except Exception:
-        return None
+    chat_id = int(chat_id); msg_id = int(msg_id)
     store = get_chat_store(chat_id)
 
-    def _matches(r):
-        if not isinstance(r, dict):
-            return False
-        for key in ("source_msg_id", "origin_msg_id", "msg_id", "source_order_msg_id"):
+    rec = find_record_by_message_id(chat_id, msg_id)
+    if rec is None:
+        # Newer durable schema may carry the destination id separately.
+        for row in store.get("records", []) or []:
             try:
-                if int(r.get(key) or 0) == wanted:
-                    return True
+                if int(row.get("forward_dst_msg_id") or 0) == msg_id:
+                    rec = row
+                    break
             except Exception:
                 continue
-        return False
 
-    for r in store.get("records", []) or []:
-        if _matches(r):
-            return r
+    src_chat_id, src_msg_id = _find_forward_origin_by_copied_message(chat_id, msg_id)
+    if rec is None and src_chat_id is not None and src_msg_id is not None:
+        matches = []
+        for row in store.get("records", []) or []:
+            try:
+                if (
+                    int(row.get("forward_source_chat_id") or 0) == int(src_chat_id)
+                    and int(row.get("forward_source_msg_id") or 0) == int(src_msg_id)
+                ):
+                    matches.append(row)
+            except Exception:
+                continue
+        if len(matches) == 1:
+            rec = matches[0]
 
-    def _promote_legacy_record(r):
-        """Возвращает legacy-запись в канонический records, чтобы её можно было редактировать."""
-        if not isinstance(r, dict):
-            return r
-        try:
-            rid = int(r.get("id") or 0)
-        except Exception:
-            rid = 0
-        records = store.setdefault("records", [])
-        existing = None
-        if rid:
-            existing = next((x for x in records if isinstance(x, dict) and int(x.get("id") or 0) == rid), None)
-        if existing is not None:
-            existing.update(r)
-            return existing
-        records.append(dict(r))
-        try:
+    if isinstance(rec, dict) and repair and src_chat_id is not None and src_msg_id is not None:
+        changed = False
+        repair_fields = {
+            "forwarded_by_bot": True,
+            "forward_source_chat_id": int(src_chat_id),
+            "forward_source_msg_id": int(src_msg_id),
+            "forward_dst_chat_id": chat_id,
+            "forward_dst_msg_id": msg_id,
+        }
+        for key, value in repair_fields.items():
+            if rec.get(key) != value:
+                rec[key] = value
+                changed = True
+        if not str(rec.get("source_finance_text") or "").strip():
+            rec["source_finance_text"] = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+            changed = True
+        if changed:
+            rid = rec.get("id")
+            for arr in (store.get("daily_records", {}) or {}).values():
+                for rr in arr or []:
+                    if isinstance(rr, dict) and rr.get("id") == rid:
+                        rr.update(rec)
+            _persist_forward_index_in_data(data)
             save_data(data, chat_ids=[chat_id])
-            bot_journal("legacy_finance_record_promoted", chat_id, f"rid={rid} msg={wanted}")
-        except Exception:
-            pass
-        return records[-1]
-
-    # Legacy/fallback: часть старых снапшотов имела полный объект только в daily_records.
-    for _dk, arr in (store.get("daily_records", {}) or {}).items():
-        for r in arr or []:
-            if _matches(r):
-                return _promote_legacy_record(r)
-
-    # Последний fallback читает холодные поля SQLite напрямую. Это важно после
-    # LOW-RAM evict и для старых восстановленных snapshot, не раздувая RAM надолго.
-    try:
-        for key in ("records", "daily_records", "ars_records", "ars_daily_records"):
-            cold = SQLITE.get_cold(chat_id, key, [] if key.endswith("records") and "daily" not in key else {})
-            if isinstance(cold, list):
-                for r in cold:
-                    if _matches(r):
-                        return _promote_legacy_record(r)
-            elif isinstance(cold, dict):
-                for arr in cold.values():
-                    for r in arr or []:
-                        if _matches(r):
-                            return _promote_legacy_record(r)
-    except Exception as e:
-        log_error(f"find_record_by_message_id cold fallback {chat_id}:{wanted}: {e}")
-    return None
+            try:
+                bot_journal("forward_copy_legacy_repaired", chat_id, f"msg={msg_id} src={src_chat_id}:{src_msg_id} rid={rid}")
+            except Exception:
+                pass
+    return rec
 
 
 def delete_forwarded_finance_record_by_msg_id(chat_id: int, msg_id: int) -> bool:
@@ -21728,13 +21847,7 @@ def build_csv_menu(day_key: str, chat_id: int | None = None):
         "🎯 Произвольный точный период",
         callback_data=export_callback(f"exp_pick_start:{ref_dt.year}:{ref_dt.month}:{day_key}"),
     ))
-    # Выбор вида/направления бэкапа оставлен только владельцу.
-    if chat_id is not None and is_owner_chat(chat_id):
-        kb.row(
-            IB(_backup_toggle_label(chat_id, "chat", "Бэкап в чат"), callback_data=f"d:{day_key}:bk_chat"),
-            IB(_backup_toggle_label(chat_id, "channel", "в канал"), callback_data=f"d:{day_key}:bk_channel"),
-            IB(_backup_toggle_label(chat_id, "mega", "в MEGA"), callback_data=f"d:{day_key}:bk_mega"),
-        )
+    # v124: Ф47 — только экспорт CSV/Excel. Настройки бэкапа находятся в отдельном BACKUP-меню.
     kb.row(IB("⬅️ Назад", callback_data=f"d:{day_key}:edit_menu"))
     return kb
 
@@ -22746,6 +22859,11 @@ def build_fin_window_menu_keyboard(target_chat_id: int, day_key: str, owner_day_
 def build_fin_window_csv_menu(target_chat_id: int, day_key: str, owner_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
     _add_export_period_rows(kb, day_key, "fv", owner_day_key=owner_day_key, target_chat_id=target_chat_id)
+    kb.row(
+        IB(_backup_toggle_label(target_chat_id, "chat", "Бэкап в чат"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_chat:{owner_day_key}"),
+        IB(_backup_toggle_label(target_chat_id, "channel", "в канал"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_channel:{owner_day_key}"),
+        IB(_backup_toggle_label(target_chat_id, "mega", "в MEGA"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_mega:{owner_day_key}"),
+    )
     kb.row(IB("🔙 Назад", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
     return kb
 
@@ -23777,31 +23895,69 @@ def bot_file_identity_lines() -> list[str]:
     return [f"🤖 Бот: {current_bot_sender_name()}", f"📄 Файл: {BOT_FILE_NAME}", f"🏷 Версия: {VERSION}"]
 
 
-def build_version_menu_text() -> str:
+VERSION_MENU_PAGE_SIZE = 9
+
+
+def _version_menu_keys() -> list[str]:
+    return list(BOT_BEHAVIOR_PROFILES.keys())
+
+
+def _version_menu_page_count() -> int:
+    keys = _version_menu_keys()
+    return max(1, (len(keys) + VERSION_MENU_PAGE_SIZE - 1) // VERSION_MENU_PAGE_SIZE)
+
+
+def _version_menu_clamp_page(page: int | str | None) -> int:
+    try:
+        page = int(page or 0)
+    except Exception:
+        page = 0
+    return max(0, min(_version_menu_page_count() - 1, page))
+
+
+def build_version_menu_text(page: int = 0) -> str:
+    """Compact text: old v123 rendered every long description and Telegram rejected it as MESSAGE_TOO_LONG."""
+    page = _version_menu_clamp_page(page)
     active = active_bot_behavior_profile()
+    cfg = BOT_BEHAVIOR_PROFILES.get(active, {})
     lines = [
         "🧩 Переключение версий / режимов",
         *bot_file_identity_lines(),
         "",
-        "v98–v124 переключают совместимый профиль внутри текущего безопасного ядра v124. Код, SQLite/MEGA-схема и exact-once защита не откатываются. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
+        f"✅ Сейчас: {cfg.get('title') or active}",
+        f"Страница {page + 1}/{_version_menu_page_count()}",
         "",
-        "Кнопка выбора версии всегда остаётся в ИНФО, даже в режиме v81.",
+        "Выбор меняет совместимый профиль интерфейса/поведения внутри текущего безопасного ядра.",
+        "SQLite, MEGA, финансовые записи, остатки и exact-once защита не откатываются.",
         "",
+        "Нажмите нужную версию ниже.",
+        "",
+        "──────────",
+        *bot_file_identity_lines(),
     ]
-    for key, cfg in BOT_BEHAVIOR_PROFILES.items():
-        mark = "✅" if key == active else "▫️"
-        lines.append(f"{mark} {cfg['title']} — {cfg['description']}")
-        lines.append(f"   Интервал UI: {cfg['ui_edit_interval']:.2f} сек.; меню: {cfg.get('info_layout', key)}")
-    lines.extend(["", "──────────", *bot_file_identity_lines()])
-    return wm_owner("\n".join(lines), 9)
+    # Hard ceiling below Telegram's 4096-char message limit.
+    return wm_owner("\n".join(lines)[:3400], 9)
 
 
-def build_version_menu_keyboard():
+def build_version_menu_keyboard(page: int = 0):
     kb = types.InlineKeyboardMarkup(row_width=1)
     active = active_bot_behavior_profile()
-    for key, cfg in BOT_BEHAVIOR_PROFILES.items():
+    page = _version_menu_clamp_page(page)
+    keys = _version_menu_keys()
+    lo = page * VERSION_MENU_PAGE_SIZE
+    hi = min(len(keys), lo + VERSION_MENU_PAGE_SIZE)
+    for key in keys[lo:hi]:
+        cfg = BOT_BEHAVIOR_PROFILES[key]
         mark = "✅" if key == active else "▫️"
-        kb.row(IB(f"{mark} {cfg['title']}", callback_data=f"version_select:{key}"))
+        kb.row(IB(f"{mark} {cfg['title']}", callback_data=f"version_select:{key}:{page}"))
+    if _version_menu_page_count() > 1:
+        nav = []
+        if page > 0:
+            nav.append(IB("⬅️", callback_data=f"version_menu:{page-1}"))
+        nav.append(IB(f"{page+1}/{_version_menu_page_count()}", callback_data=f"version_menu:{page}"))
+        if page + 1 < _version_menu_page_count():
+            nav.append(IB("➡️", callback_data=f"version_menu:{page+1}"))
+        kb.row(*nav)
     kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
     return kb
 
@@ -26110,8 +26266,9 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             kb = types.InlineKeyboardMarkup()
-            kb.row(IB("📄 Скачать TXT", callback_data="journal_file"))
-            kb.row(IB("🐍 Скачать bot.py (текущий деплой)", callback_data="journal_bot_source"))
+            kb.row(IB("📄 Скачать последние события", callback_data="journal_file"))
+            kb.row(IB("📚 Журнал этой версии с первого деплоя", callback_data="journal_version_file"))
+            kb.row(IB("🐍 Скачать текущую версию бота", callback_data="journal_bot_file"))
             kb.row(
                 IB("🔙 Назад", callback_data="journal_back"),
                 IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
@@ -26124,10 +26281,15 @@ def on_callback(call):
                 return
             send_journal_file_to_owner(chat_id, 3000)
             return
-        if data_str == "journal_bot_source":
+        if data_str == "journal_version_file":
             if not is_owner_chat(chat_id):
                 return
-            send_current_bot_source(chat_id)
+            send_current_version_journal(chat_id)
+            return
+        if data_str == "journal_bot_file":
+            if not is_owner_chat(chat_id):
+                return
+            send_running_bot_file(chat_id)
             return
         if data_str == "journal_toggle":
             if not is_owner_chat(chat_id):
@@ -26375,23 +26537,32 @@ def on_callback(call):
             fast_ui_edit_message_text(chat_id, call.message.message_id, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id), purpose="internal_timer_back_info")
             return
 
-        if data_str == "version_menu":
+        if data_str == "version_menu" or data_str.startswith("version_menu:"):
             if not is_owner_chat(chat_id):
                 return
-            safe_edit(bot, call, build_version_menu_text(), reply_markup=build_version_menu_keyboard())
+            page = 0
+            if ":" in data_str:
+                try:
+                    page = int(data_str.split(":", 1)[1])
+                except Exception:
+                    page = 0
+            safe_edit(bot, call, build_version_menu_text(page), reply_markup=build_version_menu_keyboard(page))
             return
         if data_str.startswith("version_select:"):
             if not is_owner_chat(chat_id):
                 return
-            profile_key = data_str.split(":", 1)[1]
-            selected = set_bot_behavior_profile(profile_key)
+            parts = data_str.split(":")
+            profile_key = parts[1] if len(parts) > 1 else DEFAULT_BOT_BEHAVIOR_PROFILE
             try:
-                title = str(BOT_BEHAVIOR_PROFILES.get(selected, {}).get("title") or selected)
-                bot.answer_callback_query(call.id, f"✅ Включено: {title}", show_alert=False)
+                page = int(parts[2]) if len(parts) > 2 else 0
+            except Exception:
+                page = 0
+            set_bot_behavior_profile(profile_key)
+            try:
+                bot.answer_callback_query(call.id, f"Версия: {BOT_BEHAVIOR_PROFILES.get(profile_key, {}).get('title', profile_key)}", show_alert=False)
             except Exception:
                 pass
-            bot_journal("version_profile_selected", chat_id, f"profile={selected}")
-            safe_edit(bot, call, build_version_menu_text(), reply_markup=build_version_menu_keyboard())
+            safe_edit(bot, call, build_version_menu_text(page), reply_markup=build_version_menu_keyboard(page))
             return
         if data_str == "version_back":
             if not is_owner_chat(chat_id):
