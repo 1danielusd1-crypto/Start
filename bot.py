@@ -1,4 +1,4 @@
-# v122
+# v123
 import os
 import io
 import json
@@ -679,8 +679,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v122_excel_notes_balances_finance_witness"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v122_excel_notes_balances_finance_witness.py"
+VERSION = "bot_v123_edit_consistency_peres_safe"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v123_edit_consistency_peres_safe.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -2898,7 +2898,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
             fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
-            fh.write("v120: single-flight file exports + elapsed status + forward witness worker-skip fix; LOW-RAM remains active.\n\n")
+            fh.write("v123: edit consistency + 💰Перес clean insert + exact edit witnesses; LOW-RAM remains active.\n\n")
             fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
@@ -7650,6 +7650,225 @@ def _durable_forward_targets(source_chat_id: int | None) -> list[tuple]:
 
 
 
+
+def _durable_record_edit_witness(chat_id: int, rid: int, amount=None, note=None, source_finance_text=None, usd_amount=None, usd_note=None, kind: str = "finance") -> dict:
+    witness = {
+        "chat_id": int(chat_id),
+        "rid": int(rid),
+        "kind": str(kind or "finance"),
+    }
+    if amount is not None:
+        witness["amount"] = float(amount)
+    if note is not None:
+        witness["note"] = str(note or "")
+    if source_finance_text is not None:
+        witness["source_finance_text"] = str(source_finance_text or "").strip()
+    if usd_amount is not None:
+        witness["usd_amount"] = float(usd_amount)
+    if usd_note is not None:
+        witness["usd_note"] = str(usd_note or "")
+    return witness
+
+
+def _durable_secret_edit_witness(chat_id: int, record_id: int, text: str) -> dict:
+    return {
+        "chat_id": int(chat_id),
+        "record_id": int(record_id),
+        "text": str(text or "").strip(),
+    }
+
+
+def _durable_sanitize_inserted_text_no_network(text: str) -> str:
+    """Receipt-time sanitizer: never calls Telegram before the durable task is persisted."""
+    value = str(text or "").strip()
+    value = re.sub(r"(?m)^\s*@[A-Za-z0-9_]{3,}\s+(?=(?:\(|[+\-–]?\s*\d))", "", value)
+    return re.sub(r"[ \t]+", " ", value).strip()
+
+
+def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, source_msg_id: int, text: str) -> dict:
+    """Recognize deterministic edit/input routes before ordinary finance classification.
+
+    This is verification metadata only.  It never performs a business mutation.  The same
+    payload can therefore be checked safely after a Render restart without replaying money.
+    """
+    result = {"consumes_source": False, "record_edits": [], "secret_edits": []}
+    clean = str(text or "").strip()
+    if not clean:
+        return result
+
+    # Direct edit buttons (О6 and secret edit list) contain explicit stable target ids.
+    try:
+        token_kind = "EDITUSD" if "EDITUSD|" in clean else ("EDITREC" if "EDITREC|" in clean else None)
+        if token_kind:
+            result["consumes_source"] = True
+            m = re.search(r"\((%s\|[^)]*)\)" % re.escape(token_kind), clean)
+            if m:
+                parts = m.group(1).split("|", 4)
+                target_chat_id = int(parts[1]); rid = int(parts[2])
+                value_text = _durable_sanitize_inserted_text_no_network((clean[:m.start()] + " " + clean[m.end():]).strip())
+            else:
+                tail = clean[clean.find(token_kind + "|"):]
+                parts = tail.split("|", 4)
+                if len(parts) < 5:
+                    return result
+                target_chat_id = int(parts[1]); rid = int(parts[2])
+                value_text = _durable_sanitize_inserted_text_no_network(parts[4])
+            if value_text:
+                if token_kind == "EDITUSD":
+                    usd_amount, usd_note = parse_usd_edit_value(value_text)
+                    result["record_edits"].append(_durable_record_edit_witness(
+                        target_chat_id, rid, source_finance_text=None,
+                        usd_amount=usd_amount, usd_note=usd_note, kind="usd_direct",
+                    ))
+                else:
+                    amount, note = split_amount_and_note(value_text)
+                    result["record_edits"].append(_durable_record_edit_witness(
+                        target_chat_id, rid, amount=amount, note=note,
+                        source_finance_text=value_text, kind="direct_edit",
+                    ))
+            return result
+    except Exception:
+        # A malformed edit token is still an edit command and must not create a new finance row.
+        if "EDITREC|" in clean or "EDITUSD|" in clean:
+            result["consumes_source"] = True
+            return result
+
+    try:
+        if "EDITSECRET|" in clean:
+            result["consumes_source"] = True
+            m = re.search(r"\((EDITSECRET\|[^)]*)\)", clean)
+            if m:
+                parts = m.group(1).split("|", 3)
+                target_chat_id = int(parts[1]); record_id = int(parts[2])
+                new_text = _durable_sanitize_inserted_text_no_network((clean[:m.start()] + " " + clean[m.end():]).strip())
+                if new_text:
+                    result["secret_edits"].append(_durable_secret_edit_witness(target_chat_id, record_id, new_text))
+            return result
+    except Exception:
+        result["consumes_source"] = True
+        return result
+
+    # GOMONKI is a dedicated settings input, never a new financial source record.
+    if "GOMONKI" in clean.upper():
+        result["consumes_source"] = True
+        return result
+
+    # Wait-state edits are deterministic because the durable task captures the wait state
+    # before business execution.  Build the exact record value expected after the edit.
+    try:
+        store = get_chat_store(int(source_chat_id))
+        fwd_wait = store.get("forward_copy_edit_wait") or {}
+        if fwd_wait.get("type") == "forward_copy_edit":
+            result["consumes_source"] = True
+            value_text = _durable_sanitize_inserted_text_no_network(clean)
+            comp = parse_financial_components(value_text)
+            result["record_edits"].append(_durable_record_edit_witness(
+                int(source_chat_id), int(fwd_wait.get("rid")),
+                amount=comp.get("amount"), note=comp.get("note"),
+                source_finance_text=comp.get("source_finance_text") or value_text,
+                usd_amount=comp.get("usd_amount"), usd_note=comp.get("usd_note") if comp.get("usd_amount") is not None else None,
+                kind="forward_copy_edit",
+            ))
+            return result
+
+        finwin_wait = store.get("finwin_edit_wait") or {}
+        if finwin_wait.get("type") == "finwin_edit":
+            result["consumes_source"] = True
+            value_text = _durable_sanitize_inserted_text_no_network(clean)
+            amount, note = split_amount_and_note(value_text)
+            result["record_edits"].append(_durable_record_edit_witness(
+                int(finwin_wait.get("target_chat_id")), int(finwin_wait.get("rid")),
+                amount=amount, note=note, source_finance_text=value_text, kind="finwin_edit",
+            ))
+            return result
+
+        edit_wait = store.get("edit_wait") or {}
+        if edit_wait.get("type") == "edit":
+            result["consumes_source"] = True
+            value_text = _durable_sanitize_inserted_text_no_network(clean)
+            amount, note = split_amount_and_note(value_text)
+            result["record_edits"].append(_durable_record_edit_witness(
+                int(source_chat_id), int(edit_wait.get("rid")),
+                amount=amount, note=note, source_finance_text=value_text, kind="edit_wait",
+            ))
+            return result
+
+        # Category prompts consume every answer (including invalid format).
+        if bool(store.get("category_add_wait")) or bool(store.get("category_edit_wait")):
+            result["consumes_source"] = True
+            return result
+        # Confirmation prompts consume only the explicit answers their live handlers recognize.
+        text_up = clean.strip().upper()
+        if bool(store.get("reset_wait")) and text_up == "ДА":
+            result["consumes_source"] = True
+            return result
+        if bool(store.get("finwin_reset_wait")) and text_up in {"ДА", "НЕТ", "ОТМЕНА", "CANCEL"}:
+            result["consumes_source"] = True
+            return result
+        if bool(store.get("finance_toggle_wait")) and text_up in {"ДА", "НЕТ", "ОТМЕНА", "CANCEL"}:
+            result["consumes_source"] = True
+            return result
+    except Exception:
+        pass
+
+    # Native Telegram edit: verify the existing finance row changed, not merely that it exists.
+    try:
+        is_edited = isinstance(payload.get("edited_message"), dict) or isinstance(payload.get("edited_channel_post"), dict)
+        if is_edited:
+            rec = find_record_by_message_id(int(source_chat_id), int(source_msg_id))
+            if isinstance(rec, dict):
+                if clean and looks_like_amount(clean):
+                    comp = parse_financial_components(clean)
+                    result["record_edits"].append(_durable_record_edit_witness(
+                        int(source_chat_id), int(rec.get("id")),
+                        amount=comp.get("amount"), note=comp.get("note"),
+                        source_finance_text=comp.get("source_finance_text") or clean,
+                        usd_amount=comp.get("usd_amount"), usd_note=comp.get("usd_note") if comp.get("usd_amount") is not None else None,
+                        kind="native_source_edit",
+                    ))
+                else:
+                    result["record_edits"].append(_durable_record_edit_witness(
+                        int(source_chat_id), int(rec.get("id")), amount=0.0, note="удалено",
+                        source_finance_text=clean, kind="native_source_edit_removed",
+                    ))
+
+            # Finance rows of already-linked bot copies must follow the source edit too.
+            for dst_chat_id, dst_msg_id in get_forward_links(int(source_chat_id), int(source_msg_id)):
+                if not get_forward_finance(int(source_chat_id), int(dst_chat_id)):
+                    continue
+                dst_rec = find_record_by_message_id(int(dst_chat_id), int(dst_msg_id))
+                if not isinstance(dst_rec, dict):
+                    continue
+                if clean and looks_like_amount(clean):
+                    comp = parse_financial_components(clean)
+                    result["record_edits"].append(_durable_record_edit_witness(
+                        int(dst_chat_id), int(dst_rec.get("id")),
+                        amount=comp.get("amount"), note=comp.get("note"),
+                        source_finance_text=comp.get("source_finance_text") or clean,
+                        usd_amount=comp.get("usd_amount"), usd_note=comp.get("usd_note") if comp.get("usd_amount") is not None else None,
+                        kind="propagated_copy_edit",
+                    ))
+                else:
+                    result["record_edits"].append(_durable_record_edit_witness(
+                        int(dst_chat_id), int(dst_rec.get("id")), amount=0.0, note="удалено",
+                        source_finance_text=clean, kind="propagated_copy_edit_removed",
+                    ))
+
+            secret_rec = next(
+                (r for r in _secret_records(int(source_chat_id)) if int(r.get("source_msg_id") or 0) == int(source_msg_id)),
+                None,
+            )
+            if isinstance(secret_rec, dict) and clean:
+                marked, cleaned_secret = _extract_secret_codeword(clean)
+                expected_secret_text = cleaned_secret if marked else clean
+                result["secret_edits"].append(_durable_secret_edit_witness(
+                    int(source_chat_id), int(secret_rec.get("id")), expected_secret_text,
+                ))
+    except Exception:
+        pass
+    return result
+
+
 def _durable_expected_effects(payload: dict) -> dict:
     """Snapshot the effects that this Telegram update is actually expected to create.
 
@@ -7662,19 +7881,27 @@ def _durable_expected_effects(payload: dict) -> dict:
         "source_finance": False,
         "source_secret": False,
         "forward_targets": [],
+        "record_edits": [],
+        "secret_edits": [],
     }
     raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
     if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
         return out
     text = str(raw.get("text") or raw.get("caption") or "").strip()
+    edit_expect = _durable_extract_edit_expectations(payload, int(source_chat_id), int(source_msg_id), text)
+    out["record_edits"] = list(edit_expect.get("record_edits") or [])
+    out["secret_edits"] = list(edit_expect.get("secret_edits") or [])
+    edit_consumes_source = bool(edit_expect.get("consumes_source"))
     # Wait-state replies are commands/answers first.  Do not guess a direct finance effect
     # from the digits while a dedicated input state is active.
-    waiting = False
+    waiting = bool(edit_consumes_source)
     try:
         store = get_chat_store(int(source_chat_id))
-        waiting = any(str(k).endswith("_wait") and bool(v) for k, v in (store or {}).items())
+        secret_wait = (store or {}).get("secret_wait") or {}
+        if isinstance(secret_wait, dict) and secret_wait.get("type") == "secret_note_add":
+            waiting = True
     except Exception:
-        waiting = False
+        pass
     # v117: secret routing consumes the source message before ordinary source finance.
     # Therefore `5🙊` expects source_secret, but must NOT expect source_finance.
     # Destination finance is independent and is still evaluated below for forwarded copies.
@@ -7689,6 +7916,7 @@ def _durable_expected_effects(payload: dict) -> dict:
     try:
         out["source_finance"] = bool(
             (not waiting)
+            and (not edit_consumes_source)
             and (not out["source_secret"])
             and is_finance_mode(int(source_chat_id))
             and text
@@ -7696,6 +7924,11 @@ def _durable_expected_effects(payload: dict) -> dict:
         )
     except Exception:
         out["source_finance"] = False
+    if edit_consumes_source:
+        out["source_secret"] = False
+        out["forward_targets"] = []
+        out["source_consumed_by_edit_route"] = True
+        return out
     for dst_chat_id, mode, finance_enabled in _durable_forward_targets(source_chat_id):
         dst = int(dst_chat_id)
         dst_finance = False
@@ -7739,6 +7972,30 @@ def _durable_normalize_expected_for_route(payload: dict, expected: dict | None) 
     if secret_route and bool(adjusted.get("source_finance")):
         adjusted["source_finance"] = False
         adjusted["source_finance_suppressed_by_secret_route"] = True
+
+    # v123 backward repair: old task files may have classified an edit answer as a new
+    # finance row.  Re-read deterministic edit tokens from the payload; this only removes
+    # impossible effects and adds verification witnesses, it never replays an edit.
+    try:
+        _raw2, _src2, _mid2, _grp2 = _durable_payload_message(payload or {})
+        if isinstance(_raw2, dict) and _src2 is not None and _mid2 is not None:
+            edit_meta = _durable_extract_edit_expectations(
+                payload or {}, int(_src2), int(_mid2),
+                str(_raw2.get("text") or _raw2.get("caption") or "").strip(),
+            )
+            if edit_meta.get("consumes_source"):
+                adjusted["source_finance"] = False
+                adjusted["source_secret"] = False
+                adjusted["forward_targets"] = []
+                adjusted["source_consumed_by_edit_route"] = True
+            for field in ("record_edits", "secret_edits"):
+                rows = list(adjusted.get(field, []) or [])
+                for row in edit_meta.get(field, []) or []:
+                    if row not in rows:
+                        rows.append(_delta_json_clone(row))
+                adjusted[field] = rows
+    except Exception:
+        pass
 
     # v120: mirror forward_any_message() skip predicates for old persisted tasks too.
     # This is metadata reclassification only: no Telegram resend and no finance mutation.
@@ -7898,6 +8155,41 @@ def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
         if not ok:
             report["complete"] = False
             report["missing"].append(f"source_secret:{source_chat_id}:{source_msg_id}")
+
+    # v123: an edit is complete only when the existing record contains the requested value.
+    for witness in expected.get("record_edits", []) or []:
+        try:
+            w_chat = int(witness.get("chat_id")); w_rid = int(witness.get("rid"))
+            rec = next((r for r in get_chat_store(w_chat).get("records", []) if int(r.get("id", -1)) == w_rid), None)
+            ok = isinstance(rec, dict)
+            if ok and "amount" in witness:
+                ok = abs(float(rec.get("amount", 0) or 0) - float(witness.get("amount", 0) or 0)) <= 1e-6
+            if ok and "note" in witness:
+                ok = str(rec.get("note") or "").strip() == str(witness.get("note") or "").strip()
+            if ok and "source_finance_text" in witness:
+                ok = str(rec.get("source_finance_text") or "").strip() == str(witness.get("source_finance_text") or "").strip()
+            if ok and "usd_amount" in witness:
+                ok = abs(float(rec.get("usd_amount", 0) or 0) - float(witness.get("usd_amount", 0) or 0)) <= 1e-6
+            if ok and "usd_note" in witness:
+                ok = str(rec.get("usd_note") or "").strip() == str(witness.get("usd_note") or "").strip()
+            if not ok:
+                report["complete"] = False
+                report["missing"].append(f"record_edit:{w_chat}:R{w_rid}:{witness.get('kind','edit')}")
+        except Exception:
+            report["complete"] = False
+            report["missing"].append(f"record_edit:invalid:{witness}")
+
+    for witness in expected.get("secret_edits", []) or []:
+        try:
+            w_chat = int(witness.get("chat_id")); record_id = int(witness.get("record_id"))
+            rec = next((r for r in _secret_records(w_chat) if int(r.get("id") or 0) == record_id), None)
+            ok = isinstance(rec, dict) and str(rec.get("text") or "").strip() == str(witness.get("text") or "").strip()
+            if not ok:
+                report["complete"] = False
+                report["missing"].append(f"secret_edit:{w_chat}:{record_id}")
+        except Exception:
+            report["complete"] = False
+            report["missing"].append(f"secret_edit:invalid:{witness}")
     return report
 
 def _durable_forward_effect_complete(payload: dict, expected: dict | None = None) -> bool:
@@ -8011,19 +8303,20 @@ def _repair_missing_durable_forward(payload: dict) -> bool:
     return bool(all_ok and _durable_forward_effect_complete(payload))
 
 
-def wait_durable_subtasks(chat_id, timeout: float = 20.0) -> bool:
-    """Drain state-changing child queues already spawned by the current content update."""
-    if chat_id is None:
+def wait_durable_subtasks(chat_id, timeout: float = 20.0, wait_forward: bool = True) -> bool:
+    """Wait only for business effects that are actually asynchronous.
+
+    Finance add/edit is committed synchronously before schedule_finalize(); FINANCE_TASK_POOL
+    mainly refreshes UI/backup work.  Waiting for that queue used to hold an edit webhook for
+    ~20 seconds and then falsely fail source_finance.  Forward delivery is genuinely async,
+    therefore only that queue is part of the durable business barrier.
+    """
+    if chat_id is None or not wait_forward:
         return True
     key = int(chat_id)
-    deadline = time.monotonic() + max(0.5, float(timeout))
-    for pool in (FORWARD_TASK_POOL, FINANCE_TASK_POOL):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        if not pool.wait_key_idle(key, remaining):
-            log_error(f"DURABLE CHILD QUEUE TIMEOUT pool={pool.name} chat={key}")
-            return False
+    if not FORWARD_TASK_POOL.wait_key_idle(key, max(0.5, float(timeout))):
+        log_error(f"DURABLE CHILD QUEUE TIMEOUT pool={FORWARD_TASK_POOL.name} chat={key}")
+        return False
     return True
 
 
@@ -8035,13 +8328,19 @@ def finalize_durable_task_after_business(update_id, chat_id, update_type: str = 
     without producing duplicate finance records or duplicate forwarded messages.
     """
     key = _mega_task_id(update_id)
-    if not wait_durable_subtasks(chat_id, timeout=20.0):
-        return False
     callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
     expected = _durable_normalize_expected_for_route(
         payload or {},
         expected_effects if isinstance(expected_effects, dict) else (_durable_expected_effects(payload) if isinstance(payload, dict) else {}),
     )
+    wait_forward = bool(expected.get("forward_targets")) or any(
+        str((row or {}).get("kind") or "").startswith("propagated_copy_edit")
+        for row in (expected.get("record_edits") or [])
+    )
+    if isinstance(payload, dict) and callback_target is None:
+        wait_forward = bool(wait_forward or _durable_forward_work_still_pending(payload))
+    if not wait_durable_subtasks(chat_id, timeout=20.0, wait_forward=wait_forward):
+        return False
     if isinstance(payload, dict) and callback_target is None:
         expected = _durable_apply_live_forward_outcome(payload, expected)
         if _durable_forward_work_still_pending(payload):
@@ -8172,6 +8471,32 @@ def _durable_note_forward_decision(source_chat_id: int, direct: bool = False):
             pass
 
 
+def _durable_note_record_edit_witness(witness: dict):
+    try:
+        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
+        if not isinstance(ctx, dict) or not isinstance(witness, dict):
+            return
+        rows = ctx.setdefault("record_edits", [])
+        key = (int(witness.get("chat_id")), int(witness.get("rid")), str(witness.get("kind") or "edit"))
+        rows[:] = [r for r in rows if (int(r.get("chat_id")), int(r.get("rid")), str(r.get("kind") or "edit")) != key]
+        rows.append(_delta_json_clone(witness))
+    except Exception:
+        pass
+
+
+def _durable_note_secret_edit_witness(witness: dict):
+    try:
+        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
+        if not isinstance(ctx, dict) or not isinstance(witness, dict):
+            return
+        rows = ctx.setdefault("secret_edits", [])
+        key = (int(witness.get("chat_id")), int(witness.get("record_id")))
+        rows[:] = [r for r in rows if (int(r.get("chat_id")), int(r.get("record_id"))) != key]
+        rows.append(_delta_json_clone(witness))
+    except Exception:
+        pass
+
+
 def _durable_note_source_consumed(reason: str):
     """Tell the durable finalizer that the handler consumed this source before finance/forward routes."""
     try:
@@ -8193,6 +8518,8 @@ def _durable_execution_context_snapshot() -> dict:
             "forward_direct": bool(ctx.get("forward_direct")),
             "actual_forward_targets": _delta_json_clone(ctx.get("actual_forward_targets") or []),
             "source_consumed_reason": str(ctx.get("source_consumed_reason") or ""),
+            "record_edits": _delta_json_clone(ctx.get("record_edits") or []),
+            "secret_edits": _delta_json_clone(ctx.get("secret_edits") or []),
         }
     except Exception:
         return {}
@@ -8234,6 +8561,17 @@ def _durable_expected_after_execution(base_expected: dict | None, execution_ctx:
         })
     expected["forward_targets"] = rebuilt
     expected["forward_decision_actual"] = bool(execution_ctx.get("forward_decision_reached"))
+    # Exact post-handler edit witnesses override/extend receipt-time guesses.
+    for field, key_fields in (("record_edits", ("chat_id", "rid", "kind")), ("secret_edits", ("chat_id", "record_id"))):
+        merged = list(expected.get(field, []) or [])
+        for row in execution_ctx.get(field, []) or []:
+            try:
+                row_key = tuple(str(row.get(k)) for k in key_fields)
+                merged = [old for old in merged if tuple(str(old.get(k)) for k in key_fields) != row_key]
+                merged.append(_delta_json_clone(row))
+            except Exception:
+                pass
+        expected[field] = merged
     consumed_reason = str(execution_ctx.get("source_consumed_reason") or "").strip()
     if consumed_reason:
         # The real handler returned before ordinary finance/secret/forward processing.
@@ -8270,10 +8608,46 @@ def _durable_adjust_expected_for_captured_wait(task: dict | None, payload: dict,
             adjusted["forward_targets"] = []
             # Dedicated edit/input flows consume this text before ordinary finance parsing.
             # Therefore a new record with source_msg_id of the answer is NOT an expected effect.
-            # This is the v119 fix for false needs_review such as update 451477187.
             adjusted["source_finance"] = False
             adjusted["source_finance_suppressed_by_captured_wait"] = True
             adjusted["forward_suppressed_by_captured_wait"] = True
+            # v123: old failed/running edit tasks become repairable only when the exact
+            # requested value is already visible in the existing record.
+            try:
+                _raw2, _src2, _mid2, _grp2 = _durable_payload_message(payload or {})
+                value_text = _durable_sanitize_inserted_text_no_network(str((_raw2 or {}).get("text") or "").strip())
+                witness = None
+                fw = waits.get("forward_copy_edit_wait") or {}
+                if isinstance(fw, dict) and fw.get("type") == "forward_copy_edit" and value_text:
+                    comp = parse_financial_components(value_text)
+                    witness = _durable_record_edit_witness(
+                        int(_src2), int(fw.get("rid")), amount=comp.get("amount"), note=comp.get("note"),
+                        source_finance_text=comp.get("source_finance_text") or value_text,
+                        usd_amount=comp.get("usd_amount"),
+                        usd_note=comp.get("usd_note") if comp.get("usd_amount") is not None else None,
+                        kind="forward_copy_edit",
+                    )
+                fin = waits.get("finwin_edit_wait") or {}
+                if witness is None and isinstance(fin, dict) and fin.get("type") == "finwin_edit" and value_text:
+                    amount, note = split_amount_and_note(value_text)
+                    witness = _durable_record_edit_witness(
+                        int(fin.get("target_chat_id")), int(fin.get("rid")), amount=amount, note=note,
+                        source_finance_text=value_text, kind="finwin_edit",
+                    )
+                ew = waits.get("edit_wait") or {}
+                if witness is None and isinstance(ew, dict) and ew.get("type") == "edit" and value_text:
+                    amount, note = split_amount_and_note(value_text)
+                    witness = _durable_record_edit_witness(
+                        int(_src2), int(ew.get("rid")), amount=amount, note=note,
+                        source_finance_text=value_text, kind="edit_wait",
+                    )
+                if witness is not None:
+                    rows = list(adjusted.get("record_edits", []) or [])
+                    if witness not in rows:
+                        rows.append(witness)
+                    adjusted["record_edits"] = rows
+            except Exception:
+                pass
             return adjusted
         text_up = str(raw.get("text") or "").strip().upper()
         if waits.get("finwin_reset_wait") and text_up in {"ДА", "НЕТ", "ОТМЕНА", "CANCEL"}:
@@ -8437,7 +8811,7 @@ def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type
         context["callback_target_chat_id"] = int(callback_target)
     return {
         "kind": "telegram_bot_durable_task",
-        "schema_version": 4,
+        "schema_version": 5,
         "bot_version": VERSION,
         "task_id": key,
         "update_id": int(update_id) if str(update_id).lstrip("-").isdigit() else str(update_id),
@@ -14974,6 +15348,7 @@ def handle_category_add_message(msg) -> bool:
     wait = store.get("category_add_wait")
     if not wait or wait.get("type") != "expense_category_add":
         return False
+    _durable_note_source_consumed("category_add_wait")
     text = (msg.text or "").strip()
     target_chat_id = int(wait.get("target_chat_id") or chat_id)
     try:
@@ -15222,6 +15597,7 @@ def handle_category_edit_message(msg) -> bool:
     wait = store.get("category_edit_wait")
     if not wait or wait.get("type") != "expense_category_edit":
         return False
+    _durable_note_source_consumed("category_edit_wait")
     text = (msg.text or "").strip()
     if text.lower() in {"отмена", "cancel", "/cancel"}:
         clear_category_wait_state(chat_id, "category_edit_wait", delete_prompt=True)
@@ -16664,6 +17040,7 @@ def handle_secret_edit_insert_message(msg) -> bool:
     text = (msg.text or "").strip()
     if SECRET_EDIT_TOKEN + "|" not in text:
         return False
+    _durable_note_source_consumed("secret_edit_insert")
     try:
         # Удаляем служебное сообщение редактирования сразу: даже если текст пустой
         # или запись не найдена, хвост вида EDITSECRET|... не должен висеть в чате.
@@ -16686,6 +17063,7 @@ def handle_secret_edit_insert_message(msg) -> bool:
             return True
         target["text"] = new_text
         target["edited_at"] = now_local().isoformat(timespec="seconds")
+        _durable_note_secret_edit_witness(_durable_secret_edit_witness(target_chat_id, record_id, new_text))
         save_data(data)
         schedule_config_backup_for_chats(target_chat_id, delay=0.2)
         schedule_secret_mega_upload(target_chat_id)
@@ -17263,6 +17641,7 @@ def on_any_message(msg):
             if store.get("reset_wait"):
                 text_up = (msg.text or "").strip().upper()
                 if text_up == "ДА":
+                    _durable_note_source_consumed("reset_wait")
                     store["reset_wait"] = False
                     store["reset_time"] = 0
                     save_data(data)
@@ -17287,6 +17666,7 @@ def on_any_message(msg):
                 fin_window_msg_id = finwin_reset_wait.get("fin_window_msg_id")
                 owner_day_key = finwin_reset_wait.get("owner_day_key") or today_key()
                 if text_up == "ДА":
+                    _durable_note_source_consumed("finwin_reset_wait")
                     store["finwin_reset_wait"] = None
                     save_data(data)
                     cleanup_forward_links(target_chat_id)
@@ -17310,6 +17690,7 @@ def on_any_message(msg):
                             log_error(f"finwin reset refresh failed: {e}")
                     return
                 elif text_up in {"НЕТ", "ОТМЕНА", "CANCEL"}:
+                    _durable_note_source_consumed("finwin_reset_wait")
                     store["finwin_reset_wait"] = None
                     save_data(data)
                     send_and_auto_delete(chat_id, "❎ Обнуление отменено.", 8)
@@ -17328,6 +17709,7 @@ def on_any_message(msg):
             if wait:
                 text_up = (msg.text or "").strip().upper()
                 if text_up == "ДА":
+                    _durable_note_source_consumed("finance_toggle_wait")
                     target_chat_id = int(wait.get("target_chat_id"))
                     set_finance_mode(target_chat_id, not is_finance_mode(target_chat_id))
                     store["finance_toggle_wait"] = None
@@ -17343,6 +17725,7 @@ def on_any_message(msg):
                         pass
                     return
                 elif text_up in {"НЕТ", "ОТМЕНА", "CANCEL"}:
+                    _durable_note_source_consumed("finance_toggle_wait")
                     store["finance_toggle_wait"] = None
                     save_data(data)
                     send_and_auto_delete(chat_id, "❎ Переключение финансового режима отменено.", 8)
@@ -17361,11 +17744,22 @@ def on_any_message(msg):
             store = get_chat_store(chat_id)
             fwd_wait = store.get("forward_copy_edit_wait") or {}
             if fwd_wait.get("type") == "forward_copy_edit":
+                _durable_note_source_consumed("forward_copy_edit_wait")
                 dst_msg_id = int(fwd_wait.get("dst_msg_id"))
                 text = (msg.text or "").strip()
                 if not edit_forward_copy_and_record(chat_id, dst_msg_id, text):
                     send_and_auto_delete(chat_id, "❌ Неверный формат или бот-копия не найдена. Пример: 1500 продукты", 10)
                     return
+                _edited_rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
+                if isinstance(_edited_rec, dict):
+                    _durable_note_record_edit_witness(_durable_record_edit_witness(
+                        int(chat_id), int(_edited_rec.get("id")),
+                        amount=_edited_rec.get("amount", 0), note=_edited_rec.get("note", ""),
+                        source_finance_text=_edited_rec.get("source_finance_text", ""),
+                        usd_amount=_edited_rec.get("usd_amount") if _edited_rec.get("usd_amount") is not None else None,
+                        usd_note=_edited_rec.get("usd_note") if _edited_rec.get("usd_amount") is not None else None,
+                        kind="forward_copy_edit",
+                    ))
                 clear_forward_copy_edit_wait(chat_id, delete_prompt=True)
                 try:
                     bot.delete_message(chat_id, msg.message_id)
@@ -17380,6 +17774,7 @@ def on_any_message(msg):
             store = get_chat_store(chat_id)
             finwin_wait = store.get("finwin_edit_wait")
             if finwin_wait and finwin_wait.get("type") == "finwin_edit":
+                _durable_note_source_consumed("finwin_edit_wait")
                 text = sanitize_telegram_inserted_text((msg.text or "").strip())
                 try:
                     amount, note = split_amount_and_note(text)
@@ -17394,8 +17789,12 @@ def on_any_message(msg):
                 fin_window_msg_id = finwin_wait.get("fin_window_msg_id")
 
                 with locked_chat(target_chat_id):
-                    ok = update_record_in_chat(target_chat_id, rid, amount, note)
+                    ok = update_record_in_chat(target_chat_id, rid, amount, note, source_finance_text=text)
 
+                if ok:
+                    _durable_note_record_edit_witness(_durable_record_edit_witness(
+                        target_chat_id, rid, amount=amount, note=note, source_finance_text=text, kind="finwin_edit",
+                    ))
                 clear_finwin_edit_wait_state(chat_id, delete_prompt=True)
                 try:
                     bot.delete_message(chat_id, msg.message_id)
@@ -17429,6 +17828,7 @@ def on_any_message(msg):
             edit_wait = store.get("edit_wait")
 
             if edit_wait and edit_wait.get("type") == "edit":
+                _durable_note_source_consumed("edit_wait")
                 text = sanitize_telegram_inserted_text((msg.text or "").strip())
                 if not text:
                     return
@@ -17459,13 +17859,18 @@ def on_any_message(msg):
 
                 target["amount"] = amount
                 target["note"] = note
+                target["source_finance_text"] = str(text)
 
                 for dk, arr in store.get("daily_records", {}).items():
                     for r in arr:
                         if r.get("id") == rid:
                             r["amount"] = amount
                             r["note"] = note
+                            r["source_finance_text"] = str(text)
 
+                _durable_note_record_edit_witness(_durable_record_edit_witness(
+                    chat_id, int(rid), amount=amount, note=note, source_finance_text=text, kind="edit_wait",
+                ))
                 store["balance"] = sum(r["amount"] for r in store.get("records", []))
                 clear_edit_wait_state(chat_id)
                 save_data(data)
@@ -17671,11 +18076,11 @@ def handle_finance_edit(msg):
 
     target["amount"] = amount
     target["note"] = note
+    target["source_finance_text"] = str(comp.get("source_finance_text") or text)
     if comp.get("usd_amount") is not None:
         target["usd_amount"] = float(comp.get("usd_amount") or 0)
         target["usd_note"] = str(comp.get("usd_note") or "")
         target["usd_only"] = bool(comp.get("usd_only", False))
-        target["source_finance_text"] = str(comp.get("source_finance_text") or text)
     elif target.get("usd_amount") is not None:
         target["usd_amount"] = 0.0
         target["usd_note"] = ""
@@ -17728,11 +18133,11 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 if existing:
                     existing["amount"] = amount
                     existing["note"] = note
+                    existing["source_finance_text"] = str(comp.get("source_finance_text") or text)
                     if comp.get("usd_amount") is not None:
                         existing["usd_amount"] = float(comp.get("usd_amount") or 0)
                         existing["usd_note"] = str(comp.get("usd_note") or "")
                         existing["usd_only"] = bool(comp.get("usd_only", False))
-                        existing["source_finance_text"] = str(comp.get("source_finance_text") or text)
                     elif existing.get("usd_amount") is not None:
                         existing["usd_amount"] = 0.0
                         existing["usd_note"] = ""
@@ -17769,6 +18174,7 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
         elif existing:
             existing["amount"] = 0
             existing["note"] = "удалено"
+            existing["source_finance_text"] = str(text or "").strip()
             existing["usd_amount"] = 0.0
             existing["usd_note"] = ""
             existing["usd_only"] = False
@@ -17783,6 +18189,10 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
 
     # v92 fix: возвращаем конкретную запись, чтобы UI бот-копии не искал её второй раз.
     result_rec = find_record_by_message_id(dst_chat_id, dst_msg_id)
+    try:
+        refresh_active_forward_copy_edit_prompt(int(dst_chat_id), int(dst_msg_id), result_rec)
+    except Exception:
+        pass
     schedule_finalize(dst_chat_id, entry_day)
     return result_rec if result_rec is not None else True
 
@@ -18321,7 +18731,7 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None
                 if _forward_copy_retro_is_stale(owner_chat_id, generation):
                     stopped_stale = True
                     break
-                base_text = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+                base_text = str(rec.get("source_finance_text") or "").strip() or compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
                 display_text = _forward_copy_display_text(base_text, rec, mode)
                 markup = _forward_copy_edit_keyboard(mode)
                 ct = str(rec.get("forward_copy_content_type") or "text")
@@ -18490,6 +18900,78 @@ def _forward_copy_edit_wait_scheduler_key(chat_id: int) -> str:
     return f"forward-copy-edit-wait:{int(chat_id)}"
 
 
+def _forward_copy_clean_copy_button(text: str):
+    """No-@bot edit helper.
+
+    Telegram switch_inline_query_current_chat must insert @bot.  CopyTextButton is the only
+    Bot API button that can expose arbitrary text without that tag, so use it when available.
+    Older pyTelegramBotAPI builds fall back to a callback that shows the same clean text.
+    """
+    value = str(text or "")[:256]
+    copy_cls = getattr(types, "CopyTextButton", None)
+    if copy_cls is not None:
+        try:
+            return IB("📋 Скопировать текст", copy_text=copy_cls(value))
+        except Exception:
+            pass
+    return IB("📋 Скопировать текст", callback_data="fwdcopy_edit_copy")
+
+
+def _forward_copy_edit_prompt_text(rec: dict, current: str) -> str:
+    return (
+        "✏️ изменение копии бота\n\n"
+        f"Запись: {rec.get('short_id') or 'R' + str(rec.get('id'))}\n"
+        f"Текущее значение: {current}\n\n"
+        "Нажмите «Скопировать текст», вставьте его в поле без @бот и измените нужное.\n"
+        "Либо отправьте новые данные одним сообщением. Будет изменена именно эта бот-копия и связанная финансовая запись.\n\n"
+        "⏳ Режим автоматически отменится через 40 секунд."
+    )
+
+
+def _forward_copy_edit_prompt_keyboard(current: str):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(_forward_copy_clean_copy_button(current))
+    kb.row(IB("❌ Отмена", callback_data="fwdcopy_edit_cancel"))
+    return kb
+
+
+def refresh_active_forward_copy_edit_prompt(chat_id: int, dst_msg_id: int, rec: dict | None = None) -> bool:
+    """Keep an already-open 💰Перес edit window synchronized with auto-edited bot copies."""
+    try:
+        chat_id = int(chat_id); dst_msg_id = int(dst_msg_id)
+        store = get_chat_store(chat_id)
+        wait = store.get("forward_copy_edit_wait") or {}
+        if wait.get("type") != "forward_copy_edit" or int(wait.get("dst_msg_id") or 0) != dst_msg_id:
+            return False
+        rec = rec or find_record_by_message_id(chat_id, dst_msg_id)
+        if not isinstance(rec, dict):
+            return False
+        current = str(rec.get("source_finance_text") or "").strip()
+        if not current:
+            current = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
+        wait["insert_text"] = current
+        prompt = _forward_copy_edit_prompt_text(rec, current)
+        wait["countdown_base_text"] = prompt
+        store["forward_copy_edit_wait"] = wait
+        save_data(data, chat_ids=[chat_id])
+        prompt_id = int(wait.get("prompt_msg_id") or 0)
+        if prompt_id:
+            try:
+                _tg_call_retry(
+                    bot.edit_message_text, prompt,
+                    chat_id=chat_id, message_id=prompt_id,
+                    reply_markup=_forward_copy_edit_prompt_keyboard(current),
+                    purpose="forward_copy_edit_prompt_refresh",
+                )
+            except Exception as e:
+                if "message is not modified" not in str(e).lower():
+                    log_error(f"refresh_active_forward_copy_edit_prompt({chat_id},{dst_msg_id}): {e}")
+        return True
+    except Exception as e:
+        log_error(f"refresh_active_forward_copy_edit_prompt({chat_id},{dst_msg_id}): {e}")
+        return False
+
+
 def clear_forward_copy_edit_wait(chat_id: int, delete_prompt: bool = True):
     store = get_chat_store(int(chat_id))
     wait = store.get("forward_copy_edit_wait") or {}
@@ -18517,9 +18999,8 @@ def schedule_forward_copy_edit_wait_cancel(chat_id: int, prompt_message_id: int,
             wait = store.get("forward_copy_edit_wait") or {}
             if int(wait.get("prompt_msg_id") or 0) != int(prompt_message_id):
                 return
-            clear_forward_copy_edit_wait(int(chat_id), delete_prompt=False)
-            day_key = store.get("current_view_day") or today_key()
-            return_to_main_window_closing_previous(int(chat_id), day_key, int(prompt_message_id))
+            clear_forward_copy_edit_wait(int(chat_id), delete_prompt=True)
+            bot_journal("forward_copy_edit_timeout", int(chat_id), f"prompt={prompt_message_id}; window deleted")
         except Exception as e:
             log_error(f"schedule_forward_copy_edit_wait_cancel({chat_id}): {e}")
     DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
@@ -18541,41 +19022,15 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
         else:
             current = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
 
-    kb = types.InlineKeyboardMarkup()
-    kb.row(make_copy_or_inline_button("✍️ Вставить текст", current))
-    kb.row(IB("❌ Отмена", callback_data="fwdcopy_edit_cancel"))
-    prompt = (
-        "✏️ изменение копии бота\n\n"
-        f"Запись: {rec.get('short_id') or 'R' + str(rec.get('id'))}\n"
-        f"Текущее значение: {current}\n\n"
-        "Нажмите «Вставить текст» или отправьте новые данные одним сообщением.\n"
-        "Будет изменена именно эта бот-копия и связанная финансовая запись.\n\n"
-        "⏳ Режим автоматически отменится через 40 секунд."
+    prompt = _forward_copy_edit_prompt_text(rec, current)
+    sent = _tg_call_retry(
+        bot.send_message, int(chat_id), prompt,
+        reply_markup=_forward_copy_edit_prompt_keyboard(current),
+        purpose="forward_copy_edit_prompt",
     )
-    sent = _tg_call_retry(bot.send_message, int(chat_id), prompt, reply_markup=kb, purpose="forward_copy_edit_prompt")
-
-    # Telegram Bot API не позволяет без действия пользователя физически заполнить compose-поле.
-    # ForceReply сразу открывает режим ответа, а сообщение ниже даёт готовую строку @бот + значение.
-    try:
-        username = get_bot_username_cached()
-        force_text = (
-            f"@{username} {current}" if username
-            else str(current)
-        )
-        try:
-            force_reply = types.ForceReply(selective=True, input_field_placeholder=str(current)[:64])
-        except TypeError:
-            force_reply = types.ForceReply(selective=True)
-        force_msg = _tg_call_retry(
-            bot.send_message, int(chat_id), force_text,
-            reply_markup=force_reply,
-            reply_to_message_id=int(sent.message_id),
-            purpose="forward_copy_edit_force_reply",
-        )
-        force_msg_id = int(getattr(force_msg, "message_id", 0) or 0)
-    except Exception as e:
-        log_error(f"forward_copy_edit force reply {chat_id}: {e}")
-        force_msg_id = 0
+    # v123: no ForceReply/@bot helper.  switch_inline_query_current_chat always prefixes
+    # the username, therefore 💰Перес uses CopyTextButton (or a clean-text fallback).
+    force_msg_id = 0
 
     get_chat_store(int(chat_id))["forward_copy_edit_wait"] = {
         "type": "forward_copy_edit",
@@ -18608,15 +19063,15 @@ def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -
     if source_chat_id is None:
         return False
     with locked_chat(int(chat_id)):
-        if not update_record_in_chat(int(chat_id), rid, amount, note):
+        if not update_record_in_chat(int(chat_id), rid, amount, note, source_finance_text=str(comp.get("source_finance_text") or clean_text)):
             return False
         rec = find_record_by_message_id(int(chat_id), int(dst_msg_id))
         if rec is not None:
+            rec["source_finance_text"] = str(comp.get("source_finance_text") or clean_text)
             if comp.get("usd_amount") is not None:
                 rec["usd_amount"] = float(comp.get("usd_amount") or 0)
                 rec["usd_note"] = str(comp.get("usd_note") or "")
                 rec["usd_only"] = bool(comp.get("usd_only", False))
-                rec["source_finance_text"] = str(comp.get("source_finance_text") or clean_text)
             elif rec.get("usd_amount") is not None:
                 rec["usd_amount"] = 0.0
                 rec["usd_note"] = ""
@@ -18652,6 +19107,15 @@ def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -
         if "message is not modified" not in str(e).lower():
             log_error(f"edit_forward_copy_and_record({chat_id},{dst_msg_id}): {e}")
             return False
+    _durable_note_source_consumed("forward_copy_manual_edit")
+    if isinstance(rec, dict):
+        _durable_note_record_edit_witness(_durable_record_edit_witness(
+            int(chat_id), rid, amount=rec.get("amount", 0), note=rec.get("note", ""),
+            source_finance_text=rec.get("source_finance_text", ""),
+            usd_amount=rec.get("usd_amount") if rec.get("usd_amount") is not None else None,
+            usd_note=rec.get("usd_note") if rec.get("usd_amount") is not None else None,
+            kind="forward_copy_edit",
+        ))
     finance_changed(int(chat_id), day_key, reason="forward_copy_manual_edit", delay=0.1)
     return True
 
@@ -18926,11 +19390,20 @@ def rebind_forwarded_finance_record(chat_id: int, old_msg_id: int, new_msg_id: i
             rec["origin_msg_id"] = new_msg_id
             rec["msg_id"] = new_msg_id
 
+            rec["source_finance_text"] = str(text or "").strip()
             if text and looks_like_amount(text):
                 try:
-                    amount, note = split_amount_and_note(text)
-                    rec["amount"] = amount
-                    rec["note"] = note
+                    comp = parse_financial_components(text)
+                    rec["amount"] = comp.get("amount", 0.0)
+                    rec["note"] = comp.get("note", "")
+                    if comp.get("usd_amount") is not None:
+                        rec["usd_amount"] = float(comp.get("usd_amount") or 0)
+                        rec["usd_note"] = str(comp.get("usd_note") or "")
+                        rec["usd_only"] = bool(comp.get("usd_only", False))
+                    elif rec.get("usd_amount") is not None:
+                        rec["usd_amount"] = 0.0
+                        rec["usd_note"] = ""
+                        rec["usd_only"] = False
                 except Exception:
                     pass
 
@@ -20068,6 +20541,7 @@ def handle_gomonk_insert_message(msg) -> bool:
     cleaned = sanitize_telegram_inserted_text(getattr(msg, "text", "") or "")
     if GOMONKI_INSERT_TOKEN not in cleaned.upper():
         return False
+    _durable_note_source_consumed("gomonk_insert")
     chat_id = int(msg.chat.id)
     entries = parse_gomonk_entries(cleaned)
     try:
@@ -21237,6 +21711,7 @@ def handle_direct_edit_insert_message(msg) -> bool:
         token_kind = USD_DIRECT_EDIT_TOKEN if USD_DIRECT_EDIT_TOKEN + "|" in text else DIRECT_EDIT_TOKEN if DIRECT_EDIT_TOKEN + "|" in text else None
         if not token_kind:
             return False
+        _durable_note_source_consumed("direct_edit_insert")
 
         # Формат: (EDITREC/EDITUSD|chat|rid|day| служебное...) + ниже обычный текст суммы.
         m = re.search(r"\((%s\|[^)]*)\)" % re.escape(token_kind), text)
@@ -21284,11 +21759,19 @@ def handle_direct_edit_insert_message(msg) -> bool:
         else:
             amount, note = split_amount_and_note(value_text)
             with locked_chat(target_chat_id):
-                ok = update_record_in_chat(target_chat_id, rid, amount, note)
+                ok = update_record_in_chat(target_chat_id, rid, amount, note, source_finance_text=value_text)
         if not ok:
             send_and_auto_delete(chat_id, "❌ Запись для редактирования не найдена.", 10)
             return True
 
+        if token_kind == USD_DIRECT_EDIT_TOKEN:
+            _durable_note_record_edit_witness(_durable_record_edit_witness(
+                target_chat_id, rid, usd_amount=amount, usd_note=note, kind="usd_direct",
+            ))
+        else:
+            _durable_note_record_edit_witness(_durable_record_edit_witness(
+                target_chat_id, rid, amount=amount, note=note, source_finance_text=value_text, kind="direct_edit",
+            ))
         try:
             bot.delete_message(chat_id, msg.message_id)
         except Exception:
@@ -22038,8 +22521,8 @@ def clear_edit_delete_selection(chat_id: int, day_key: str | None = None):
     save_data(data)
 
 
-def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str) -> bool:
-    """v27: только меняет данные. Окна/бэкапы делает finance_changed()."""
+def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, source_finance_text: str | None = None) -> bool:
+    """Меняет существующую запись; raw-текст редактирования хранится вместе с суммой/описанием."""
     bot_journal("record_update_start", chat_id, f"rid={rid} amount={amount} note={note}")
     store = get_chat_store(chat_id)
     target = next((r for r in store.get("records", []) if int(r.get("id", -1)) == int(rid)), None)
@@ -22047,11 +22530,15 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str) -> b
         return False
     target["amount"] = amount
     target["note"] = note
+    if source_finance_text is not None:
+        target["source_finance_text"] = str(source_finance_text or "").strip()
     for dk, arr in (store.get("daily_records", {}) or {}).items():
         for r in arr:
             if int(r.get("id", -1)) == int(rid):
                 r["amount"] = amount
                 r["note"] = note
+                if source_finance_text is not None:
+                    r["source_finance_text"] = str(source_finance_text or "").strip()
     recalc_balance(chat_id)
     rebuild_month_short_ids(chat_id)
     rebuild_global_records()
@@ -24990,6 +25477,17 @@ def on_callback(call):
             return
         if data_str == "fwdcopy_edit_cancel":
             clear_forward_copy_edit_wait(chat_id, delete_prompt=True)
+            return
+        if data_str == "fwdcopy_edit_copy":
+            wait = get_chat_store(int(chat_id)).get("forward_copy_edit_wait") or {}
+            current = str(wait.get("insert_text") or "").strip()
+            try:
+                bot.answer_callback_query(call.id, "Текст без @бот показан ниже", show_alert=False)
+            except Exception:
+                pass
+            if current:
+                helper = _tg_call_retry(bot.send_message, int(chat_id), current, purpose="forward_copy_edit_copy_fallback")
+                delete_message_later(int(chat_id), int(helper.message_id), 25)
             return
         if data_str == "forward_copy_edit_mode_toggle":
             if not version_mode_feature("forward_copy_edit"):
@@ -30510,4 +31008,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# v122
+# v123
