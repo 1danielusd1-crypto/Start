@@ -1,4 +1,4 @@
-# v127
+# v128
 import os
 import io
 import json
@@ -679,7 +679,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v127_excel_notes_exact_validation"
+VERSION = "bot_v128_google_sheets_gomonk_fix"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v127_excel_notes_exact_validation.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1759,6 +1759,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v128_current": _modern_behavior_profile("v128 Google Sheets Notes / Gomonk fix", "Нативные примечания Google Sheets для Excel статей и исправление кнопки Гомонковые во всех современных профилях."),
     "v127_current": _modern_behavior_profile("v127 Excel Notes exact validation", "Исправление ложной проверки expected/actual в Excel статьи и проверка текста каждого Примечания внутри XLSX."),
     "v126_current": _modern_behavior_profile("v126 Кнопки / Excel Примечания", "Аудит callback-кнопок, channel-safe вставка без Telegram 400 и Excel статьи с примечаниями без автора/современных комментариев."),
     "v125_current": _modern_behavior_profile("v125 Быстрый 💰Перес / Excel Примечания", "💰Перес обновляет только свежие копии за 3 дня без длинной очереди; режим Excel глобальный, Примечания отделены от Комментариев."),
@@ -1792,7 +1793,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v127_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v128_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -5050,13 +5051,17 @@ def _normalize_excel_table_style(value) -> str:
         "note": "new_notes",
         "comments": "new_comments",
         "comment": "new_comments",
+        "google": "google_notes",
+        "sheets": "google_notes",
+        "google_sheets": "google_notes",
+        "google_notes": "google_notes",
     }
     mode = aliases.get(raw, raw)
-    return mode if mode in {"old", "new_comments", "new_notes"} else ""
+    return mode if mode in {"old", "new_comments", "new_notes", "google_notes"} else ""
 
 
 def excel_table_style(chat_id: int) -> str:
-    """Глобальный формат ВСЕХ XLSX: old / new_comments / new_notes.
+    """Глобальный формат: old / new_comments / new_notes / google_notes.
 
     v124 хранил выбор отдельно в каждом чате. Из-за этого владелец мог выбрать
     «Примечания» в INFO, а экспорт другого целевого чата всё ещё создавался в
@@ -5110,7 +5115,7 @@ def set_excel_table_style(chat_id: int, mode: str) -> str:
 
 def toggle_excel_table_style(chat_id: int) -> str:
     """Compatibility helper: cycle OLD -> Comments -> Notes -> OLD."""
-    order = ["old", "new_comments", "new_notes"]
+    order = ["old", "new_comments", "new_notes", "google_notes"]
     current = excel_table_style(chat_id)
     try:
         next_mode = order[(order.index(current) + 1) % len(order)]
@@ -5125,6 +5130,8 @@ def excel_table_style_caption(chat_id: int) -> str:
         return "СТАРОЕ"
     if mode == "new_comments":
         return "НОВОЕ • КОММЕНТАРИИ"
+    if mode == "google_notes":
+        return "GOOGLE SHEETS • ПРИМЕЧАНИЯ"
     return "НОВОЕ • ПРИМЕЧАНИЯ"
 
 
@@ -5132,7 +5139,7 @@ def excel_annotation_mode(chat_id: int) -> str | None:
     mode = excel_table_style(chat_id)
     if mode == "new_comments":
         return "comments"
-    if mode == "new_notes":
+    if mode in {"new_notes", "google_notes"}:
         return "notes"
     return None
 
@@ -5147,7 +5154,8 @@ def build_excel_style_text(chat_id: int) -> str:
         "Формат единый для ВСЕХ XLSX-файлов и всех чатов.\n"
         "• Старая — прежняя простая таблица.\n"
         "• Новая в комментариях — цветная таблица + современные Excel Comments.\n"
-        "• Новая в примечаниях — цветная таблица + классические Excel Notes (Примечания); современные комментарии в файле отсутствуют.\n\n"
+        "• Новая в примечаниях — цветная XLSX + классические Excel Notes.\n"
+        "• Google Sheets в примечаниях — Excel статьи создаётся прямо в Google Sheets через API; описание записывается в нативное поле Примечание.\n\n"
         f"Сейчас: {excel_table_style_caption(chat_id)}",
         9,
     )
@@ -5159,7 +5167,8 @@ def build_excel_style_keyboard(chat_id: int):
     choices = [
         ("old", "Старая"),
         ("new_comments", "Новая в комментариях"),
-        ("new_notes", "Новая в примечаниях"),
+        ("new_notes", "Новая в примечаниях (XLSX)"),
+        ("google_notes", "Google Sheets в примечаниях"),
     ]
     for value, label in choices:
         mark = "✅" if mode == value else "⬜"
@@ -20714,15 +20723,18 @@ USD_RATE_CACHE_SECONDS = max(300, int(os.getenv("USD_RATE_CACHE_SECONDS", "1800"
 
 
 def _v85_enabled(feature: str) -> bool:
-    """Функции, появившиеся в v85+, остаются доступны и во всех новых профилях.
+    """Доступность функций v85+ определяется самим активным профилем.
 
-    Раньше список был жёстко ограничен v92 и ниже, поэтому в v93/v97 режим
-    «Гомонковые» был объявлен в профиле, но фактически блокировался.
+    Старый жёсткий список профилей обрывался на v97. Поэтому в современных
+    профилях v119-v127 кнопка «Гомонковые» отображалась, но callback молча
+    завершался. version_mode_feature() уже является единственным источником
+    истины и корректно работает для новых и исторических профилей.
     """
-    return bool(active_bot_behavior_profile() in {
-        "v97_current", "v93_current", "v92_current", "v91_current", "v90_current",
-        "v88_current", "v87_current", "v86_current", "v85_current"
-    } and version_mode_feature(feature))
+    try:
+        return bool(version_mode_feature(feature))
+    except Exception as exc:
+        log_error(f"v85 feature gate {feature}: {exc}")
+        return False
 
 
 def _gomonk_settings(chat_id: int) -> dict:
@@ -23419,6 +23431,194 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     return rows, label
 
 
+
+# ─────────────────────────────────────────────────────────────
+# v128: нативные Google Sheets Notes через Sheets API
+# ─────────────────────────────────────────────────────────────
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+GOOGLE_SHEETS_SHARE_EMAIL = os.getenv("GOOGLE_SHEETS_SHARE_EMAIL", "").strip()
+_GOOGLE_TOKEN_CACHE = {"token": "", "expires_at": 0.0}
+_GOOGLE_TOKEN_LOCK = threading.RLock()
+
+
+def _b64url(data: bytes) -> str:
+    import base64
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _google_service_account_info() -> dict:
+    raw = GOOGLE_SERVICE_ACCOUNT_JSON
+    if not raw:
+        raise RuntimeError(
+            "Google Sheets API не настроен: добавьте GOOGLE_SERVICE_ACCOUNT_JSON и GOOGLE_SHEETS_SHARE_EMAIL в Render Environment"
+        )
+    try:
+        if raw.lstrip().startswith("{"):
+            info = json.loads(raw)
+        else:
+            import base64
+            info = json.loads(base64.b64decode(raw).decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"GOOGLE_SERVICE_ACCOUNT_JSON повреждён: {exc}")
+    for key in ("client_email", "private_key", "token_uri"):
+        if not info.get(key):
+            raise RuntimeError(f"GOOGLE_SERVICE_ACCOUNT_JSON: отсутствует {key}")
+    return info
+
+
+def _google_sign_rs256(message: bytes, private_key_pem: str) -> bytes:
+    """Подписывает JWT через системный openssl, без дополнительных pip-зависимостей."""
+    key_path = msg_path = sig_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as key_file:
+            key_file.write(private_key_pem)
+            key_path = key_file.name
+        with tempfile.NamedTemporaryFile("wb", delete=False) as msg_file:
+            msg_file.write(message)
+            msg_path = msg_file.name
+        sig_fd, sig_path = tempfile.mkstemp(prefix="google_jwt_", suffix=".sig")
+        os.close(sig_fd)
+        proc = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-sign", key_path, "-out", sig_path, msg_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.decode("utf-8", "replace")[-500:])
+        return Path(sig_path).read_bytes()
+    finally:
+        for path in (key_path, msg_path, sig_path):
+            if path:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
+
+def _google_access_token() -> str:
+    with _GOOGLE_TOKEN_LOCK:
+        now = time.time()
+        if _GOOGLE_TOKEN_CACHE.get("token") and now < float(_GOOGLE_TOKEN_CACHE.get("expires_at", 0)) - 120:
+            return str(_GOOGLE_TOKEN_CACHE["token"])
+        info = _google_service_account_info()
+        header = {"alg": "RS256", "typ": "JWT"}
+        claims = {
+            "iss": info["client_email"],
+            "scope": "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive",
+            "aud": info.get("token_uri") or "https://oauth2.googleapis.com/token",
+            "iat": int(now),
+            "exp": int(now) + 3600,
+        }
+        signing_input = (
+            _b64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+            + "."
+            + _b64url(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
+        ).encode("ascii")
+        signature = _google_sign_rs256(signing_input, info["private_key"])
+        assertion = signing_input.decode("ascii") + "." + _b64url(signature)
+        response = requests.post(
+            info.get("token_uri") or "https://oauth2.googleapis.com/token",
+            data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion},
+            timeout=30,
+        )
+        if response.status_code >= 300:
+            raise RuntimeError(f"Google OAuth {response.status_code}: {response.text[:500]}")
+        payload = response.json()
+        token = str(payload.get("access_token") or "")
+        if not token:
+            raise RuntimeError("Google OAuth не вернул access_token")
+        _GOOGLE_TOKEN_CACHE.update(token=token, expires_at=now + int(payload.get("expires_in", 3600) or 3600))
+        return token
+
+
+def _google_cell_value(value):
+    if isinstance(value, dict) and value.get("formula"):
+        return {"formulaValue": "=" + str(value.get("formula") or "").lstrip("=")}
+    if isinstance(value, bool):
+        return {"boolValue": value}
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return {"numberValue": float(value)}
+    return {"stringValue": str(value or "")}
+
+
+def _google_category_fill(col_idx_zero: int) -> dict:
+    palette = [
+        (0.78, 0.94, 0.81), (0.87, 0.92, 0.97), (0.99, 0.89, 0.84),
+        (0.89, 0.87, 0.93), (1.0, 0.95, 0.80), (0.85, 0.92, 0.83),
+        (0.81, 0.89, 0.95), (0.96, 0.80, 0.80), (0.82, 0.88, 0.89),
+        (0.92, 0.82, 0.86), (0.85, 0.82, 0.91),
+    ]
+    if col_idx_zero >= 3:
+        rgb = palette[(col_idx_zero - 3) % len(palette)]
+        return {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}
+    return {"red": 0.92, "green": 0.95, "blue": 0.90}
+
+
+def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
+    """Создаёт Google Spreadsheet и пишет описания в native CellData.note."""
+    token = _google_access_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    create = requests.post(
+        "https://sheets.googleapis.com/v4/spreadsheets",
+        headers=headers,
+        json={"properties": {"title": title[:100]}, "sheets": [{"properties": {"title": "Статьи", "gridProperties": {"frozenRowCount": 2}}}]},
+        timeout=45,
+    )
+    if create.status_code >= 300:
+        raise RuntimeError(f"Google Sheets create {create.status_code}: {create.text[:700]}")
+    book = create.json()
+    spreadsheet_id = str(book.get("spreadsheetId") or "")
+    sheet_id = int(((book.get("sheets") or [{}])[0].get("properties") or {}).get("sheetId", 0))
+    if not spreadsheet_id:
+        raise RuntimeError("Google Sheets API не вернул spreadsheetId")
+
+    _styles, annotations, _freeze, _widths = _modern_category_excel_styles_comments(rows)
+    cell_rows = []
+    max_cols = max((len(row) for row in rows), default=1)
+    for r_idx, row in enumerate(rows, start=1):
+        values = []
+        for c_idx in range(1, max_cols + 1):
+            value = row[c_idx - 1] if c_idx - 1 < len(row) else ""
+            cell = {"userEnteredValue": _google_cell_value(value)}
+            note = str(annotations.get((r_idx, c_idx)) or "").strip()
+            if note:
+                cell["note"] = note
+            if r_idx == 1:
+                cell["userEnteredFormat"] = {"textFormat": {"bold": True}, "backgroundColor": _google_category_fill(c_idx - 1)}
+            elif c_idx >= 4 and value not in ("", None):
+                cell["userEnteredFormat"] = {"backgroundColor": _google_category_fill(c_idx - 1)}
+            values.append(cell)
+        cell_rows.append({"values": values})
+
+    requests_payload = [{
+        "updateCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "startColumnIndex": 0},
+            "rows": cell_rows,
+            "fields": "userEnteredValue,note,userEnteredFormat",
+        }
+    }, {
+        "autoResizeDimensions": {
+            "dimensions": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": max_cols}
+        }
+    }]
+    update = requests.post(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate",
+        headers=headers, json={"requests": requests_payload}, timeout=90,
+    )
+    if update.status_code >= 300:
+        raise RuntimeError(f"Google Sheets update {update.status_code}: {update.text[:700]}")
+
+    share_email = GOOGLE_SHEETS_SHARE_EMAIL.strip()
+    if share_email:
+        share = requests.post(
+            f"https://www.googleapis.com/drive/v3/files/{spreadsheet_id}/permissions?sendNotificationEmail=false",
+            headers=headers,
+            json={"type": "user", "role": "writer", "emailAddress": share_email},
+            timeout=45,
+        )
+        if share.status_code >= 300:
+            raise RuntimeError(f"Google Drive share {share.status_code}: {share.text[:700]}")
+    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+
 def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv"):
     """Отправка CSV или Excel по выбранному периоду. Работает для обычного чата и для меню владельца по чужому чату."""
     trace = ProcessTrace(recipient_chat_id, f"Экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
@@ -23474,6 +23674,18 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             store = get_chat_store(target_chat_id)
             start_key, end_key = _period_export_bounds(store, mode, day_key)
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
+            if excel_table_style(target_chat_id) == "google_notes":
+                trace.step("создаёт Google Sheets с нативными примечаниями")
+                _file_job_progress("создаю Google Таблицу и примечания", force=True)
+                title = f"{get_chat_display_name(target_chat_id)} — статьи — {label}"
+                sheet_url = _google_sheets_create_category_report(title, xlsx_rows)
+                bot.send_message(
+                    recipient_chat_id,
+                    f"📊 Google Таблица — статьи {label}: {get_chat_display_name(target_chat_id)}\n\n{sheet_url}\n\nОписания расходов записаны в нативные Примечания Google Sheets.",
+                    disable_web_page_preview=True,
+                )
+                trace.finish("Google Таблица создана")
+                return True
             _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Статьи", category_layout=True)
         elif ext == "xlsx":
             trace.step("создаёт временный Excel файл")
@@ -26836,7 +27048,13 @@ def on_callback(call):
             return
         if data_str == "gomonk_open":
             if not _v85_enabled("gomonk_wallets"):
+                bot_journal("gomonk_blocked", chat_id, f"profile={active_bot_behavior_profile()}")
+                try:
+                    bot.answer_callback_query(call.id, "Гомонковые недоступны в выбранном историческом профиле", show_alert=True)
+                except Exception:
+                    pass
                 return
+            bot_journal("gomonk_open", chat_id, f"profile={active_bot_behavior_profile()}")
             open_gomonk_window(chat_id, call.message.message_id)
             return
         if data_str == "gomonk_toggle":
@@ -31762,3 +31980,5 @@ if __name__ == "__main__":
     main()
 
 # v127
+
+# v128
