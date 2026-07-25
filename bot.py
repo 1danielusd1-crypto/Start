@@ -1,4 +1,4 @@
-# v125
+# v126
 import os
 import io
 import json
@@ -679,8 +679,8 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v125_fast_peres_excel_notes_global"
-BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v125_fast_peres_excel_notes_global.py"
+VERSION = "bot_v126_buttons_notes_stability"
+BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v126_buttons_notes_stability.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
 
@@ -1759,6 +1759,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v126_current": _modern_behavior_profile("v126 Кнопки / Excel Примечания", "Аудит callback-кнопок, channel-safe вставка без Telegram 400 и Excel статьи с примечаниями без автора/современных комментариев."),
     "v125_current": _modern_behavior_profile("v125 Быстрый 💰Перес / Excel Примечания", "💰Перес обновляет только свежие копии за 3 дня без длинной очереди; режим Excel глобальный, Примечания отделены от Комментариев."),
     "v124_current": _modern_behavior_profile("v124 Global 💰Перес / версии / файлы", "Глобальный 💰Перес с ретро-обновлением старых копий, постраничный Ф132 и загрузки исходника/журнала в Ф89."),
     "v123_current": _modern_behavior_profile("v123 Edit consistency / 💰Перес safe", "Единая логика редактирования, exact edit witnesses и безопасное завершение 40-секундного окна 💰Перес."),
@@ -1790,7 +1791,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v125_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v126_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -3858,6 +3859,7 @@ WINDOW_MARKER_CONSTANTS = {
     'journal_current_file': 'Ф173',
     'journal_bot_source': 'Ф174',
     'fwdcopy_edit_copy': 'Ф175',
+    'itxt:*': 'Ф176',
     'journal_open': 'Ф89',
     'journal_toggle': 'Ф90',
     'legacy_common:*': 'Ф91',
@@ -13795,7 +13797,7 @@ def _write_tabl_lsx_xlsx(
 <v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox style="mso-direction-alt:auto"><div style="text-align:left"/></v:textbox>
 <x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>{max(0,int(col_idx)-1)}, 15, {max(0,int(row_idx)-1)}, 2, {int(col_idx)+2}, 15, {int(row_idx)+4}, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>{max(0,int(row_idx)-1)}</x:Row><x:Column>{max(0,int(col_idx)-1)}</x:Column></x:ClientData></v:shape>''')
         notes_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author>Telegram Finance Bot</author></authors><commentList>{''.join(comment_nodes)}</commentList></comments>'''
+<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author></author></authors><commentList>{''.join(comment_nodes)}</commentList></comments>'''
         vml_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
 <o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>{''.join(shapes)}</xml>'''
@@ -13864,10 +13866,20 @@ def _validate_xlsx_annotation_package(path: str, annotation_mode: str | None) ->
         return
     with zipfile.ZipFile(path, "r") as z:
         names = set(z.namelist())
+        legacy_xml = z.read("xl/comments1.xml").decode("utf-8", "replace") if "xl/comments1.xml" in names else ""
+        vml_text = z.read("xl/drawings/vmlDrawing1.vml").decode("utf-8", "replace") if "xl/drawings/vmlDrawing1.vml" in names else ""
     has_legacy_notes = "xl/comments1.xml" in names and "xl/drawings/vmlDrawing1.vml" in names
     has_threaded_comments = "xl/threadedComments/threadedComment1.xml" in names or "xl/persons/person.xml" in names
-    if mode == "notes" and has_threaded_comments:
-        raise RuntimeError("XLSX notes mode contains threaded Comments parts")
+    if mode == "notes":
+        if has_threaded_comments:
+            raise RuntimeError("XLSX notes mode contains threaded Comments parts")
+        if has_legacy_notes:
+            if "ObjectType=\"Note\"" not in vml_text:
+                raise RuntimeError("XLSX notes VML does not declare ObjectType=Note")
+            if "Telegram Finance Bot" in legacy_xml:
+                raise RuntimeError("XLSX notes mode must not carry a comment author")
+            if "<comment " in legacy_xml and not re.search(r"<comment\b[^>]*>.*?<t(?:\s[^>]*)?>(?!\s*</t>).*?</t>", legacy_xml, flags=re.S):
+                raise RuntimeError("XLSX notes mode contains empty note bodies")
     if mode == "comments" and has_legacy_notes:
         raise RuntimeError("XLSX comments mode contains legacy Notes parts")
 
@@ -13983,6 +13995,25 @@ def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sh
     else:
         styles, annotations, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
     annotation_mode = excel_annotation_mode(chat_id)
+    if category_layout and annotation_mode == "notes":
+        expected = 0
+        header_seen = False
+        for row in rows or []:
+            row = list(row or [])
+            first = str(row[0] if row else "").strip().casefold()
+            second = str(row[1] if len(row) > 1 else "").strip().casefold()
+            if first in {"дата", "date"} and second in {"описание", "description", "приход/выдача"}:
+                header_seen = True
+                continue
+            if not header_seen:
+                continue
+            note_text = str(row[1] if len(row) > 1 else "").strip()
+            if not note_text:
+                continue
+            if any(_excel_nonempty(row[c]) for c in range(3, len(row))):
+                expected += 1
+        if expected and len(annotations) < expected:
+            raise RuntimeError(f"Excel статьи: потеря примечаний expected={expected} actual={len(annotations)}")
     _write_tabl_lsx_xlsx(
         path, rows, styles, sheet_name=sheet_name, comments=annotations,
         freeze_rows=freeze_rows, widths=widths, annotation_mode=annotation_mode,
@@ -15681,7 +15712,7 @@ def _category_prompt_keyboard(chat_id: int, owner_day_key: str | None = None, ba
     else:
         delete_callback = cat_callback("cat_del_menu")
     if insert_text:
-        kb.row(make_copy_or_inline_button("✏️ Изменить значение", str(insert_text)))
+        kb.row(make_copy_or_inline_button("✏️ Изменить значение", str(insert_text), viewer_chat_id=chat_id))
     kb.row(IB("🗑 Удалить статью", callback_data=delete_callback))
     kb.row(
         IB("⬅️ Назад", callback_data=cat_callback("cat_prompt_back")),
@@ -17259,7 +17290,7 @@ def build_secret_edit_keyboard(
         label = f"{idx}. {fmt_date_ddmmyy(day_key)} {stamp} ✏️"
         delete_label = "☑️ Удалить" if record_id in selected else "⬛ Удалить"
         kb.row(
-            IB(label, switch_inline_query_current_chat=compose_secret_edit_insert(target_chat_id, item)[:256]),
+            make_copy_or_inline_button(label, compose_secret_edit_insert(target_chat_id, item), viewer_chat_id=viewer_chat_id),
             IB(delete_label, callback_data=f"secedtoggle:{target_chat_id}:{day_key}:{record_id}"),
         )
     if not _secret_day_records(target_chat_id, day_key):
@@ -19325,7 +19356,7 @@ def _forward_copy_edit_wait_scheduler_key(chat_id: int) -> str:
 
 def _forward_copy_clean_copy_button(text: str):
     """Compatibility helper kept for old code paths; v125 uses the main edit insert UX."""
-    return IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(text or ""))[:256])
+    return make_copy_or_inline_button("✍️ Вставить текст", "\n" + str(text or ""), viewer_chat_id=None)
 
 
 def _forward_copy_edit_prompt_text(rec: dict, current: str) -> str:
@@ -19350,12 +19381,7 @@ def _forward_copy_edit_prompt_keyboard(current: str, day_key: str | None = None,
     except Exception:
         chat_type = ""
     if current:
-        if chat_type == "channel":
-            # Telegram rejects switch_inline_query_current_chat inside channels (400).
-            # Fallback shows clean text in a temporary message instead of breaking Edit.
-            kb.row(IB("✍️ Показать текст", callback_data="fwdcopy_edit_copy"))
-        else:
-            kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(current))[:256]))
+        kb.row(make_copy_or_inline_button("✍️ Вставить текст", "\n" + str(current), viewer_chat_id=chat_id))
     kb.row(
         IB("❌ Закрыть", callback_data="fwdcopy_edit_cancel"),
         IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"),
@@ -20989,7 +21015,7 @@ def build_gomonk_menu_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.row(IB(gomonk_toggle_label(chat_id), callback_data="gomonk_toggle"))
     template = f"({GOMONKI_INSERT_TOKEN})\nИмя1 1000 : Имя2 5777"
-    kb.row(make_copy_or_inline_button("💰 Сумма", template))
+    kb.row(make_copy_or_inline_button("💰 Сумма", template, viewer_chat_id=chat_id))
     kb.row(IB("🔙 Назад в Инфо", callback_data="gomonk_back"))
     return kb
 
@@ -21623,7 +21649,7 @@ def start_record_edit_prompt(chat_id: int, day_key: str, rid: int) -> bool:
         )
         insert_value = compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
         text = wm_common(text, 10)
-        kb = build_cancel_edit_keyboard(day_key, insert_text=insert_value)
+        kb = build_cancel_edit_keyboard(day_key, insert_text=insert_value, chat_id=chat_id)
         prompt_id = send_or_edit_edit_prompt(chat_id, "edit_wait", text, reply_markup=kb)
         store["edit_wait"] = {
             "type": "edit",
@@ -22089,10 +22115,81 @@ def build_csv_menu(day_key: str, chat_id: int | None = None):
 def build_edit_menu_keyboard(day_key: str, chat_id=None):
     """Совместимость со старыми callback: отдельного подменю больше нет."""
     return build_main_keyboard(day_key, chat_id)
-def make_copy_or_inline_button(label: str, text: str):
-    """Кнопка-вставка в поле ввода через inline current chat.
-    Если Telegram добавит @имя_бота, обработчики редактирования очищают его перед сохранением.
+_INLINE_FALLBACK_TEXT_LOCK = threading.RLock()
+_INLINE_FALLBACK_TEXT = {}
+_INLINE_FALLBACK_TEXT_SEQ = 0
+_INLINE_FALLBACK_TEXT_TTL = 180.0
+_INLINE_FALLBACK_TEXT_MAX = 300
+
+
+def _chat_type_for_buttons(chat_id: int | None) -> str:
+    try:
+        if chat_id is None:
+            return ""
+        info = (get_chat_store(int(chat_id)).get("info") or {})
+        return str(info.get("type") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _inline_current_chat_supported(chat_id: int | None) -> bool:
+    """Telegram forbids switch_inline_query_current_chat in channel posts."""
+    return _chat_type_for_buttons(chat_id) != "channel"
+
+
+def _inline_fallback_register(chat_id: int | None, text: str) -> str:
+    """Small RAM-only token for channel-safe 'show/copy text' buttons.
+
+    It is intentionally ephemeral: these buttons are only helpers for an already-open
+    edit window. Business state stays in SQLite/MEGA.
     """
+    global _INLINE_FALLBACK_TEXT_SEQ
+    now = time.time()
+    with _INLINE_FALLBACK_TEXT_LOCK:
+        for key, item in list(_INLINE_FALLBACK_TEXT.items()):
+            if now - float((item or {}).get("ts", 0.0) or 0.0) > _INLINE_FALLBACK_TEXT_TTL:
+                _INLINE_FALLBACK_TEXT.pop(key, None)
+        _INLINE_FALLBACK_TEXT_SEQ += 1
+        token = f"{int(now * 1000):x}{_INLINE_FALLBACK_TEXT_SEQ:x}"[-18:]
+        _INLINE_FALLBACK_TEXT[token] = {
+            "chat_id": int(chat_id) if chat_id is not None else None,
+            "text": str(text or "")[:3500],
+            "ts": now,
+        }
+        if len(_INLINE_FALLBACK_TEXT) > _INLINE_FALLBACK_TEXT_MAX:
+            oldest = sorted(_INLINE_FALLBACK_TEXT.items(), key=lambda kv: float((kv[1] or {}).get("ts", 0.0) or 0.0))
+            for key, _item in oldest[: len(_INLINE_FALLBACK_TEXT) - _INLINE_FALLBACK_TEXT_MAX]:
+                _INLINE_FALLBACK_TEXT.pop(key, None)
+    return f"itxt:{token}"
+
+
+def _inline_fallback_get(data_str: str, chat_id: int) -> str:
+    token = str(data_str or "").split(":", 1)[1] if ":" in str(data_str or "") else ""
+    now = time.time()
+    with _INLINE_FALLBACK_TEXT_LOCK:
+        item = _INLINE_FALLBACK_TEXT.get(token) or {}
+        if not item:
+            return ""
+        if now - float(item.get("ts", 0.0) or 0.0) > _INLINE_FALLBACK_TEXT_TTL:
+            _INLINE_FALLBACK_TEXT.pop(token, None)
+            return ""
+        expected = item.get("chat_id")
+        if expected is not None and int(expected) != int(chat_id):
+            return ""
+        return str(item.get("text") or "")
+
+
+def make_copy_or_inline_button(label: str, text: str, viewer_chat_id: int | None = None):
+    """Insert text in normal chats; never create Telegram-invalid inline buttons in channels."""
+    if not _inline_current_chat_supported(viewer_chat_id):
+        safe_label = str(label or "✍️")
+        if "Вставить" in safe_label:
+            safe_label = safe_label.replace("Вставить", "Показать")
+        elif safe_label.strip() in {"✏️", "✍️"}:
+            safe_label = safe_label
+        else:
+            safe_label = safe_label + " · показать"
+        return IB(safe_label, callback_data=_inline_fallback_register(viewer_chat_id, text))
     return IB(label, switch_inline_query_current_chat=str(text)[:256])
 
 
@@ -22143,12 +22240,9 @@ def compose_usd_edit_insert_value(target_chat_id: int, rid: int, day_key: str, a
     return f"({meta} служебное — можно не трогать)\n\n{value}"
 
 
-def make_direct_edit_insert_button(label: str, insert_text: str):
-    """Кнопка, которая сразу открывает поле ввода Telegram с подготовленным текстом.
-    В Bot API это возможно только через inline-query текущего чата; обычный callback не умеет
-    принудительно вставлять текст в поле ввода.
-    """
-    return IB(label, switch_inline_query_current_chat=str(insert_text)[:256])
+def make_direct_edit_insert_button(label: str, insert_text: str, viewer_chat_id: int | None = None):
+    """Direct edit insert with a safe channel fallback instead of Telegram HTTP 400."""
+    return make_copy_or_inline_button(label, insert_text, viewer_chat_id=viewer_chat_id)
 
 
 def handle_direct_edit_insert_message(msg) -> bool:
@@ -22243,12 +22337,10 @@ def handle_direct_edit_insert_message(msg) -> bool:
             pass
         return True
 
-def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None):
+def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None, chat_id: int | None = None):
     kb = types.InlineKeyboardMarkup()
-    # Кнопка открывает поле ввода через inline current chat; возможное @имя_бота очищается обработчиком перед сохранением.
     if insert_text:
-        # v91: Telegram показывает @имя_бота, а сам текст начинается с новой строки, не сплошняком.
-        kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(insert_text))[:256]))
+        kb.row(make_copy_or_inline_button("✍️ Вставить текст", "\n" + str(insert_text), viewer_chat_id=chat_id))
     kb.row(
         IB("❌ Закрыть", callback_data=f"d:{day_key}:cancel_edit"),
         IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"),
@@ -22259,7 +22351,7 @@ def build_cancel_edit_keyboard(day_key: str, insert_text: str | None = None):
 def build_finwin_cancel_edit_keyboard(target_chat_id: int, day_key: str, owner_day_key: str, insert_text: str | None = None):
     kb = types.InlineKeyboardMarkup()
     if insert_text:
-        kb.row(make_copy_or_inline_button("✍️ Вставить текст", str(insert_text)))
+        kb.row(make_copy_or_inline_button("✍️ Вставить текст", str(insert_text), viewer_chat_id=(int(OWNER_ID) if OWNER_ID else target_chat_id)))
     kb.row(
         IB("❌ Закрыть", callback_data=f"fv:{target_chat_id}:{day_key}:cancel_edit:{owner_day_key}"),
         IB("⬅️ Назад осн. окно", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"),
@@ -22918,7 +23010,7 @@ def build_edit_records_keyboard(day_key: str, chat_id: int, prefix: str = "d", o
         insert_text = compose_direct_edit_insert_value(chat_id, rid, day_key, r.get("amount", 0), r.get("note", ""))
         kb.row(
             IB(lbl, callback_data="none"),
-            make_direct_edit_insert_button("✏️", insert_text),
+            make_direct_edit_insert_button("✏️", insert_text, viewer_chat_id=(int(OWNER_ID) if prefix == "fv" and OWNER_ID else chat_id)),
             IB(del_icon, callback_data=del_cb)
         )
 
@@ -22943,7 +23035,7 @@ def build_usd_edit_records_keyboard(day_key: str, chat_id: int):
         sid = str(rec.get("usd_short_id") or rec.get("short_id") or f"U{rid}")
         label = f"{sid} {('+' if amt >= 0 else '-')}${fmt_num_plain(abs(amt))}"
         insert_text = compose_usd_edit_insert_value(chat_id, rid, _record_day_key(rec), amt, rec.get("usd_note") or rec.get("note", ""))
-        kb.row(IB(label, callback_data="none"), make_direct_edit_insert_button("✏️", insert_text))
+        kb.row(IB(label, callback_data="none"), make_direct_edit_insert_button("✏️", insert_text, viewer_chat_id=chat_id))
     kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
@@ -26000,6 +26092,24 @@ def on_callback(call):
             if handle_categories_callback(call, data_str):
                 return
 
+        # Channel-safe replacement for every switch_inline_query_current_chat helper.
+        if data_str.startswith("itxt:"):
+            current = _inline_fallback_get(data_str, int(chat_id))
+            if not current:
+                try:
+                    bot.answer_callback_query(call.id, "Кнопка устарела. Откройте окно заново.", show_alert=True)
+                except Exception:
+                    pass
+                return
+            try:
+                bot.answer_callback_query(call.id, "Текст показан ниже", show_alert=False)
+            except Exception:
+                pass
+            helper = _tg_call_retry(bot.send_message, int(chat_id), current, purpose="inline_text_channel_fallback")
+            if helper is not None and getattr(helper, "message_id", None):
+                delete_message_later(int(chat_id), int(helper.message_id), 25)
+            return
+
         # 💰Перес работает и в скрытом финрежиме принимающего чата, поэтому до guard.
         if data_str == "fwdcopy_edit":
             start_forward_copy_edit(chat_id, call.message.message_id)
@@ -26016,7 +26126,8 @@ def on_callback(call):
                 pass
             if current:
                 helper = _tg_call_retry(bot.send_message, int(chat_id), current, purpose="forward_copy_edit_copy_fallback")
-                delete_message_later(int(chat_id), int(helper.message_id), 25)
+                if helper is not None and getattr(helper, "message_id", None):
+                    delete_message_later(int(chat_id), int(helper.message_id), 25)
             return
         if data_str == "forward_copy_edit_mode_toggle":
             if not version_mode_feature("forward_copy_edit"):
@@ -28078,8 +28189,19 @@ def on_callback(call):
             except Exception:
                 pass
             return
+
+        # Fail visibly instead of silently swallowing a button that has no route.
+        log_error(f"UNHANDLED_CALLBACK: chat={chat_id} data={str(data_str)[:500]}")
+        try:
+            bot.answer_callback_query(call.id, "Эта кнопка не обработана. Откройте меню заново.", show_alert=True)
+        except Exception:
+            pass
     except Exception as e:
-        log_error(f"on_callback error: {e}")
+        log_error(f"on_callback error: data={locals().get('data_str', '')} chat={locals().get('chat_id', '')}: {e}")
+        try:
+            bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
+        except Exception:
+            pass
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -31576,4 +31698,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# v125
+# v126
