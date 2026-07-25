@@ -1,4 +1,4 @@
-# v123
+# v124
 import os
 import io
 import json
@@ -679,7 +679,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v123_edit_consistency_peres_safe"
+VERSION = "bot_v124_ui_versions_oldfinance_source"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v123_edit_consistency_peres_safe.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1759,6 +1759,10 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v124_current": _modern_behavior_profile("v124 UI / versions / old finance / source", "Ф47 без backup-кнопок; рабочее переключение профилей; 💰Перес как обычное редактирование; поиск старых финансовых записей; скачивание текущего bot.py."),
+    "v123_current": _modern_behavior_profile("v123 Edit consistency / Перес safe", "Согласованное редактирование 💰Перес, exact edit witnesses и безопасная обработка edit-ввода."),
+    "v122_current": _modern_behavior_profile("v122 Excel notes / balances / finance witness", "Excel-примечания, остатки и finance witness."),
+    "v121_current": _modern_behavior_profile("v121 Forward outcome / all Excel", "Forward outcome и единый новый Excel для всех экспортов."),
     "v120_current": _modern_behavior_profile("v120 Single-flight exports / forward witness", "Повторные нажатия экспорта не копятся в очереди; видимое время формирования; исправление ложного ambiguous forward для worker-skip."),
     "v119_current": _modern_behavior_profile("v119 Excel / runtime export / exact edit", "Новый Excel с заливками и примечаниями, экспорт runtime из MEGA, исправление ложного source_finance при редактировании."),
     "v118_current": _modern_behavior_profile("v118 Runtime slots / restart forensics", "Rotating runtime slots, корректный watcher_mega_ok и диагностика рестартов Render."),
@@ -1785,7 +1789,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v120_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v124_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -2898,7 +2902,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
             fh.write("ВАЖНО: время старта Python != время начала Render deploy.\n")
-            fh.write("v123: edit consistency + 💰Перес clean insert + exact edit witnesses; LOW-RAM remains active.\n\n")
+            fh.write("v124: Ф47 без backup UI; version switch fixed; 💰Перес edit UX unified; legacy finance lookup; current bot.py download.\n\n")
             fh.write("==================== CURRENT DIAGNOSTIC SNAPSHOT (JSON) ====================\n")
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
@@ -2977,6 +2981,35 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 3000):
             pass
         return False
     return True
+
+
+def _send_current_bot_source_sync(chat_id: int):
+    """Отправляет владельцу именно тот Python-файл, который сейчас запущен."""
+    try:
+        path = os.path.abspath(__file__)
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        with open(path, "rb") as fh:
+            payload = io.BytesIO(fh.read())
+        payload.name = f"bot_{VERSION}.py"
+        _tg_call_retry(
+            bot.send_document, int(chat_id), payload,
+            caption=f"🐍 Текущий код бота\n{VERSION}\ncommit: {os.getenv('RENDER_GIT_COMMIT','')[:12] or 'local'}",
+            purpose="send_current_bot_source",
+        )
+        bot_journal("bot_source_downloaded", int(chat_id), f"version={VERSION}")
+    except Exception as e:
+        log_error(f"_send_current_bot_source_sync: {e}")
+        send_and_auto_delete(int(chat_id), f"❌ Не удалось отправить bot.py: {e}", 10)
+
+
+def send_current_bot_source(chat_id: int):
+    ok, info = submit_interactive_file_job(
+        int(chat_id), "bot_source", "Код текущей версии бота", _send_current_bot_source_sync, int(chat_id)
+    )
+    if not ok and info:
+        send_and_auto_delete(int(chat_id), str(info), 8)
+    return ok
 
 def _secret_notes_list() -> list:
     try:
@@ -3715,6 +3748,7 @@ WINDOW_MARKER_CONSTANTS = {
     'journal_back': 'Ф87',
     'journal_file': 'Ф88',
     'journal_open': 'Ф89',
+    'journal_bot_source': 'Ф89A',
     'journal_toggle': 'Ф90',
     'legacy_common:*': 'Ф91',
     'legacy_owner:*': 'Ф92',
@@ -18918,20 +18952,26 @@ def _forward_copy_clean_copy_button(text: str):
 
 
 def _forward_copy_edit_prompt_text(rec: dict, current: str) -> str:
-    return (
-        "✏️ изменение копии бота\n\n"
-        f"Запись: {rec.get('short_id') or 'R' + str(rec.get('id'))}\n"
-        f"Текущее значение: {current}\n\n"
-        "Нажмите «Скопировать текст», вставьте его в поле без @бот и измените нужное.\n"
-        "Либо отправьте новые данные одним сообщением. Будет изменена именно эта бот-копия и связанная финансовая запись.\n\n"
-        "⏳ Режим автоматически отменится через 40 секунд."
+    rid_label = rec.get("short_id") or ("R" + str(rec.get("id")))
+    return wm_common(
+        f"✏️ Редактирование записи {rid_label}\n\n"
+        f"Текущие данные:\n{current}\n\n"
+        "✍️ Напишите новые данные.\n\n"
+        "⏳ Это сообщение и режим редактирования будут автоматически отменены через 40 секунд.",
+        10,
     )
 
 
 def _forward_copy_edit_prompt_keyboard(current: str):
     kb = types.InlineKeyboardMarkup()
-    kb.row(_forward_copy_clean_copy_button(current))
-    kb.row(IB("❌ Отмена", callback_data="fwdcopy_edit_cancel"))
+    if current:
+        # Тот же способ, что и в основном режиме редактирования. Возможный @бот
+        # удаляется sanitize_telegram_inserted_text перед применением значения.
+        kb.row(IB("✍️ Вставить текст", switch_inline_query_current_chat=("\n" + str(current))[:256]))
+    kb.row(
+        IB("❌ Закрыть", callback_data="fwdcopy_edit_cancel"),
+        IB("⬅️ Назад осн. окно", callback_data=f"d:{today_key()}:back_main"),
+    )
     return kb
 
 
@@ -19360,14 +19400,79 @@ def is_forward_delete_command(text: str) -> bool:
 
 
 def find_record_by_message_id(chat_id: int, msg_id: int):
+    """Находит и новые, и старые финансовые записи по Telegram message_id.
+
+    Старые базы некоторых версий могли содержать запись только в daily_records
+    либо хранить message_id строкой. Поэтому поиск не ограничивается records и
+    сравнивает идентификаторы после приведения к int.
+    """
+    chat_id = int(chat_id)
+    try:
+        wanted = int(msg_id)
+    except Exception:
+        return None
     store = get_chat_store(chat_id)
-    for r in store.get("records", []):
-        if (
-            r.get("source_msg_id") == msg_id
-            or r.get("origin_msg_id") == msg_id
-            or r.get("msg_id") == msg_id
-        ):
+
+    def _matches(r):
+        if not isinstance(r, dict):
+            return False
+        for key in ("source_msg_id", "origin_msg_id", "msg_id", "source_order_msg_id"):
+            try:
+                if int(r.get(key) or 0) == wanted:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    for r in store.get("records", []) or []:
+        if _matches(r):
             return r
+
+    def _promote_legacy_record(r):
+        """Возвращает legacy-запись в канонический records, чтобы её можно было редактировать."""
+        if not isinstance(r, dict):
+            return r
+        try:
+            rid = int(r.get("id") or 0)
+        except Exception:
+            rid = 0
+        records = store.setdefault("records", [])
+        existing = None
+        if rid:
+            existing = next((x for x in records if isinstance(x, dict) and int(x.get("id") or 0) == rid), None)
+        if existing is not None:
+            existing.update(r)
+            return existing
+        records.append(dict(r))
+        try:
+            save_data(data, chat_ids=[chat_id])
+            bot_journal("legacy_finance_record_promoted", chat_id, f"rid={rid} msg={wanted}")
+        except Exception:
+            pass
+        return records[-1]
+
+    # Legacy/fallback: часть старых снапшотов имела полный объект только в daily_records.
+    for _dk, arr in (store.get("daily_records", {}) or {}).items():
+        for r in arr or []:
+            if _matches(r):
+                return _promote_legacy_record(r)
+
+    # Последний fallback читает холодные поля SQLite напрямую. Это важно после
+    # LOW-RAM evict и для старых восстановленных snapshot, не раздувая RAM надолго.
+    try:
+        for key in ("records", "daily_records", "ars_records", "ars_daily_records"):
+            cold = SQLITE.get_cold(chat_id, key, [] if key.endswith("records") and "daily" not in key else {})
+            if isinstance(cold, list):
+                for r in cold:
+                    if _matches(r):
+                        return _promote_legacy_record(r)
+            elif isinstance(cold, dict):
+                for arr in cold.values():
+                    for r in arr or []:
+                        if _matches(r):
+                            return _promote_legacy_record(r)
+    except Exception as e:
+        log_error(f"find_record_by_message_id cold fallback {chat_id}:{wanted}: {e}")
     return None
 
 
@@ -22641,11 +22746,6 @@ def build_fin_window_menu_keyboard(target_chat_id: int, day_key: str, owner_day_
 def build_fin_window_csv_menu(target_chat_id: int, day_key: str, owner_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
     _add_export_period_rows(kb, day_key, "fv", owner_day_key=owner_day_key, target_chat_id=target_chat_id)
-    kb.row(
-        IB(_backup_toggle_label(target_chat_id, "chat", "Бэкап в чат"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_chat:{owner_day_key}"),
-        IB(_backup_toggle_label(target_chat_id, "channel", "в канал"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_channel:{owner_day_key}"),
-        IB(_backup_toggle_label(target_chat_id, "mega", "в MEGA"), callback_data=f"fv:{target_chat_id}:{day_key}:bk_mega:{owner_day_key}"),
-    )
     kb.row(IB("🔙 Назад", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
     return kb
 
@@ -23683,7 +23783,7 @@ def build_version_menu_text() -> str:
         "🧩 Переключение версий / режимов",
         *bot_file_identity_lines(),
         "",
-        "v98–v120 переключают совместимый профиль внутри текущего безопасного ядра v120. Код, SQLite/MEGA-схема и exact-once защита не откатываются. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
+        "v98–v124 переключают совместимый профиль внутри текущего безопасного ядра v124. Код, SQLite/MEGA-схема и exact-once защита не откатываются. Финансовые записи, остатки, пересылки и бэкапы остаются общими и не удаляются.",
         "",
         "Кнопка выбора версии всегда остаётся в ИНФО, даже в режиме v81.",
         "",
@@ -26011,6 +26111,7 @@ def on_callback(call):
                 return
             kb = types.InlineKeyboardMarkup()
             kb.row(IB("📄 Скачать TXT", callback_data="journal_file"))
+            kb.row(IB("🐍 Скачать bot.py (текущий деплой)", callback_data="journal_bot_source"))
             kb.row(
                 IB("🔙 Назад", callback_data="journal_back"),
                 IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
@@ -26022,6 +26123,11 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             send_journal_file_to_owner(chat_id, 3000)
+            return
+        if data_str == "journal_bot_source":
+            if not is_owner_chat(chat_id):
+                return
+            send_current_bot_source(chat_id)
             return
         if data_str == "journal_toggle":
             if not is_owner_chat(chat_id):
@@ -26278,7 +26384,13 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             profile_key = data_str.split(":", 1)[1]
-            set_bot_behavior_profile(profile_key)
+            selected = set_bot_behavior_profile(profile_key)
+            try:
+                title = str(BOT_BEHAVIOR_PROFILES.get(selected, {}).get("title") or selected)
+                bot.answer_callback_query(call.id, f"✅ Включено: {title}", show_alert=False)
+            except Exception:
+                pass
+            bot_journal("version_profile_selected", chat_id, f"profile={selected}")
             safe_edit(bot, call, build_version_menu_text(), reply_markup=build_version_menu_keyboard())
             return
         if data_str == "version_back":
@@ -31008,4 +31120,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# v123
+# v124
