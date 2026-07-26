@@ -1,4 +1,4 @@
-# v128
+# v129
 import os
 import io
 import json
@@ -679,7 +679,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v128_google_sheets_gomonk_fix"
+VERSION = "bot_v129_google_existing_sheet_notes_stability"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v127_excel_notes_exact_validation.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1759,6 +1759,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v129_current": _modern_behavior_profile("v129 Google existing Sheet / Notes / stability", "Google Sheets экспорт пишет в заранее расшаренную таблицу владельца, создавая отдельную вкладку с native Notes; Ф40 защищён от слишком длинных сообщений."),
     "v128_current": _modern_behavior_profile("v128 Google Sheets Notes / Gomonk fix", "Нативные примечания Google Sheets для Excel статей и исправление кнопки Гомонковые во всех современных профилях."),
     "v127_current": _modern_behavior_profile("v127 Excel Notes exact validation", "Исправление ложной проверки expected/actual в Excel статьи и проверка текста каждого Примечания внутри XLSX."),
     "v126_current": _modern_behavior_profile("v126 Кнопки / Excel Примечания", "Аудит callback-кнопок, channel-safe вставка без Telegram 400 и Excel статьи с примечаниями без автора/современных комментариев."),
@@ -1793,7 +1794,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v128_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v129_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -23436,7 +23437,11 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-GOOGLE_SHEETS_SHARE_EMAIL = os.getenv("GOOGLE_SHEETS_SHARE_EMAIL", "").strip()
+GOOGLE_SHEETS_SHARE_EMAIL = os.getenv("GOOGLE_SHEETS_SHARE_EMAIL", "").strip()  # legacy compatibility; v129 does not need Drive sharing
+GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv(
+    "GOOGLE_SHEETS_SPREADSHEET_ID",
+    "1RXAdbNeNaURYH6-G-3OQtiZmpkQHXo789wY6w78QsH0",
+).strip()
 _GOOGLE_TOKEN_CACHE = {"token": "", "expires_at": 0.0}
 _GOOGLE_TOKEN_LOCK = threading.RLock()
 
@@ -23450,7 +23455,7 @@ def _google_service_account_info() -> dict:
     raw = GOOGLE_SERVICE_ACCOUNT_JSON
     if not raw:
         raise RuntimeError(
-            "Google Sheets API не настроен: добавьте GOOGLE_SERVICE_ACCOUNT_JSON и GOOGLE_SHEETS_SHARE_EMAIL в Render Environment"
+            "Google Sheets API не настроен: добавьте GOOGLE_SERVICE_ACCOUNT_JSON в Render Environment"
         )
     try:
         if raw.lstrip().startswith("{"):
@@ -23553,27 +23558,89 @@ def _google_category_fill(col_idx_zero: int) -> dict:
     return {"red": 0.92, "green": 0.95, "blue": 0.90}
 
 
+def _google_spreadsheet_id(value: str | None = None) -> str:
+    """Accepts either raw spreadsheet ID or a full docs.google.com/spreadsheets URL."""
+    raw = str(value if value is not None else GOOGLE_SHEETS_SPREADSHEET_ID).strip()
+    if not raw:
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID не задан")
+    match = re.search(r"/spreadsheets/d/([A-Za-z0-9_-]+)", raw)
+    if match:
+        raw = match.group(1)
+    raw = raw.split("?")[0].split("#")[0].strip().strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", raw):
+        raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID имеет неверный формат")
+    return raw
+
+
+def _google_sheet_tab_title(title: str) -> str:
+    """Creates a short unique Google Sheets tab title safe for repeated exports."""
+    base = re.sub(r"[\\/\?\*\[\]:]", " ", str(title or "Статьи"))
+    base = re.sub(r"\s+", " ", base).strip(" ' ") or "Статьи"
+    stamp = datetime.now().strftime("%d.%m %H-%M-%S")
+    suffix = f" · {stamp}"
+    limit = max(1, 100 - len(suffix))
+    return base[:limit].rstrip() + suffix
+
+
 def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
-    """Создаёт Google Spreadsheet и пишет описания в native CellData.note."""
+    """v129: writes a category report to a NEW TAB in an existing owner-shared spreadsheet.
+
+    The service account does not create/own a Drive file. The owner creates one spreadsheet once
+    and shares it to the service-account client_email as Editor. Each export adds a new sheet tab
+    and writes descriptions into native Google Sheets CellData.note.
+    """
     token = _google_access_token()
+    info = _google_service_account_info()
+    service_email = str(info.get("client_email") or "").strip()
+    spreadsheet_id = _google_spreadsheet_id()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    create = requests.post(
-        "https://sheets.googleapis.com/v4/spreadsheets",
+
+    # First verify that this service account can actually open the shared spreadsheet.
+    meta = requests.get(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}",
         headers=headers,
-        json={"properties": {"title": title[:100]}, "sheets": [{"properties": {"title": "Статьи", "gridProperties": {"frozenRowCount": 2}}}]},
+        params={"fields": "spreadsheetId,properties.title,sheets.properties(sheetId,title)"},
         timeout=45,
     )
-    if create.status_code >= 300:
-        raise RuntimeError(f"Google Sheets create {create.status_code}: {create.text[:700]}")
-    book = create.json()
-    spreadsheet_id = str(book.get("spreadsheetId") or "")
-    sheet_id = int(((book.get("sheets") or [{}])[0].get("properties") or {}).get("sheetId", 0))
-    if not spreadsheet_id:
-        raise RuntimeError("Google Sheets API не вернул spreadsheetId")
+    if meta.status_code >= 300:
+        detail = meta.text[:700]
+        if meta.status_code in (401, 403):
+            raise RuntimeError(
+                "Google Sheets target access 403: сервисный аккаунт не имеет доступа к таблице. "
+                f"Откройте таблицу → Поделиться → добавьте {service_email} как Редактор. "
+                f"spreadsheet_id={spreadsheet_id}; Google: {detail}"
+            )
+        raise RuntimeError(f"Google Sheets target {meta.status_code}: {detail}")
 
     _styles, annotations, _freeze, _widths = _modern_category_excel_styles_comments(rows)
-    cell_rows = []
     max_cols = max((len(row) for row in rows), default=1)
+    row_count = max(100, len(rows) + 20)
+    col_count = max(26, max_cols + 3)
+    tab_title = _google_sheet_tab_title(title)
+
+    # Add a fresh tab to the existing spreadsheet. The returned sheetId is then used for updates.
+    add_sheet = requests.post(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate",
+        headers=headers,
+        json={"requests": [{"addSheet": {"properties": {
+            "title": tab_title,
+            "gridProperties": {
+                "rowCount": row_count,
+                "columnCount": col_count,
+                "frozenRowCount": 2,
+            },
+        }}}]},
+        timeout=60,
+    )
+    if add_sheet.status_code >= 300:
+        raise RuntimeError(f"Google Sheets add tab {add_sheet.status_code}: {add_sheet.text[:700]}")
+    add_payload = add_sheet.json()
+    try:
+        sheet_id = int(add_payload["replies"][0]["addSheet"]["properties"]["sheetId"])
+    except Exception as exc:
+        raise RuntimeError(f"Google Sheets API не вернул sheetId новой вкладки: {exc}")
+
+    cell_rows = []
     for r_idx, row in enumerate(rows, start=1):
         values = []
         for c_idx in range(1, max_cols + 1):
@@ -23583,7 +23650,10 @@ def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
             if note:
                 cell["note"] = note
             if r_idx == 1:
-                cell["userEnteredFormat"] = {"textFormat": {"bold": True}, "backgroundColor": _google_category_fill(c_idx - 1)}
+                cell["userEnteredFormat"] = {
+                    "textFormat": {"bold": True},
+                    "backgroundColor": _google_category_fill(c_idx - 1),
+                }
             elif c_idx >= 4 and value not in ("", None):
                 cell["userEnteredFormat"] = {"backgroundColor": _google_category_fill(c_idx - 1)}
             values.append(cell)
@@ -23597,27 +23667,65 @@ def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
         }
     }, {
         "autoResizeDimensions": {
-            "dimensions": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": max_cols}
+            "dimensions": {
+                "sheetId": sheet_id,
+                "dimension": "COLUMNS",
+                "startIndex": 0,
+                "endIndex": max_cols,
+            }
         }
     }]
     update = requests.post(
         f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate",
-        headers=headers, json={"requests": requests_payload}, timeout=90,
+        headers=headers,
+        json={"requests": requests_payload},
+        timeout=90,
     )
     if update.status_code >= 300:
         raise RuntimeError(f"Google Sheets update {update.status_code}: {update.text[:700]}")
 
-    share_email = GOOGLE_SHEETS_SHARE_EMAIL.strip()
-    if share_email:
-        share = requests.post(
-            f"https://www.googleapis.com/drive/v3/files/{spreadsheet_id}/permissions?sendNotificationEmail=false",
+    # Read back notes only: success means the real Google Sheet contains native notes,
+    # not merely that our request returned HTTP 200.
+    expected_notes = {
+        (r, c): str(note).strip()
+        for (r, c), note in annotations.items()
+        if str(note or "").strip()
+    }
+    if expected_notes:
+        verify = requests.get(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}",
             headers=headers,
-            json={"type": "user", "role": "writer", "emailAddress": share_email},
-            timeout=45,
+            params={
+                "includeGridData": "true",
+                "ranges": f"'{tab_title.replace(chr(39), chr(39)*2)}'!A1:{_xlsx_col_name(max_cols)}{max(1, len(rows))}",
+                "fields": "sheets(data(rowData(values(note))))",
+            },
+            timeout=60,
         )
-        if share.status_code >= 300:
-            raise RuntimeError(f"Google Drive share {share.status_code}: {share.text[:700]}")
-    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+        if verify.status_code >= 300:
+            raise RuntimeError(f"Google Sheets note verify {verify.status_code}: {verify.text[:700]}")
+        actual_notes = {}
+        try:
+            row_data = (((verify.json().get("sheets") or [{}])[0].get("data") or [{}])[0].get("rowData") or [])
+            for r0, row_obj in enumerate(row_data, start=1):
+                for c0, cell in enumerate(row_obj.get("values") or [], start=1):
+                    note = str(cell.get("note") or "").strip()
+                    if note:
+                        actual_notes[(r0, c0)] = note
+        except Exception as exc:
+            raise RuntimeError(f"Google Sheets note verify parse: {exc}")
+        missing = [
+            f"{_xlsx_col_name(c)}{r}"
+            for (r, c), note in expected_notes.items()
+            if actual_notes.get((r, c)) != note
+        ]
+        if missing:
+            raise RuntimeError(
+                "Google Sheets: нативные примечания не подтвердились после записи; "
+                f"missing={missing[:12]} expected={len(expected_notes)} actual={len(actual_notes)}"
+            )
+
+    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={sheet_id}"
 
 def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv"):
     """Отправка CSV или Excel по выбранному периоду. Работает для обычного чата и для меню владельца по чужому чату."""
@@ -23675,16 +23783,16 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             start_key, end_key = _period_export_bounds(store, mode, day_key)
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
             if excel_table_style(target_chat_id) == "google_notes":
-                trace.step("создаёт Google Sheets с нативными примечаниями")
-                _file_job_progress("создаю Google Таблицу и примечания", force=True)
+                trace.step("создаёт вкладку Google Sheets с нативными примечаниями")
+                _file_job_progress("создаю новую вкладку Google Таблицы и примечания", force=True)
                 title = f"{get_chat_display_name(target_chat_id)} — статьи — {label}"
                 sheet_url = _google_sheets_create_category_report(title, xlsx_rows)
                 bot.send_message(
                     recipient_chat_id,
-                    f"📊 Google Таблица — статьи {label}: {get_chat_display_name(target_chat_id)}\n\n{sheet_url}\n\nОписания расходов записаны в нативные Примечания Google Sheets.",
+                    f"📊 Google Таблица — статьи {label}: {get_chat_display_name(target_chat_id)}\n\n{sheet_url}\n\nСоздана новая вкладка. Описания расходов записаны в нативные Примечания Google Sheets.",
                     disable_web_page_preview=True,
                 )
-                trace.finish("Google Таблица создана")
+                trace.finish("вкладка Google Таблицы создана")
                 return True
             _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Статьи", category_layout=True)
         elif ext == "xlsx":
@@ -31390,14 +31498,44 @@ def cmd_errors(msg):
     if not is_owner_chat(chat_id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
-    errors = get_recent_errors(20)
+    errors = get_recent_errors(30)
     if not errors:
         send_and_auto_delete(chat_id, "🧯 Ошибок в журнале нет.", 30)
         return
-    lines = ["🧯 Последние ошибки бота:"]
-    for e in errors:
-        lines.append(f"\n• {e.get('ts','')}\n{format_error_for_owner(e.get('msg',''))[:700]}")
-    send_and_auto_delete(chat_id, "\n".join(lines), 90)
+
+    # v129 / Ф40: identical retries of the same Telegram update used to explode the
+    # message beyond Telegram's limit. Keep recent UNIQUE errors and split safely.
+    unique = []
+    seen = set()
+    for e in reversed(errors):
+        msg_text = format_error_for_owner(e.get("msg", ""))
+        fingerprint = re.sub(r"\s+", " ", msg_text).strip()[:1200]
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        unique.append((e, msg_text))
+        if len(unique) >= 12:
+            break
+    unique.reverse()
+
+    blocks = ["🧯 Последние ошибки бота:"]
+    for e, msg_text in unique:
+        blocks.append(f"• {e.get('ts','')}\n{msg_text[:650]}")
+
+    chunks = []
+    current = ""
+    for block in blocks:
+        candidate = block if not current else current + "\n\n" + block
+        if len(candidate) > 3400 and current:
+            chunks.append(current)
+            current = block
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    for idx, chunk in enumerate(chunks, start=1):
+        prefix = f"🧯 Ф40 {idx}/{len(chunks)}\n" if len(chunks) > 1 else ""
+        send_and_auto_delete(chat_id, prefix + chunk, 90)
 
 
 
@@ -31979,6 +32117,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# v127
-
-# v128
+# v129
