@@ -1,4 +1,4 @@
-# v130_modular_split
+# v131_modular_stability
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -237,7 +237,28 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
     """
     try:
         marker_key = marker_action or _window_key_from_markup(reply_markup)
-        text = window_mark(text, _window_marker_code(marker_key, "Ф"), html_mode=(str(parse_mode or "").upper() == "HTML"))
+        marker_code = _window_marker_code(marker_key, "Ф")
+        body = strip_window_mark(str(text or ""))
+        # Telegram text messages are limited to 4096 characters. Keep head + tail instead of
+        # throwing MESSAGE_TOO_LONG and losing the whole category window. Full history stays
+        # available through CSV/Excel; this is only the interactive Telegram view.
+        reserve = len(str(marker_code or "")) + 120
+        safe_limit = max(1000, 4000 - reserve)
+        if len(body) > safe_limit:
+            tail_keep = min(500, max(180, safe_limit // 5))
+            head_keep = max(400, safe_limit - tail_keep - 120)
+            omitted = max(0, len(body) - head_keep - tail_keep)
+            body = (
+                body[:head_keep].rstrip()
+                + f"\n\n… ⚠️ В Telegram скрыто {omitted} символов, чтобы окно не превысило лимит. "
+                  "Полный список доступен в Excel/CSV. …\n\n"
+                + body[-tail_keep:].lstrip()
+            )
+            try:
+                bot_journal("categories_window_truncated", chat_id, f"marker={marker_code} original={len(str(text or ''))} final={len(body)}")
+            except Exception:
+                pass
+        text = window_mark(body, marker_code, html_mode=(str(parse_mode or "").upper() == "HTML"))
     except Exception:
         pass
     store = get_chat_store(chat_id)
@@ -1886,4 +1907,4 @@ def answer_callback_query_background(callback_id: str):
             bot_journal("callback_ack_queue_full", None, str(callback_id), "WARN")
         except Exception:
             pass
-# v130_modular_split
+# v131_modular_stability

@@ -1,4 +1,4 @@
-# v130_modular_split
+# v131_modular_stability
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -475,6 +475,55 @@ def _forward_copy_record_command(rec: dict) -> str:
     if not re.fullmatch(r"[RU]\d+", sid):
         sid = "R" + re.sub(r"\D+", "", sid)
     return f"/izm_{sid}"
+
+
+def _predict_forward_copy_record_command(dst_chat_id: int, source_msg, text: str) -> str | None:
+    """Predict the exact monthly R/U command before Telegram sends a new text copy.
+
+    Caller should hold locked_chat(dst_chat_id) until the matching finance row is created.
+    This makes slash-mode copies appear in their final form immediately instead of being
+    copied first and edited a moment later.
+    """
+    try:
+        raw = str(text or "").strip()
+        if not raw or not looks_like_amount(raw) or not is_finance_mode(int(dst_chat_id)):
+            return None
+        comp = parse_financial_components(raw)
+        store = get_chat_store(int(dst_chat_id))
+        normalize_chat_records(int(dst_chat_id))
+        day_key = finance_day_key_from_message(source_msg) if source_msg is not None else finance_today_key(int(dst_chat_id))
+        month_key = str(day_key)[:7]
+        temp = {
+            "id": int(store.get("next_id", 1) or 1),
+            "day_key": str(day_key),
+            "timestamp": message_timestamp_iso(source_msg),
+            "source_order_msg_id": int(getattr(source_msg, "message_id", 0) or 0),
+            "source_msg_id": 0,
+            "usd_only": bool(comp.get("usd_only", False)),
+            "usd_amount": float(comp.get("usd_amount", 0) or 0),
+        }
+        temp_key = record_sort_key(temp)
+        rows = []
+        for dk, arr in (store.get("daily_records", {}) or {}).items():
+            if str(dk)[:7] != month_key:
+                continue
+            for rec in arr or []:
+                if isinstance(rec, dict):
+                    rows.append(rec)
+        if bool(temp.get("usd_only")):
+            relevant = [r for r in rows if bool(float(r.get("usd_amount", 0) or 0))]
+            prefix = "U"
+        else:
+            relevant = [r for r in rows if not bool(r.get("usd_only", False))]
+            prefix = "R"
+        position = 1 + sum(1 for r in relevant if record_sort_key(r) < temp_key)
+        return f"/izm_{prefix}{position}"
+    except Exception as e:
+        try:
+            log_error(f"predict forward copy command dst={dst_chat_id}: {e}")
+        except Exception:
+            pass
+        return None
 
 
 def _forward_copy_display_text(base_text: str, rec: dict | None, mode: str) -> str:
@@ -1481,6 +1530,26 @@ def _handle_supergroup_migration_error(old_chat_id: int, err: Exception):
         return int(new_id)
     return None
 
+def _note_forward_target_migrated(source_chat_id: int, source_msg_id: int, old_chat_id: int, new_chat_id: int):
+    """Mark old target as migrated so live/durable witnesses do not wait on it forever."""
+    try:
+        _forward_outcome_update(
+            int(source_chat_id), int(source_msg_id),
+            dst_chat_id=int(old_chat_id), dst_state="migrated",
+        )
+    except Exception:
+        pass
+    try:
+        fn = globals().get("_durable_note_forward_target_migration")
+        if callable(fn):
+            fn(int(source_chat_id), int(old_chat_id), int(new_chat_id))
+    except Exception as e:
+        try:
+            log_error(f"forward migration witness {old_chat_id}->{new_chat_id}: {e}")
+        except Exception:
+            pass
+
+
 def _notify_forward_failure(source_chat_id: int, msg_id: int, dst_chat_id: int, err: Exception):
     if _is_bot_removed_error(err):
         set_chat_bot_removed(dst_chat_id, True, str(err)[:240])
@@ -1573,31 +1642,82 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
     except Exception as e:
         log_error(f"_forward_single_to_target reply resolve {source_chat_id}->{dst_chat_id}: {e}")
 
-    # v92 fix2: режим 💰Перес глобальный. В режиме «кнопка» прикрепляем
-    # inline-кнопку прямо к copyMessage, чтобы она появилась вместе с копией
-    # и не зависела от последующего edit_message_reply_markup.
+    # v131: 💰Перес должен выглядеть правильно уже в момент появления копии.
+    # Кнопка и раньше прикреплялась прямо к copyMessage. Для режима «слеш» текстовые
+    # финансовые копии теперь отправляются сразу с будущим /izm_R... или /izm_U...,
+    # а запись создаётся под lock того же целевого чата, поэтому номер не успевает сдвинуться.
     pre_copy_markup = None
+    initial_slash_command = None
+    initial_slash_synced_rec = None
+    initial_slash_sent = False
+    text_for_finance = _message_text_for_finance(msg)
+    copy_edit_mode = "normal"
     try:
-        if finance_enabled and forward_copy_edit_mode(source_chat_id) == "button":
-            pre_copy_markup = _forward_copy_edit_keyboard("button")
+        if finance_enabled:
+            copy_edit_mode = forward_copy_edit_mode(source_chat_id)
+            if copy_edit_mode == "button":
+                pre_copy_markup = _forward_copy_edit_keyboard("button")
     except Exception:
         pre_copy_markup = None
+        copy_edit_mode = "normal"
 
     try:
-        if reply_to_target_id:
-            trace.step(f"ищет reply-связь: target_reply={reply_to_target_id}")
-            try:
-                sent = _tg_call_retry(
-                    bot.copy_message,
-                    dst_chat_id,
-                    source_chat_id,
-                    msg.message_id,
-                    reply_to_message_id=reply_to_target_id,
-                    allow_sending_without_reply=True,
-                    reply_markup=pre_copy_markup,
-                    purpose="forward_copy_message"
-                )
-            except TypeError:
+        use_initial_slash = False
+        try:
+            use_initial_slash = bool(
+                finance_enabled
+                and copy_edit_mode == "slash"
+                and str(getattr(msg, "content_type", "") or "") == "text"
+                and text_for_finance
+                and is_finance_mode(int(dst_chat_id))
+                and looks_like_amount(text_for_finance)
+            )
+        except Exception:
+            use_initial_slash = False
+
+        if use_initial_slash:
+            trace.step("💰Перес слеш: формирует финальный текст до отправки")
+            with locked_chat(int(dst_chat_id)):
+                initial_slash_command = _predict_forward_copy_record_command(int(dst_chat_id), msg, text_for_finance)
+                if initial_slash_command:
+                    display_text = (_strip_forward_copy_edit_command(text_for_finance) + "\n" + initial_slash_command).strip()
+                    send_kwargs = {}
+                    entities = getattr(msg, "entities", None)
+                    if entities:
+                        send_kwargs["entities"] = entities
+                    if reply_to_target_id:
+                        send_kwargs["reply_to_message_id"] = int(reply_to_target_id)
+                        send_kwargs["allow_sending_without_reply"] = True
+                    try:
+                        sent = _tg_call_retry(
+                            bot.send_message, int(dst_chat_id), display_text,
+                            purpose="forward_send_text_initial_slash", **send_kwargs
+                        )
+                    except TypeError:
+                        send_kwargs.pop("allow_sending_without_reply", None)
+                        sent = _tg_call_retry(
+                            bot.send_message, int(dst_chat_id), display_text,
+                            purpose="forward_send_text_initial_slash", **send_kwargs
+                        )
+                    dst_msg_id = int(sent.message_id)
+                    initial_slash_sent = True
+                    # Persist the Telegram link before finance work, matching the old safety order.
+                    _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
+                    _forward_outcome_update(source_chat_id, int(msg.message_id), dst_chat_id=int(dst_chat_id), dst_state="delivered", dst_msg_id=int(dst_msg_id))
+                    try:
+                        _persist_forward_index_in_data(data)
+                        save_data(data, root_only=True)
+                    except Exception as e:
+                        log_error(f"[FORWARD LINK DURABLE initial slash] {source_chat_id}:{msg.message_id}->{dst_chat_id}:{dst_msg_id}: {e}")
+                    owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
+                    initial_slash_synced_rec = sync_forwarded_finance_message(
+                        int(dst_chat_id), int(dst_msg_id), text_for_finance, owner_id, source_msg=msg
+                    )
+                    trace.step(f"доставлено сразу с {initial_slash_command} message_id={dst_msg_id}")
+
+        if not initial_slash_sent:
+            if reply_to_target_id:
+                trace.step(f"ищет reply-связь: target_reply={reply_to_target_id}")
                 try:
                     sent = _tg_call_retry(
                         bot.copy_message,
@@ -1605,16 +1725,28 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                         source_chat_id,
                         msg.message_id,
                         reply_to_message_id=reply_to_target_id,
+                        allow_sending_without_reply=True,
                         reply_markup=pre_copy_markup,
                         purpose="forward_copy_message"
                     )
                 except TypeError:
-                    sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, reply_markup=pre_copy_markup, purpose="forward_copy_message")
-        else:
-            trace.step("копирует сообщение через Telegram copy_message")
-            sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, reply_markup=pre_copy_markup, purpose="forward_copy_message")
-        dst_msg_id = sent.message_id
-        trace.step(f"доставлено в целевой чат message_id={dst_msg_id}")
+                    try:
+                        sent = _tg_call_retry(
+                            bot.copy_message,
+                            dst_chat_id,
+                            source_chat_id,
+                            msg.message_id,
+                            reply_to_message_id=reply_to_target_id,
+                            reply_markup=pre_copy_markup,
+                            purpose="forward_copy_message"
+                        )
+                    except TypeError:
+                        sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, reply_markup=pre_copy_markup, purpose="forward_copy_message")
+            else:
+                trace.step("копирует сообщение через Telegram copy_message")
+                sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, reply_markup=pre_copy_markup, purpose="forward_copy_message")
+            dst_msg_id = sent.message_id
+            trace.step(f"доставлено в целевой чат message_id={dst_msg_id}")
     except Exception as e_copy:
         # If Telegram changed a basic group into a supergroup, do not lose the migration hint
         # behind a later unsupported manual fallback.
@@ -1625,6 +1757,7 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                 trace.finish("старый chat_id заменён на supergroup")
             except Exception:
                 pass
+            _note_forward_target_migrated(source_chat_id, int(getattr(msg, "message_id", 0) or 0), dst_chat_id, migrated_id)
             return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
 
         # v107: forward_message is a broad Bot API fallback for content classes for which
@@ -1649,6 +1782,7 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                     trace.finish("старый chat_id заменён на supergroup")
                 except Exception:
                     pass
+                _note_forward_target_migrated(source_chat_id, int(getattr(msg, "message_id", 0) or 0), dst_chat_id, migrated_id)
                 return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
 
             trace.step("forward_message не сработал — пробует ручной send_* fallback")
@@ -1664,6 +1798,7 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                         trace.finish("старый chat_id заменён на supergroup")
                     except Exception:
                         pass
+                    _note_forward_target_migrated(source_chat_id, int(getattr(msg, "message_id", 0) or 0), dst_chat_id, migrated_id)
                     return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
                 # Preserve the most useful Telegram error in diagnostics when manual fallback merely
                 # says "unsupported content_type".
@@ -1685,17 +1820,33 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
     trace.step("обновляет счётчик быстрого остатка целевого чата")
     bump_quick_balance_recreate_counter(dst_chat_id)
 
-    text_for_finance = _message_text_for_finance(msg)
     if finance_enabled and text_for_finance:
         trace.step("включён финучёт пересылки — синхронизирует сумму")
         try:
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
-            ok_fin = sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=msg)
+            ok_fin = initial_slash_synced_rec or sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=msg)
             if ok_fin:
                 _rec = ok_fin if isinstance(ok_fin, dict) else find_record_by_message_id(dst_chat_id, dst_msg_id)
-                # Сначала durable SQLite + индекс, только затем кнопки/слеш/UI.
+                if isinstance(_rec, dict) and initial_slash_sent:
+                    _rec["forward_copy_content_type"] = "text"
+                # Сначала durable SQLite + индекс, только затем косметика.
                 _persist_forward_finance_delivery_now(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id, _rec)
-                _ui_ok = apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec)
+                if initial_slash_sent and isinstance(_rec, dict):
+                    actual_command = _forward_copy_record_command(_rec)
+                    if actual_command == initial_slash_command:
+                        _ui_ok = True
+                        try:
+                            bot_journal(
+                                "forward_copy_initial_slash", int(dst_chat_id),
+                                f"src={source_chat_id}:{msg.message_id} dst_msg={dst_msg_id} command={actual_command}",
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        # Rare out-of-order history case: correct the command once rather than leave a wrong /izm_.
+                        _ui_ok = apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec)
+                else:
+                    _ui_ok = apply_forward_copy_edit_ui(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec)
                 if not _ui_ok and forward_copy_edit_mode(source_chat_id) != "normal":
                     schedule_forward_copy_edit_ui_retry(source_chat_id, dst_chat_id, dst_msg_id, msg, rec=_rec, delay=0.8)
             elif text_has_any_digit(text_for_finance):
@@ -1795,6 +1946,7 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
                 if migrated_id is not None:
                     log_info(f"[MEDIA GROUP MIGRATION RETRY] {dst_chat_id} -> {migrated_id}")
                     for src_msg in messages:
+                        _note_forward_target_migrated(source_chat_id, int(getattr(src_msg, "message_id", 0) or 0), dst_chat_id, migrated_id)
                         _forward_single_to_target(source_chat_id, src_msg, migrated_id, finance_enabled, _migration_retry=True)
                     continue
                 log_error(f"_flush_media_group_forward send_media_group failed {get_chat_display_name(source_chat_id)}->{get_chat_display_name(dst_chat_id)}: {e}")
@@ -1887,4 +2039,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v130_modular_split
+# v131_modular_stability

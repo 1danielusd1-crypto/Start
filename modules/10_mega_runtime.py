@@ -1,4 +1,4 @@
-# v130_modular_split
+# v131_modular_stability
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -1374,6 +1374,52 @@ def _durable_note_forward_decision(source_chat_id: int, direct: bool = False):
             log_error(f"durable forward decision note {source_chat_id}: {e}")
         except Exception:
             pass
+
+
+def _durable_note_forward_target_migration(source_chat_id: int, old_chat_id: int, new_chat_id: int):
+    """Keep the live durable witness aligned with Telegram basic-group -> supergroup migration.
+
+    The forwarding worker may discover the new destination only after the handler has already
+    captured its original target list. Without this rewrite the finalizer keeps waiting for the
+    obsolete chat_id and can move a successfully delivered task to MEGA/failed.
+    """
+    try:
+        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
+        if not isinstance(ctx, dict):
+            return False
+        if ctx.get("chat_id") is not None and int(ctx.get("chat_id")) != int(source_chat_id):
+            return False
+        changed = False
+        specs = ctx.get("actual_forward_targets") or []
+        for spec in specs:
+            if not isinstance(spec, dict):
+                continue
+            try:
+                if int(spec.get("dst_chat_id")) != int(old_chat_id):
+                    continue
+            except Exception:
+                continue
+            spec["dst_chat_id"] = int(new_chat_id)
+            try:
+                spec["secret_expected"] = bool(is_total_secret_mode(int(new_chat_id)))
+            except Exception:
+                pass
+            changed = True
+        if changed:
+            try:
+                bot_journal(
+                    "durable_forward_target_migrated", int(source_chat_id),
+                    f"{int(old_chat_id)}->{int(new_chat_id)}",
+                )
+            except Exception:
+                pass
+        return changed
+    except Exception as e:
+        try:
+            log_error(f"durable forward target migration {old_chat_id}->{new_chat_id}: {e}")
+        except Exception:
+            pass
+        return False
 
 
 def _durable_note_record_edit_witness(witness: dict):
@@ -8016,4 +8062,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v130_modular_split
+# v131_modular_stability

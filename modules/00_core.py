@@ -1,4 +1,4 @@
-# v130_modular_split
+# v131_modular_stability
 import os
 import io
 import json
@@ -679,7 +679,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v130_modular_split"
+VERSION = "bot_v131_modular_stability"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1770,6 +1770,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v131_current": _modern_behavior_profile("v131 Modular stability / instant 💰Перес", "Модульный контроль версий, мгновенный слеш 💰Перес для новых текстовых фин-копий, safe supergroup migration witness и защита длинных окон статей."),
     "v130_current": _modern_behavior_profile("v130 Modular split / v129 behavior", "Физически разделён на модули без изменения бизнес-логики v129; Google existing Sheet / Notes / stability сохранены."),
     "v129_current": _modern_behavior_profile("v129 Google existing Sheet / Notes / stability", "Google Sheets экспорт пишет в заранее расшаренную таблицу владельца, создавая отдельную вкладку с native Notes; Ф40 защищён от слишком длинных сообщений."),
     "v128_current": _modern_behavior_profile("v128 Google Sheets Notes / Gomonk fix", "Нативные примечания Google Sheets для Excel статей и исправление кнопки Гомонковые во всех современных профилях."),
@@ -1806,7 +1807,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v130_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v131_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -7328,4 +7329,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v130_modular_split
+# v131_modular_stability
