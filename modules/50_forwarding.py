@@ -1,4 +1,4 @@
-# v131_modular_stability
+# v132_anonymous_admin_forward_fix
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -2009,8 +2009,9 @@ def _collect_media_group_for_forward(source_chat_id: int, msg):
 def forward_any_message(source_chat_id: int, msg):
     try:
         source_msg_id = int(getattr(msg, "message_id", 0) or 0)
-        if getattr(getattr(msg, "from_user", None), "is_bot", False):
-            _forward_outcome_skip(source_chat_id, msg, "bot_sender")
+        sender_skip_reason = _forward_sender_skip_reason(msg)
+        if sender_skip_reason:
+            _forward_outcome_skip(source_chat_id, msg, sender_skip_reason)
             return
         if getattr(msg, "edit_date", None):
             _forward_outcome_skip(source_chat_id, msg, "edited_source")
@@ -2039,4 +2040,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v131_modular_stability
+# v132_anonymous_admin_forward_fix

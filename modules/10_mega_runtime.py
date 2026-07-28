@@ -1,4 +1,4 @@
-# v131_modular_stability
+# v132_anonymous_admin_forward_fix
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -868,15 +868,11 @@ def _durable_normalize_expected_for_route(payload: dict, expected: dict | None) 
     # It safely clears false ambiguous forwards created when the async forward worker
     # intentionally skipped bot-authored or edited source messages.
     if isinstance(raw, dict):
-        try:
-            sender = raw.get("from") or {}
-            sender_is_bot = bool(sender.get("is_bot")) if isinstance(sender, dict) else False
-        except Exception:
-            sender_is_bot = False
+        sender_skip_reason = _forward_sender_skip_reason_raw(raw)
         edited_source = bool(raw.get("edit_date"))
-        if sender_is_bot or edited_source:
+        if sender_skip_reason or edited_source:
             adjusted["forward_targets"] = []
-            adjusted["forward_suppressed_by_worker_skip"] = "bot_sender" if sender_is_bot else "edited_source"
+            adjusted["forward_suppressed_by_worker_skip"] = sender_skip_reason or "edited_source"
     return adjusted
 
 
@@ -8062,4 +8058,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v131_modular_stability
+# v132_anonymous_admin_forward_fix
