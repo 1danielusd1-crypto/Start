@@ -1,0 +1,39 @@
+{
+  "version": "bot_v132_anonymous_admin_forward_fix",
+  "file_marker": "v131_modular_stability",
+  "purpose": "Prevents mixed bot.py/modules deployments on GitHub/Render; v132 allows per-file markers for unchanged modules",
+  "file_markers": {
+    "modules/00_core.py": "v132_anonymous_admin_forward_fix",
+    "modules/10_mega_runtime.py": "v132_anonymous_admin_forward_fix",
+    "modules/20_callback_tokens.py": "v131_modular_stability",
+    "modules/30_secret.py": "v131_modular_stability",
+    "modules/40_message_router.py": "v131_modular_stability",
+    "modules/50_forwarding.py": "v132_anonymous_admin_forward_fix",
+    "modules/60_finance_currency.py": "v131_modular_stability",
+    "modules/61_forwarding_ui.py": "v131_modular_stability",
+    "modules/62_finance_ui.py": "v131_modular_stability",
+    "modules/63_google_sheets.py": "v131_modular_stability",
+    "modules/70_fast_ui.py": "v131_modular_stability",
+    "modules/80_callback_router.py": "v131_modular_stability",
+    "modules/90_commands_exports.py": "v131_modular_stability",
+    "modules/91_finance_records_handlers.py": "v131_modular_stability",
+    "modules/99_web_runtime.py": "v131_modular_stability"
+  },
+  "files": {
+    "modules/00_core.py": "eea8b46e48077466c69484093e269c1572ab3f39ae81f40a7e4c390e846631b8",
+    "modules/10_mega_runtime.py": "820a0df5ae8c794f7aab9c4fa43eba50b95da715c8f3afd4ff8161d4a33edd0f",
+    "modules/20_callback_tokens.py": "ab025e59c35d4b976f4cbffcad8b49a090486dffb3e5c9ec98b64ad24c64cedd",
+    "modules/30_secret.py": "8514a1bee8cc5996bed9d2721bf6048bbb5c3995a083fda23859c7174850a25d",
+    "modules/40_message_router.py": "6dca83693d56739766b58a8d949388124310fd00a9559cbf9cf7430dea3e8af6",
+    "modules/50_forwarding.py": "8362e9f617036fe1445f94b1c232b858b3b78f7005da016a722958348186d244",
+    "modules/60_finance_currency.py": "e61b26505de52a025ce809b0242cb67a75ffa43e9178690ca8d548c3637b60cd",
+    "modules/61_forwarding_ui.py": "e86b72768eb7759df772a1dea18207ac86554bdc627b409bd778d202c689b300",
+    "modules/62_finance_ui.py": "218068e08f59dee07140952114c0ccbc56bb91bcd15da17e9009d37ffd73f99d",
+    "modules/63_google_sheets.py": "68f60e8328de86a6ae4a1e90082ee469da716e50d1872d9d563ca02a2815b27f",
+    "modules/70_fast_ui.py": "dfa9c2f13cdb359b4bfb2a67defb6d23bdaa7cb6410eda9fac6ca96a901f5c29",
+    "modules/80_callback_router.py": "b1442852d43d07bcec4970fe25749338c343bd1d7dee4619707a64b63025d811",
+    "modules/90_commands_exports.py": "e12846c036a40439b55a80ed24594291f3916510c487b8b0fa589c6f8303479f",
+    "modules/91_finance_records_handlers.py": "9a97f721e9b1855c1b63e3a81205c7bda1cd39ea5e03384aa6ee1b1012da2ce0",
+    "modules/99_web_runtime.py": "8883a09a8d63e851789f9071855a5bc1a18852c07e5eb632470bcc8f572832b7"
+  }
+}
