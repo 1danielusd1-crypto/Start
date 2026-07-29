@@ -1,4 +1,4 @@
-# v130_modular_split
+# v134_flat_reminder
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -448,6 +448,10 @@ def main():
     runtime_set_phase("boot_webhook", "устанавливаю Telegram webhook")
     set_webhook()
     start_keep_alive_thread()
+    try:
+        start_reminder_scheduler()
+    except Exception as e:
+        log_error(f"reminder scheduler start: {e}")
 
     if boot_recovery_remaining > 0:
         runtime_set_phase("boot_recovery_background", f"осталось {boot_recovery_remaining}; webhook временно 503")
@@ -489,7 +493,7 @@ def main():
             try:
                 bot.send_message(
                     owner_id,
-                    f"{'🚨' if RESTORE_GUARD_ACTIVE else '✅'} {version_animal_badge()} Процесс бота запущен (версия {VERSION}).\n"
+                    f"{'🚨' if RESTORE_GUARD_ACTIVE else '✅'} {version_animal_badge()} Бот запущен (версия {VERSION}).\n"
                     f"Старт Python: {_RUNTIME_STATE.get('started_at') or '—'}; READY: {_RUNTIME_STATE.get('ready_at') or ('ещё RECOVERY' if not runtime_is_ready() else '—')}\n"
                     f"Причина предыдущего запуска (оценка): {_RUNTIME_STATE.get('previous_reason', '—')}\n"
                     f"Render instance: {str(os.getenv('RENDER_INSTANCE_ID','') or '—')[-28:]}; commit: {str(os.getenv('RENDER_GIT_COMMIT','') or '—')[:12]}\n"
@@ -515,4 +519,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v130_modular_split
+# v134_flat_reminder

@@ -1,4 +1,4 @@
-# v130_modular_split
+# v134_flat_reminder
 import os
 import io
 import json
@@ -627,6 +627,87 @@ def _forward_delete_with_finance_priority(source_chat_id: int, source_msg_id: in
     return delete_forward_copies_for_source(source_chat_id, source_msg_id)
 
 
+def _current_bot_id_for_forwarding() -> int:
+    """Return this bot's Telegram user id without a network call when possible."""
+    try:
+        token = str(globals().get("BOT_TOKEN") or "").strip()
+        head = token.split(":", 1)[0].strip()
+        if head.isdigit():
+            return int(head)
+    except Exception:
+        pass
+    try:
+        me = bot.get_me()
+        return int(getattr(me, "id", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _forward_anonymous_admin_message(msg) -> bool:
+    """Telegram represents anonymous/send-as-group admins as a bot-like sender.
+
+    Such messages are human-originated and must be eligible for configured forwarding.
+    """
+    try:
+        sender = getattr(msg, "from_user", None)
+        if not sender or not bool(getattr(sender, "is_bot", False)):
+            return False
+        username = str(getattr(sender, "username", "") or "").lstrip("@").lower()
+        if username == "groupanonymousbot":
+            return True
+        sender_chat = getattr(msg, "sender_chat", None)
+        chat = getattr(msg, "chat", None)
+        if sender_chat is not None and chat is not None:
+            return int(getattr(sender_chat, "id", 0) or 0) == int(getattr(chat, "id", 0) or 0) != 0
+    except Exception:
+        pass
+    return False
+
+
+def _forward_sender_skip_reason(msg) -> str:
+    """Skip our own/other real bot messages, but allow anonymous human admins."""
+    try:
+        sender = getattr(msg, "from_user", None)
+        if not sender or not bool(getattr(sender, "is_bot", False)):
+            return ""
+        sender_id = int(getattr(sender, "id", 0) or 0)
+        self_id = _current_bot_id_for_forwarding()
+        if self_id and sender_id == self_id:
+            return "bot_sender"
+        if _forward_anonymous_admin_message(msg):
+            return ""
+        return "other_bot_sender"
+    except Exception:
+        return ""
+
+
+def _forward_sender_skip_reason_raw(raw: dict) -> str:
+    """Raw-payload twin of _forward_sender_skip_reason for durable recovery."""
+    if not isinstance(raw, dict):
+        return ""
+    try:
+        sender = raw.get("from") or {}
+        if not isinstance(sender, dict) or not bool(sender.get("is_bot")):
+            return ""
+        sender_id = int(sender.get("id") or 0)
+        self_id = _current_bot_id_for_forwarding()
+        if self_id and sender_id == self_id:
+            return "bot_sender"
+        username = str(sender.get("username") or "").lstrip("@").lower()
+        if username == "groupanonymousbot":
+            return ""
+        sender_chat = raw.get("sender_chat") or {}
+        chat = raw.get("chat") or {}
+        if isinstance(sender_chat, dict) and isinstance(chat, dict):
+            sid = int(sender_chat.get("id") or 0)
+            cid = int(chat.get("id") or 0)
+            if sid and cid and sid == cid:
+                return ""
+        return "other_bot_sender"
+    except Exception:
+        return ""
+
+
 def schedule_forward_any_message(source_chat_id: int, msg):
     """Пересылка: порядок по исходному чату сохраняется; finance имеет приоритет.
 
@@ -635,9 +716,19 @@ def schedule_forward_any_message(source_chat_id: int, msg):
     by design or an album was still waiting for its delayed media-group flush.
     """
     try:
-        if getattr(getattr(msg, "from_user", None), "is_bot", False):
-            _forward_outcome_skip(source_chat_id, msg, "bot_sender")
+        sender_skip_reason = _forward_sender_skip_reason(msg)
+        if sender_skip_reason:
+            _forward_outcome_skip(source_chat_id, msg, sender_skip_reason)
             return
+        if _forward_anonymous_admin_message(msg):
+            try:
+                bot_journal(
+                    "anonymous_admin_forward_allowed",
+                    int(source_chat_id),
+                    f"msg={int(getattr(msg, 'message_id', 0) or 0)} sender_chat={int(getattr(getattr(msg, 'sender_chat', None), 'id', 0) or 0)}",
+                )
+            except Exception:
+                pass
         if getattr(msg, "edit_date", None):
             _forward_outcome_skip(source_chat_id, msg, "edited_source")
             return
@@ -679,7 +770,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v130_modular_split"
+VERSION = "bot_v134_flat_reminder"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1770,6 +1861,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v131_current": _modern_behavior_profile("v131 Modular stability / instant 💰Перес", "Модульный контроль версий, мгновенный слеш 💰Перес для новых текстовых фин-копий, safe supergroup migration witness и защита длинных окон статей."),
     "v130_current": _modern_behavior_profile("v130 Modular split / v129 behavior", "Физически разделён на модули без изменения бизнес-логики v129; Google existing Sheet / Notes / stability сохранены."),
     "v129_current": _modern_behavior_profile("v129 Google existing Sheet / Notes / stability", "Google Sheets экспорт пишет в заранее расшаренную таблицу владельца, создавая отдельную вкладку с native Notes; Ф40 защищён от слишком длинных сообщений."),
     "v128_current": _modern_behavior_profile("v128 Google Sheets Notes / Gomonk fix", "Нативные примечания Google Sheets для Excel статей и исправление кнопки Гомонковые во всех современных профилях."),
@@ -1806,7 +1898,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v130_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v131_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -2003,18 +2095,28 @@ FIN_BUTTON_PAD_CHAR = "⠀"  # U+2800: Telegram сохраняет символ,
 
 
 def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
+    view_usd = False
     try:
-        amount = float((rec or {}).get("amount", 0) or 0)
+        view_usd = bool(chat_id is not None and usd_transactions_view_enabled(int(chat_id)))
+    except Exception:
+        view_usd = False
+    try:
+        amount = float((rec or {}).get("usd_amount" if view_usd else "amount", 0) or 0)
     except Exception:
         amount = 0.0
-    sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}")
-    note = re.sub(r"\s+", " ", str((rec or {}).get("note") or "").strip())
+    if view_usd:
+        sid = str((rec or {}).get("usd_short_id") or f"U{(rec or {}).get('id', '')}")
+        note = re.sub(r"\s+", " ", str((rec or {}).get("usd_note") or (rec or {}).get("note") or "").strip())
+        amount_text = f"{('+' if amount >= 0 else '-')}${fmt_num_plain(abs(amount))}"
+    else:
+        sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}")
+        note = re.sub(r"\s+", " ", str((rec or {}).get("note") or "").strip())
+        if chat_id is not None and version_mode_feature("daily_usd"):
+            amount_text = format_chat_amount(int(chat_id), amount, mixed_space=False)
+        else:
+            amount_text = fmt_num(amount)
     if len(note) > 31:
         note = note[:30] + "…"
-    if chat_id is not None and version_mode_feature("daily_usd"):
-        amount_text = format_chat_amount(int(chat_id), amount, mixed_space=False)
-    else:
-        amount_text = fmt_num(amount)
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
@@ -2024,7 +2126,11 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
 
 def financial_value_records_for_day(chat_id: int, day_key: str) -> list[dict]:
     try:
-        recs = get_chat_store(int(chat_id)).get("daily_records", {}).get(str(day_key), []) or []
+        store = get_chat_store(int(chat_id))
+        recs = store.get("daily_records", {}).get(str(day_key), []) or []
+        view_usd = bool(usd_transactions_view_enabled(int(chat_id)))
+        if view_usd:
+            return sorted((r for r in recs if isinstance(r, dict) and abs(float(r.get("usd_amount", 0) or 0)) > 0), key=record_sort_key)
         return sorted((r for r in recs if isinstance(r, dict) and not bool(r.get("usd_only", False))), key=record_sort_key)
     except Exception:
         return []
@@ -3537,8 +3643,8 @@ def handle_o9_secret_triple_click(call, data_str: str) -> bool:
 
 
 def _process_trace_enabled() -> bool:
-    """Глобальный рубильник PROCESS через Render env. По чатам всё равно по умолчанию выключено."""
-    return _env_bool("FIN_PROCESS_TRACE", "1")
+    """Старый пользовательский PROCESS удалён в v134; трейсы больше не показываются в чатах."""
+    return False
 
 
 def _trace_timestamp() -> str:
@@ -7328,4 +7434,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v130_modular_split
+# v134_flat_reminder
