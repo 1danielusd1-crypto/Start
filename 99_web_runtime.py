@@ -1,4 +1,4 @@
-# v134_flat_reminder
+# v135_reminders_secret_timers
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -52,12 +52,75 @@ def keepalive_endpoint():
     }, 200
 
 
+def _refresh_callback_window_timers(chat_id: int, message_id: int, raw_callback: str):
+    """v135: любой клик в связанном окне начинает ВСЕ его авто-таймеры заново."""
+    chat_id = int(chat_id); message_id = int(message_id)
+    raw = str(raw_callback or "")
+    resolved = resolve_short_callback(raw) or raw
+    try:
+        _touch_v98_auto_close_for_callback(chat_id, message_id, resolved)
+    except Exception:
+        pass
+
+    store = get_chat_store(chat_id)
+    # Отдельные обычные окна с автовозвратом.
+    try:
+        for timer_chat_id, store_key in list(_aux_window_timers.keys()):
+            if int(timer_chat_id) == chat_id and int(store.get(str(store_key)) or 0) == message_id:
+                schedule_stored_window_delete(chat_id, str(store_key), None)
+    except Exception:
+        pass
+
+    # Любая кнопка внутри окна редактирования/ввода продлевает его ожидание.
+    try:
+        wait = store.get("edit_wait") or {}
+        if int(wait.get("prompt_msg_id") or 0) == message_id:
+            schedule_cancel_edit(chat_id, message_id, delay=None)
+    except Exception:
+        pass
+    try:
+        wait = store.get("finwin_edit_wait") or {}
+        if int(wait.get("prompt_msg_id") or 0) == message_id:
+            schedule_cancel_finwin_edit(chat_id, message_id, delay=None)
+    except Exception:
+        pass
+    for field in ("category_add_wait", "category_edit_wait"):
+        try:
+            wait = store.get(field) or {}
+            if int(wait.get("prompt_msg_id") or 0) == message_id:
+                schedule_cancel_category_wait(chat_id, field, message_id, delay=None)
+        except Exception:
+            pass
+    try:
+        wait = store.get("forward_copy_edit_wait") or {}
+        if int(wait.get("prompt_msg_id") or 0) == message_id:
+            schedule_forward_copy_edit_wait_cancel(chat_id, message_id, delay=None)
+    except Exception:
+        pass
+
+    # Секретные окна раньше намеренно исключались из общей защиты. Из-за этого нажатие
+    # соседней кнопки могло не продлить 90 секунд и окно закрывалось во время работы.
+    try:
+        active = store.get("secret_active_window") or {}
+        if int(active.get("message_id") or 0) == message_id:
+            schedule_secret_calendar_close(chat_id, message_id)
+    except Exception:
+        pass
+    try:
+        if (chat_id, message_id) in _secret_media_timer_generation:
+            schedule_secret_media_close(chat_id, message_id)
+    except Exception:
+        pass
+    try:
+        secret_wait = store.get("secret_wait") or {}
+        if int(secret_wait.get("prompt_msg_id") or 0) == message_id:
+            schedule_o9_secret_wait_timeout(chat_id, message_id, O9_SECRET_WAIT_SECONDS)
+    except Exception:
+        pass
+
+
 def _protect_pending_ui_timers_on_receipt(payload: dict):
-    """
-    v104: пользователь уже отправил ответ/нажал кнопку — значит его рабочий таймер
-    не должен успеть отменить операцию только потому, что webhook ждёт другую задачу.
-    Продлеваем только обычные (не секретные) ожидания сразу при получении update.
-    """
+    """Продлевает связанные авто-close/auto-cancel/auto-return уже в момент receipt webhook."""
     try:
         if not isinstance(payload, dict):
             return
@@ -79,6 +142,12 @@ def _protect_pending_ui_timers_on_receipt(payload: dict):
             wait = store.get("forward_copy_edit_wait") or {}
             if isinstance(wait, dict) and wait.get("prompt_msg_id"):
                 schedule_forward_copy_edit_wait_cancel(chat_id, int(wait["prompt_msg_id"]), delay=None)
+            try:
+                secret_wait = store.get("secret_wait") or {}
+                if isinstance(secret_wait, dict) and secret_wait.get("prompt_msg_id"):
+                    schedule_o9_secret_wait_timeout(chat_id, int(secret_wait["prompt_msg_id"]), O9_SECRET_WAIT_SECONDS)
+            except Exception:
+                pass
             return
 
         cq = payload.get("callback_query")
@@ -87,25 +156,8 @@ def _protect_pending_ui_timers_on_receipt(payload: dict):
             chat = cmsg.get("chat") or {}
             chat_id = int(chat.get("id"))
             message_id = int(cmsg.get("message_id") or 0)
-            if not message_id:
-                return
-            raw = str(cq.get("data") or "")
-            # Секретные callback не трогаем: у них собственная логика таймеров.
-            if raw.startswith("sec") or raw.startswith("o9"):
-                return
-            try:
-                _touch_v98_auto_close_for_callback(chat_id, message_id, resolve_short_callback(raw) or raw)
-            except Exception:
-                pass
-            try:
-                store = get_chat_store(chat_id)
-                for timer_chat_id, store_key in list(_aux_window_timers.keys()):
-                    if int(timer_chat_id) != chat_id:
-                        continue
-                    if int(store.get(str(store_key)) or 0) == message_id:
-                        schedule_stored_window_delete(chat_id, str(store_key), None)
-            except Exception:
-                pass
+            if message_id:
+                _refresh_callback_window_timers(chat_id, message_id, str(cq.get("data") or ""))
     except Exception as e:
         try:
             log_error(f"receipt timer protection: {e}")
@@ -519,4 +571,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v134_flat_reminder
+# v135_reminders_secret_timers

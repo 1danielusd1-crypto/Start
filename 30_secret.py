@@ -1,4 +1,4 @@
-# v131_modular_stability
+# v135_reminders_secret_timers
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
@@ -529,6 +529,80 @@ def capture_forwarded_bot_copy_as_secret(chat_id: int, copied_message_id: int, s
             1.0,
             lambda: bot.delete_message(int(chat_id), int(copied_message_id)),
         )
+    return True
+
+
+def sync_forwarded_secret_bot_copy_edit(chat_id: int, copied_message_id: int, source_chat_id: int, source_msg) -> bool:
+    """Обновляет скрытую bot-copy при редактировании исходника БЕЗ видимого Telegram fallback.
+
+    Критично для TOTAL SECRET: исходная копия была удалена сразу после сохранения, поэтому
+    обычный edit_message_* получает ``message to edit not found``. Старый fallback после этого
+    создавал новую видимую копию и фактически ломал секретность.
+    """
+    chat_id = int(chat_id); copied_message_id = int(copied_message_id); source_chat_id = int(source_chat_id)
+    if not is_total_secret_mode(chat_id):
+        return False
+    source_msg_id = int(getattr(source_msg, "message_id", 0) or 0)
+    records = _secret_records(chat_id)
+    record = None
+    for row in records:
+        if not isinstance(row, dict) or not bool(row.get("is_bot_copy")):
+            continue
+        try:
+            if int(row.get("source_msg_id") or 0) == copied_message_id:
+                record = row; break
+            if int(row.get("forward_source_chat_id") or 0) == source_chat_id and int(row.get("forward_source_msg_id") or 0) == source_msg_id:
+                record = row; break
+        except Exception:
+            continue
+
+    if record is None:
+        # Даже при потерянном локальном индексе безопаснее заново создать СКРЫТУЮ запись,
+        # чем отправить видимый fallback в секретный чат.
+        try:
+            record = save_secret_bot_copy(chat_id, copied_message_id, source_msg)
+        except Exception as exc:
+            log_error(f"secret bot-copy edit create {chat_id}:{copied_message_id}: {exc}")
+            return False
+    if not isinstance(record, dict):
+        return False
+
+    try:
+        content_type = str(getattr(source_msg, "content_type", "text") or "text")
+        record["text"] = _secret_message_text(source_msg)
+        record["content_type"] = content_type
+        record["file_id"] = _secret_file_id(source_msg)
+        record["content"] = _secret_content_payload(source_msg)
+        record["forward_source_chat_id"] = source_chat_id
+        record["forward_source_msg_id"] = source_msg_id
+        record["source_msg_id"] = copied_message_id
+        record["is_bot_copy"] = True
+        record["edited_at"] = now_local().isoformat(timespec="seconds")
+        if content_type != "text" and not int(record.get("media_number") or 0):
+            record["media_number"] = _next_secret_media_number(chat_id)
+        settings = get_chat_store(chat_id).setdefault("settings", {})
+        settings["auto_backup_to_mega_enabled"] = True
+        save_data(data, chat_ids=[chat_id])
+        schedule_config_backup_for_chats(chat_id, delay=0.2)
+        schedule_secret_mega_upload(chat_id)
+        refresh_secret_windows(chat_id)
+        try:
+            _durable_note_secret_edit_witness(_durable_secret_edit_witness(chat_id, int(record.get("id")), str(record.get("text") or "")))
+        except Exception:
+            pass
+        try:
+            bot_journal("secret_forward_edit_hidden", chat_id, f"src={source_chat_id}:{source_msg_id} copy={copied_message_id}")
+        except Exception:
+            pass
+    except Exception as exc:
+        log_error(f"secret bot-copy edit update {chat_id}:{copied_message_id}: {exc}")
+        return False
+
+    # На всякий случай удаляем Telegram-копию, если она почему-либо существует.
+    try:
+        bot.delete_message(chat_id, copied_message_id)
+    except Exception:
+        pass
     return True
 
 
@@ -1952,4 +2026,4 @@ def cmd_forward_copy_edit(msg):
         delete_message_later(msg.chat.id, msg.message_id, 1)
     except Exception as e:
         log_error(f"cmd_forward_copy_edit: {e}")
-# v131_modular_stability
+# v135_reminders_secret_timers

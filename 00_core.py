@@ -1,4 +1,4 @@
-# v134_flat_reminder
+# v135_reminders_secret_timers
 import os
 import io
 import json
@@ -770,7 +770,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v134_flat_reminder"
+VERSION = "bot_v135_reminders_secret_timers"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1926,7 +1926,7 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
         "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
         "category_usd_enabled", "expense_category_order_slugs",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
-        "process_trace_enabled", "usd_transactions_view",
+        "usd_transactions_view",
     )
     return global_fields, chat_fields
 
@@ -2092,6 +2092,18 @@ def main_financial_value_buttons_label(chat_id: int) -> str:
 
 FIN_BUTTON_RIGHT_PAD = max(0, min(18, int(os.getenv("FIN_BUTTON_RIGHT_PAD", "10") or "10")))
 FIN_BUTTON_PAD_CHAR = "⠀"  # U+2800: Telegram сохраняет символ, визуально сдвигая подпись влево.
+BUTTON_LABEL_TARGET_CHARS = 41
+
+
+def pad_button_label_41(value: str, target: int = BUTTON_LABEL_TARGET_CHARS) -> str:
+    """Единое визуальное выравнивание кнопок: максимум/минимум ровно 41 символ."""
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    target = max(1, int(target or BUTTON_LABEL_TARGET_CHARS))
+    if len(text) > target:
+        text = text[:max(1, target - 1)] + "…"
+    if len(text) < target:
+        text += FIN_BUTTON_PAD_CHAR * (target - len(text))
+    return text
 
 
 def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
@@ -2120,9 +2132,7 @@ def financial_record_button_label(rec: dict, chat_id: int | None = None) -> str:
     label = f"{sid} {amount_text}"
     if note:
         label += f" {note}"
-    if active_bot_behavior_profile() in {"v92_current", "v91_current", "v90_current", "v88_current", "v87_current", "v86_current"} and FIN_BUTTON_RIGHT_PAD:
-        label += FIN_BUTTON_PAD_CHAR * FIN_BUTTON_RIGHT_PAD
-    return label
+    return pad_button_label_41(label)
 
 def financial_value_records_for_day(chat_id: int, day_key: str) -> list[dict]:
     try:
@@ -2282,19 +2292,6 @@ def toggle_total_secret_mask(chat_id: int | None = None) -> bool:
 
 def total_secret_mask_label(chat_id: int | None = None) -> str:
     return "🪷 Маска: ВКЛ" if total_secret_mask_enabled(chat_id) else "🪷 Маска: ВЫКЛ"
-
-def verbose_process_journal_enabled() -> bool:
-    """Подробный PROCESS-журнал нужен только для диагностики. По умолчанию выключен, чтобы не тормозить бот."""
-    try:
-        if _env_bool("BOT_JOURNAL_VERBOSE_PROCESS", "0"):
-            return True
-    except Exception:
-        pass
-    try:
-        return bool((data or {}).setdefault("_global_settings", {}).get("bot_journal_verbose_process", False))
-    except Exception:
-        return False
-
 
 def verbose_telegram_journal_enabled() -> bool:
     """Успешные Telegram API-вызовы сильно раздувают журнал. Включать только для диагностики."""
@@ -3642,127 +3639,6 @@ def handle_o9_secret_triple_click(call, data_str: str) -> bool:
 
 
 
-def _process_trace_enabled() -> bool:
-    """Старый пользовательский PROCESS удалён в v134; трейсы больше не показываются в чатах."""
-    return False
-
-
-def _trace_timestamp() -> str:
-    try:
-        return now_local().strftime("%H:%M:%S.%f")[:-3]
-    except Exception:
-        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
-
-
-def _trace_delete_delay() -> int:
-    try:
-        return int(os.getenv("FIN_PROCESS_TRACE_DELETE_SECONDS", "120"))
-    except Exception:
-        return 120
-
-
-class ProcessTrace:
-    """PROCESS-трейс: одно сообщение, которое редактируется и пополняется строками по мере старта этапов."""
-
-    def __init__(self, chat_id: int, title: str):
-        self.chat_id = int(chat_id)
-        self.title = str(title or "Процесс")
-        self.lines = []
-        self.message_id = None
-        self.enabled = False
-        self._last_text = ""
-        self._last_edit_ts = 0.0
-        try:
-            self.enabled = bool(_process_trace_enabled() and is_process_trace_enabled(self.chat_id))
-        except Exception:
-            self.enabled = False
-
-    def start(self):
-        self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — старт")
-        try:
-            if self.enabled or verbose_process_journal_enabled():
-                bot_journal("process_start", self.chat_id, self.title)
-        except Exception:
-            pass
-        if not self.enabled:
-            return self
-        try:
-            text = self._render(running=True)
-            if "_tg_call_retry" in globals():
-                sent = _tg_call_retry(bot.send_message, self.chat_id, text, purpose="process_trace_start")
-            else:
-                sent = bot.send_message(self.chat_id, text)
-            self.message_id = sent.message_id
-            self._last_text = text
-            self._last_edit_ts = time.time()
-        except Exception as e:
-            log_error(f"ProcessTrace start({self.chat_id}): {e}")
-            self.enabled = False
-        return self
-
-    def step(self, label: str):
-        self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {label}")
-        try:
-            if self.enabled or verbose_process_journal_enabled():
-                bot_journal("process_step", self.chat_id, f"{self.title}: {label}")
-        except Exception:
-            pass
-        self._update_message(running=True)
-        return self
-
-    def _render(self, running: bool = False) -> str:
-        head = "⏳" if running else "✅"
-        # Telegram лимит ~4096. Держим одно сообщение, но если строк очень много — оставляем хвост и пометку.
-        lines = list(self.lines)
-        hidden = 0
-        while lines and len(head + " " + self.title + "\n" + "\n".join(lines)) > 3900:
-            lines.pop(0)
-            hidden += 1
-        if hidden:
-            lines.insert(0, f"… скрыто ранних этапов: {hidden}")
-        return head + " " + self.title + "\n" + "\n".join(lines)
-
-    def _update_message(self, running: bool = True, force: bool = False):
-        if not self.enabled or not self.message_id:
-            return
-        text = self._render(running=running)
-        if text == self._last_text and not force:
-            return
-        # Редактируем это же сообщение на каждом этапе, чтобы было видно, где именно бот сейчас занят.
-        try:
-            if "_tg_call_retry" in globals():
-                _tg_call_retry(bot.edit_message_text, text, chat_id=self.chat_id, message_id=self.message_id, purpose="process_trace_edit")
-            else:
-                bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id)
-            self._last_text = text
-            self._last_edit_ts = time.time()
-        except Exception as e:
-            err = str(e).lower()
-            if "message is not modified" not in err:
-                log_error(f"ProcessTrace update({self.chat_id}): {e}")
-
-    def finish(self, final_label: str = "завершено"):
-        self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — {final_label}")
-        try:
-            if self.enabled or verbose_process_journal_enabled():
-                bot_journal("process_finish", self.chat_id, f"{self.title}: {final_label}")
-        except Exception:
-            pass
-        if not self.enabled:
-            return
-        try:
-            if self.message_id:
-                self._update_message(running=False, force=True)
-                delete_message_later(self.chat_id, self.message_id, _trace_delete_delay())
-            else:
-                send_and_auto_delete(self.chat_id, self._render(running=False), _trace_delete_delay())
-        except Exception as e:
-            log_error(f"ProcessTrace finish({self.chat_id}): {e}")
-
-    def fail(self, err: Exception):
-        self.lines.append(f"{len(self.lines) + 1}. {_trace_timestamp()} — ошибка: {str(err)[:160]}")
-        self.finish("остановлено")
-
 def format_error_for_owner(raw) -> str:
     """Для /errors: по возможности заменяет известные chat_id на имена чатов/пользователей."""
     text = str(raw or "")
@@ -3936,7 +3812,6 @@ WINDOW_MARKER_CONSTANTS = {
     'd:*:next': 'Ф55',
     'd:*:open': 'Ф56',
     'd:*:prev': 'Ф57',
-    'd:*:process_menu': 'Ф58',
     'd:*:report': 'Ф59',
     'd:*:today': 'Ф60',
     'd:*:total': 'Ф61',
@@ -4293,12 +4168,28 @@ def _schedule_v98_auto_close(chat_id: int, message_id: int, delay: int | float |
 
 
 def _touch_v98_auto_close_for_callback(chat_id: int, message_id: int, data_str: str):
+    """Любой клик внутри уже открытого авто-окна начинает его таймер заново.
+
+    Раньше неизвестная callback-кнопка отменяла таймер целиком, из-за чего окно могло
+    закрыться/вернуться в основное прямо во время работы пользователя.
+    """
     try:
-        code = window_code_for_callback(data_str, owner_chat=is_owner_chat(chat_id))
-        if code in {"о98", "в98", "Ф9998"}:
-            _schedule_v98_auto_close(chat_id, message_id, None)
-        else:
+        chat_id = int(chat_id); message_id = int(message_id)
+        raw = str(data_str or "")
+        key = (chat_id, message_id)
+        closeish = (
+            raw == "aux_close"
+            or raw.endswith(":back_main")
+            or raw in {"close", "secclose", "secmclose"}
+        )
+        if closeish:
             _cancel_v98_auto_close(chat_id, message_id)
+            return
+        with _v98_auto_close_lock:
+            already_active = key in _v98_auto_close_timers
+        code = window_code_for_callback(raw, owner_chat=is_owner_chat(chat_id))
+        if already_active or code in {"о98", "в98", "Ф9998"}:
+            _schedule_v98_auto_close(chat_id, message_id, None)
     except Exception:
         pass
 
@@ -5400,36 +5291,6 @@ def set_auto_backup_enabled(chat_id: int, enabled: bool):
     settings["auto_backup_to_mega_enabled"] = enabled
     save_data(data)
     schedule_config_backup_for_chats(chat_id)
-
-
-def _ensure_process_settings(chat_id: int) -> dict:
-    """Настройка PROCESS по чатам. По умолчанию выключено, но сохраняется в JSON/SQLite."""
-    store = get_chat_store(chat_id)
-    settings = store.setdefault("settings", {})
-    settings.setdefault("process_trace_enabled", False)
-    return settings
-
-
-def is_process_trace_enabled(chat_id: int) -> bool:
-    try:
-        settings = _ensure_process_settings(chat_id)
-        return bool(settings.get("process_trace_enabled", False))
-    except Exception:
-        return False
-
-
-def set_process_trace_enabled(chat_id: int, enabled: bool):
-    settings = _ensure_process_settings(chat_id)
-    settings["process_trace_enabled"] = bool(enabled)
-    save_data(data)
-    # Настройка тоже должна уехать в JSON-бэкап, но сам PROCESS при этом не блокирует основной поток.
-    schedule_config_backup_for_chats(chat_id)
-
-
-def toggle_process_trace(chat_id: int) -> bool:
-    new_value = not is_process_trace_enabled(chat_id)
-    set_process_trace_enabled(chat_id, new_value)
-    return new_value
 
 
 def _is_bot_removed_error(err) -> bool:
@@ -7000,7 +6861,7 @@ def _is_fast_ui_purpose(purpose: str) -> bool:
     p = str(purpose or "").lower()
     fast_marks = (
         "safe_edit", "countdown", "secret_window", "secret media",
-        "secret_edit_debounce", "category_wait_countdown", "process_trace_edit",
+        "secret_edit_debounce", "category_wait_countdown",
         "o9_secret_wait_countdown",
     )
     return any(x in p for x in fast_marks)
@@ -7434,4 +7295,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v134_flat_reminder
+# v135_reminders_secret_timers

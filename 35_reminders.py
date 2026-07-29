@@ -1,8 +1,11 @@
-# v134_flat_reminder
+# v135_reminders_secret_timers
 
 _REMINDER_THREAD_STARTED = False
 _REMINDER_THREAD_LOCK = threading.RLock()
+_REMINDER_CONFIG_LOCK = threading.RLock()
 _REMINDER_CHECK_SECONDS = 15.0
+_REMINDER_LIST_PAGE_SIZE = 8
+_REMINDER_UI_BINDINGS = {}
 _REMINDER_MONTHS_RU = [
     "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
@@ -16,12 +19,27 @@ def _reminder_owner_id() -> int | None:
         return None
 
 
-def _reminder_cfg() -> dict:
-    gs = data.setdefault("_global_settings", {})
-    cfg = gs.setdefault("reminder", {})
+def _new_reminder_cfg() -> dict:
+    return {
+        "enabled": False,
+        "text": "",
+        "chat_ids": [],
+        "interval_minutes": 120,
+        "start_hour": 8,
+        "end_hour": 22,
+        "start_date": today_key(),
+        "end_date": "",
+        "next_run_at": "",
+        "last_sent_at": "",
+        "last_message_ids": {},
+        "created_at": now_local().isoformat(timespec="seconds"),
+        "updated_at": now_local().isoformat(timespec="seconds"),
+    }
+
+
+def _normalize_reminder_cfg(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         cfg = {}
-        gs["reminder"] = cfg
     cfg.setdefault("enabled", False)
     cfg.setdefault("text", "")
     cfg.setdefault("chat_ids", [])
@@ -33,8 +51,105 @@ def _reminder_cfg() -> dict:
     cfg.setdefault("next_run_at", "")
     cfg.setdefault("last_sent_at", "")
     cfg.setdefault("last_message_ids", {})
-    cfg.setdefault("input_wait", None)
+    cfg.setdefault("created_at", now_local().isoformat(timespec="seconds"))
+    cfg.setdefault("updated_at", now_local().isoformat(timespec="seconds"))
     return cfg
+
+
+def _reminders_root() -> dict:
+    """v135: несколько независимых напоминалок + миграция одиночной v134 в №1."""
+    gs = data.setdefault("_global_settings", {})
+    with _REMINDER_CONFIG_LOCK:
+        root = gs.get("reminders_v2")
+        if not isinstance(root, dict):
+            root = {"next_id": 1, "items": {}, "migrated_v134": False}
+            gs["reminders_v2"] = root
+        items = root.setdefault("items", {})
+        if not isinstance(items, dict):
+            items = {}
+            root["items"] = items
+        root.setdefault("next_id", 1)
+        root.setdefault("migrated_v134", False)
+
+        # Одноразовая безопасная миграция старой одиночной напоминалки.
+        if not bool(root.get("migrated_v134")):
+            legacy = gs.get("reminder")
+            if isinstance(legacy, dict) and any([
+                str(legacy.get("text") or "").strip(),
+                legacy.get("chat_ids"), legacy.get("last_message_ids"), legacy.get("enabled"),
+            ]):
+                cfg = _normalize_reminder_cfg(dict(legacy))
+                cfg.pop("input_wait", None)
+                cfg["updated_at"] = now_local().isoformat(timespec="seconds")
+                items.setdefault("1", cfg)
+                try:
+                    root["next_id"] = max(int(root.get("next_id") or 1), 2)
+                except Exception:
+                    root["next_id"] = 2
+                # Старый контур оставляем как архив, но выключаем, чтобы rollback не дал дубль.
+                legacy["enabled"] = False
+                legacy["next_run_at"] = ""
+                legacy["migrated_to_reminders_v2"] = True
+            root["migrated_v134"] = True
+        for rid in list(items.keys()):
+            if isinstance(items.get(rid), dict):
+                items[str(rid)] = _normalize_reminder_cfg(items[rid])
+        return root
+
+
+def _reminder_items() -> list[tuple[int, dict]]:
+    root = _reminders_root()
+    rows = []
+    for rid_raw, cfg in (root.get("items") or {}).items():
+        try:
+            rid = int(rid_raw)
+        except Exception:
+            continue
+        if isinstance(cfg, dict):
+            rows.append((rid, _normalize_reminder_cfg(cfg)))
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+def _reminder_cfg(reminder_id: int | str | None = None, create: bool = False) -> dict | None:
+    if reminder_id is None:
+        rows = _reminder_items()
+        return rows[0][1] if rows else None
+    try:
+        rid = int(reminder_id)
+    except Exception:
+        return None
+    root = _reminders_root()
+    items = root.setdefault("items", {})
+    cfg = items.get(str(rid))
+    if cfg is None and create:
+        cfg = _new_reminder_cfg()
+        items[str(rid)] = cfg
+    return _normalize_reminder_cfg(cfg) if isinstance(cfg, dict) else None
+
+
+def _reminder_create() -> tuple[int, dict]:
+    with _REMINDER_CONFIG_LOCK:
+        root = _reminders_root()
+        try:
+            rid = max(1, int(root.get("next_id") or 1))
+        except Exception:
+            rid = 1
+        while str(rid) in (root.get("items") or {}):
+            rid += 1
+        cfg = _new_reminder_cfg()
+        root.setdefault("items", {})[str(rid)] = cfg
+        root["next_id"] = rid + 1
+    _reminder_save("reminder_add")
+    return rid, cfg
+
+
+def _reminder_position(reminder_id: int) -> int:
+    ids = [rid for rid, _cfg in _reminder_items()]
+    try:
+        return ids.index(int(reminder_id)) + 1
+    except Exception:
+        return 0
 
 
 def _reminder_save(reason: str = "reminder") -> None:
@@ -48,6 +163,10 @@ def _reminder_save(reason: str = "reminder") -> None:
             schedule_delta_backup(owner, delay=0.35, reason=reason)
         except Exception as exc:
             log_error(f"reminder delta schedule: {exc}")
+
+
+def _reminder_touch(cfg: dict) -> None:
+    cfg["updated_at"] = now_local().isoformat(timespec="seconds")
 
 
 def _reminder_parse_date(value: str):
@@ -86,8 +205,7 @@ def _reminder_interval_label(minutes: int) -> str:
         d = minutes // 1440
         return f"{d} д" if d != 1 else "1 день"
     if minutes % 60 == 0:
-        h = minutes // 60
-        return f"{h} ч"
+        return f"{minutes // 60} ч"
     return f"{minutes} мин"
 
 
@@ -145,8 +263,7 @@ def _reminder_next_valid_start(now_dt: datetime, cfg: dict):
     return None
 
 
-def _reminder_rearm(cfg: dict | None = None, immediate_if_valid: bool = True) -> None:
-    cfg = cfg or _reminder_cfg()
+def _reminder_rearm(cfg: dict, immediate_if_valid: bool = True) -> None:
     now_dt = now_local()
     if not bool(cfg.get("enabled")):
         cfg["next_run_at"] = ""
@@ -184,8 +301,7 @@ def _reminder_advance_after_send(now_dt: datetime, cfg: dict) -> None:
 
 
 def _reminder_known_chats() -> list[tuple[int, str]]:
-    rows = []
-    seen = set()
+    rows, seen = [], set()
     try:
         source = _collect_backup_menu_items()
     except Exception:
@@ -205,18 +321,75 @@ def _reminder_known_chats() -> list[tuple[int, str]]:
     return rows
 
 
-def build_reminder_menu_text() -> str:
-    cfg = _reminder_cfg()
+def _reminder_button_label(position: int, cfg: dict) -> str:
+    text = re.sub(r"\s+", " ", str(cfg.get("text") or "").strip()) or "без текста"
+    base = f"{int(position)}. {text}"
+    try:
+        return pad_button_label_41(base)
+    except Exception:
+        if len(base) > 41:
+            base = base[:40] + "…"
+        return base + ("⠀" * max(0, 41 - len(base)))
+
+
+def build_reminder_list_text() -> str:
+    rows = _reminder_items()
+    enabled = sum(1 for _rid, cfg in rows if bool(cfg.get("enabled")))
+    return (
+        "⏰ НАПОМИНАЛКИ\n\n"
+        f"Всего: {len(rows)}\n"
+        f"Активных: {enabled}\n\n"
+        "Нажмите напоминалку для просмотра и настройки."
+    )
+
+
+def build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
+    day_key = day_key or today_key()
+    rows = _reminder_items()
+    pages = max(1, (len(rows) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE)
+    page = max(0, min(int(page or 0), pages - 1))
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB("+добавить⏰", callback_data=f"rem:add:{page}:{day_key}"))
+    start = page * _REMINDER_LIST_PAGE_SIZE
+    for idx, (rid, cfg) in enumerate(rows[start:start + _REMINDER_LIST_PAGE_SIZE], start=start + 1):
+        kb.row(IB(_reminder_button_label(idx, cfg), callback_data=f"rem:open:{rid}:{page}:{day_key}"))
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(IB("⬅️", callback_data=f"rem:list:{page-1}:{day_key}"))
+        nav.append(IB(f"{page+1}/{pages}", callback_data="none"))
+        if page + 1 < pages:
+            nav.append(IB("➡️", callback_data=f"rem:list:{page+1}:{day_key}"))
+        kb.row(*nav)
+    kb.row(IB("⬅️ Назад", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+
+def _reminder_bind_editor(reminder_id: int, chat_id: int, message_id: int, day_key: str, page: int = 0) -> None:
+    _REMINDER_UI_BINDINGS[int(reminder_id)] = {
+        "chat_id": int(chat_id), "message_id": int(message_id), "day_key": str(day_key),
+        "page": int(page), "ts": time.time(),
+    }
+
+
+def _reminder_unbind(reminder_id: int) -> None:
+    _REMINDER_UI_BINDINGS.pop(int(reminder_id), None)
+
+
+def build_reminder_menu_text(reminder_id: int) -> str:
+    cfg = _reminder_cfg(reminder_id)
+    if not cfg:
+        return "⏰ Напоминалка не найдена."
     _reminder_normalize_hours(cfg)
-    txt = str(cfg.get("text") or "").strip()
-    preview = txt.replace("\n", " ")
-    if len(preview) > 120:
-        preview = preview[:117] + "..."
+    preview = re.sub(r"\s+", " ", str(cfg.get("text") or "").strip())
+    if len(preview) > 160:
+        preview = preview[:157] + "..."
     end_date = _reminder_fmt_date(cfg.get("end_date")) if cfg.get("end_date") else "без конца"
     state = "✅ ВКЛ" if cfg.get("enabled") else "⏸ ВЫКЛ"
     chats_count = len([x for x in (cfg.get("chat_ids") or []) if str(x).strip()])
+    pos = _reminder_position(int(reminder_id)) or int(reminder_id)
     return (
-        "⏰ НАПОМИНАЛКА\n\n"
+        f"⏰ НАПОМИНАЛКА №{pos}\n\n"
         f"Состояние: {state}\n"
         f"Текст: {preview or 'не задан'}\n"
         f"Даты: {_reminder_fmt_date(cfg.get('start_date'))} → {end_date}\n"
@@ -228,44 +401,81 @@ def build_reminder_menu_text() -> str:
     )
 
 
-def build_reminder_menu_keyboard(day_key: str | None = None):
+def _reminder_insert_query(token: str, current_text: str = "") -> str:
+    service = f"({token} служебное — можно не трогать)"
+    max_payload = max(0, 252 - len(service) - 2)
+    current = str(current_text or "")
+    if len(current) > max_payload:
+        current = current[:max_payload]
+    return service + "\n\n" + current
+
+
+def compose_reminder_text_insert_value(reminder_id: int, current_text: str = "") -> str:
+    return _reminder_insert_query(f"EDITREM|{int(reminder_id)}|", current_text)
+
+
+def compose_reminder_interval_insert_value(reminder_id: int, cfg: dict) -> str:
+    return _reminder_insert_query(f"EDITREMINT|{int(reminder_id)}|", _reminder_interval_label(cfg.get("interval_minutes", 120)))
+
+
+def build_reminder_menu_keyboard(reminder_id: int, day_key: str | None = None, page: int = 0, viewer_chat_id: int | None = None):
     day_key = day_key or today_key()
-    cfg = _reminder_cfg()
+    cfg = _reminder_cfg(reminder_id)
     kb = types.InlineKeyboardMarkup(row_width=2)
+    if not cfg:
+        kb.row(IB("⬅️ К напоминалкам", callback_data=f"rem:list:{page}:{day_key}"))
+        return kb
     kb.row(
-        IB("✍️ Текст", callback_data=f"rem:text:{day_key}"),
-        IB(f"💬 Чаты ({len(cfg.get('chat_ids') or [])})", callback_data=f"rem:chats:0:{day_key}"),
+        make_copy_or_inline_button("✍️ Текст", compose_reminder_text_insert_value(reminder_id, cfg.get("text") or ""), viewer_chat_id=viewer_chat_id),
+        IB(f"💬 Чаты ({len(cfg.get('chat_ids') or [])})", callback_data=f"rem:chats:{reminder_id}:0:{page}:{day_key}"),
     )
     kb.row(
-        IB("📅 Даты", callback_data=f"rem:dates:{day_key}"),
-        IB(f"🔁 {_reminder_interval_label(cfg.get('interval_minutes', 120))}", callback_data=f"rem:interval:{day_key}"),
+        IB("📅 Даты", callback_data=f"rem:dates:{reminder_id}:{page}:{day_key}"),
+        IB(f"🔁 {_reminder_interval_label(cfg.get('interval_minutes', 120))}", callback_data=f"rem:interval:{reminder_id}:{page}:{day_key}"),
     )
     kb.row(
-        IB(f"🕗 С {int(cfg.get('start_hour', 8)):02d}:00", callback_data=f"rem:hours:start:{day_key}"),
-        IB(f"🕙 До {int(cfg.get('end_hour', 22)):02d}:59", callback_data=f"rem:hours:end:{day_key}"),
+        IB(f"🕗 С {int(cfg.get('start_hour', 8)):02d}:00", callback_data=f"rem:hours:start:{reminder_id}:{page}:{day_key}"),
+        IB(f"🕙 До {int(cfg.get('end_hour', 22)):02d}:59", callback_data=f"rem:hours:end:{reminder_id}:{page}:{day_key}"),
     )
     kb.row(
-        IB("⏸ Отключить" if cfg.get("enabled") else "✅ Включить", callback_data=f"rem:toggle:{day_key}"),
-        IB("🗑 Удалить", callback_data=f"rem:delete_confirm:{day_key}"),
+        IB("⏸ Отключить" if cfg.get("enabled") else "✅ Включить", callback_data=f"rem:toggle:{reminder_id}:{page}:{day_key}"),
+        IB("Изменить📝", callback_data=f"rem:editmenu:{reminder_id}:{page}:{day_key}"),
     )
-    kb.row(IB("⬅️ Назад", callback_data=f"d:{day_key}:back_main"))
+    kb.row(IB("⬅️ К напоминалкам", callback_data=f"rem:list:{page}:{day_key}"))
     return kb
 
 
-def _reminder_dates_text() -> str:
-    cfg = _reminder_cfg()
+def _reminder_edit_menu_keyboard(reminder_id: int, page: int, day_key: str, viewer_chat_id: int):
+    cfg = _reminder_cfg(reminder_id) or {}
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(make_copy_or_inline_button(
+        "✍️ Вставить текст",
+        compose_reminder_text_insert_value(reminder_id, cfg.get("text") or ""),
+        viewer_chat_id=viewer_chat_id,
+    ))
+    kb.row(IB("🗑 Удалить", callback_data=f"rem:delete_confirm:{reminder_id}:{page}:{day_key}"))
+    kb.row(
+        IB("⬅️ Назад", callback_data=f"rem:open:{reminder_id}:{page}:{day_key}"),
+        IB("✖️ Отмена", callback_data=f"rem:open:{reminder_id}:{page}:{day_key}"),
+    )
+    return kb
+
+
+def _reminder_dates_text(reminder_id: int) -> str:
+    cfg = _reminder_cfg(reminder_id) or {}
     end = _reminder_fmt_date(cfg.get("end_date")) if cfg.get("end_date") else "без конца"
     return f"📅 ДАТЫ НАПОМИНАЛКИ\n\nНачало: {_reminder_fmt_date(cfg.get('start_date'))}\nКонец: {end}"
 
 
-def _reminder_dates_keyboard(day_key: str):
+def _reminder_dates_keyboard(reminder_id: int, page: int, day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
+    now_ym = now_local().strftime("%Y-%m")
     kb.row(
-        IB("📅 Начало", callback_data=f"rem:calendar:start:{now_local().strftime('%Y-%m')}:{day_key}"),
-        IB("🏁 Конец", callback_data=f"rem:calendar:end:{now_local().strftime('%Y-%m')}:{day_key}"),
+        IB("📅 Начало", callback_data=f"rem:calendar:start:{now_ym}:{reminder_id}:{page}:{day_key}"),
+        IB("🏁 Конец", callback_data=f"rem:calendar:end:{now_ym}:{reminder_id}:{page}:{day_key}"),
     )
-    kb.row(IB("♾ Без конца", callback_data=f"rem:noend:{day_key}"))
-    kb.row(IB("⬅️ Назад", callback_data=f"rem:menu:{day_key}"))
+    kb.row(IB("♾ Без конца", callback_data=f"rem:noend:{reminder_id}:{page}:{day_key}"))
+    kb.row(IB("⬅️ Назад", callback_data=f"rem:open:{reminder_id}:{page}:{day_key}"))
     return kb
 
 
@@ -274,7 +484,7 @@ def _reminder_calendar_text(which: str, year: int, month: int) -> str:
     return f"📅 Выберите дату {target}\n\n{_REMINDER_MONTHS_RU[month-1]} {year}"
 
 
-def _reminder_calendar_keyboard(which: str, year: int, month: int, day_key: str):
+def _reminder_calendar_keyboard(which: str, year: int, month: int, reminder_id: int, page: int, day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=7)
     kb.row(*[IB(x, callback_data="none") for x in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")])
     cal = calendar.Calendar(firstweekday=0)
@@ -285,107 +495,76 @@ def _reminder_calendar_keyboard(which: str, year: int, month: int, day_key: str)
                 row.append(IB(" ", callback_data="none"))
             else:
                 date_key = f"{year:04d}-{month:02d}-{d:02d}"
-                row.append(IB(str(d), callback_data=f"rem:date:{which}:{date_key}:{day_key}"))
+                row.append(IB(str(d), callback_data=f"rem:date:{which}:{date_key}:{reminder_id}:{page}:{day_key}"))
         kb.row(*row)
-    prev_month = month - 1
-    prev_year = year
+    prev_month, prev_year = month - 1, year
     if prev_month < 1:
-        prev_month = 12
-        prev_year -= 1
-    next_month = month + 1
-    next_year = year
+        prev_month, prev_year = 12, prev_year - 1
+    next_month, next_year = month + 1, year
     if next_month > 12:
-        next_month = 1
-        next_year += 1
+        next_month, next_year = 1, next_year + 1
     kb.row(
-        IB("⬅️", callback_data=f"rem:calendar:{which}:{prev_year:04d}-{prev_month:02d}:{day_key}"),
-        IB("📅 Даты", callback_data=f"rem:dates:{day_key}"),
-        IB("➡️", callback_data=f"rem:calendar:{which}:{next_year:04d}-{next_month:02d}:{day_key}"),
+        IB("⬅️", callback_data=f"rem:calendar:{which}:{prev_year:04d}-{prev_month:02d}:{reminder_id}:{page}:{day_key}"),
+        IB("📅 Даты", callback_data=f"rem:dates:{reminder_id}:{page}:{day_key}"),
+        IB("➡️", callback_data=f"rem:calendar:{which}:{next_year:04d}-{next_month:02d}:{reminder_id}:{page}:{day_key}"),
     )
     return kb
 
 
-def _reminder_interval_keyboard(day_key: str):
-    cfg = _reminder_cfg()
+def _reminder_interval_keyboard(reminder_id: int, page: int, day_key: str, viewer_chat_id: int):
+    cfg = _reminder_cfg(reminder_id) or {}
     current = int(cfg.get("interval_minutes", 120) or 120)
     kb = types.InlineKeyboardMarkup(row_width=3)
-    options = [30, 60, 120, 180, 240, 360, 720, 1440]
     buttons = []
-    for minutes in options:
+    for minutes in [30, 60, 120, 180, 240, 360, 720, 1440]:
         mark = "✅ " if minutes == current else ""
-        buttons.append(IB(mark + _reminder_interval_label(minutes), callback_data=f"rem:intset:{minutes}:{day_key}"))
+        buttons.append(IB(mark + _reminder_interval_label(minutes), callback_data=f"rem:intset:{minutes}:{reminder_id}:{page}:{day_key}"))
     for i in range(0, len(buttons), 3):
         kb.row(*buttons[i:i+3])
-    kb.row(IB("✍️ Свой интервал", callback_data=f"rem:intcustom:{day_key}"))
-    kb.row(IB("⬅️ Назад", callback_data=f"rem:menu:{day_key}"))
+    kb.row(make_copy_or_inline_button(
+        "✍️ Свой интервал",
+        compose_reminder_interval_insert_value(reminder_id, cfg),
+        viewer_chat_id=viewer_chat_id,
+    ))
+    kb.row(IB("⬅️ Назад", callback_data=f"rem:open:{reminder_id}:{page}:{day_key}"))
     return kb
 
 
-def _reminder_hours_keyboard(which: str, day_key: str):
-    cfg = _reminder_cfg()
+def _reminder_hours_keyboard(which: str, reminder_id: int, page: int, day_key: str):
+    cfg = _reminder_cfg(reminder_id) or {}
     current = int(cfg.get("start_hour" if which == "start" else "end_hour", 8 if which == "start" else 22))
     kb = types.InlineKeyboardMarkup(row_width=4)
     buttons = []
     for hour in range(24):
         mark = "✅ " if hour == current else ""
-        buttons.append(IB(f"{mark}{hour:02d}:00", callback_data=f"rem:hourset:{which}:{hour}:{day_key}"))
+        buttons.append(IB(f"{mark}{hour:02d}:00", callback_data=f"rem:hourset:{which}:{hour}:{reminder_id}:{page}:{day_key}"))
     for i in range(0, 24, 4):
         kb.row(*buttons[i:i+4])
-    kb.row(IB("⬅️ Назад", callback_data=f"rem:menu:{day_key}"))
+    kb.row(IB("⬅️ Назад", callback_data=f"rem:open:{reminder_id}:{page}:{day_key}"))
     return kb
 
 
-def _reminder_chats_keyboard(page: int, day_key: str):
-    cfg = _reminder_cfg()
+def _reminder_chats_keyboard(reminder_id: int, chat_page: int, list_page: int, day_key: str):
+    cfg = _reminder_cfg(reminder_id) or {}
     selected = {int(x) for x in (cfg.get("chat_ids") or []) if str(x).lstrip("-").isdigit()}
     rows = _reminder_known_chats()
     per_page = 8
     pages = max(1, (len(rows) + per_page - 1) // per_page)
-    page = max(0, min(int(page), pages - 1))
+    chat_page = max(0, min(int(chat_page), pages - 1))
     kb = types.InlineKeyboardMarkup(row_width=1)
-    for cid, title in rows[page * per_page:(page + 1) * per_page]:
+    for cid, title in rows[chat_page * per_page:(chat_page + 1) * per_page]:
         mark = "✅" if cid in selected else "⬜"
         name = chat_button_title(cid, title) if "chat_button_title" in globals() else str(title)
-        kb.row(IB(f"{mark} {name}", callback_data=f"rem:chat:{cid}:{page}:{day_key}"))
+        kb.row(IB(f"{mark} {name}", callback_data=f"rem:chat:{cid}:{reminder_id}:{chat_page}:{list_page}:{day_key}"))
     nav = []
-    if page > 0:
-        nav.append(IB("⬅️", callback_data=f"rem:chats:{page-1}:{day_key}"))
-    nav.append(IB(f"{page+1}/{pages}", callback_data="none"))
-    if page + 1 < pages:
-        nav.append(IB("➡️", callback_data=f"rem:chats:{page+1}:{day_key}"))
+    if chat_page > 0:
+        nav.append(IB("⬅️", callback_data=f"rem:chats:{reminder_id}:{chat_page-1}:{list_page}:{day_key}"))
+    nav.append(IB(f"{chat_page+1}/{pages}", callback_data="none"))
+    if chat_page + 1 < pages:
+        nav.append(IB("➡️", callback_data=f"rem:chats:{reminder_id}:{chat_page+1}:{list_page}:{day_key}"))
     kb.row(*nav)
-    kb.row(IB("⬅️ Назад", callback_data=f"rem:menu:{day_key}"))
+    kb.row(IB("⬅️ Назад", callback_data=f"rem:open:{reminder_id}:{list_page}:{day_key}"))
     return kb
-
-
-def _reminder_wait_active(chat_id: int, wait_type: str | None = None) -> bool:
-    owner = _reminder_owner_id()
-    if owner is None or int(chat_id) != owner:
-        return False
-    wait = _reminder_cfg().get("input_wait") or {}
-    if not isinstance(wait, dict):
-        return False
-    try:
-        if float(wait.get("expires_at", 0) or 0) < time.time():
-            _reminder_cfg()["input_wait"] = None
-            _reminder_save("reminder_wait_expired")
-            return False
-    except Exception:
-        pass
-    if wait_type is not None and wait.get("type") != wait_type:
-        return False
-    return bool(wait.get("type"))
-
-
-def _reminder_set_wait(call, wait_type: str, day_key: str) -> None:
-    cfg = _reminder_cfg()
-    cfg["input_wait"] = {
-        "type": wait_type,
-        "day_key": day_key,
-        "message_id": int(call.message.message_id),
-        "expires_at": time.time() + 180,
-    }
-    _reminder_save("reminder_input_wait")
 
 
 def _reminder_parse_custom_interval(text: str) -> int | None:
@@ -393,33 +572,17 @@ def _reminder_parse_custom_interval(text: str) -> int | None:
     m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(мин|м|min|m|ч|час|часа|часов|h|д|дн|день|дня|дней|d)?\s*", value)
     if not m:
         return None
-    num = float(m.group(1))
-    unit = m.group(2) or "мин"
+    num = float(m.group(1)); unit = m.group(2) or "мин"
     if unit in {"ч", "час", "часа", "часов", "h"}:
         minutes = int(round(num * 60))
     elif unit in {"д", "дн", "день", "дня", "дней", "d"}:
         minutes = int(round(num * 1440))
     else:
         minutes = int(round(num))
-    if minutes < 5 or minutes > 43200:
-        return None
-    return minutes
+    return minutes if 5 <= minutes <= 43200 else None
 
 
-def _reminder_edit_back(chat_id: int, message_id: int, day_key: str) -> None:
-    try:
-        bot.edit_message_text(
-            build_reminder_menu_text(),
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=build_reminder_menu_keyboard(day_key),
-        )
-    except Exception as exc:
-        log_error(f"reminder edit back: {exc}")
-
-
-def _reminder_delete_last_messages(cfg: dict | None = None) -> None:
-    cfg = cfg or _reminder_cfg()
+def _reminder_delete_last_messages(cfg: dict) -> None:
     last_map = cfg.get("last_message_ids") or {}
     for cid_raw, mid_raw in list(last_map.items()):
         try:
@@ -429,8 +592,7 @@ def _reminder_delete_last_messages(cfg: dict | None = None) -> None:
     cfg["last_message_ids"] = {}
 
 
-def _reminder_send_cycle() -> bool:
-    cfg = _reminder_cfg()
+def _reminder_send_cycle(reminder_id: int, cfg: dict) -> bool:
     text = str(cfg.get("text") or "").strip()
     chat_ids = []
     for raw in cfg.get("chat_ids") or []:
@@ -454,43 +616,54 @@ def _reminder_send_cycle() -> bool:
                     pass
             sent_any = True
             try:
-                bot_journal("reminder_sent", cid, f"message_id={sent.message_id}")
+                bot_journal("reminder_sent", cid, f"reminder_id={int(reminder_id)} message_id={sent.message_id}")
             except Exception:
                 pass
         except Exception as exc:
-            log_error(f"reminder send {cid}: {exc}")
+            log_error(f"reminder {reminder_id} send {cid}: {exc}")
             try:
-                bot_journal("reminder_send_error", cid, str(exc), "ERROR")
+                bot_journal("reminder_send_error", cid, f"reminder_id={int(reminder_id)} {exc}", "ERROR")
             except Exception:
                 pass
     return sent_any
 
 
-def _reminder_tick() -> None:
-    cfg = _reminder_cfg()
+def _reminder_tick_one(reminder_id: int, cfg: dict) -> bool:
     if not bool(cfg.get("enabled")):
-        return
+        return False
     now_dt = now_local()
     if not str(cfg.get("text") or "").strip() or not (cfg.get("chat_ids") or []):
-        return
+        return False
     due = _reminder_parse_dt(cfg.get("next_run_at"))
     if due is None:
         _reminder_rearm(cfg, immediate_if_valid=True)
-        _reminder_save("reminder_rearm")
         due = _reminder_parse_dt(cfg.get("next_run_at"))
     if due is None or now_dt < due:
-        return
+        return False
     if not _reminder_date_allowed(now_dt, cfg) or not _reminder_time_allowed(now_dt, cfg):
         next_dt = _reminder_next_valid_start(now_dt, cfg)
         cfg["next_run_at"] = next_dt.isoformat(timespec="seconds") if next_dt else ""
         if next_dt is None:
             cfg["enabled"] = False
-        _reminder_save("reminder_window_shift")
-        return
-    if _reminder_send_cycle():
+        _reminder_touch(cfg)
+        return True
+    if _reminder_send_cycle(reminder_id, cfg):
         cfg["last_sent_at"] = now_dt.isoformat(timespec="seconds")
     _reminder_advance_after_send(now_dt, cfg)
-    _reminder_save("reminder_sent")
+    _reminder_touch(cfg)
+    return True
+
+
+def _reminder_tick() -> None:
+    changed = False
+    with _REMINDER_CONFIG_LOCK:
+        for rid, cfg in _reminder_items():
+            try:
+                changed = _reminder_tick_one(rid, cfg) or changed
+            except Exception as exc:
+                log_error(f"reminder {rid} tick: {exc}")
+    if changed:
+        _reminder_save("reminders_tick")
 
 
 def _reminder_scheduler_loop() -> None:
@@ -509,52 +682,108 @@ def start_reminder_scheduler() -> None:
         if _REMINDER_THREAD_STARTED:
             return
         _REMINDER_THREAD_STARTED = True
+        _reminders_root()  # миграция до первого tick
+        try:
+            save_data(data, root_only=True)  # миграция v134 должна пережить restart даже до первого send
+        except Exception as exc:
+            log_error(f"reminder migration save: {exc}")
         threading.Thread(target=_reminder_scheduler_loop, name="reminder-scheduler", daemon=True).start()
 
 
-@bot.message_handler(func=lambda m: _reminder_wait_active(getattr(getattr(m, "chat", None), "id", 0)), content_types=["text"])
-def reminder_input_message(msg):
+def _reminder_direct_input_predicate(msg) -> bool:
+    try:
+        if getattr(msg, "content_type", None) != "text" or not is_owner_chat(int(msg.chat.id)):
+            return False
+        text = str(getattr(msg, "text", "") or "")
+        return bool(re.search(r"\((?:EDITREM|EDITREMINT)\|\d+\|", text))
+    except Exception:
+        return False
+
+
+def _reminder_extract_insert(text: str, kind: str):
+    raw = str(text or "")
+    m = re.search(rf"\(({re.escape(kind)}\|(\d+)\|)[^)]*\)", raw)
+    if not m:
+        return None, ""
+    try:
+        rid = int(m.group(2))
+    except Exception:
+        return None, ""
+    value = (raw[:m.start()] + " " + raw[m.end():]).strip()
+    try:
+        value = sanitize_telegram_inserted_text(value)
+    except Exception:
+        value = re.sub(r"(?m)^\s*@[A-Za-z0-9_]{3,}\s+", "", value).strip()
+    return rid, value.strip()
+
+
+def _reminder_refresh_bound_editor(reminder_id: int) -> None:
+    binding = _REMINDER_UI_BINDINGS.get(int(reminder_id)) or {}
+    try:
+        chat_id = int(binding.get("chat_id")); message_id = int(binding.get("message_id"))
+    except Exception:
+        return
+    cfg = _reminder_cfg(reminder_id)
+    if not cfg:
+        return
+    day_key = str(binding.get("day_key") or today_key()); page = int(binding.get("page") or 0)
+    try:
+        bot.edit_message_text(
+            build_reminder_menu_text(reminder_id), chat_id=chat_id, message_id=message_id,
+            reply_markup=build_reminder_menu_keyboard(reminder_id, day_key, page, viewer_chat_id=chat_id),
+        )
+    except Exception as exc:
+        if "message is not modified" not in str(exc).lower():
+            log_error(f"reminder refresh bound editor {reminder_id}: {exc}")
+
+
+@bot.message_handler(func=_reminder_direct_input_predicate, content_types=["text"])
+def reminder_direct_input_message(msg):
     chat_id = int(msg.chat.id)
-    if not is_owner_chat(chat_id):
-        return
-    cfg = _reminder_cfg()
-    wait = cfg.get("input_wait") or {}
-    wait_type = str(wait.get("type") or "")
-    day_key = str(wait.get("day_key") or today_key())
-    menu_message_id = int(wait.get("message_id") or 0)
-    text = str(getattr(msg, "text", "") or "").strip()
-    if wait_type == "text":
-        if not text:
-            send_and_auto_delete(chat_id, "❌ Текст пустой.", 8)
+    text = str(msg.text or "")
+    if "EDITREMINT|" in text:
+        rid, value = _reminder_extract_insert(text, "EDITREMINT")
+        cfg = _reminder_cfg(rid) if rid is not None else None
+        if not cfg:
+            send_and_auto_delete(chat_id, "❌ Напоминалка не найдена.", 8)
             return
-        if len(text) > 4000:
-            send_and_auto_delete(chat_id, "❌ Текст слишком длинный. Максимум 4000 символов.", 10)
-            return
-        cfg["text"] = text
-        cfg["input_wait"] = None
-        if cfg.get("enabled"):
-            _reminder_rearm(cfg, immediate_if_valid=True)
-        _reminder_save("reminder_text")
-    elif wait_type == "interval":
-        minutes = _reminder_parse_custom_interval(text)
+        minutes = _reminder_parse_custom_interval(value)
         if minutes is None:
-            send_and_auto_delete(chat_id, "❌ Пример: 90 мин, 2 ч, 1 день.", 10)
+            send_and_auto_delete(chat_id, "❌ Пример: 90 мин, 2 ч, 1 день. Минимум 5 минут.", 10)
             return
+        _durable_note_source_consumed("reminder_interval_insert")
         cfg["interval_minutes"] = int(minutes)
-        cfg["input_wait"] = None
         if cfg.get("enabled"):
             _reminder_rearm(cfg, immediate_if_valid=True)
-        _reminder_save("reminder_interval")
-    else:
-        cfg["input_wait"] = None
-        _reminder_save("reminder_wait_clear")
+        _reminder_touch(cfg); _reminder_save("reminder_interval_insert")
+        try:
+            bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            pass
+        _reminder_refresh_bound_editor(rid)
         return
+
+    rid, value = _reminder_extract_insert(text, "EDITREM")
+    cfg = _reminder_cfg(rid) if rid is not None else None
+    if not cfg:
+        send_and_auto_delete(chat_id, "❌ Напоминалка не найдена.", 8)
+        return
+    if not value:
+        send_and_auto_delete(chat_id, "❌ Текст пустой.", 8)
+        return
+    if len(value) > 4000:
+        send_and_auto_delete(chat_id, "❌ Текст слишком длинный. Максимум 4000 символов.", 10)
+        return
+    _durable_note_source_consumed("reminder_text_insert")
+    cfg["text"] = value
+    if cfg.get("enabled"):
+        _reminder_rearm(cfg, immediate_if_valid=True)
+    _reminder_touch(cfg); _reminder_save("reminder_text_insert")
     try:
         bot.delete_message(chat_id, msg.message_id)
     except Exception:
         pass
-    if menu_message_id:
-        _reminder_edit_back(chat_id, menu_message_id, day_key)
+    _reminder_refresh_bound_editor(rid)
 
 
 @bot.callback_query_handler(func=lambda c: str(getattr(c, "data", "") or "").startswith("rem:"))
@@ -566,59 +795,70 @@ def reminder_callback(call):
         except Exception:
             pass
         return
-    raw = str(call.data or "")
-    parts = raw.split(":")
+    raw = str(call.data or ""); parts = raw.split(":")
     action = parts[1] if len(parts) > 1 else "menu"
-    cfg = _reminder_cfg()
     try:
         bot.answer_callback_query(call.id)
     except Exception:
         pass
 
+    # v134 старые кнопки rem:menu:<day> продолжают открывать новый список.
     if action == "menu":
         day_key = parts[2] if len(parts) > 2 else today_key()
-        safe_edit(bot, call, build_reminder_menu_text(), reply_markup=build_reminder_menu_keyboard(day_key))
+        safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(day_key, 0))
         return
-    if action == "text":
-        day_key = parts[2] if len(parts) > 2 else today_key()
-        _reminder_set_wait(call, "text", day_key)
-        kb = types.InlineKeyboardMarkup()
-        kb.row(IB("✖️ Отмена", callback_data=f"rem:cancelinput:{day_key}"))
-        safe_edit(bot, call, "✍️ Пришлите одним сообщением текст напоминания.\n\nРежим отменится сам через 3 минуты.", reply_markup=kb)
+
+    # Кнопки старого одиночного окна v134 могут физически остаться в Telegram после deploy.
+    # Вместо исключения/битой операции мягко переводим их в новый список.
+    legacy_min_parts = {
+        "dates": 5, "calendar": 7, "date": 7, "noend": 5, "interval": 5,
+        "intset": 6, "hours": 6, "hourset": 7, "chats": 6, "chat": 7,
+        "toggle": 5, "delete_confirm": 5, "delete": 5,
+    }
+    if action in {"text", "intcustom", "cancelinput"} or (action in legacy_min_parts and len(parts) < legacy_min_parts[action]):
+        old_day = next((x for x in reversed(parts) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(x or ""))), today_key())
+        safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(old_day, 0))
         return
-    if action == "intcustom":
-        day_key = parts[2] if len(parts) > 2 else today_key()
-        _reminder_set_wait(call, "interval", day_key)
-        kb = types.InlineKeyboardMarkup()
-        kb.row(IB("✖️ Отмена", callback_data=f"rem:cancelinput:{day_key}"))
-        safe_edit(bot, call, "🔁 Напишите период.\n\nПримеры: 90 мин, 2 ч, 1 день.\nМинимум 5 минут.", reply_markup=kb)
+    if action == "list":
+        page = int(parts[2]) if len(parts) > 2 else 0
+        day_key = parts[3] if len(parts) > 3 else today_key()
+        safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(day_key, page))
         return
-    if action == "cancelinput":
-        day_key = parts[2] if len(parts) > 2 else today_key()
-        cfg["input_wait"] = None
-        _reminder_save("reminder_input_cancel")
-        safe_edit(bot, call, build_reminder_menu_text(), reply_markup=build_reminder_menu_keyboard(day_key))
+    if action == "add":
+        page = int(parts[2]) if len(parts) > 2 else 0
+        day_key = parts[3] if len(parts) > 3 else today_key()
+        rid, _cfg = _reminder_create()
+        _reminder_bind_editor(rid, chat_id, call.message.message_id, day_key, page)
+        safe_edit(bot, call, build_reminder_menu_text(rid), reply_markup=build_reminder_menu_keyboard(rid, day_key, page, viewer_chat_id=chat_id))
+        return
+    if action == "open":
+        rid = int(parts[2]); page = int(parts[3]) if len(parts) > 3 else 0
+        day_key = parts[4] if len(parts) > 4 else today_key()
+        if not _reminder_cfg(rid):
+            safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(day_key, page)); return
+        _reminder_bind_editor(rid, chat_id, call.message.message_id, day_key, page)
+        safe_edit(bot, call, build_reminder_menu_text(rid), reply_markup=build_reminder_menu_keyboard(rid, day_key, page, viewer_chat_id=chat_id))
+        return
+    if action == "editmenu":
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4] if len(parts) > 4 else today_key()
+        _reminder_bind_editor(rid, chat_id, call.message.message_id, day_key, page)
+        safe_edit(bot, call, f"Изменить📝 напоминалку №{_reminder_position(rid) or rid}", reply_markup=_reminder_edit_menu_keyboard(rid, page, day_key, chat_id))
         return
     if action == "dates":
-        day_key = parts[2] if len(parts) > 2 else today_key()
-        safe_edit(bot, call, _reminder_dates_text(), reply_markup=_reminder_dates_keyboard(day_key))
-        return
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        safe_edit(bot, call, _reminder_dates_text(rid), reply_markup=_reminder_dates_keyboard(rid, page, day_key)); return
     if action == "calendar":
-        which = parts[2] if len(parts) > 2 else "start"
-        ym = parts[3] if len(parts) > 3 else now_local().strftime("%Y-%m")
-        day_key = parts[4] if len(parts) > 4 else today_key()
+        which = parts[2] if len(parts) > 2 else "start"; ym = parts[3]
+        rid = int(parts[4]); page = int(parts[5]); day_key = parts[6]
         try:
             year, month = [int(x) for x in ym.split("-", 1)]
         except Exception:
             year, month = now_local().year, now_local().month
-        safe_edit(bot, call, _reminder_calendar_text(which, year, month), reply_markup=_reminder_calendar_keyboard(which, year, month, day_key))
-        return
+        safe_edit(bot, call, _reminder_calendar_text(which, year, month), reply_markup=_reminder_calendar_keyboard(which, year, month, rid, page, day_key)); return
     if action == "date":
-        which = parts[2] if len(parts) > 2 else "start"
-        date_key = parts[3] if len(parts) > 3 else today_key()
-        day_key = parts[4] if len(parts) > 4 else today_key()
-        selected = _reminder_parse_date(date_key)
-        if selected is None:
+        which, date_key = parts[2], parts[3]; rid = int(parts[4]); page = int(parts[5]); day_key = parts[6]
+        cfg = _reminder_cfg(rid); selected = _reminder_parse_date(date_key)
+        if not cfg or selected is None:
             return
         if which == "start":
             cfg["start_date"] = date_key
@@ -630,112 +870,86 @@ def reminder_callback(call):
             cfg["end_date"] = date_key if selected >= start else start.strftime("%Y-%m-%d")
         if cfg.get("enabled"):
             _reminder_rearm(cfg, immediate_if_valid=True)
-        _reminder_save("reminder_dates")
-        safe_edit(bot, call, _reminder_dates_text(), reply_markup=_reminder_dates_keyboard(day_key))
-        return
+        _reminder_touch(cfg); _reminder_save("reminder_dates")
+        safe_edit(bot, call, _reminder_dates_text(rid), reply_markup=_reminder_dates_keyboard(rid, page, day_key)); return
     if action == "noend":
-        day_key = parts[2] if len(parts) > 2 else today_key()
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4]; cfg = _reminder_cfg(rid)
+        if not cfg: return
         cfg["end_date"] = ""
-        if cfg.get("enabled"):
-            _reminder_rearm(cfg, immediate_if_valid=True)
-        _reminder_save("reminder_noend")
-        safe_edit(bot, call, _reminder_dates_text(), reply_markup=_reminder_dates_keyboard(day_key))
-        return
+        if cfg.get("enabled"): _reminder_rearm(cfg, immediate_if_valid=True)
+        _reminder_touch(cfg); _reminder_save("reminder_noend")
+        safe_edit(bot, call, _reminder_dates_text(rid), reply_markup=_reminder_dates_keyboard(rid, page, day_key)); return
     if action == "interval":
-        day_key = parts[2] if len(parts) > 2 else today_key()
-        safe_edit(bot, call, "🔁 ПЕРИОДИЧНОСТЬ\n\nКак часто присылать напоминание?", reply_markup=_reminder_interval_keyboard(day_key))
-        return
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        safe_edit(bot, call, "🔁 ПЕРИОДИЧНОСТЬ\n\nКак часто присылать напоминание?", reply_markup=_reminder_interval_keyboard(rid, page, day_key, chat_id)); return
     if action == "intset":
-        minutes = int(parts[2])
-        day_key = parts[3] if len(parts) > 3 else today_key()
-        cfg["interval_minutes"] = minutes
-        if cfg.get("enabled"):
-            _reminder_rearm(cfg, immediate_if_valid=True)
-        _reminder_save("reminder_interval")
-        safe_edit(bot, call, build_reminder_menu_text(), reply_markup=build_reminder_menu_keyboard(day_key))
-        return
+        minutes = int(parts[2]); rid = int(parts[3]); page = int(parts[4]); day_key = parts[5]; cfg = _reminder_cfg(rid)
+        if not cfg: return
+        cfg["interval_minutes"] = max(5, int(minutes))
+        if cfg.get("enabled"): _reminder_rearm(cfg, immediate_if_valid=True)
+        _reminder_touch(cfg); _reminder_save("reminder_interval")
+        safe_edit(bot, call, build_reminder_menu_text(rid), reply_markup=build_reminder_menu_keyboard(rid, day_key, page, viewer_chat_id=chat_id)); return
     if action == "hours":
-        which = parts[2] if len(parts) > 2 else "start"
-        day_key = parts[3] if len(parts) > 3 else today_key()
+        which = parts[2]; rid = int(parts[3]); page = int(parts[4]); day_key = parts[5]
         label = "С КАКОГО ЧАСА" if which == "start" else "ДО КАКОГО ЧАСА"
-        safe_edit(bot, call, f"🕐 {label}\n\nВыберите час.", reply_markup=_reminder_hours_keyboard(which, day_key))
-        return
+        safe_edit(bot, call, f"🕐 {label}\n\nВыберите час.", reply_markup=_reminder_hours_keyboard(which, rid, page, day_key)); return
     if action == "hourset":
-        which = parts[2] if len(parts) > 2 else "start"
-        hour = max(0, min(23, int(parts[3])))
-        day_key = parts[4] if len(parts) > 4 else today_key()
+        which = parts[2]; hour = max(0, min(23, int(parts[3]))); rid = int(parts[4]); page = int(parts[5]); day_key = parts[6]
+        cfg = _reminder_cfg(rid)
+        if not cfg: return
         if which == "start":
             cfg["start_hour"] = hour
-            if int(cfg.get("end_hour", 22)) < hour:
-                cfg["end_hour"] = hour
+            if int(cfg.get("end_hour", 22)) < hour: cfg["end_hour"] = hour
         else:
             cfg["end_hour"] = hour
-            if int(cfg.get("start_hour", 8)) > hour:
-                cfg["start_hour"] = hour
-        if cfg.get("enabled"):
-            _reminder_rearm(cfg, immediate_if_valid=True)
-        _reminder_save("reminder_hours")
-        safe_edit(bot, call, build_reminder_menu_text(), reply_markup=build_reminder_menu_keyboard(day_key))
-        return
+            if int(cfg.get("start_hour", 8)) > hour: cfg["start_hour"] = hour
+        if cfg.get("enabled"): _reminder_rearm(cfg, immediate_if_valid=True)
+        _reminder_touch(cfg); _reminder_save("reminder_hours")
+        safe_edit(bot, call, build_reminder_menu_text(rid), reply_markup=build_reminder_menu_keyboard(rid, day_key, page, viewer_chat_id=chat_id)); return
     if action == "chats":
-        page = int(parts[2]) if len(parts) > 2 else 0
-        day_key = parts[3] if len(parts) > 3 else today_key()
-        safe_edit(bot, call, "💬 ЧАТЫ ДЛЯ НАПОМИНАЛКИ\n\nНажимайте — ✅ выбран / ⬜ не выбран.", reply_markup=_reminder_chats_keyboard(page, day_key))
-        return
+        rid = int(parts[2]); chat_page = int(parts[3]); list_page = int(parts[4]); day_key = parts[5]
+        safe_edit(bot, call, "💬 ЧАТЫ ДЛЯ НАПОМИНАЛКИ\n\nНажимайте — ✅ выбран / ⬜ не выбран.", reply_markup=_reminder_chats_keyboard(rid, chat_page, list_page, day_key)); return
     if action == "chat":
-        target = int(parts[2])
-        page = int(parts[3]) if len(parts) > 3 else 0
-        day_key = parts[4] if len(parts) > 4 else today_key()
+        target = int(parts[2]); rid = int(parts[3]); chat_page = int(parts[4]); list_page = int(parts[5]); day_key = parts[6]
+        cfg = _reminder_cfg(rid)
+        if not cfg: return
         selected = {int(x) for x in (cfg.get("chat_ids") or []) if str(x).lstrip("-").isdigit()}
         if target in selected:
             selected.remove(target)
             old_mid = (cfg.get("last_message_ids") or {}).pop(str(target), None)
             if old_mid:
-                try:
-                    bot.delete_message(target, int(old_mid))
-                except Exception:
-                    pass
+                try: bot.delete_message(target, int(old_mid))
+                except Exception: pass
         else:
             selected.add(target)
         cfg["chat_ids"] = sorted(selected)
-        if cfg.get("enabled"):
-            _reminder_rearm(cfg, immediate_if_valid=True)
-        _reminder_save("reminder_chats")
-        safe_edit(bot, call, "💬 ЧАТЫ ДЛЯ НАПОМИНАЛКИ\n\nНажимайте — ✅ выбран / ⬜ не выбран.", reply_markup=_reminder_chats_keyboard(page, day_key))
-        return
+        if cfg.get("enabled"): _reminder_rearm(cfg, immediate_if_valid=True)
+        _reminder_touch(cfg); _reminder_save("reminder_chats")
+        safe_edit(bot, call, "💬 ЧАТЫ ДЛЯ НАПОМИНАЛКИ\n\nНажимайте — ✅ выбран / ⬜ не выбран.", reply_markup=_reminder_chats_keyboard(rid, chat_page, list_page, day_key)); return
     if action == "toggle":
-        day_key = parts[2] if len(parts) > 2 else today_key()
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4]; cfg = _reminder_cfg(rid)
+        if not cfg: return
         if not cfg.get("enabled"):
             if not str(cfg.get("text") or "").strip():
-                send_and_auto_delete(chat_id, "❌ Сначала задайте текст напоминания.", 8)
-                return
+                send_and_auto_delete(chat_id, "❌ Сначала задайте текст напоминания.", 8); return
             if not (cfg.get("chat_ids") or []):
-                send_and_auto_delete(chat_id, "❌ Сначала выберите хотя бы один чат.", 8)
-                return
-            cfg["enabled"] = True
-            _reminder_rearm(cfg, immediate_if_valid=True)
+                send_and_auto_delete(chat_id, "❌ Сначала выберите хотя бы один чат.", 8); return
+            cfg["enabled"] = True; _reminder_rearm(cfg, immediate_if_valid=True)
         else:
-            cfg["enabled"] = False
-            cfg["next_run_at"] = ""
-        _reminder_save("reminder_toggle")
-        safe_edit(bot, call, build_reminder_menu_text(), reply_markup=build_reminder_menu_keyboard(day_key))
-        return
+            cfg["enabled"] = False; cfg["next_run_at"] = ""
+        _reminder_touch(cfg); _reminder_save("reminder_toggle")
+        safe_edit(bot, call, build_reminder_menu_text(rid), reply_markup=build_reminder_menu_keyboard(rid, day_key, page, viewer_chat_id=chat_id)); return
     if action == "delete_confirm":
-        day_key = parts[2] if len(parts) > 2 else today_key()
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4]
         kb = types.InlineKeyboardMarkup(row_width=2)
-        kb.row(
-            IB("🗑 Да, удалить", callback_data=f"rem:delete:{day_key}"),
-            IB("✖️ Отмена", callback_data=f"rem:menu:{day_key}"),
-        )
-        safe_edit(bot, call, "🗑 Удалить напоминалку?\n\nПоследние отправленные сообщения тоже будут удалены из выбранных чатов.", reply_markup=kb)
-        return
+        kb.row(IB("🗑 Да, удалить", callback_data=f"rem:delete:{rid}:{page}:{day_key}"), IB("✖️ Отмена", callback_data=f"rem:open:{rid}:{page}:{day_key}"))
+        safe_edit(bot, call, "🗑 Удалить напоминалку?\n\nПоследние отправленные сообщения этой напоминалки тоже будут удалены из выбранных чатов.", reply_markup=kb); return
     if action == "delete":
-        day_key = parts[2] if len(parts) > 2 else today_key()
-        _reminder_delete_last_messages(cfg)
-        cfg.clear()
-        _reminder_cfg()
-        _reminder_save("reminder_delete")
-        safe_edit(bot, call, build_reminder_menu_text(), reply_markup=build_reminder_menu_keyboard(day_key))
-        return
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        root = _reminders_root(); cfg = _reminder_cfg(rid)
+        if cfg: _reminder_delete_last_messages(cfg)
+        root.setdefault("items", {}).pop(str(rid), None); _reminder_unbind(rid); _reminder_save("reminder_delete")
+        rows = _reminder_items(); pages = max(1, (len(rows) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE); page = min(page, pages - 1)
+        safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(day_key, page)); return
 
-# v134_flat_reminder
+# v135_reminders_secret_timers

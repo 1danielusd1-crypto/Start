@@ -1,4 +1,4 @@
-# v133_usd_operations_parity_articles_paging
+# v135_reminders_secret_timers
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -295,9 +295,7 @@ def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
 
 def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv"):
     """Отправка CSV или Excel по выбранному периоду. Работает для обычного чата и для меню владельца по чужому чату."""
-    trace = ProcessTrace(recipient_chat_id, f"Экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
     try:
-        trace.step("читает режим периода")
         _file_job_progress("собираю экспорт", force=True)
         file_type = str(file_type or "csv").lower().lstrip(".")
         raw_mode = str(mode or "all")
@@ -308,12 +306,10 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             mode = "all"
 
         if mode == "all" and file_type in {"csv", "xlsx"} and not financial_view_is_usd(get_chat_store(target_chat_id)):
-            trace.step("экспорт за всё время — обновляет локальные файлы")
             save_chat_json(target_chat_id)
             path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
             label = "за всё время"
             if os.path.exists(path):
-                trace.step("отправляет готовый файл в Telegram")
                 fobj = file_bytesio_named(path, export_display_filename(target_chat_id, mode, day_key, "xlsx" if file_type == "xlsx" else "csv"))
                 if fobj:
                     _tg_call_retry(
@@ -324,19 +320,13 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                         timeout=120,
                         purpose="export_send_document"
                     )
-                trace.finish("экспорт завершён")
                 return True
 
-        trace.step("собирает строки за выбранный период")
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
         ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         if not rows and ext != "xlsx":
-            trace.step("строк нет — отправляет уведомление")
             send_info(recipient_chat_id, f"Нет данных {label}.")
-            trace.finish("экспорт завершён без данных")
             return True
-        if not rows and ext == "xlsx":
-            trace.step("строк нет — создаёт пустой Excel с заголовками")
         tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}")
         if file_type == "xlsxstat":
             safe_chat = mega_safe_name(get_chat_display_name(target_chat_id), "chat")
@@ -344,12 +334,10 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         else:
             display_name = export_display_filename(target_chat_id, mode, day_key, ext)
         if file_type == "xlsxstat":
-            trace.step("создаёт Excel по статьям с формулами")
             store = get_chat_store(target_chat_id)
             start_key, end_key = _period_export_bounds(store, mode, day_key)
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
             if excel_table_style(target_chat_id) == "google_notes":
-                trace.step("создаёт вкладку Google Sheets с нативными примечаниями")
                 _file_job_progress("создаю новую вкладку Google Таблицы и примечания", force=True)
                 title = f"{get_chat_display_name(target_chat_id)} — статьи — {label}"
                 sheet_url = _google_sheets_create_category_report(title, xlsx_rows)
@@ -358,11 +346,9 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                     f"📊 Google Таблица — статьи {label}: {get_chat_display_name(target_chat_id)}\n\n{sheet_url}\n\nСоздана новая вкладка. Описания расходов записаны в нативные Примечания Google Sheets.",
                     disable_web_page_preview=True,
                 )
-                trace.finish("вкладка Google Таблицы создана")
                 return True
             _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Статьи", category_layout=True)
         elif ext == "xlsx":
-            trace.step("создаёт временный Excel файл")
             xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
             for date_v, amount_v, note_v in rows:
                 try:
@@ -378,13 +364,11 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
             _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Экспорт", category_layout=False)
         else:
-            trace.step("создаёт временный CSV файл")
             with open(tmp_name, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["date", "amount", "note"])
                 write_csv_rows_with_day_gaps(w, rows, 3)
 
-        trace.step("отправляет файл в Telegram")
         _file_job_progress("отправляю файл в Telegram", force=True)
         fobj = file_bytesio_named(tmp_name, display_name)
         if fobj:
@@ -396,15 +380,12 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 timeout=120,
                 purpose="export_send_document"
             )
-        trace.step("удаляет временный файл")
         try:
             os.remove(tmp_name)
         except Exception:
             pass
-        trace.finish("экспорт завершён")
         return True
     except Exception as e:
-        trace.fail(e)
         log_error(f"send_export_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
         return False
 
@@ -736,4 +717,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v133_usd_operations_parity_articles_paging
+# v135_reminders_secret_timers

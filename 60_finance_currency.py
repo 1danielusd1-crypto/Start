@@ -1,4 +1,4 @@
-# v134_flat_reminder
+# v135_reminders_secret_timers
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -989,7 +989,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
         kb.row(IB("ℹ️ Инфо", callback_data=f"d:{day_key}:info"))
     if is_owner_chat(chat_id):
         kb.row(IB("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu"), IB("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"))
-        kb.row(IB("⏰ Напоминалка", callback_data=f"rem:menu:{day_key}"), IB("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"))
+        kb.row(IB("⏰ Напоминалка", callback_data=f"rem:list:0:{day_key}"), IB("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"))
     kb.row(IB("❌ Закрыть", callback_data=f"main_close:{day_key}"))
     return kb
 
@@ -1414,7 +1414,6 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
 
 def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str):
     """Фоновый экспорт между двумя точными границами включительно."""
-    trace = ProcessTrace(recipient_chat_id, f"Точный экспорт {str(file_type).upper()}: {get_chat_display_name(target_chat_id)}").start()
     tmp_name = None
     try:
         file_type = str(file_type or "csv").lower()
@@ -1424,7 +1423,6 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         rows = _exact_export_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
         if not rows:
             send_and_auto_delete(recipient_chat_id, "Нет записей в выбранном точном диапазоне.", 10)
-            trace.finish("экспорт завершён без данных")
             return True
         ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         tmp_name = os.path.join(
@@ -1476,10 +1474,8 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                 timeout=120,
                 purpose="exact_export_send_document",
             )
-        trace.finish("точный экспорт завершён")
         return True
     except Exception as exc:
-        trace.fail(exc)
         log_error(f"send_exact_range_export({target_chat_id}): {exc}")
         return False
     finally:
@@ -1779,4 +1775,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v134_flat_reminder
+# v135_reminders_secret_timers

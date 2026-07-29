@@ -1,4 +1,4 @@
-# v132_anonymous_admin_forward_fix
+# v135_reminders_secret_timers
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -1232,6 +1232,28 @@ def sync_edited_copy_to_target(source_chat_id: int, msg, dst_chat_id: int, dst_m
     display_text = _forward_copy_display_text(text, rec, edit_mode) if rec else text
     edit_markup = _forward_copy_edit_keyboard(edit_mode) if finance_enabled else None
 
+    # v135 TOTAL SECRET: исходная Telegram-копия уже удалена после скрытого сохранения.
+    # Нельзя падать в обычный fallback_send_single — он создаст ВИДИМОЕ сообщение и раскроет секрет.
+    try:
+        if is_total_secret_mode(int(dst_chat_id)):
+            hidden_ok = sync_forwarded_secret_bot_copy_edit(
+                int(dst_chat_id), int(dst_msg_id), int(source_chat_id), msg
+            )
+            if hidden_ok:
+                if finance_enabled and text and is_finance_mode(int(dst_chat_id)):
+                    sync_forwarded_finance_message(int(dst_chat_id), int(dst_msg_id), text, owner_id, source_msg=msg)
+                return int(dst_msg_id)
+            # Даже если скрытый индекс повреждён, секретный target никогда не получает visible fallback.
+            raise RuntimeError(f"TOTAL SECRET edit could not be stored safely for {dst_chat_id}:{dst_msg_id}")
+    except Exception as secret_exc:
+        try:
+            if is_total_secret_mode(int(dst_chat_id)):
+                log_error(f"sync_edited_copy_to_target secret-safe failed {dst_chat_id}:{dst_msg_id}: {secret_exc}")
+                _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, secret_exc)
+                return None
+        except Exception:
+            pass
+
     try:
         if ct == "text":
             try:
@@ -1627,9 +1649,6 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
         _forward_outcome_update(source_chat_id, int(getattr(msg, "message_id", 0) or 0), state="dispatching", dst_chat_id=int(dst_chat_id), dst_state="attempted")
     except Exception:
         pass
-    trace_chat_id = int(source_chat_id) if is_process_trace_enabled(source_chat_id) else (int(dst_chat_id) if is_process_trace_enabled(dst_chat_id) else int(source_chat_id))
-    trace = ProcessTrace(trace_chat_id, f"Пересылка: {get_chat_display_name(source_chat_id)} → {get_chat_display_name(dst_chat_id)}").start()
-    trace.step(f"получено сообщение {getattr(msg, 'message_id', '?')} type={getattr(msg, 'content_type', '?')}")
     reply_to_target_id = None
     try:
         reply_to_msg = getattr(msg, "reply_to_message", None)
@@ -1676,7 +1695,6 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
             use_initial_slash = False
 
         if use_initial_slash:
-            trace.step("💰Перес слеш: формирует финальный текст до отправки")
             with locked_chat(int(dst_chat_id)):
                 initial_slash_command = _predict_forward_copy_record_command(int(dst_chat_id), msg, text_for_finance)
                 if initial_slash_command:
@@ -1713,11 +1731,9 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                     initial_slash_synced_rec = sync_forwarded_finance_message(
                         int(dst_chat_id), int(dst_msg_id), text_for_finance, owner_id, source_msg=msg
                     )
-                    trace.step(f"доставлено сразу с {initial_slash_command} message_id={dst_msg_id}")
 
         if not initial_slash_sent:
             if reply_to_target_id:
-                trace.step(f"ищет reply-связь: target_reply={reply_to_target_id}")
                 try:
                     sent = _tg_call_retry(
                         bot.copy_message,
@@ -1743,27 +1759,19 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                     except TypeError:
                         sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, reply_markup=pre_copy_markup, purpose="forward_copy_message")
             else:
-                trace.step("копирует сообщение через Telegram copy_message")
                 sent = _tg_call_retry(bot.copy_message, dst_chat_id, source_chat_id, msg.message_id, reply_markup=pre_copy_markup, purpose="forward_copy_message")
             dst_msg_id = sent.message_id
-            trace.step(f"доставлено в целевой чат message_id={dst_msg_id}")
     except Exception as e_copy:
         # If Telegram changed a basic group into a supergroup, do not lose the migration hint
         # behind a later unsupported manual fallback.
         migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_copy)
         if migrated_id is not None:
-            trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
-            try:
-                trace.finish("старый chat_id заменён на supergroup")
-            except Exception:
-                pass
             _note_forward_target_migrated(source_chat_id, int(getattr(msg, "message_id", 0) or 0), dst_chat_id, migrated_id)
             return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
 
         # v107: forward_message is a broad Bot API fallback for content classes for which
         # copy_message or our hand-written send_* fallback may not exist yet.  It may show
         # Telegram's original-forward attribution, but it is preferable to silently losing data.
-        trace.step("copy_message не сработал — пробует Telegram forward_message")
         try:
             sent_forward = _tg_call_retry(
                 bot.forward_message,
@@ -1773,42 +1781,27 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                 purpose="forward_message_fallback"
             )
             dst_msg_id = sent_forward.message_id
-            trace.step(f"forward_message-доставка успешна message_id={dst_msg_id}")
         except Exception as e_forward:
             migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_forward)
             if migrated_id is not None:
-                trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
-                try:
-                    trace.finish("старый chat_id заменён на supergroup")
-                except Exception:
-                    pass
                 _note_forward_target_migrated(source_chat_id, int(getattr(msg, "message_id", 0) or 0), dst_chat_id, migrated_id)
                 return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
 
-            trace.step("forward_message не сработал — пробует ручной send_* fallback")
             try:
                 sent_msg = _fallback_send_single(dst_chat_id, msg, reply_to_message_id=reply_to_target_id)
                 dst_msg_id = sent_msg.message_id
-                trace.step(f"ручная fallback-доставка успешна message_id={dst_msg_id}")
             except Exception as e_send:
                 migrated_id = None if _migration_retry else _handle_supergroup_migration_error(dst_chat_id, e_send)
                 if migrated_id is not None:
-                    trace.step(f"Telegram мигрировал группу: {dst_chat_id} → {migrated_id}; повторяет пересылку")
-                    try:
-                        trace.finish("старый chat_id заменён на supergroup")
-                    except Exception:
-                        pass
                     _note_forward_target_migrated(source_chat_id, int(getattr(msg, "message_id", 0) or 0), dst_chat_id, migrated_id)
                     return _forward_single_to_target(source_chat_id, msg, migrated_id, finance_enabled, _migration_retry=True)
                 # Preserve the most useful Telegram error in diagnostics when manual fallback merely
                 # says "unsupported content_type".
                 final_error = e_forward if "Unsupported fallback content_type" in str(e_send) else e_send
-                trace.fail(final_error)
                 _forward_outcome_update(source_chat_id, int(getattr(msg, "message_id", 0) or 0), dst_chat_id=int(dst_chat_id), dst_state="failed", error=str(final_error))
                 _notify_forward_failure(source_chat_id, msg.message_id, dst_chat_id, final_error)
                 return None
 
-    trace.step("сохраняет связь оригинал → копия")
     _store_forward_link(source_chat_id, msg.message_id, dst_chat_id, dst_msg_id)
     _forward_outcome_update(source_chat_id, int(msg.message_id), dst_chat_id=int(dst_chat_id), dst_state="delivered", dst_msg_id=int(dst_msg_id))
     # После успешной Telegram-доставки индекс фиксируем сразу, не ждём debounce 0.25с.
@@ -1817,11 +1810,9 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
         save_data(data, root_only=True)
     except Exception as e:
         log_error(f"[FORWARD LINK DURABLE] {source_chat_id}:{msg.message_id}->{dst_chat_id}:{dst_msg_id}: {e}")
-    trace.step("обновляет счётчик быстрого остатка целевого чата")
     bump_quick_balance_recreate_counter(dst_chat_id)
 
     if finance_enabled and text_for_finance:
-        trace.step("включён финучёт пересылки — синхронизирует сумму")
         try:
             owner_id = msg.from_user.id if getattr(msg, "from_user", None) else 0
             ok_fin = initial_slash_synced_rec or sync_forwarded_finance_message(dst_chat_id, dst_msg_id, text_for_finance, owner_id, source_msg=msg)
@@ -1867,7 +1858,6 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
     except Exception as e:
         log_error(f"forward secret capture {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
 
-    trace.finish("пересылка завершена")
     return dst_msg_id
 
 
@@ -2040,4 +2030,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v132_anonymous_admin_forward_fix
+# v135_reminders_secret_timers

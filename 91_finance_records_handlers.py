@@ -1,4 +1,4 @@
-# v131_modular_stability
+# v135_reminders_secret_timers
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -227,19 +227,13 @@ def _run_full_chat_backup(chat_id: int):
     if RESTORE_GUARD_ACTIVE:
         log_error(f"FULL BACKUP BLOCKED {chat_id}: {RESTORE_GUARD_REASON}")
         return
-    trace = ProcessTrace(chat_id, f"Бэкап: {get_chat_display_name(chat_id)}").start()
     with state_chat_context(chat_id):
         try:
             if not is_finance_mode(chat_id):
-                trace.step("финрежим выключен — пропуск")
-                trace.finish("бэкап завершён")
                 return
             if not is_auto_backup_enabled(chat_id):
-                trace.step("все авто-бэкапы выключены — пропуск")
-                trace.finish("бэкап завершён")
                 return
             save_data(data, chat_ids=[chat_id])
-            trace.step("создаёт JSON/CSV" + ("/Excel" if backup_excel_all_enabled() else ""))
             save_chat_json(chat_id)
 
             # Канал/личный чат работают как раньше, но MEGA-файлы теперь заменяются
@@ -249,12 +243,9 @@ def _run_full_chat_backup(chat_id: int):
             if is_backup_to_channel_enabled(chat_id):
                 send_backup_to_channel(chat_id, ensure_files=False)
             if is_backup_to_mega_enabled(chat_id):
-                trace.step("безопасно обновляет JSON чата и месячный JSON в MEGA")
                 mega_upload_chat_backup_bundle(chat_id, current_month_key())
                 _mark_global_snapshot_pending()
-            trace.finish("бэкап завершён")
         except Exception as exc:
-            trace.fail(exc)
             log_error(f"_run_full_chat_backup({chat_id}): {exc}")
         finally:
             with timer_lock:
@@ -341,22 +332,11 @@ def schedule_backup_flush(chat_id: int, delay: float = 3.0):
 
 def _safe_stabilize(action_name, func):
     try:
-        try:
-            if verbose_process_journal_enabled():
-                bot_journal("process_call_start", None, str(action_name))
-        except Exception:
-            pass
-        res = func()
-        try:
-            if verbose_process_journal_enabled():
-                bot_journal("process_call_done", None, str(action_name))
-        except Exception:
-            pass
-        return res
+        return func()
     except Exception as e:
         log_error(f"[STABILIZE ERROR] {action_name}: {e}")
         try:
-            bot_journal("process_call_error", None, f"{action_name}: {e}", "ERROR")
+            bot_journal("stabilize_error", None, f"{action_name}: {e}", "ERROR")
         except Exception:
             pass
         return None
@@ -370,39 +350,28 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
     """
     chat_id = int(chat_id)
     day_key = day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
-    trace = ProcessTrace(chat_id, f"Фин-процесс: {get_chat_display_name(chat_id)} / {reason}").start()
 
     try:
         with locked_chat(chat_id):
             store = get_chat_store(chat_id)
             store["current_view_day"] = day_key
 
-            trace.step("получает хранилище чата")
-            trace.step("фиксирует текущую дату окна")
-            trace.step("нормализует записи чата")
             _safe_stabilize("normalize_chat_records", lambda: normalize_chat_records(chat_id))
 
-            trace.step("вычисляет остатки")
             _safe_stabilize("recalc_balance", lambda: recalc_balance(chat_id))
 
-            trace.step("пересчитывает месячные номера R")
             _safe_stabilize("rebuild_month_short_ids", lambda: rebuild_month_short_ids(chat_id))
 
-            trace.step("пересобирает общие записи")
             _safe_stabilize("rebuild_global_records", rebuild_global_records)
 
-            trace.step("записывает финрежимы в общий словарь")
-            trace.step("сохраняет SQLite/data")
             _safe_stabilize("currency_ledger_snapshot", lambda: _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store)))
             _safe_stabilize("save_data", lambda: save_data(data, chat_ids=[chat_id]))
 
-            trace.step("проверяет скрытый финрежим и независимый режим окна")
             hidden = is_finance_output_suppressed(chat_id)
             visible_window_mode = finance_window_mode(chat_id)
 
         # v90: сразу после подтверждённой SQLite ставим маленький delta, ДО Telegram-окон.
         # Поэтому медленное редактирование интерфейса не откладывает аварийную копию.
-        trace.step("ставит быстрый delta до обновления окон")
         _safe_stabilize(
             "delta_queue_early",
             lambda: schedule_quick_backup(
@@ -419,35 +388,27 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
             # counter owns creation/recreation for this mode.
             if get_active_window_id(chat_id, day_key):
                 if is_owner_chat(chat_id):
-                    trace.step("обновляет существующее окно владельца")
                     _safe_stabilize("owner_window", lambda: backup_window_for_owner(chat_id, day_key, None))
                 else:
-                    trace.step("обновляет существующее окно дня")
                     _safe_stabilize("day_window", lambda: update_or_send_day_window(chat_id, day_key))
         elif visible_window_mode in {"open", "first"}:
-            trace.step("обновляет выбранный быстрый остаток")
             _safe_stabilize("quick_balance_now", lambda: refresh_balance_panel_now(chat_id))
             _safe_stabilize("quick_balance_schedule", lambda: schedule_balance_panel_refresh(chat_id, BALANCE_PANEL_REFRESH_DELAY))
 
         if not hidden:
             # Manually opened totals/auxiliary financial views can still refresh when finance is not hidden.
-            trace.step("обновляет общий итог")
             _safe_stabilize("refresh_total", lambda: refresh_total_message_if_any(chat_id))
 
         # Реестр обновляем даже для скрытого финрежима: сам скрытый чат может не показывать финансы,
         # но открытое у владельца окно этого чата обязано синхронизироваться.
-        trace.step("обновляет зарегистрированные открытые окна")
         _safe_stabilize("open_windows_registry", lambda: refresh_registered_financial_windows(chat_id))
 
-        trace.step("ставит бэкап в отдельную очередь")
         _safe_stabilize("full_backup_queue", lambda: schedule_full_backup_only(chat_id, BACKUP_MIN_DELAY_SECONDS))
 
         # Важно: действия в других чатах не должны менять личное окно владельца.
         # Поэтому здесь не вызываем backup_window_for_owner/refresh_owner_after_chat_change.
 
-        trace.finish("финобработка завершена")
     except Exception as e:
-        trace.fail(e)
         raise
 
 
@@ -1435,4 +1396,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v131_modular_stability
+# v135_reminders_secret_timers

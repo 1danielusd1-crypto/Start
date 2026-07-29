@@ -1,4 +1,4 @@
-# v133_usd_operations_parity_articles_paging
+# v135_reminders_secret_timers
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -551,7 +551,7 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
     This is verification metadata only.  It never performs a business mutation.  The same
     payload can therefore be checked safely after a Render restart without replaying money.
     """
-    result = {"consumes_source": False, "record_edits": [], "secret_edits": []}
+    result = {"consumes_source": False, "record_edits": [], "secret_edits": [], "secret_copy_edits": [], "reminder_edits": []}
     clean = str(text or "").strip()
     if not clean:
         return result
@@ -607,6 +607,32 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
     except Exception:
         result["consumes_source"] = True
         return result
+
+    # v135 reminder direct-insert tokens are deterministic business inputs.
+    # They MUST be consumed before finance/forward classification and verified after save.
+    try:
+        reminder_kind = "EDITREMINT" if "EDITREMINT|" in clean else ("EDITREM" if "EDITREM|" in clean else None)
+        if reminder_kind:
+            result["consumes_source"] = True
+            m = re.search(r"\((%s\|(\d+)\|)[^)]*\)" % re.escape(reminder_kind), clean)
+            if not m:
+                return result
+            reminder_id = int(m.group(2))
+            value_text = _durable_sanitize_inserted_text_no_network((clean[:m.start()] + " " + clean[m.end():]).strip())
+            if reminder_kind == "EDITREMINT":
+                try:
+                    minutes = _reminder_parse_custom_interval(value_text) if "_reminder_parse_custom_interval" in globals() else None
+                except Exception:
+                    minutes = None
+                if minutes is not None:
+                    result["reminder_edits"].append({"reminder_id": reminder_id, "kind": "interval", "interval_minutes": int(minutes)})
+            elif value_text:
+                result["reminder_edits"].append({"reminder_id": reminder_id, "kind": "text", "text": str(value_text)})
+            return result
+    except Exception:
+        if "EDITREM|" in clean or "EDITREMINT|" in clean:
+            result["consumes_source"] = True
+            return result
 
     # GOMONKI is a dedicated settings input, never a new financial source record.
     if "GOMONKI" in clean.upper():
@@ -720,6 +746,36 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
                         source_finance_text=clean, kind="propagated_copy_edit_removed",
                     ))
 
+            # v135: an edited source that was copied into a TOTAL SECRET target must
+            # update the stored hidden record instead of creating a visible fallback copy.
+            for dst_chat_id, dst_msg_id in get_forward_links(int(source_chat_id), int(source_msg_id)):
+                try:
+                    if not is_total_secret_mode(int(dst_chat_id)):
+                        continue
+                    result["secret_copy_edits"].append({
+                        "chat_id": int(dst_chat_id),
+                        "copied_message_id": int(dst_msg_id),
+                        "source_chat_id": int(source_chat_id),
+                        "source_msg_id": int(source_msg_id),
+                        "text": str(clean),
+                    })
+                    dst_secret_rec = next((
+                        r for r in _secret_records(int(dst_chat_id))
+                        if isinstance(r, dict) and bool(r.get("is_bot_copy")) and (
+                            int(r.get("source_msg_id") or 0) == int(dst_msg_id)
+                            or (
+                                int(r.get("forward_source_chat_id") or 0) == int(source_chat_id)
+                                and int(r.get("forward_source_msg_id") or 0) == int(source_msg_id)
+                            )
+                        )
+                    ), None)
+                    if isinstance(dst_secret_rec, dict):
+                        result["secret_edits"].append(_durable_secret_edit_witness(
+                            int(dst_chat_id), int(dst_secret_rec.get("id")), clean,
+                        ))
+                except Exception:
+                    pass
+
             secret_rec = next(
                 (r for r in _secret_records(int(source_chat_id)) if int(r.get("source_msg_id") or 0) == int(source_msg_id)),
                 None,
@@ -749,6 +805,8 @@ def _durable_expected_effects(payload: dict) -> dict:
         "forward_targets": [],
         "record_edits": [],
         "secret_edits": [],
+        "secret_copy_edits": [],
+        "reminder_edits": [],
     }
     raw, source_chat_id, source_msg_id, _group_id = _durable_payload_message(payload)
     if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
@@ -757,6 +815,8 @@ def _durable_expected_effects(payload: dict) -> dict:
     edit_expect = _durable_extract_edit_expectations(payload, int(source_chat_id), int(source_msg_id), text)
     out["record_edits"] = list(edit_expect.get("record_edits") or [])
     out["secret_edits"] = list(edit_expect.get("secret_edits") or [])
+    out["secret_copy_edits"] = list(edit_expect.get("secret_copy_edits") or [])
+    out["reminder_edits"] = list(edit_expect.get("reminder_edits") or [])
     edit_consumes_source = bool(edit_expect.get("consumes_source"))
     # Wait-state replies are commands/answers first.  Do not guess a direct finance effect
     # from the digits while a dedicated input state is active.
@@ -854,7 +914,7 @@ def _durable_normalize_expected_for_route(payload: dict, expected: dict | None) 
                 adjusted["source_secret"] = False
                 adjusted["forward_targets"] = []
                 adjusted["source_consumed_by_edit_route"] = True
-            for field in ("record_edits", "secret_edits"):
+            for field in ("record_edits", "secret_edits", "secret_copy_edits", "reminder_edits"):
                 rows = list(adjusted.get(field, []) or [])
                 for row in edit_meta.get(field, []) or []:
                     if row not in rows:
@@ -1091,6 +1151,41 @@ def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
         except Exception:
             report["complete"] = False
             report["missing"].append(f"secret_edit:invalid:{witness}")
+    for witness in expected.get("secret_copy_edits", []) or []:
+        try:
+            w_chat = int(witness.get("chat_id")); copied_mid = int(witness.get("copied_message_id"))
+            src_chat = int(witness.get("source_chat_id")); src_mid = int(witness.get("source_msg_id"))
+            expected_text = str(witness.get("text") or "").strip()
+            rec = next((
+                r for r in _secret_records(w_chat)
+                if isinstance(r, dict) and bool(r.get("is_bot_copy")) and (
+                    int(r.get("source_msg_id") or 0) == copied_mid
+                    or (int(r.get("forward_source_chat_id") or 0) == src_chat and int(r.get("forward_source_msg_id") or 0) == src_mid)
+                )
+            ), None)
+            ok = isinstance(rec, dict) and str(rec.get("text") or "").strip() == expected_text
+            if not ok:
+                report["complete"] = False
+                report["missing"].append(f"secret_copy_edit:{w_chat}:{copied_mid}")
+        except Exception:
+            report["complete"] = False
+            report["missing"].append(f"secret_copy_edit:invalid:{witness}")
+
+    for witness in expected.get("reminder_edits", []) or []:
+        try:
+            reminder_id = int(witness.get("reminder_id"))
+            cfg = _reminder_cfg(reminder_id) if "_reminder_cfg" in globals() else None
+            ok = isinstance(cfg, dict)
+            if ok and str(witness.get("kind") or "") == "text":
+                ok = str(cfg.get("text") or "").strip() == str(witness.get("text") or "").strip()
+            elif ok and str(witness.get("kind") or "") == "interval":
+                ok = int(cfg.get("interval_minutes") or 0) == int(witness.get("interval_minutes") or 0)
+            if not ok:
+                report["complete"] = False
+                report["missing"].append(f"reminder_edit:{reminder_id}:{witness.get('kind','value')}")
+        except Exception:
+            report["complete"] = False
+            report["missing"].append(f"reminder_edit:invalid:{witness}")
     return report
 
 def _durable_forward_effect_complete(payload: dict, expected: dict | None = None) -> bool:
@@ -1305,17 +1400,19 @@ def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = 
         if live_pending and pending_age < 30.0:
             DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", 1.0, _job)
             return
-        if attempts["n"] >= 3:
+        if attempts["n"] >= 6:
+            # Не повторяем денежные/Telegram-действия вслепую: сначала даём поздним
+            # worker/delta/secret/reminder-свидетелям до ~1 минуты появиться.
             report = _durable_effect_report(payload_copy or {}, expected_copy or {}) if payload_copy else {}
             reason = f"needs_review: durable effects not proven; missing={report.get('missing', [])}; ambiguous={report.get('ambiguous', [])}"
             mega_task_finish(key, False, reason)
             try:
                 if OWNER_ID:
-                    bot.send_message(int(OWNER_ID), f"⚠️ Задача {key} НЕ повторена автоматически и сохранена в MEGA/failed.\n{reason[:850]}")
+                    bot.send_message(int(OWNER_ID), f"⚠️ Задача {key} требует проверки и сохранена в MEGA/failed.\nАвтоповтор специально не выполнен, чтобы не создать дубль.\n{reason[:760]}")
             except Exception:
                 pass
             return
-        DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", 2.0 if payload_copy else 5.0, _job)
+        DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", 3.0 if payload_copy else 5.0, _job)
     DELAYED_SCHEDULER.cancel(f"mega-task-finalize:{key}")
     DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", max(0.5, float(delay)), _job)
 
@@ -2535,7 +2632,6 @@ def build_chat_settings_backup_payload(chat_id: int, store: dict | None = None) 
         "hidden_finance": is_hidden_finance_mode(chat_id),
         "quick_balance_enabled": is_quick_balance_enabled(chat_id),
         "quick_balance_behavior": get_quick_balance_behavior(chat_id),
-        "process_trace_enabled": is_process_trace_enabled(chat_id),
         "forward_rules_outgoing": outgoing_rules,
         "forward_rules_incoming": incoming_rules,
         "forward_finance_outgoing": outgoing_finance,
@@ -5719,7 +5815,7 @@ def default_data():
         "bot_errors": [],
         "csv_meta": {},
         "chat_backup_meta": {},
-        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_process": False, "bot_journal_verbose_telegram": False, "buttons_current_window": True, "forward_menu_new_style": True, "icon_button_mode": False, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "finance_day_start_minute": 5, "backup_excel_all_enabled": True, "mega_backup_priority": True, "bot_behavior_profile": "v97_current", "journal_default_off_v83_applied": True},
+        "_global_settings": {"bot_journal_enabled": False, "bot_journal_verbose_telegram": False, "buttons_current_window": True, "forward_menu_new_style": True, "icon_button_mode": False, "total_secret_mask_enabled": False, "finance_day_start_5am": False, "finance_day_start_minute": 5, "backup_excel_all_enabled": True, "mega_backup_priority": True, "bot_behavior_profile": "v97_current", "journal_default_off_v83_applied": True},
     }
 
 # InlineKeyboardButton wrapper for optional compact mode. It is intentionally
@@ -6895,13 +6991,10 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
 
 
 def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
-    trace = ProcessTrace(recipient_chat_id, f"Таблица LSX: {get_chat_display_name(target_chat_id)}").start()
     path = None
     try:
-        trace.step("собирает последние 4 недели Чт–Ср")
         _file_job_progress("собираю Excel", force=True)
         path = create_tabl_lsx_file(target_chat_id, today_key())
-        trace.step("отправляет Excel")
         _file_job_progress("отправляю Excel в Telegram", force=True)
         display = os.path.basename(path)
         fobj = file_bytesio_named(path, display)
@@ -6914,15 +7007,10 @@ def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
                 timeout=120,
                 purpose="tabl_lsx_send_document",
             )
-        trace.finish("таблица готова")
         return True
     except Exception as e:
         log_error(f"send_tabl_lsx_for_chat({target_chat_id}): {e}")
         send_and_auto_delete(recipient_chat_id, "❌ Не удалось создать /tabl_lsx.", 15)
-        try:
-            trace.fail(e)
-        except Exception:
-            pass
         return False
     finally:
         if path:
@@ -8174,4 +8262,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v133_usd_operations_parity_articles_paging
+# v135_reminders_secret_timers

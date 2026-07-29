@@ -1,11 +1,11 @@
-# v134_flat_reminder
+# v135_reminders_secret_timers
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v134_flat_reminder"
-MODULE_FILE_VERSION = "v134_flat_reminder"
+MODULAR_VERSION = "bot_v135_reminders_secret_timers"
+MODULE_FILE_VERSION = "v135_reminders_secret_timers"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -122,4 +122,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v134_flat_reminder
+# v135_reminders_secret_timers
