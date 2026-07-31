@@ -1,4 +1,4 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack
 import os
 import io
 import json
@@ -204,7 +204,7 @@ class DelayedTaskScheduler:
         self._executed = 0
         self._cancelled = 0
         self._failed_dispatch = 0
-        threading.Thread(target=self._worker, name="delayed-scheduler", daemon=True).start()
+        threading.Thread(target=self._worker, name=f"{self.executor_pool.name}-scheduler", daemon=True).start()
 
     def schedule(self, key, delay: float, func, *args, **kwargs):
         key = str(key)
@@ -290,9 +290,37 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 128) -> i
 
 
 WEBHOOK_TASK_POOL = KeyedTaskPool(
-    "webhook",
-    _env_int("WEBHOOK_WORKERS", 3, 2, 16),
+    "content",
+    _env_int("WEBHOOK_WORKERS", 4, 2, 16),
     _env_int("WEBHOOK_MAX_PENDING", 2000, 100, 10000),
+)
+# v138: callback/UI updates have a reserved lane. A long finance/forward durable finalizer
+# can no longer occupy every content worker and leave inline buttons waiting in the same queue.
+UI_TASK_POOL = KeyedTaskPool(
+    "ui",
+    _env_int("UI_WORKERS", 4, 2, 12),
+    _env_int("UI_MAX_PENDING", 1500, 100, 6000),
+)
+# Telegram callback acknowledgements are tiny network calls and must not share GENERAL with
+# MEGA/runtime/restore work. The dedicated delayed scheduler provides a receipt-level fallback.
+CALLBACK_ACK_TASK_POOL = KeyedTaskPool(
+    "callback-ack",
+    _env_int("CALLBACK_ACK_WORKERS", 2, 1, 4),
+    _env_int("CALLBACK_ACK_MAX_PENDING", 2000, 100, 10000),
+)
+# Durable verification/recovery may wait for forwarding and delta witnesses for up to tens of
+# seconds. It is isolated from both content and UI lanes.
+RECOVERY_TASK_POOL = KeyedTaskPool(
+    "recovery",
+    _env_int("RECOVERY_WORKERS", 2, 1, 4),
+    _env_int("RECOVERY_MAX_PENDING", 1000, 100, 5000),
+)
+# Reminder delivery has its own workers so Telegram/network latency in reminders cannot stop
+# callback menus or finance/forward processing.
+REMINDER_TASK_POOL = KeyedTaskPool(
+    "reminder",
+    _env_int("REMINDER_WORKERS", 2, 1, 4),
+    _env_int("REMINDER_MAX_PENDING", 500, 50, 3000),
 )
 FINANCE_TASK_POOL = KeyedTaskPool(
     "finance",
@@ -348,6 +376,7 @@ DOZVON_TASK_POOL = KeyedTaskPool(
     _env_int("DOZVON_MAX_PENDING", 100, 10, 500),
 )
 DELAYED_SCHEDULER = DelayedTaskScheduler(DELAYED_TASK_POOL)
+CALLBACK_ACK_SCHEDULER = DelayedTaskScheduler(CALLBACK_ACK_TASK_POOL)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -770,7 +799,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v137_excel_toggle_usd_gomonk_timers_cleanup"
+VERSION = "bot_v138_parallel_lanes_ui_ack"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -2322,6 +2351,7 @@ def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"
             if not journal_should_record(chat_id):
                 return None
         _ws = WEBHOOK_TASK_POOL.stats()
+        _uis = UI_TASK_POOL.stats() if "UI_TASK_POOL" in globals() else {}
         _fs = FINANCE_TASK_POOL.stats()
         _fws = FORWARD_TASK_POOL.stats()
         _ds = DELTA_TASK_POOL.stats() if "DELTA_TASK_POOL" in globals() else {}
@@ -2338,6 +2368,8 @@ def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"
             "render_commit": str(os.getenv("RENDER_GIT_COMMIT", "") or ""),
             "webhook_pending": _ws.get("pending", 0),
             "webhook_active": _ws.get("active", 0),
+            "ui_pending": _uis.get("pending", 0),
+            "ui_active": _uis.get("active", 0),
             "finance_pending": _fs.get("pending", 0),
             "finance_active": _fs.get("active", 0),
             "forward_pending": _fws.get("pending", 0),
@@ -2722,7 +2754,8 @@ def _journal_diagnostic_snapshot() -> dict:
 
 def _journal_write_export_row(fh, r: dict):
     q = (
-        f"Q wh={r.get('webhook_pending',0)}/{r.get('webhook_active',0)} "
+        f"Q content={r.get('webhook_pending',0)}/{r.get('webhook_active',0)} "
+        f"ui={r.get('ui_pending',0)}/{r.get('ui_active',0)} "
         f"fin={r.get('finance_pending',0)}/{r.get('finance_active',0)} "
         f"fwd={r.get('forward_pending',0)}/{r.get('forward_active',0)} "
         f"delta={r.get('delta_pending',0)} backup={r.get('backup_pending',0)}"
@@ -3950,6 +3983,9 @@ WINDOW_MARKER_CONSTANTS = {
     'fwdcopy_edit': 'Ф162',
     'fwdcopy_edit_cancel': 'Ф163',
     'd:*:usd_tx_toggle': 'Ф164',
+    # v138: все окна напоминалки используют один фиксированный маркер. Последняя *
+    # покрывает rem:list:page:day и остальные callback-хвосты без динамической нумерации.
+    'rem:*': 'Ф191',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -7446,4 +7482,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack

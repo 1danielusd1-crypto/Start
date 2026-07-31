@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v138_parallel_lanes_ui_ack
 
 _REMINDER_THREAD_STARTED = False
 _REMINDER_THREAD_LOCK = threading.RLock()
@@ -654,16 +654,80 @@ def _reminder_tick_one(reminder_id: int, cfg: dict) -> bool:
     return True
 
 
+def _reminder_due_now(cfg: dict, now_dt=None) -> bool:
+    if not bool((cfg or {}).get("enabled")):
+        return False
+    if not str((cfg or {}).get("text") or "").strip() or not ((cfg or {}).get("chat_ids") or []):
+        return False
+    now_dt = now_dt or now_local()
+    due = _reminder_parse_dt((cfg or {}).get("next_run_at"))
+    return due is None or now_dt >= due
+
+
+def _reminder_tick_job(reminder_id: int) -> None:
+    """One reminder per keyed worker; network send happens outside the config lock."""
+    reminder_id = int(reminder_id)
+    snapshot = None
+    now_dt = now_local()
+    changed_without_send = False
+    with _REMINDER_CONFIG_LOCK:
+        cfg = _reminder_cfg(reminder_id)
+        if not cfg or not _reminder_due_now(cfg, now_dt):
+            return
+        due = _reminder_parse_dt(cfg.get("next_run_at"))
+        if due is None:
+            _reminder_rearm(cfg, immediate_if_valid=True)
+            due = _reminder_parse_dt(cfg.get("next_run_at"))
+        if due is None or now_dt < due:
+            return
+        if not _reminder_date_allowed(now_dt, cfg) or not _reminder_time_allowed(now_dt, cfg):
+            next_dt = _reminder_next_valid_start(now_dt, cfg)
+            cfg["next_run_at"] = next_dt.isoformat(timespec="seconds") if next_dt else ""
+            if next_dt is None:
+                cfg["enabled"] = False
+            _reminder_touch(cfg)
+            changed_without_send = True
+        else:
+            snapshot = copy.deepcopy(cfg)
+    if changed_without_send:
+        _reminder_save("reminders_tick_window")
+        return
+    if snapshot is None:
+        return
+
+    sent_ok = _reminder_send_cycle(reminder_id, snapshot)
+    updated = False
+    with _REMINDER_CONFIG_LOCK:
+        cfg = _reminder_cfg(reminder_id)
+        if cfg:
+            # Preserve settings changed by the user while the network send was in progress;
+            # merge only delivery metadata produced by this cycle.
+            cfg["last_message_ids"] = dict(snapshot.get("last_message_ids") or {})
+            if sent_ok:
+                cfg["last_sent_at"] = now_dt.isoformat(timespec="seconds")
+            _reminder_advance_after_send(now_dt, cfg)
+            _reminder_touch(cfg)
+            updated = True
+    if updated:
+        _reminder_save("reminders_tick")
+
+
 def _reminder_tick() -> None:
-    changed = False
+    now_dt = now_local()
+    due_ids = []
     with _REMINDER_CONFIG_LOCK:
         for rid, cfg in _reminder_items():
             try:
-                changed = _reminder_tick_one(rid, cfg) or changed
+                if _reminder_due_now(cfg, now_dt):
+                    due_ids.append(int(rid))
             except Exception as exc:
-                log_error(f"reminder {rid} tick: {exc}")
-    if changed:
-        _reminder_save("reminders_tick")
+                log_error(f"reminder {rid} due check: {exc}")
+    for rid in due_ids:
+        if not REMINDER_TASK_POOL.submit_unique(f"reminder:{rid}", _reminder_tick_job, rid):
+            try:
+                bot_journal("reminder_dispatch_coalesced", None, f"reminder_id={rid}")
+            except Exception:
+                pass
 
 
 def _reminder_scheduler_loop() -> None:
@@ -952,4 +1016,4 @@ def reminder_callback(call):
         rows = _reminder_items(); pages = max(1, (len(rows) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE); page = min(page, pages - 1)
         safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(day_key, page)); return
 
-# v135_reminders_secret_timers
+# v138_parallel_lanes_ui_ack

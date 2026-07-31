@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v138_parallel_lanes_ui_ack
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -1222,7 +1222,11 @@ def build_diag_text() -> str:
         f"Связей пересылки: {forward_pairs}",
         f"Активных окон: {active_windows_count}",
         f"Dirty-бэкапов в очереди: {dirty_count}",
-        f"Очередь webhook: {WEBHOOK_TASK_POOL.stats()['pending']}",
+        f"Очередь content: {WEBHOOK_TASK_POOL.stats()['pending']}",
+        f"Очередь UI: {UI_TASK_POOL.stats()['pending']}",
+        f"Очередь callback ACK: {CALLBACK_ACK_TASK_POOL.stats()['pending']}",
+        f"Очередь recovery: {RECOVERY_TASK_POOL.stats()['pending']}",
+        f"Очередь напоминалок: {REMINDER_TASK_POOL.stats()['pending']}",
         f"Очередь пересылки: {FORWARD_TASK_POOL.stats()['pending']}",
         f"Очередь финансов: {FINANCE_TASK_POOL.stats()['pending']}",
         f"Очередь delta: {DELTA_TASK_POOL.stats()['pending']}",
@@ -1396,4 +1400,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v135_reminders_secret_timers
+# v138_parallel_lanes_ui_ack

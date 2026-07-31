@@ -1,11 +1,11 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v137_excel_toggle_usd_gomonk_timers_cleanup"
-MODULE_FILE_VERSION = "v137_excel_toggle_usd_gomonk_timers_cleanup"
+MODULAR_VERSION = "bot_v138_parallel_lanes_ui_ack"
+MODULE_FILE_VERSION = "v138_parallel_lanes_ui_ack"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -122,4 +122,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack

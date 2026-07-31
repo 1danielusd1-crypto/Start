@@ -1,11 +1,9 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack
 @bot.callback_query_handler(func=lambda c: True)
 
 def on_callback(call):
-    # Раньше этот сетевой вызов выполнялся синхронно и давал 0.3–1.0 с задержки
-    # до начала обработки кнопки. Теперь подтверждение и действие идут параллельно.
-    answer_callback_query_background(call.id)
-
+    # v138: receipt-level ACK already runs in a reserved lane. Do not send a blank ACK here:
+    # explicit handler answers/alerts get the first 0.65 s to reach Telegram unchanged.
     try:
         raw_data_str = call.data or ""
         data_str = resolve_short_callback(raw_data_str)
@@ -2695,4 +2693,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack

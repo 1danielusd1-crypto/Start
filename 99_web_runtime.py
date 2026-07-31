@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v138_parallel_lanes_ui_ack
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -208,6 +208,12 @@ def telegram_webhook():
         # Пользователь уже совершил действие. Не даём рабочему таймеру истечь, пока update
         # стоит за другой задачей этого чата. Секретные таймеры не меняются.
         _protect_pending_ui_timers_on_receipt(payload)
+        if update_type == "callback_query":
+            try:
+                cq_raw = (payload or {}).get("callback_query") or {}
+                schedule_callback_receipt_ack(str(cq_raw.get("id") or ""), update_chat_id)
+            except Exception as ack_exc:
+                log_error(f"CALLBACK RECEIPT ACK SCHEDULE: {ack_exc}")
 
         # Persisted idempotency marker wins even if Render died after committing state but before HTTP 200.
         if durable_update_processed(update_id):
@@ -265,11 +271,22 @@ def telegram_webhook():
                     success = True
                     if durable_cloud:
                         durable_expected_after = _durable_expected_after_execution(durable_expected, execution_ctx, payload)
-                        finalized = finalize_durable_task_after_business(update_id, update_chat_id, update_type, payload=payload, expected_effects=durable_expected_after)
-                        if not finalized:
-                            # Verification-only retry. It never repeats business effects.
-                            schedule_durable_task_finalize_retry(update_id, update_chat_id, update_type, 1.0, payload=payload, expected_effects=durable_expected_after)
-                            log_error(f"MEGA TASK FINALIZE DEFERRED update={update_id}; durable effects still pending")
+                        # v138: forwarding/finance witnesses may need 5–20 s. Verification is moved
+                        # to RECOVERY_TASK_POOL; business execution and the content/UI lane are free.
+                        queued_finalize = enqueue_durable_finalize_background(
+                            update_id, update_chat_id, update_type, payload, durable_expected_after
+                        )
+                        if not queued_finalize:
+                            finalized = finalize_durable_task_after_business(
+                                update_id, update_chat_id, update_type,
+                                payload=payload, expected_effects=durable_expected_after,
+                            )
+                            if not finalized:
+                                schedule_durable_task_finalize_retry(
+                                    update_id, update_chat_id, update_type, 1.0,
+                                    payload=payload, expected_effects=durable_expected_after,
+                                )
+                                log_error(f"MEGA TASK FINALIZE DEFERRED update={update_id}; durable effects still pending")
                 except Exception as exc:
                     error_text = str(exc)
                     if durable_cloud and durable_started:
@@ -279,20 +296,27 @@ def telegram_webhook():
                 finally:
                     UPDATE_DISPATCHER.finish(update_id, success, error_text)
                     bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s success={success} durable={durable_cloud}")
-                    # The update and its durable finalizer are finished: return large history to SQLite.
-                    try:
-                        _lowram_release_chat(update_chat_id)
-                    except Exception as _lr_exc:
-                        log_error(f"LOWRAM post-update release: {_lr_exc}")
+                    # Non-durable updates can release cold history immediately. Durable background
+                    # finalizer owns a delayed release after its witness check.
+                    if not durable_cloud:
+                        try:
+                            _lowram_release_chat(update_chat_id)
+                        except Exception as _lr_exc:
+                            log_error(f"LOWRAM post-update release: {_lr_exc}")
 
-            if not WEBHOOK_TASK_POOL.submit(update_key, _process_update):
-                log_error(f"WEBHOOK QUEUE FULL: chat={update_chat_id}")
-                UPDATE_DISPATCHER.release_failed_enqueue(update_id, "webhook_queue_full")
+            selected_pool = UI_TASK_POOL if update_type == "callback_query" else WEBHOOK_TASK_POOL
+            selected_key = f"ui:{update_key}" if update_type == "callback_query" else update_key
+            if not selected_pool.submit(selected_key, _process_update):
+                log_error(f"{selected_pool.name.upper()} QUEUE FULL: chat={update_chat_id}")
+                UPDATE_DISPATCHER.release_failed_enqueue(update_id, f"{selected_pool.name}_queue_full")
                 # Telegram повторит update позже; pending-файл уже сохранён в MEGA.
                 return "BUSY", 503
 
-        # В отличие от v103, не подтверждаем Telegram задачу, которая только лежит в RAM.
-        # Если не успела обработаться, 503 заставит Telegram сохранить/повторить update.
+        # v138 safety invariant: callback spinner is cleared by the dedicated ACK lane, but the
+        # HTTP webhook receipt is still held until the queued action finishes (or times out).
+        # Therefore a Render crash cannot silently lose even a non-cloud UI action: Telegram keeps
+        # the update as the external emergency queue and retries after our 503. Critical finance/
+        # forwarding/secret content additionally keeps the existing write-before-execute MEGA card.
         state, dispatch_error = UPDATE_DISPATCHER.wait_result(ticket, WEBHOOK_ACK_WAIT_SECONDS)
         if state == "done":
             return "OK", 200
@@ -313,8 +337,13 @@ def set_webhook():
     bot.remove_webhook()
     time.sleep(0.5)
 
+    try:
+        webhook_connections = max(1, min(100, int(os.getenv("WEBHOOK_MAX_CONNECTIONS", "40") or "40")))
+    except Exception:
+        webhook_connections = 40
     bot.set_webhook(
         url=wh_url,
+        max_connections=webhook_connections,
         allowed_updates=[
             "message",
             "edited_message",
@@ -324,7 +353,7 @@ def set_webhook():
             "deleted_business_messages",
         ],
     )
-    log_info(f"Webhook установлен: {wh_url} (allowed_updates включает edited_message)")
+    log_info(f"Webhook установлен: {wh_url} (max_connections={webhook_connections}; отдельные content/UI lanes)")
         
 def main():
     global data
@@ -571,4 +600,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v135_reminders_secret_timers
+# v138_parallel_lanes_ui_ack

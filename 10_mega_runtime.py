@@ -1,4 +1,4 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -1427,6 +1427,53 @@ def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = 
     DELAYED_SCHEDULER.schedule(f"mega-task-finalize:{key}", max(0.5, float(delay)), _job)
 
 
+def enqueue_durable_finalize_background(update_id, chat_id, update_type: str, payload: dict, expected_effects: dict) -> bool:
+    """Move slow durable witness verification out of the content/UI worker.
+
+    Business effects have already run exactly once and the MEGA task is in ``running``.
+    This job only waits for finance/forward/delta witnesses, marks the update processed,
+    and moves the task to done. It never replays Telegram sends or finance mutations.
+    """
+    key = _mega_task_id(update_id)
+    payload_copy = _delta_json_clone(payload or {})
+    expected_copy = _delta_json_clone(expected_effects or {})
+
+    def _job():
+        started = time.monotonic()
+        try:
+            finalized = finalize_durable_task_after_business(
+                key, chat_id, update_type, payload=payload_copy, expected_effects=expected_copy
+            )
+            if not finalized:
+                schedule_durable_task_finalize_retry(
+                    key, chat_id, update_type, 1.0, payload=payload_copy, expected_effects=expected_copy
+                )
+                bot_journal(
+                    "durable_finalize_background_pending", chat_id,
+                    f"update_id={key} elapsed={time.monotonic()-started:.3f}s",
+                )
+            else:
+                bot_journal(
+                    "durable_finalize_background_done", chat_id,
+                    f"update_id={key} elapsed={time.monotonic()-started:.3f}s",
+                )
+        except Exception as exc:
+            log_error(f"DURABLE BACKGROUND FINALIZE update={key}: {exc}")
+            schedule_durable_task_finalize_retry(
+                key, chat_id, update_type, 1.0, payload=payload_copy, expected_effects=expected_copy
+            )
+        finally:
+            # Let late forward/delta workers finish before returning a large chat history to cold SQLite.
+            try:
+                DELAYED_SCHEDULER.schedule(
+                    f"lowram-after-durable:{key}", 15.0, _lowram_release_chat, chat_id
+                )
+            except Exception:
+                pass
+
+    return RECOVERY_TASK_POOL.submit(f"durable-finalize:{key}", _job)
+
+
 _TELEGRAM_UPDATE_CONTEXT = threading.local()
 
 
@@ -2372,7 +2419,9 @@ def schedule_mega_task_recovery(delay: float | None = None):
         for key, state, path in rows:
             def _job(k=key, st=state, rp=path):
                 _mega_task_recover_one(k, st, rp)
-            if not WEBHOOK_TASK_POOL.submit("mega-recover-global", _job):
+            # Recovery remains ordered globally to avoid reordering two uncertain tasks
+            # from the same chat; only the worker pool is isolated from live content/UI.
+            if not RECOVERY_TASK_POOL.submit("mega-recover-global", _job):
                 log_error(f"MEGA TASK RECOVERY QUEUE FULL update={key}")
         log_info(f"[MEGA TASKS] registry pending={stats.get('pending')} running={stats.get('running')} failed={stats.get('failed')} recovery_submitted={len(rows)}")
 
@@ -3989,7 +4038,11 @@ def runtime_heartbeat_snapshot(event: str = "heartbeat") -> dict:
             "uptime_seconds": round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3),
         },
         "queues": {
-            "webhook": WEBHOOK_TASK_POOL.stats().get("pending", 0),
+            "content": WEBHOOK_TASK_POOL.stats().get("pending", 0),
+            "ui": UI_TASK_POOL.stats().get("pending", 0),
+            "callback_ack": CALLBACK_ACK_TASK_POOL.stats().get("pending", 0),
+            "recovery": RECOVERY_TASK_POOL.stats().get("pending", 0),
+            "reminder": REMINDER_TASK_POOL.stats().get("pending", 0),
             "finance": FINANCE_TASK_POOL.stats().get("pending", 0),
             "forward": FORWARD_TASK_POOL.stats().get("pending", 0),
             "delta": DELTA_TASK_POOL.stats().get("pending", 0),
@@ -4012,7 +4065,8 @@ def _runtime_disk_stats() -> dict:
 
 def _runtime_pool_stats() -> dict:
     pools = (
-        WEBHOOK_TASK_POOL, FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL,
+        WEBHOOK_TASK_POOL, UI_TASK_POOL, CALLBACK_ACK_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL,
+        FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL,
         BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL,
         DELAYED_TASK_POOL, DOZVON_TASK_POOL,
     )
@@ -4043,6 +4097,7 @@ def runtime_snapshot(extra: dict | None = None) -> dict:
         "disk": _runtime_disk_stats(),
         "queues": _runtime_pool_stats(),
         "delayed": DELAYED_SCHEDULER.stats(),
+        "callback_ack_delayed": CALLBACK_ACK_SCHEDULER.stats(),
         "mega_tasks": mega_task_registry_stats() if "mega_task_registry_stats" in globals() else {},
         "delta": {
             "pending_chats": len(_delta_pending_chats) if "_delta_pending_chats" in globals() else 0,
@@ -4657,7 +4712,10 @@ def _runtime_watcher_should_yield_to_critical_mega() -> bool:
 
 def _lowram_business_busy() -> bool:
     try:
-        for pool_name in ("WEBHOOK_TASK_POOL", "FINANCE_TASK_POOL", "FORWARD_TASK_POOL", "DELTA_TASK_POOL", "BACKUP_TASK_POOL"):
+        for pool_name in (
+            "WEBHOOK_TASK_POOL", "UI_TASK_POOL", "RECOVERY_TASK_POOL", "REMINDER_TASK_POOL",
+            "FINANCE_TASK_POOL", "FORWARD_TASK_POOL", "DELTA_TASK_POOL", "BACKUP_TASK_POOL"
+        ):
             pool = globals().get(pool_name)
             if pool is None:
                 continue
@@ -5029,12 +5087,22 @@ def build_runtime_watcher_text() -> str:
         "",
         "Очереди P/A | done err rej | max wait:",
     ]
-    for name in ("webhook", "finance", "forward", "delta", "backup", "export", "general", "journal", "delayed", "dozvon"):
+    for name in (
+        "content", "ui", "callback-ack", "recovery", "reminder",
+        "finance", "forward", "delta", "backup", "export",
+        "general", "maintenance", "journal", "delayed", "dozvon",
+    ):
         q = queues.get(name) or {}
         lines.append(
             f"{name}: {q.get('pending', 0)}/{q.get('active', 0)} | "
             f"{q.get('completed', 0)} {q.get('failed', 0)} {q.get('rejected', 0)} | {q.get('max_wait', 0)}с"
         )
+    ack_delayed = snap.get("callback_ack_delayed") or {}
+    lines.append(
+        f"callback ACK timers: active {ack_delayed.get('scheduled', 0)} | "
+        f"done {ack_delayed.get('executed', 0)} | cancelled {ack_delayed.get('cancelled', 0)} | "
+        f"dispatch err {ack_delayed.get('dispatch_failed', 0)}"
+    )
     delta = snap.get('delta') or {}
     keep = snap.get('keep_alive') or {}
     lines.extend([
@@ -8395,4 +8463,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack

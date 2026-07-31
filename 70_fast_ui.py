@@ -1,4 +1,4 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v138_parallel_lanes_ui_ack
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -518,7 +518,9 @@ def build_owner_instruction_keyboard(chat_id: int):
 
 def all_task_pool_stats() -> list[dict]:
     return [
-        WEBHOOK_TASK_POOL.stats(), FINANCE_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
+        WEBHOOK_TASK_POOL.stats(), UI_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(),
+        RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(),
+        FINANCE_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
         DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
         MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
     ]
@@ -1978,6 +1980,79 @@ def schedule_secret_edit_refresh_window(viewer_chat_id: int, message_id: int, ta
         _secret_edit_refresh_timers[key] = generation
         DELAYED_SCHEDULER.schedule(scheduler_key, float(delay), _job)
 
+# v138 callback ACK -----------------------------------------------------------
+# A receipt-level fallback clears Telegram's spinner even when the callback handler is queued
+# behind a long operation. Explicit handler answers (including alerts) win during the grace
+# period; a late text answer is converted to a short chat notification instead of being lost.
+_CALLBACK_ACK_LOCK = threading.RLock()
+_CALLBACK_ACK_STATE = {}
+_CALLBACK_ACK_TTL_SECONDS = 180.0
+try:
+    CALLBACK_RECEIPT_ACK_DELAY_SECONDS = max(
+        0.15, min(3.0, float(os.getenv("CALLBACK_RECEIPT_ACK_DELAY_SECONDS", "0.65") or "0.65"))
+    )
+except Exception:
+    CALLBACK_RECEIPT_ACK_DELAY_SECONDS = 0.65
+_ORIGINAL_BOT_ANSWER_CALLBACK_QUERY = bot.answer_callback_query
+
+
+def _callback_ack_prune_locked(now_ts=None):
+    now_ts = float(now_ts or time.time())
+    for key, row in list(_CALLBACK_ACK_STATE.items()):
+        if now_ts - float((row or {}).get("ts", now_ts)) > _CALLBACK_ACK_TTL_SECONDS:
+            _CALLBACK_ACK_STATE.pop(key, None)
+
+
+def _late_callback_notice(chat_id, text):
+    try:
+        if chat_id is not None and str(text or "").strip():
+            send_and_auto_delete(int(chat_id), f"ℹ️ {str(text).strip()}", 8)
+    except Exception:
+        pass
+
+
+def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
+    callback_id = str(callback_query_id or "")
+    text = kwargs.get("text")
+    if text is None and args:
+        text = args[0]
+    with _CALLBACK_ACK_LOCK:
+        _callback_ack_prune_locked()
+        row = _CALLBACK_ACK_STATE.setdefault(callback_id, {"ts": time.time()})
+        row["ts"] = time.time()
+        if row.get("answered"):
+            chat_id = row.get("chat_id")
+            if str(text or "").strip() and not row.get("late_notice_sent"):
+                row["late_notice_sent"] = True
+                CALLBACK_ACK_TASK_POOL.submit(
+                    f"callback-late-notice:{callback_id}", _late_callback_notice, chat_id, text
+                )
+            return True
+        if row.get("inflight"):
+            return True
+        row["inflight"] = True
+    try:
+        result = _ORIGINAL_BOT_ANSWER_CALLBACK_QUERY(callback_query_id, *args, **kwargs)
+        with _CALLBACK_ACK_LOCK:
+            row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
+            row.update({"answered": True, "inflight": False, "ts": time.time()})
+        try:
+            CALLBACK_ACK_SCHEDULER.cancel(f"callback-receipt-ack:{callback_id}")
+        except Exception:
+            pass
+        return result
+    except Exception:
+        with _CALLBACK_ACK_LOCK:
+            row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
+            row["inflight"] = False
+            row["ts"] = time.time()
+        raise
+
+
+# Every existing handler transparently participates in the ACK tracker.
+bot.answer_callback_query = _tracked_answer_callback_query
+
+
 def _answer_callback_query_quiet(callback_id: str):
     try:
         bot.answer_callback_query(callback_id)
@@ -1986,12 +2061,31 @@ def _answer_callback_query_quiet(callback_id: str):
 
 
 def answer_callback_query_background(callback_id: str):
-    """Снимает Telegram «Загрузка…» параллельно, не задерживая обработку самой кнопки."""
+    """Immediate ACK from a callback handler, isolated from GENERAL/MEGA work."""
     key = f"callback-ack:{callback_id}"
-    if not GENERAL_TASK_POOL.submit(key, _answer_callback_query_quiet, callback_id):
-        # При переполнении не блокируем кнопку сетевым вызовом; последующая UI-операция всё равно выполнится.
+    if not CALLBACK_ACK_TASK_POOL.submit_unique(key, _answer_callback_query_quiet, callback_id):
         try:
-            bot_journal("callback_ack_queue_full", None, str(callback_id), "WARN")
+            bot_journal("callback_ack_coalesced", None, str(callback_id))
         except Exception:
             pass
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+
+
+def schedule_callback_receipt_ack(callback_id: str, chat_id=None, delay: float | None = None):
+    """Fallback ACK scheduled as soon as Flask receives callback_query."""
+    callback_id = str(callback_id or "")
+    if not callback_id:
+        return
+    with _CALLBACK_ACK_LOCK:
+        _callback_ack_prune_locked()
+        row = _CALLBACK_ACK_STATE.setdefault(callback_id, {})
+        row["chat_id"] = int(chat_id) if chat_id is not None else row.get("chat_id")
+        row["ts"] = time.time()
+        if row.get("answered"):
+            return
+    CALLBACK_ACK_SCHEDULER.schedule(
+        f"callback-receipt-ack:{callback_id}",
+        CALLBACK_RECEIPT_ACK_DELAY_SECONDS if delay is None else max(0.05, float(delay)),
+        _answer_callback_query_quiet,
+        callback_id,
+    )
+# v138_parallel_lanes_ui_ack
