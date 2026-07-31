@@ -1,4 +1,4 @@
-# v134_flat_reminder
+# v136_excel_export_month_backnav
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -91,6 +91,11 @@ def _run_pending_ui_edit(key):
 
 
 def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "fast_ui") -> str:
+    try:
+        if "secret" not in str(purpose or "").lower():
+            reply_markup = ensure_main_back_nav_keyboard(reply_markup, int(chat_id))
+    except Exception:
+        pass
     key = _ui_edit_key(chat_id, message_id)
     payload = {
         "chat_id": int(chat_id),
@@ -147,6 +152,10 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
             reply_markup = default_window_nav_keyboard(chat_id)
         except Exception:
             pass
+    try:
+        reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
+    except Exception:
+        pass
     result = fast_ui_edit_message_text(
         chat_id, msg_id, text,
         reply_markup=reply_markup,
@@ -212,6 +221,10 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
             reply_markup = default_window_nav_keyboard(chat_id)
         except Exception:
             pass
+    try:
+        reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
+    except Exception:
+        pass
     result = fast_ui_edit_message_text(
         chat_id, msg_id, text,
         reply_markup=reply_markup,
@@ -2044,4 +2057,4 @@ def answer_callback_query_background(callback_id: str):
             bot_journal("callback_ack_queue_full", None, str(callback_id), "WARN")
         except Exception:
             pass
-# v134_flat_reminder
+# v136_excel_export_month_backnav

@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v136_excel_export_month_backnav
 import os
 import io
 import json
@@ -770,7 +770,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v135_reminders_secret_timers"
+VERSION = "bot_v136_excel_export_month_backnav"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -3813,6 +3813,7 @@ WINDOW_MARKER_CONSTANTS = {
     'd:*:open': 'Ф56',
     'd:*:prev': 'Ф57',
     'd:*:report': 'Ф59',
+    'd:*:usd_month': 'Ф177',
     'd:*:today': 'Ф60',
     'd:*:total': 'Ф61',
     'dzv:*': 'Ф62',
@@ -3833,6 +3834,7 @@ WINDOW_MARKER_CONSTANTS = {
     'fv:*:info:*': 'Ф77',
     'fv:*:open:*': 'Ф78',
     'fv:*:report:*': 'Ф79',
+    'fv:*:usd_month:*': 'Ф178',
     'fv:*:reset:*': 'Ф80',
     'fv:*:total:*': 'Ф81',
     'fvcat_': 'Ф82',
@@ -3884,6 +3886,10 @@ WINDOW_MARKER_CONSTANTS = {
     'exp_pick_end:*': 'Ф114',
     'exp_pick_set_end:*': 'Ф115',
     'exp_pick_end_record:*': 'Ф116',
+    'exp_style_period:*': 'Ф179',
+    'exp_send_period_style:*': 'Ф180',
+    'exp_style_exact:*': 'Ф181',
+    'exp_send_exact_style:*': 'Ф182',
     'exp_send:*:csv:*': 'Ф117',
     'exp_send:*:xlsx:*': 'Ф118',
     'd:*:backup_mass_chat': 'Ф119',
@@ -5750,6 +5756,34 @@ def default_window_nav_keyboard(chat_id: int):
     return kb
 
 
+def ensure_main_back_nav_keyboard(reply_markup, chat_id: int, day_key: str | None = None):
+    """Добавляет «Назад осн. окно» к служебным окнам, если такой кнопки ещё нет.
+
+    Основное финансовое окно не меняется. Функция безопасна для уже собранных
+    InlineKeyboardMarkup и вызывается центрально перед редактированием окна.
+    """
+    if reply_markup is None:
+        return default_window_nav_keyboard(chat_id)
+    try:
+        rows = list(getattr(reply_markup, "keyboard", None) or [])
+        callbacks = []
+        labels = []
+        for row in rows:
+            for btn in row or []:
+                callbacks.append(str(getattr(btn, "callback_data", "") or ""))
+                labels.append(str(getattr(btn, "text", "") or ""))
+        # Не добавляем кнопку в само основное окно.
+        if any(cb.startswith("main_close:") for cb in callbacks):
+            return reply_markup
+        if any("back_main" in cb for cb in callbacks) or any("Назад осн" in t for t in labels):
+            return reply_markup
+        day = str(day_key or get_chat_store(int(chat_id)).get("current_view_day") or today_key())[:10]
+        reply_markup.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day}:back_main"))
+    except Exception:
+        pass
+    return reply_markup
+
+
 def _open_window_registry() -> dict:
     return data.setdefault("open_window_registry", {})
 
@@ -5932,7 +5966,18 @@ def _refresh_registered_fin_view(item: dict, changed_chat_id: int) -> bool:
             bot.edit_message_text(
                 f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + report_html,
                 chat_id=host_chat_id, message_id=message_id,
-                reply_markup=_one_button_keyboard("🔙 Назад", f"fv:{target_chat_id}:{view_day}:open:{owner_day_key}"),
+                reply_markup=ensure_main_back_nav_keyboard(
+                    _one_button_keyboard("🔙 Назад", f"fv:{target_chat_id}:{view_day}:open:{owner_day_key}"),
+                    host_chat_id, owner_day_key,
+                ),
+                parse_mode="HTML",
+            )
+        elif action == "usd_month":
+            month_html, _ = render_usd_month_window(target_chat_id, view_day)
+            bot.edit_message_text(
+                f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + month_html,
+                chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_fin_window_usd_month_keyboard(target_chat_id, view_day, owner_day_key),
                 parse_mode="HTML",
             )
         elif action == "total":
@@ -6025,10 +6070,18 @@ def _refresh_registered_local_fin_view(item: dict, changed_chat_id: int) -> bool
                 report_html, chat_id=host_chat_id, message_id=message_id,
                 reply_markup=build_report_keyboard(month_key), parse_mode="HTML",
             )
+        elif action == "usd_month":
+            month_day = str(params.get("month_day") or view_day)
+            month_html, _ = render_usd_month_window(host_chat_id, month_day)
+            bot.edit_message_text(
+                month_html, chat_id=host_chat_id, message_id=message_id,
+                reply_markup=build_usd_month_keyboard(month_day), parse_mode="HTML",
+            )
         elif action == "total":
             bot.edit_message_text(
                 _build_total_window_text_for_registry(host_chat_id),
                 chat_id=host_chat_id, message_id=message_id, parse_mode="HTML",
+                reply_markup=default_window_nav_keyboard(host_chat_id),
             )
         elif action == "info":
             bot.edit_message_text(
@@ -6214,6 +6267,10 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
             reply_markup = default_window_nav_keyboard(chat_id)
         except Exception:
             pass
+    try:
+        reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id, store.get("current_view_day"))
+    except Exception:
+        pass
     try:
         marker_key = f"stored:{store_key}:" + _window_key_from_markup(reply_markup)
         text = window_mark(
@@ -7295,4 +7352,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v135_reminders_secret_timers
+# v136_excel_export_month_backnav

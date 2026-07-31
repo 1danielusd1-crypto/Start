@@ -1,4 +1,4 @@
-# v134_flat_reminder
+# v136_excel_export_month_backnav
 @bot.callback_query_handler(func=lambda c: True)
 
 def on_callback(call):
@@ -1532,7 +1532,7 @@ def on_callback(call):
                 registry_action = "open"
             elif action.startswith("del_toggle_") or action == "del_selected":
                 registry_action = "edit_list"
-            if registry_action in {"open", "back_main", "menu", "calendar", "report", "total", "info", "edit_list", "csv_menu"}:
+            if registry_action in {"open", "back_main", "menu", "calendar", "report", "usd_month", "total", "info", "edit_list", "csv_menu"}:
                 register_open_window(
                     chat_id, call.message.message_id, "fin_view", code=f"fv:{registry_action}", day_key=view_day,
                     params={"target_chat_id": target_chat_id, "owner_day_key": owner_day_key, "view_action": registry_action},
@@ -1596,6 +1596,21 @@ def on_callback(call):
                     f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + report_html,
                     reply_markup=_one_button_keyboard("🔙 Назад", f"fv:{target_chat_id}:{view_day}:open:{owner_day_key}"),
                     parse_mode="HTML"
+                )
+                return
+            if action == "usd_month":
+                if not usd_transactions_view_enabled(target_chat_id):
+                    try:
+                        bot.answer_callback_query(call.id, "В этом чате не включены 💵 USD операции", show_alert=True)
+                    except Exception:
+                        pass
+                    return
+                month_html, _ = render_usd_month_window(target_chat_id, view_day)
+                safe_edit(
+                    bot, call,
+                    f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + month_html,
+                    reply_markup=build_fin_window_usd_month_keyboard(target_chat_id, view_day, owner_day_key),
+                    parse_mode="HTML",
                 )
                 return
             if action == "total":
@@ -1777,6 +1792,66 @@ def on_callback(call):
                 )
             except Exception:
                 pass
+
+        if data_str.startswith("exp_style_period:"):
+            try:
+                _, scope, target_s, mode, file_type, day_key_s, owner_day_key = data_str.split(":")
+                target_chat_id = chat_id if scope == "d" or int(target_s or 0) == 0 else int(target_s)
+                kind_label = "Excel статьи" if file_type == "xlsxstat" else "Excel"
+                safe_edit(
+                    bot, call,
+                    f"📊 {kind_label}\nПериод: {mode}\n\nВыберите способ получения:",
+                    reply_markup=_period_excel_style_keyboard(scope, target_chat_id, mode, file_type, day_key_s, owner_day_key),
+                )
+            except Exception as e:
+                log_error(f"exp_style_period: {e}")
+            return
+
+        if data_str.startswith("exp_send_period_style:"):
+            try:
+                _, scope, target_s, mode, file_type, style, day_key_s, owner_day_key = data_str.split(":")
+                target_chat_id = chat_id if scope == "d" or int(target_s or 0) == 0 else int(target_s)
+                ok, info = submit_interactive_file_job(
+                    chat_id, "period_export", f"{_export_style_caption(style)}",
+                    send_export_for_chat_to, chat_id, target_chat_id, mode, day_key_s, file_type, style,
+                )
+                try:
+                    bot.answer_callback_query(call.id, "Готовлю экспорт; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                except Exception:
+                    pass
+            except Exception as e:
+                log_error(f"exp_send_period_style: {e}")
+            return
+
+        if data_str.startswith("exp_style_exact:"):
+            try:
+                _, start_key, start_rid, end_key, end_rid, file_type, return_day_key = data_str.split(":")
+                kind_label = "Excel статьи" if file_type == "xlsxstat" else "Excel"
+                safe_edit(
+                    bot, call,
+                    f"🎯 {kind_label} — точный период\n\nВыберите способ получения:",
+                    reply_markup=_exact_excel_style_keyboard(
+                        start_key, int(start_rid), end_key, int(end_rid), file_type, return_day_key,
+                    ),
+                )
+            except Exception as e:
+                log_error(f"exp_style_exact: {e}")
+            return
+
+        if data_str.startswith("exp_send_exact_style:"):
+            try:
+                _, start_key, start_rid, end_key, end_rid, file_type, style, return_day_key = data_str.split(":")
+                ok, info = submit_interactive_file_job(
+                    chat_id, "exact_export", f"Точный {_export_style_caption(style)}",
+                    send_exact_range_export, chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type, style,
+                )
+                try:
+                    bot.answer_callback_query(call.id, "Готовлю экспорт; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                except Exception:
+                    pass
+            except Exception as e:
+                log_error(f"exp_send_exact_style: {e}")
+            return
 
         if data_str.startswith("exp_pick_start:"):
             try:
@@ -1997,6 +2072,21 @@ def on_callback(call):
             except Exception:
                 pass
             return
+        if cmd == "usd_month":
+            if not usd_transactions_view_enabled(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Сначала включите 💵 USD операции", show_alert=True)
+                except Exception:
+                    pass
+                return
+            month_html, _ = render_usd_month_window(chat_id, day_key)
+            safe_edit(bot, call, month_html, reply_markup=build_usd_month_keyboard(day_key), parse_mode="HTML")
+            register_open_window(
+                chat_id, call.message.message_id, "local_fin_view", code="usd_month", day_key=day_key,
+                params={"view_action": "usd_month", "month_day": day_key},
+            )
+            return
+
         if cmd == "calendar":
             try:
                 cdt = datetime.strptime(day_key, "%Y-%m-%d")
@@ -2558,4 +2648,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v134_flat_reminder
+# v136_excel_export_month_backnav

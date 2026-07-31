@@ -1,4 +1,4 @@
-# v133_usd_operations_parity_articles_paging
+# v136_excel_export_month_backnav
 def finance_mode_compact_icon(chat_id: int) -> str:
     """v108: hidden finance and visible auto-window mode are shown independently."""
     try:
@@ -548,12 +548,33 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
         IB("📊 Отчёт", callback_data=f"fv:{target_chat_id}:{day_key}:report:{owner_day_key}"),
         IB("💰 Общий итог", callback_data=f"fv:{target_chat_id}:{day_key}:total:{owner_day_key}"),
     )
+    if usd_transactions_view_enabled(int(target_chat_id)):
+        kb.row(IB("📆 За месяц", callback_data=f"fv:{target_chat_id}:{day_key}:usd_month:{owner_day_key}"))
     kb.row(
         IB("⚙️ Обнулить", callback_data=f"fv:{target_chat_id}:{day_key}:reset:{owner_day_key}"),
         IB("ℹ️ Инфо", callback_data=f"fv:{target_chat_id}:{day_key}:info:{owner_day_key}"),
         IB("🔙 Назад к списку", callback_data=f"d:{owner_day_key}:fin_windows_menu"),
     )
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{owner_day_key}:back_main"))
     return kb
+
+def build_fin_window_usd_month_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
+    try:
+        dt = datetime.strptime(str(day_key)[:10], "%Y-%m-%d").replace(day=1)
+    except Exception:
+        dt = now_local().replace(day=1)
+    prev_dt = (dt - timedelta(days=1)).replace(day=1)
+    next_dt = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    kb.row(
+        IB("⬅️ Пред. месяц", callback_data=f"fv:{target_chat_id}:{prev_dt.strftime('%Y-%m-01')}:usd_month:{owner_day_key}"),
+        IB("📅 Этот месяц", callback_data=f"fv:{target_chat_id}:{today_key()}:usd_month:{owner_day_key}"),
+        IB("След. месяц ➡️", callback_data=f"fv:{target_chat_id}:{next_dt.strftime('%Y-%m-01')}:usd_month:{owner_day_key}"),
+    )
+    kb.row(IB("🔙 Назад к чату", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{owner_day_key}:back_main"))
+    return kb
+
 
 def build_fin_window_menu_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
     """Совместимость: отдельного меню больше нет."""
@@ -563,6 +584,7 @@ def build_fin_window_csv_menu(target_chat_id: int, day_key: str, owner_day_key: 
     kb = types.InlineKeyboardMarkup(row_width=3)
     _add_export_period_rows(kb, day_key, "fv", owner_day_key=owner_day_key, target_chat_id=target_chat_id)
     kb.row(IB("🔙 Назад", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{owner_day_key}:back_main"))
     return kb
 
 
@@ -685,4 +707,4 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     if financial_view_is_usd(store):
         label = "USD " + label
     return rows, label
-# v133_usd_operations_parity_articles_paging
+# v136_excel_export_month_backnav

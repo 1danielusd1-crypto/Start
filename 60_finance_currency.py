@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v136_excel_export_month_backnav
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -791,6 +791,24 @@ def render_usd_month_window(chat_id: int, day_key: str):
     return wm_common("\n".join(lines), 1, html_mode=True), income - expense
 
 
+def build_usd_month_keyboard(day_key: str):
+    try:
+        dt = datetime.strptime(str(day_key)[:10], "%Y-%m-%d").replace(day=1)
+    except Exception:
+        dt = now_local().replace(day=1)
+    prev_dt = (dt - timedelta(days=1)).replace(day=1)
+    next_dt = (dt.replace(day=28) + timedelta(days=4)).replace(day=1)
+    current_month = now_local().strftime("%Y-%m")
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    nav = [IB("⬅️ Пред. месяц", callback_data=f"d:{prev_dt.strftime('%Y-%m-01')}:usd_month")]
+    if dt.strftime("%Y-%m") != current_month:
+        nav.append(IB("📅 Этот месяц", callback_data=f"d:{today_key()}:usd_month"))
+    nav.append(IB("След. месяц ➡️", callback_data=f"d:{next_dt.strftime('%Y-%m-01')}:usd_month"))
+    kb.row(*nav)
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{str(day_key)[:10]}:back_main"))
+    return kb
+
+
 def render_day_window(chat_id: int, day_key: str):
     if version_mode_feature("usd_transactions") and usd_transactions_view_enabled(int(chat_id)):
         return render_usd_day_window(int(chat_id), day_key)
@@ -961,6 +979,8 @@ def build_main_keyboard(day_key: str, chat_id=None):
     kb.row(*nav_row)
     kb.row(IB("📅 Календарь", callback_data=f"d:{day_key}:calendar"), IB("📊 Отчёт", callback_data=f"d:{day_key}:report"), IB("💰 Общий итог", callback_data=f"d:{day_key}:total"))
     kb.row(IB("📝 Редактировать", callback_data=f"d:{day_key}:edit_list"), IB("📂 CSV", callback_data=f"d:{day_key}:csv_all"), IB("📊 Статьи", callback_data=cat_callback("cat_today")))
+    if chat_id is not None and usd_transactions_view_enabled(int(chat_id)):
+        kb.row(IB("📆 За месяц", callback_data=f"d:{day_key}:usd_month"))
     if chat_id is not None and version_mode_feature("usd_transactions"):
         kb.row(IB(usd_transactions_toggle_label(int(chat_id)), callback_data=f"d:{day_key}:usd_tx_toggle"))
     if chat_id is not None and effective_main_financial_value_buttons_enabled(int(chat_id)):
@@ -1181,7 +1201,7 @@ def _backup_toggle_label(chat_id: int, target: str, label: str) -> str:
 
 
 def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | None = None, target_chat_id: int | None = None):
-    """Ф47: пять строк периодов и четыре колонки: период / CSV / Excel / Excel статьи."""
+    """F47: period / CSV / Excel menu / Excel articles menu."""
     periods = [
         ("📅 День", "day"),
         ("🗓 Неделя", "week"),
@@ -1189,25 +1209,23 @@ def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | 
         ("📊 Ср–Чт", "wedthu"),
         ("📂 Всё время", "all"),
     ]
+    scope = "fv" if prefix == "fv" else "d"
+    target = int(target_chat_id or 0)
+    owner_day = str(owner_day_key or day_key)
     for label, mode in periods:
         if prefix == "fv":
-            csv_cb = f"fv:{target_chat_id}:{day_key}:csv_{mode}:{owner_day_key}"
-            xlsx_cb = f"fv:{target_chat_id}:{day_key}:xlsx_{mode}:{owner_day_key}"
-            xlsxstat_cb = f"fv:{target_chat_id}:{day_key}:xlsxstat_{mode}:{owner_day_key}"
+            csv_cb = f"fv:{target}:{day_key}:csv_{mode}:{owner_day}"
         else:
             csv_action = "csv_all_real" if mode == "all" else f"csv_{mode}"
-            xlsx_action = "xlsx_all" if mode == "all" else f"xlsx_{mode}"
-            xlsxstat_action = f"xlsxstat_{mode}"
             csv_cb = f"d:{day_key}:{csv_action}"
-            xlsx_cb = f"d:{day_key}:{xlsx_action}"
-            xlsxstat_cb = f"d:{day_key}:{xlsxstat_action}"
+        xlsx_cb = export_callback(f"exp_style_period:{scope}:{target}:{mode}:xlsx:{day_key}:{owner_day}")
+        xlsxstat_cb = export_callback(f"exp_style_period:{scope}:{target}:{mode}:xlsxstat:{day_key}:{owner_day}")
         kb.row(
             IB(label, callback_data="none"),
             IB("CSV", callback_data=csv_cb),
             IB("Excel", callback_data=xlsx_cb),
             IB("Excel статьи", callback_data=xlsxstat_cb),
         )
-
 
 
 def _export_calendar_start_keyboard(view_year: int, view_month: int, return_day_key: str):
@@ -1315,6 +1333,53 @@ def _export_end_record_keyboard(chat_id: int, start_key: str, start_rid: int, en
     return kb
 
 
+def _export_style_caption(style: str) -> str:
+    return {
+        "old": "Старая таблица",
+        "new_comments": "Новая • комментарии",
+        "new_notes": "Новая • примечания",
+        "google_notes": "Google Sheets • примечания",
+    }.get(str(style), str(style))
+
+
+def _period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, file_type: str, day_key: str, owner_day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for style, label in (
+        ("old", "📥 Скачать: старая таблица"),
+        ("new_comments", "📥 Скачать: новая с комментариями"),
+        ("new_notes", "📥 Скачать: новая с примечаниями"),
+        ("google_notes", "☁️ Залить в Google Sheets с примечаниями"),
+    ):
+        kb.row(IB(label, callback_data=export_callback(
+            f"exp_send_period_style:{scope}:{int(target_chat_id)}:{mode}:{file_type}:{style}:{day_key}:{owner_day_key}"
+        )))
+    if scope == "fv":
+        back_cb = f"fv:{int(target_chat_id)}:{day_key}:csv_menu:{owner_day_key}"
+    else:
+        back_cb = f"d:{day_key}:csv_all"
+    kb.row(IB("🔙 Назад в CSV / Excel", callback_data=back_cb))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{owner_day_key}:back_main"))
+    return kb
+
+
+def _exact_excel_style_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, return_day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for style, label in (
+        ("old", "📥 Скачать: старая таблица"),
+        ("new_comments", "📥 Скачать: новая с комментариями"),
+        ("new_notes", "📥 Скачать: новая с примечаниями"),
+        ("google_notes", "☁️ Залить в Google Sheets с примечаниями"),
+    ):
+        kb.row(IB(label, callback_data=export_callback(
+            f"exp_send_exact_style:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:{style}:{return_day_key}"
+        )))
+    kb.row(IB("🔙 Назад к форматам", callback_data=export_callback(
+        f"exp_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{return_day_key}"
+    )))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{return_day_key}:back_main"))
+    return kb
+
+
 def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, return_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
     kb.row(
@@ -1322,10 +1387,10 @@ def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_ri
             f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:csv:{return_day_key}"
         )),
         IB("📊 Excel", callback_data=export_callback(
-            f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsx:{return_day_key}"
+            f"exp_style_exact:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsx:{return_day_key}"
         )),
         IB("📊 Excel стат", callback_data=export_callback(
-            f"exp_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsxstat:{return_day_key}"
+            f"exp_style_exact:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:xlsxstat:{return_day_key}"
         )),
     )
     end_dt = datetime.strptime(end_key, "%Y-%m-%d")
@@ -1333,6 +1398,7 @@ def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_ri
         f"exp_pick_set_end:{start_key}:{int(start_rid)}:{end_dt.year}:{end_dt.month}:{end_dt.day}:{return_day_key}"
     )))
     kb.row(IB("❌ Вернуться в CSV / Excel", callback_data=f"d:{return_day_key}:csv_all"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{return_day_key}:back_main"))
     return kb
 
 
@@ -1412,13 +1478,16 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
     rows.append(["", "Остаток на руках", {"formula": f"C2+C{income_row_num}-C{expense_row_num}", "value": closing}] + [""] * len(categories))
     return rows
 
-def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str):
+def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, excel_style_override: str | None = None):
     """Фоновый экспорт между двумя точными границами включительно."""
     tmp_name = None
     try:
         file_type = str(file_type or "csv").lower()
         if file_type not in {"csv", "xlsx", "xlsxstat"}:
             file_type = "csv"
+        excel_style_override = str(excel_style_override or excel_table_style(target_chat_id) or "old").strip().lower()
+        if excel_style_override not in {"old", "new_comments", "new_notes", "google_notes"}:
+            excel_style_override = "old"
         _file_job_progress("собираю данные", force=True)
         rows = _exact_export_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
         if not rows:
@@ -1431,19 +1500,33 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         )
         if file_type == "xlsxstat":
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
-            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Excel стат", category_layout=True)
+            if excel_style_override == "google_notes":
+                title = f"{get_chat_display_name(target_chat_id)} — статьи — точный период"
+                sheet_url = _google_sheets_create_category_report(title, xlsx_rows, layout="category")
+                bot.send_message(recipient_chat_id, f"📊 Google Таблица — статьи, точный период\n\n{sheet_url}", disable_web_page_preview=True)
+                return True
+            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Excel стат", category_layout=True, mode_override=excel_style_override)
         elif ext == "xlsx":
-            xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
-            for date_v, amount_v, note_v in rows:
-                try:
-                    parsed_amount = parse_csv_amount(amount_v)
-                except Exception:
-                    parsed_amount = 0.0
-                xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
             opening = _opening_balance_before_exact(get_chat_store(target_chat_id), start_key, int(start_rid))
-            xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
-            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False)
+            if excel_style_override in {"new_comments", "new_notes", "google_notes"}:
+                xlsx_rows, compact_annotations = _compact_simple_excel_rows_and_annotations(rows, opening)
+                if excel_style_override == "google_notes":
+                    title = f"{get_chat_display_name(target_chat_id)} — точный период"
+                    sheet_url = _google_sheets_create_category_report(title, xlsx_rows, layout="compact", annotations_override=compact_annotations)
+                    bot.send_message(recipient_chat_id, f"📊 Google Таблица — точный период\n\n{sheet_url}", disable_web_page_preview=True)
+                    return True
+                _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False, mode_override=excel_style_override, compact_annotations=compact_annotations)
+            else:
+                xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
+                for date_v, amount_v, note_v in rows:
+                    try:
+                        parsed_amount = parse_csv_amount(amount_v)
+                    except Exception:
+                        parsed_amount = 0.0
+                    xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
+                xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
+                xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+                _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False, mode_override="old")
         else:
             with open(tmp_name, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
@@ -1459,7 +1542,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         display_name = f"{chat_name}_({start_label}-{end_label})_{'excel_стат' if file_type == 'xlsxstat' else 'точный'}.{ext}"
         store = get_chat_store(target_chat_id)
         caption = (
-            f"🎯 {(('Excel стат ' if file_type == 'xlsxstat' else 'Excel ') + excel_table_style_caption(target_chat_id)) if ext == 'xlsx' else 'CSV'} — точный период\n"
+            f"🎯 {(('Excel стат ' if file_type == 'xlsxstat' else 'Excel ') + _export_style_caption(excel_style_override)) if ext == 'xlsx' else 'CSV'} — точный период\n"
             f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}\n"
             f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}"
         )
@@ -1498,6 +1581,7 @@ def build_csv_menu(day_key: str, chat_id: int | None = None):
         callback_data=export_callback(f"exp_pick_start:{ref_dt.year}:{ref_dt.month}:{day_key}"),
     ))
     kb.row(IB("⬅️ Назад", callback_data=f"d:{day_key}:edit_menu"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
     return kb
 
 
@@ -1775,4 +1859,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v135_reminders_secret_timers
+# v136_excel_export_month_backnav

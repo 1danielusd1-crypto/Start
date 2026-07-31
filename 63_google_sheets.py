@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v136_excel_export_month_backnav
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ def _google_sheet_tab_title(title: str) -> str:
     return base[:limit].rstrip() + suffix
 
 
-def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
+def _google_sheets_create_category_report(title: str, rows: list[list], layout: str = "category", annotations_override: dict | None = None) -> str:
     """v129: writes a category report to a NEW TAB in an existing owner-shared spreadsheet.
 
     The service account does not create/own a Drive file. The owner creates one spreadsheet once
@@ -178,7 +178,11 @@ def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
             )
         raise RuntimeError(f"Google Sheets target {meta.status_code}: {detail}")
 
-    _styles, annotations, _freeze, _widths = _modern_category_excel_styles_comments(rows)
+    layout = str(layout or "category").strip().lower()
+    if layout == "compact":
+        _styles, annotations, _freeze, _widths = _modern_compact_excel_styles_comments(rows, annotations_override or {})
+    else:
+        _styles, annotations, _freeze, _widths = _modern_category_excel_styles_comments(rows)
     max_cols = max((len(row) for row in rows), default=1)
     row_count = max(100, len(rows) + 20)
     col_count = max(26, max_cols + 3)
@@ -193,7 +197,7 @@ def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
             "gridProperties": {
                 "rowCount": row_count,
                 "columnCount": col_count,
-                "frozenRowCount": 2,
+                "frozenRowCount": 1 if layout == "compact" else 2,
             },
         }}}]},
         timeout=60,
@@ -220,7 +224,9 @@ def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
                     "textFormat": {"bold": True},
                     "backgroundColor": _google_category_fill(c_idx - 1),
                 }
-            elif c_idx >= 4 and value not in ("", None):
+            elif layout == "compact" and c_idx in {2, 3} and value not in ("", None):
+                cell["userEnteredFormat"] = {"backgroundColor": _google_category_fill(3 if c_idx == 3 else 2)}
+            elif layout != "compact" and c_idx >= 4 and value not in ("", None):
                 cell["userEnteredFormat"] = {"backgroundColor": _google_category_fill(c_idx - 1)}
             values.append(cell)
         cell_rows.append({"values": values})
@@ -293,11 +299,15 @@ def _google_sheets_create_category_report(title: str, rows: list[list]) -> str:
 
     return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={sheet_id}"
 
-def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv"):
-    """Отправка CSV или Excel по выбранному периоду. Работает для обычного чата и для меню владельца по чужому чату."""
+def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv", excel_style_override: str | None = None):
+    """Отправка CSV/XLSX или создание Google Sheets по выбранному периоду."""
+    tmp_name = None
     try:
         _file_job_progress("собираю экспорт", force=True)
         file_type = str(file_type or "csv").lower().lstrip(".")
+        excel_style_override = str(excel_style_override or excel_table_style(target_chat_id) or "old").strip().lower()
+        if excel_style_override not in {"old", "new_comments", "new_notes", "google_notes"}:
+            excel_style_override = "old"
         raw_mode = str(mode or "all")
         if raw_mode.startswith("xlsxstat_"):
             raw_mode = raw_mode[len("xlsxstat_"):]
@@ -305,7 +315,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         if mode == "all_real":
             mode = "all"
 
-        if mode == "all" and file_type in {"csv", "xlsx"} and not financial_view_is_usd(get_chat_store(target_chat_id)):
+        if mode == "all" and file_type in {"csv", "xlsx"} and not financial_view_is_usd(get_chat_store(target_chat_id)) and (file_type == "csv" or excel_style_override == "old"):
             save_chat_json(target_chat_id)
             path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
             label = "за всё время"
@@ -316,7 +326,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                         bot.send_document,
                         recipient_chat_id,
                         fobj,
-                        caption=f"📂 {'Excel ' + excel_table_style_caption(target_chat_id) if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                        caption=f"📂 {'Excel ' + _export_style_caption(excel_style_override) if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
                         timeout=120,
                         purpose="export_send_document"
                     )
@@ -333,36 +343,62 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             display_name = f"{safe_chat}_{mode}_{day_key}_excel_статьи.xlsx"
         else:
             display_name = export_display_filename(target_chat_id, mode, day_key, ext)
+
         if file_type == "xlsxstat":
             store = get_chat_store(target_chat_id)
             start_key, end_key = _period_export_bounds(store, mode, day_key)
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, 0, end_key, 0)
-            if excel_table_style(target_chat_id) == "google_notes":
+            if excel_style_override == "google_notes":
                 _file_job_progress("создаю новую вкладку Google Таблицы и примечания", force=True)
                 title = f"{get_chat_display_name(target_chat_id)} — статьи — {label}"
-                sheet_url = _google_sheets_create_category_report(title, xlsx_rows)
+                sheet_url = _google_sheets_create_category_report(title, xlsx_rows, layout="category")
                 bot.send_message(
                     recipient_chat_id,
                     f"📊 Google Таблица — статьи {label}: {get_chat_display_name(target_chat_id)}\n\n{sheet_url}\n\nСоздана новая вкладка. Описания расходов записаны в нативные Примечания Google Sheets.",
                     disable_web_page_preview=True,
                 )
                 return True
-            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Статьи", category_layout=True)
+            _write_excel_by_selected_style(
+                tmp_name, xlsx_rows, target_chat_id, sheet_name="Статьи", category_layout=True,
+                mode_override=excel_style_override,
+            )
         elif ext == "xlsx":
-            xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
-            for date_v, amount_v, note_v in rows:
-                try:
-                    parsed_amount = parse_csv_amount(amount_v)
-                except Exception as e_amount:
-                    log_error(f"xlsx export amount parse skip: chat={get_chat_display_name(target_chat_id)} amount={amount_v!r} note={note_v!r}: {e_amount}")
-                    parsed_amount = 0.0
-                xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
-            xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
             store = get_chat_store(target_chat_id)
             start_key, _end_key = _period_export_bounds(store, mode, day_key)
             opening = _opening_balance_before_exact(store, start_key, 0)
-            xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
-            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Экспорт", category_layout=False)
+            if excel_style_override in {"new_comments", "new_notes", "google_notes"}:
+                xlsx_rows, compact_annotations = _compact_simple_excel_rows_and_annotations(rows, opening)
+                if excel_style_override == "google_notes":
+                    _file_job_progress("создаю новую вкладку Google Таблицы и примечания", force=True)
+                    title = f"{get_chat_display_name(target_chat_id)} — {label}"
+                    sheet_url = _google_sheets_create_category_report(
+                        title, xlsx_rows, layout="compact", annotations_override=compact_annotations,
+                    )
+                    bot.send_message(
+                        recipient_chat_id,
+                        f"📊 Google Таблица {label}: {get_chat_display_name(target_chat_id)}\n\n{sheet_url}\n\nОписание хранится в Примечании ячейки; отдельной колонки «Описание» нет.",
+                        disable_web_page_preview=True,
+                    )
+                    return True
+                _write_excel_by_selected_style(
+                    tmp_name, xlsx_rows, target_chat_id, sheet_name="Экспорт", category_layout=False,
+                    mode_override=excel_style_override, compact_annotations=compact_annotations,
+                )
+            else:
+                xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
+                for date_v, amount_v, note_v in rows:
+                    try:
+                        parsed_amount = parse_csv_amount(amount_v)
+                    except Exception as e_amount:
+                        log_error(f"xlsx export amount parse skip: chat={get_chat_display_name(target_chat_id)} amount={amount_v!r} note={note_v!r}: {e_amount}")
+                        parsed_amount = 0.0
+                    xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
+                xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
+                xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+                _write_excel_by_selected_style(
+                    tmp_name, xlsx_rows, target_chat_id, sheet_name="Экспорт", category_layout=False,
+                    mode_override="old",
+                )
         else:
             with open(tmp_name, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
@@ -376,18 +412,21 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 bot.send_document,
                 recipient_chat_id,
                 fobj,
-                caption=f"📂 {('Excel статьи ' + excel_table_style_caption(target_chat_id)) if file_type == 'xlsxstat' else (('Excel ' + excel_table_style_caption(target_chat_id)) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
+                caption=f"📂 {('Excel статьи ' + _export_style_caption(excel_style_override)) if file_type == 'xlsxstat' else (('Excel ' + _export_style_caption(excel_style_override)) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
                 timeout=120,
                 purpose="export_send_document"
             )
-        try:
-            os.remove(tmp_name)
-        except Exception:
-            pass
         return True
     except Exception as e:
         log_error(f"send_export_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
         return False
+    finally:
+        if tmp_name:
+            try:
+                os.remove(tmp_name)
+            except Exception:
+                pass
+
 
 def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start: str, end: str, owner_day_key: str):
     store = get_chat_store(target_chat_id)
@@ -717,4 +756,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v135_reminders_secret_timers
+# v136_excel_export_month_backnav

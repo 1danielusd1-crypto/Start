@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v136_excel_export_month_backnav
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -6407,6 +6407,47 @@ def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float) ->
     return out
 
 
+def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float) -> tuple[list[list], dict[tuple[int, int], str]]:
+    """3-column Excel: Date / Income / Expense; description lives only in Comment/Note."""
+    opening = float(opening_balance or 0.0)
+    rows = [["Дата", "Приход", "Расход"], ["Остаток с прошлого раза", opening, ""], []]
+    annotations: dict[tuple[int, int], str] = {}
+    income_total = 0.0
+    expense_total = 0.0
+    prev_day = None
+    for date_value, amount_value, note_value in (raw_rows or []):
+        if prev_day is not None and str(date_value) != str(prev_day):
+            rows.append([])
+        prev_day = date_value
+        try:
+            amount = parse_csv_amount(amount_value)
+        except Exception:
+            try:
+                amount = float(amount_value or 0)
+            except Exception:
+                amount = 0.0
+        income, expense = _xlsx_income_expense_values(amount)
+        rows.append([date_value, income, expense])
+        row_idx = len(rows)
+        note = str(note_value or "").strip()
+        if note:
+            annotations[(row_idx, 2 if _excel_nonempty(income) else 3)] = note
+        if amount >= 0:
+            income_total += amount
+        else:
+            expense_total += abs(amount)
+    data_start_row = 4
+    data_end_row = max(data_start_row, len(rows))
+    rows.append([])
+    income_row = len(rows) + 1
+    rows.append(["Приход за период", {"formula": f"SUM(B{data_start_row}:B{data_end_row})", "value": income_total}, ""])
+    expense_row = len(rows) + 1
+    rows.append(["Расход за период", "", {"formula": f"SUM(C{data_start_row}:C{data_end_row})", "value": expense_total}])
+    closing = opening + income_total - expense_total
+    rows.append(["Остаток на руках", {"formula": f"B2+B{income_row}-C{expense_row}", "value": closing}, ""])
+    return rows, annotations
+
+
 def _period_export_bounds(store: dict, mode: str, day_key: str) -> tuple[str, str]:
     mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
     if mode == "all_real":
@@ -6768,6 +6809,36 @@ def _modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], 
     widths = [13, 38, 15, 15] + [14] * max(0, max_cols - 4)
     return styles, comments, header_row, widths
 
+def _modern_compact_excel_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
+    """Modern 3-column Excel without Description column; annotations are on amount cells."""
+    max_cols = max((len(r) for r in rows), default=3)
+    styles = []
+    for r_idx, row in enumerate(rows or [], start=1):
+        row = list(row or [])
+        first = str(row[0] if row else "").strip().casefold()
+        is_header = first in {"дата", "date"}
+        if is_header:
+            styles.append([2] * max_cols)
+            continue
+        if not any(_excel_nonempty(v) for v in row):
+            styles.append([0] * max_cols)
+            continue
+        if first in {"остаток с прошлого раза", "остаток на руках"}:
+            styles.append([6] * max_cols)
+            continue
+        if first in {"приход за период", "расход за период"}:
+            styles.append([5] * max_cols)
+            continue
+        st = [4] * max_cols
+        if len(row) > 1 and _excel_nonempty(row[1]):
+            st[1] = 7
+        if len(row) > 2 and _excel_nonempty(row[2]):
+            note = str((annotations or {}).get((r_idx, 3)) or "")
+            st[2] = 19 + _excel_category_color_index(note)
+        styles.append(st)
+    return styles, dict(annotations or {}), 1, [22, 16, 16]
+
+
 def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
     """Modern category/stat Excel: each expense column gets its own fill and annotation."""
     max_cols = max((len(r) for r in rows), default=4)
@@ -6879,27 +6950,46 @@ def _validate_xlsx_expected_notes(path: str, expected: dict[tuple[int, int], str
         )
 
 
-def _write_excel_by_selected_style(path: str, rows: list[list], chat_id: int, sheet_name: str = "Данные", category_layout: bool = False) -> None:
-    """Single GLOBAL switch used by every XLSX export: OLD / Comments / Notes."""
-    mode = excel_table_style(int(chat_id))
-    if mode == "old":
+def _write_excel_by_selected_style(
+    path: str,
+    rows: list[list],
+    chat_id: int,
+    sheet_name: str = "Данные",
+    category_layout: bool = False,
+    mode_override: str | None = None,
+    compact_annotations: dict[tuple[int, int], str] | None = None,
+) -> None:
+    """XLSX writer with per-export style override: OLD / Comments / Notes."""
+    mode = str(mode_override or excel_table_style(int(chat_id)) or "old").strip().lower()
+    if mode not in {"old", "new_comments", "new_notes", "google_notes"}:
+        mode = "old"
+    # google_notes is a remote target. If this writer is called for a local file,
+    # use native Notes so the downloaded fallback stays valid.
+    local_mode = "new_notes" if mode == "google_notes" else mode
+    if local_mode == "old":
         _write_simple_xlsx(path, rows, sheet_name=sheet_name)
         return
     if category_layout:
         styles, annotations, freeze_rows, widths = _modern_category_excel_styles_comments(rows)
+    elif compact_annotations is not None:
+        styles, annotations, freeze_rows, widths = _modern_compact_excel_styles_comments(rows, compact_annotations)
     else:
         styles, annotations, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
-    annotation_mode = excel_annotation_mode(chat_id)
+    annotation_mode = "comments" if local_mode == "new_comments" else "notes"
     expected_annotations: dict[tuple[int, int], str] = {}
-    if category_layout and annotation_mode == "notes":
-        expected_annotations = _category_excel_expected_annotations(rows)
-        missing_map = [cell for cell, text in expected_annotations.items() if annotations.get(cell) != text]
-        extra_map = [cell for cell in annotations.keys() if cell not in expected_annotations]
-        if missing_map or extra_map:
-            raise RuntimeError(
-                f"Excel статьи: карта примечаний не совпала missing={missing_map[:8]} extra={extra_map[:8]} "
-                f"expected={len(expected_annotations)} actual={len(annotations)}"
-            )
+    if annotation_mode == "notes":
+        if category_layout:
+            expected_annotations = _category_excel_expected_annotations(rows)
+        elif compact_annotations is not None:
+            expected_annotations = {k: str(v).strip() for k, v in compact_annotations.items() if str(v or "").strip()}
+        if expected_annotations:
+            missing_map = [cell for cell, text in expected_annotations.items() if annotations.get(cell) != text]
+            extra_map = [cell for cell in annotations.keys() if cell not in expected_annotations]
+            if missing_map or extra_map:
+                raise RuntimeError(
+                    f"Excel Notes map mismatch missing={missing_map[:8]} extra={extra_map[:8]} "
+                    f"expected={len(expected_annotations)} actual={len(annotations)}"
+                )
     _write_tabl_lsx_xlsx(
         path, rows, styles, sheet_name=sheet_name, comments=annotations,
         freeze_rows=freeze_rows, widths=widths, annotation_mode=annotation_mode,
@@ -8262,4 +8352,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v135_reminders_secret_timers
+# v136_excel_export_month_backnav
