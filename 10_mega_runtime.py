@@ -1,4 +1,4 @@
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -556,9 +556,12 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
     if not clean:
         return result
 
+    # Direct insert tokens are commands only in a NEW message. In edited_message they are
+    # ordinary source edits and are handled by finance/forward propagation.
+    is_edited_update = bool((payload or {}).get("edited_message") or (payload or {}).get("edited_channel_post"))
     # Direct edit buttons (О6 and secret edit list) contain explicit stable target ids.
     try:
-        token_kind = "EDITUSD" if "EDITUSD|" in clean else ("EDITREC" if "EDITREC|" in clean else None)
+        token_kind = None if is_edited_update else ("EDITUSD" if "EDITUSD|" in clean else ("EDITREC" if "EDITREC|" in clean else None))
         if token_kind:
             result["consumes_source"] = True
             m = re.search(r"\((%s\|[^)]*)\)" % re.escape(token_kind), clean)
@@ -840,8 +843,15 @@ def _durable_expected_effects(payload: dict) -> dict:
     except Exception:
         out["source_secret"] = bool(marked)
     try:
+        content_type = _durable_raw_content_type(raw)
+        finance_handler_types = {
+            "text", "photo", "video", "animation", "audio", "voice", "video_note",
+            "document", "sticker", "location", "venue", "contact", "dice", "poll",
+            "game", "story", "paid_media", "invoice",
+        }
         out["source_finance"] = bool(
-            (not waiting)
+            (content_type in finance_handler_types)
+            and (not waiting)
             and (not edit_consumes_source)
             and (not out["source_secret"])
             and is_finance_mode(int(source_chat_id))
@@ -6881,6 +6891,33 @@ def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list]
     widths = [13, 36, 15] + [18] * max(0, max_cols - 3)
     return styles, comments, header_row, widths
 
+def _modern_category_no_description_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
+    """Category report without Description column: Date / Income / article columns."""
+    max_cols = max((len(r) for r in rows), default=3)
+    styles = []
+    for r_idx, row in enumerate(rows or [], start=1):
+        row = list(row or [])
+        first = str(row[0] if row else "").strip().casefold()
+        is_header = first in {"дата", "date"}
+        if is_header:
+            styles.append([2] * min(2, max_cols) + [8 + ((c - 2) % len(TABL_LSX_CATEGORIES)) for c in range(2, max_cols)])
+            continue
+        if not any(_excel_nonempty(v) for v in row):
+            styles.append([3] * max_cols)  # orange day separator like the reference sheet
+            continue
+        if first in {"сумма по статьям", "расход", "приход", "остаток с прошлого раза", "остаток на руках", "на руках:"}:
+            styles.append([5 if first in {"сумма по статьям", "расход"} else 6] * max_cols)
+            continue
+        st = [4] * max_cols
+        if len(row) > 1 and _excel_nonempty(row[1]):
+            st[1] = 7
+        for c in range(2, max_cols):
+            if c < len(row) and _excel_nonempty(row[c]):
+                st[c] = 19 + ((c - 2) % len(TABL_LSX_CATEGORIES))
+        styles.append(st)
+    return styles, dict(annotations or {}), 1, [22, 15] + [18] * max(0, max_cols - 2)
+
+
 def _category_excel_expected_annotations(rows: list[list]) -> dict[tuple[int, int], str]:
     """Return the exact expense cells that must carry an annotation in category Excel.
 
@@ -6961,7 +6998,7 @@ def _write_excel_by_selected_style(
 ) -> None:
     """XLSX writer with per-export style override: OLD / Comments / Notes."""
     mode = str(mode_override or excel_table_style(int(chat_id)) or "old").strip().lower()
-    if mode not in {"old", "new_comments", "new_notes", "google_notes"}:
+    if mode not in {"old", "new_plain", "new_comments", "new_notes", "google_notes"}:
         mode = "old"
     # google_notes is a remote target. If this writer is called for a local file,
     # use native Notes so the downloaded fallback stays valid.
@@ -6969,16 +7006,22 @@ def _write_excel_by_selected_style(
     if local_mode == "old":
         _write_simple_xlsx(path, rows, sheet_name=sheet_name)
         return
-    if category_layout:
+    if category_layout == "category_compact":
+        styles, annotations, freeze_rows, widths = _modern_category_no_description_styles_comments(rows, compact_annotations or {})
+    elif category_layout:
         styles, annotations, freeze_rows, widths = _modern_category_excel_styles_comments(rows)
     elif compact_annotations is not None:
         styles, annotations, freeze_rows, widths = _modern_compact_excel_styles_comments(rows, compact_annotations)
     else:
         styles, annotations, freeze_rows, widths = _modern_simple_excel_styles_comments(rows)
-    annotation_mode = "comments" if local_mode == "new_comments" else "notes"
+    annotation_mode = None if local_mode == "new_plain" else ("comments" if local_mode == "new_comments" else "notes")
+    if annotation_mode is None:
+        annotations = {}
     expected_annotations: dict[tuple[int, int], str] = {}
     if annotation_mode == "notes":
-        if category_layout:
+        if category_layout == "category_compact":
+            expected_annotations = {k: str(v).strip() for k, v in (compact_annotations or {}).items() if str(v or "").strip()}
+        elif category_layout:
             expected_annotations = _category_excel_expected_annotations(rows)
         elif compact_annotations is not None:
             expected_annotations = {k: str(v).strip() for k, v in compact_annotations.items() if str(v or "").strip()}
@@ -8352,4 +8395,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup

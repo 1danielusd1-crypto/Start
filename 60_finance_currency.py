@@ -1,4 +1,4 @@
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -22,8 +22,26 @@ def _v85_enabled(feature: str) -> bool:
         return False
 
 
+def _gomonk_is_usd_view(chat_id: int) -> bool:
+    try:
+        return bool(usd_transactions_view_enabled(int(chat_id)) or financial_view_is_usd(get_chat_store(int(chat_id))))
+    except Exception:
+        return False
+
+
+def _gomonk_keys(chat_id: int) -> tuple[str, str, str]:
+    if _gomonk_is_usd_view(chat_id):
+        return "usd_gomonk_enabled", "usd_gomonk_entries", "usd_remaining_with_gomonk"
+    return "gomonk_enabled", "gomonk_entries", "remaining_with_gomonk"
+
+
 def _gomonk_settings(chat_id: int) -> dict:
     settings = get_chat_store(int(chat_id)).setdefault("settings", {})
+    enabled_key, entries_key, remaining_key = _gomonk_keys(chat_id)
+    settings.setdefault(enabled_key, False)
+    settings.setdefault(entries_key, [])
+    settings.setdefault(remaining_key, True)
+    # Keep ARS keys for rollback compatibility without sharing them with USD.
     settings.setdefault("gomonk_enabled", False)
     settings.setdefault("gomonk_entries", [])
     settings.setdefault("remaining_with_gomonk", True)
@@ -31,12 +49,16 @@ def _gomonk_settings(chat_id: int) -> dict:
 
 
 def gomonk_enabled(chat_id: int) -> bool:
-    return bool(_gomonk_settings(chat_id).get("gomonk_enabled", False))
+    settings = _gomonk_settings(chat_id)
+    enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id)
+    return bool(settings.get(enabled_key, False))
 
 
 def gomonk_entries(chat_id: int) -> list[dict]:
+    settings = _gomonk_settings(chat_id)
+    _enabled_key, entries_key, _remaining_key = _gomonk_keys(chat_id)
     out = []
-    for item in (_gomonk_settings(chat_id).get("gomonk_entries") or []):
+    for item in (settings.get(entries_key) or []):
         if not isinstance(item, dict):
             continue
         try:
@@ -55,11 +77,11 @@ def gomonk_total(chat_id: int) -> float:
 
 def toggle_gomonk_enabled(chat_id: int) -> bool:
     settings = _gomonk_settings(chat_id)
-    settings["gomonk_enabled"] = not bool(settings.get("gomonk_enabled", False))
+    enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id)
+    settings[enabled_key] = not bool(settings.get(enabled_key, False))
     save_data(data, chat_ids=[int(chat_id)])
     schedule_config_backup_for_chats(int(chat_id))
-    return bool(settings["gomonk_enabled"])
-
+    return bool(settings[enabled_key])
 
 def parse_gomonk_entries(text: str) -> list[dict]:
     raw = sanitize_telegram_inserted_text(str(text or ""))
@@ -87,7 +109,8 @@ def parse_gomonk_entries(text: str) -> list[dict]:
 
 def set_gomonk_entries(chat_id: int, entries: list[dict]):
     settings = _gomonk_settings(chat_id)
-    settings["gomonk_entries"] = list(entries or [])[:30]
+    _enabled_key, entries_key, _remaining_key = _gomonk_keys(chat_id)
+    settings[entries_key] = list(entries or [])[:30]
     save_data(data, chat_ids=[int(chat_id)])
     schedule_config_backup_for_chats(int(chat_id), delay=1.0)
 
@@ -352,8 +375,9 @@ def gomonk_summary_lines(chat_id: int) -> list[str]:
 
 def build_gomonk_menu_text(chat_id: int) -> str:
     entries = gomonk_entries(chat_id)
+    currency_label = "USD" if _gomonk_is_usd_view(chat_id) else "ARS"
     lines = [
-        "🧳 Гомонковые",
+        f"🧳 Гомонковые • {currency_label}",
         "",
         "Это суммы, которые резервируются отдельно и вычитаются из остатка по чату.",
         "Формат нескольких сумм через двоеточие:",
@@ -397,7 +421,9 @@ def handle_gomonk_insert_message(msg) -> bool:
         send_and_auto_delete(chat_id, "❌ Не нашёл сумм. Пример: Имя1 1000 : Имя2 5777", 12)
         return True
     set_gomonk_entries(chat_id, entries)
-    _gomonk_settings(chat_id)["gomonk_enabled"] = True
+    _settings = _gomonk_settings(chat_id)
+    _enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id)
+    _settings[_enabled_key] = True
     save_data(data, chat_ids=[chat_id])
     bot_journal("gomonk_values_saved", chat_id, f"count={len(entries)} total={gomonk_total(chat_id)}")
     send_and_auto_delete(chat_id, f"✅ Гомонковые сохранены: {len(entries)}, сумма {fmt_num(gomonk_total(chat_id))}", 10)
@@ -430,8 +456,9 @@ def _opening_balance_before_day(store: dict, day_key: str) -> float:
 def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = None) -> str:
     store = get_chat_store(chat_id)
     settings = _gomonk_settings(chat_id)
+    _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id)
     if with_gomonk is None:
-        with_gomonk = bool(settings.get("remaining_with_gomonk", True))
+        with_gomonk = bool(settings.get(remaining_key, True))
     reserve = gomonk_total(chat_id) if (with_gomonk and gomonk_enabled(chat_id)) else 0.0
     running = _opening_balance_before_day(store, day_key)
     lines = [
@@ -470,7 +497,8 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
 
 def build_remaining_keyboard(chat_id: int, day_key: str):
     settings = _gomonk_settings(chat_id)
-    with_g = bool(settings.get("remaining_with_gomonk", True))
+    _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id)
+    with_g = bool(settings.get(remaining_key, True))
     try:
         dt = datetime.strptime(day_key, "%Y-%m-%d")
     except Exception:
@@ -1342,17 +1370,41 @@ def _export_style_caption(style: str) -> str:
     }.get(str(style), str(style))
 
 
+def _excel_checkbox(mark: bool, label: str) -> str:
+    return f"{'✅' if mark else '⬜'} {label}"
+
+
 def _period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, file_type: str, day_key: str, owner_day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    for style, label in (
-        ("old", "📥 Скачать: старая таблица"),
-        ("new_comments", "📥 Скачать: новая с комментариями"),
-        ("new_notes", "📥 Скачать: новая с примечаниями"),
-        ("google_notes", "☁️ Залить в Google Sheets с примечаниями"),
-    ):
-        kb.row(IB(label, callback_data=export_callback(
-            f"exp_send_period_style:{scope}:{int(target_chat_id)}:{mode}:{file_type}:{style}:{day_key}:{owner_day_key}"
+    if excel_interface_mode(target_chat_id) == "new":
+        opts = excel_new_export_options()
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for option, label in (
+            ("old_table", "Старая таблица"),
+            ("comments", "С комментариями"),
+            ("notes", "С примечаниями"),
+            ("description_column", "Описание в столбце"),
+        ):
+            kb.row(IB(_excel_checkbox(bool(opts.get(option)), label), callback_data=export_callback(
+                f"exp_new_period_toggle:{scope}:{int(target_chat_id)}:{mode}:{file_type}:{option}:{day_key}:{owner_day_key}"
+            )))
+        kb.row(IB(" ", callback_data="none"))
+        kb.row(IB("📥 Скачать в чат", callback_data=export_callback(
+            f"exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:chat:{day_key}:{owner_day_key}"
         )))
+        kb.row(IB("☁️ Залить на Google Excel", callback_data=export_callback(
+            f"exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:google:{day_key}:{owner_day_key}"
+        )))
+    else:
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for style, label in (
+            ("old", "📥 Скачать: старая таблица"),
+            ("new_comments", "📥 Скачать: новая с комментариями"),
+            ("new_notes", "📥 Скачать: новая с примечаниями"),
+            ("google_notes", "☁️ Залить в Google Sheets с примечаниями"),
+        ):
+            kb.row(IB(label, callback_data=export_callback(
+                f"exp_send_period_style:{scope}:{int(target_chat_id)}:{mode}:{file_type}:{style}:{day_key}:{owner_day_key}"
+            )))
     if scope == "fv":
         back_cb = f"fv:{int(target_chat_id)}:{day_key}:csv_menu:{owner_day_key}"
     else:
@@ -1363,22 +1415,41 @@ def _period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, fil
 
 
 def _exact_excel_style_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, return_day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    for style, label in (
-        ("old", "📥 Скачать: старая таблица"),
-        ("new_comments", "📥 Скачать: новая с комментариями"),
-        ("new_notes", "📥 Скачать: новая с примечаниями"),
-        ("google_notes", "☁️ Залить в Google Sheets с примечаниями"),
-    ):
-        kb.row(IB(label, callback_data=export_callback(
-            f"exp_send_exact_style:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:{style}:{return_day_key}"
+    if excel_interface_mode(OWNER_ID or 0) == "new":
+        opts = excel_new_export_options()
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for option, label in (
+            ("old_table", "Старая таблица"),
+            ("comments", "С комментариями"),
+            ("notes", "С примечаниями"),
+            ("description_column", "Описание в столбце"),
+        ):
+            kb.row(IB(_excel_checkbox(bool(opts.get(option)), label), callback_data=export_callback(
+                f"exp_new_exact_toggle:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:{option}:{return_day_key}"
+            )))
+        kb.row(IB(" ", callback_data="none"))
+        kb.row(IB("📥 Скачать в чат", callback_data=export_callback(
+            f"exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:chat:{return_day_key}"
         )))
+        kb.row(IB("☁️ Залить на Google Excel", callback_data=export_callback(
+            f"exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:google:{return_day_key}"
+        )))
+    else:
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for style, label in (
+            ("old", "📥 Скачать: старая таблица"),
+            ("new_comments", "📥 Скачать: новая с комментариями"),
+            ("new_notes", "📥 Скачать: новая с примечаниями"),
+            ("google_notes", "☁️ Залить в Google Sheets с примечаниями"),
+        ):
+            kb.row(IB(label, callback_data=export_callback(
+                f"exp_send_exact_style:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:{style}:{return_day_key}"
+            )))
     kb.row(IB("🔙 Назад к форматам", callback_data=export_callback(
         f"exp_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{return_day_key}"
     )))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{return_day_key}:back_main"))
     return kb
-
 
 def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, return_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
@@ -1478,16 +1549,50 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
     rows.append(["", "Остаток на руках", {"formula": f"C2+C{income_row_num}-C{expense_row_num}", "value": closing}] + [""] * len(categories))
     return rows
 
-def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, excel_style_override: str | None = None):
+def _category_rows_without_description(rows: list[list]) -> tuple[list[list], dict[tuple[int, int], str]]:
+    """Удаляет столбец «Описание», переносит подписи итогов в A и кладёт описания в примечания сумм."""
+    out = []
+    annotations = {}
+    for r_idx, raw in enumerate(rows or [], start=1):
+        row = list(raw or [])
+        desc = str(row[1] if len(row) > 1 else "").strip()
+        is_header = str(row[0] if row else "").strip().casefold() in {"дата", "date"} and desc.casefold() in {"описание", "description"}
+        if len(row) > 1:
+            if not is_header and desc and not str(row[0] if row else "").strip() and desc.casefold() in {
+                "остаток с прошлого раза", "сумма по статьям", "расход", "приход", "остаток на руках", "на руках:"
+            }:
+                row[0] = desc
+            row.pop(1)
+        if desc and not is_header and desc.casefold() not in {
+            "остаток с прошлого раза", "сумма по статьям", "расход", "приход", "остаток на руках", "на руках:"
+        }:
+            # Original expense columns start at D (0-based 3); after removing B they start at C.
+            for original_c in range(3, len(raw or [])):
+                try:
+                    if _excel_nonempty((raw or [])[original_c]):
+                        annotations[(r_idx, original_c)] = desc
+                except Exception:
+                    pass
+        out.append(row)
+    return out, annotations
+
+
+def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, excel_style_override: str | None = None, excel_options_override: dict | None = None, delivery: str = "chat"):
+
     """Фоновый экспорт между двумя точными границами включительно."""
     tmp_name = None
     try:
         file_type = str(file_type or "csv").lower()
         if file_type not in {"csv", "xlsx", "xlsxstat"}:
             file_type = "csv"
-        excel_style_override = str(excel_style_override or excel_table_style(target_chat_id) or "old").strip().lower()
-        if excel_style_override not in {"old", "new_comments", "new_notes", "google_notes"}:
+        custom_options = normalize_excel_export_options(excel_options_override) if isinstance(excel_options_override, dict) else None
+        excel_style_override = str(excel_style_override or (excel_export_options_style(custom_options) if custom_options else excel_table_style(target_chat_id)) or "old").strip().lower()
+        if excel_style_override not in {"old", "new_plain", "new_comments", "new_notes", "google_notes"}:
             excel_style_override = "old"
+        delivery = str(delivery or "chat").strip().lower()
+        force_google = delivery == "google" or excel_style_override == "google_notes"
+        description_column = True if not custom_options else bool(custom_options.get("description_column"))
+        annotations_enabled = bool(not custom_options or custom_options.get("comments") or custom_options.get("notes"))
         _file_job_progress("собираю данные", force=True)
         rows = _exact_export_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
         if not rows:
@@ -1500,29 +1605,61 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         )
         if file_type == "xlsxstat":
             xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
-            if excel_style_override == "google_notes":
+            annotations_override = None
+            category_layout = True
+            if custom_options and not description_column:
+                xlsx_rows, annotations_override = _category_rows_without_description(xlsx_rows)
+                category_layout = "category_compact"
+            if force_google:
                 title = f"{get_chat_display_name(target_chat_id)} — статьи — точный период"
-                sheet_url = _google_sheets_create_category_report(title, xlsx_rows, layout="category")
+                sheet_url = _google_sheets_create_category_report(
+                    title, xlsx_rows, layout=("category" if category_layout is True else "category_compact"),
+                    annotations_override=(annotations_override if annotations_enabled else {}),
+                    include_annotations=annotations_enabled,
+                )
                 bot.send_message(recipient_chat_id, f"📊 Google Таблица — статьи, точный период\n\n{sheet_url}", disable_web_page_preview=True)
                 return True
-            _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Excel стат", category_layout=True, mode_override=excel_style_override)
+            _write_excel_by_selected_style(
+                tmp_name, xlsx_rows, target_chat_id, sheet_name="Excel стат",
+                category_layout=category_layout, mode_override=excel_style_override,
+                compact_annotations=(annotations_override if category_layout == "category_compact" and annotations_enabled else ({} if category_layout == "category_compact" else None)),
+            )
         elif ext == "xlsx":
             opening = _opening_balance_before_exact(get_chat_store(target_chat_id), start_key, int(start_rid))
-            if excel_style_override in {"new_comments", "new_notes", "google_notes"}:
-                xlsx_rows, compact_annotations = _compact_simple_excel_rows_and_annotations(rows, opening)
-                if excel_style_override == "google_notes":
-                    title = f"{get_chat_display_name(target_chat_id)} — точный период"
-                    sheet_url = _google_sheets_create_category_report(title, xlsx_rows, layout="compact", annotations_override=compact_annotations)
-                    bot.send_message(recipient_chat_id, f"📊 Google Таблица — точный период\n\n{sheet_url}", disable_web_page_preview=True)
-                    return True
-                _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False, mode_override=excel_style_override, compact_annotations=compact_annotations)
+            if force_google:
+                # Google action intentionally uses the visual category layout shown in the reference screenshot.
+                xlsx_rows = build_exact_category_stats_xlsx_rows(target_chat_id, start_key, int(start_rid), end_key, int(end_rid))
+                annotations_override = None
+                layout_name = "category"
+                if custom_options and not description_column:
+                    xlsx_rows, annotations_override = _category_rows_without_description(xlsx_rows)
+                    layout_name = "category_compact"
+                title = f"{get_chat_display_name(target_chat_id)} — статьи — точный период"
+                sheet_url = _google_sheets_create_category_report(
+                    title, xlsx_rows, layout=layout_name,
+                    annotations_override=(annotations_override if annotations_enabled else {}),
+                    include_annotations=annotations_enabled,
+                )
+                bot.send_message(recipient_chat_id, f"📊 Google Таблица — точный период\n\n{sheet_url}", disable_web_page_preview=True)
+                return True
+            if excel_style_override != "old":
+                if description_column:
+                    xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
+                    for date_v, amount_v, note_v in rows:
+                        try: parsed_amount = parse_csv_amount(amount_v)
+                        except Exception: parsed_amount = 0.0
+                        xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
+                    xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
+                    xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+                    _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False, mode_override=excel_style_override)
+                else:
+                    xlsx_rows, compact_annotations = _compact_simple_excel_rows_and_annotations(rows, opening)
+                    _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False, mode_override=excel_style_override, compact_annotations=(compact_annotations if annotations_enabled else {}))
             else:
                 xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
                 for date_v, amount_v, note_v in rows:
-                    try:
-                        parsed_amount = parse_csv_amount(amount_v)
-                    except Exception:
-                        parsed_amount = 0.0
+                    try: parsed_amount = parse_csv_amount(amount_v)
+                    except Exception: parsed_amount = 0.0
                     xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
                 xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
                 xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
@@ -1718,6 +1855,28 @@ def make_direct_edit_insert_button(label: str, insert_text: str, viewer_chat_id:
     return make_copy_or_inline_button(label, insert_text, viewer_chat_id=viewer_chat_id)
 
 
+def _delete_direct_edit_service_message(chat_id: int, message_id: int) -> None:
+    """Удаляет служебную EDITREC/EDITUSD вставку и повторяет удаление при сетевом сбое."""
+    chat_id = int(chat_id); message_id = int(message_id)
+    try:
+        _tg_call_retry(bot.delete_message, chat_id, message_id, attempts=2, purpose="direct_edit_service_delete")
+        bot_journal("direct_edit_service_deleted", chat_id, f"message_id={message_id}")
+        return
+    except Exception as exc:
+        bot_journal("direct_edit_service_delete_retry", chat_id, f"message_id={message_id} error={str(exc)[:120]}")
+
+    def _retry():
+        try:
+            _tg_call_retry(bot.delete_message, chat_id, message_id, attempts=3, purpose="direct_edit_service_delete_retry")
+            bot_journal("direct_edit_service_deleted", chat_id, f"message_id={message_id} retry=1")
+        except Exception as exc2:
+            log_error(f"direct_edit service delete failed {chat_id}:{message_id}: {exc2}")
+    try:
+        DELAYED_SCHEDULER.schedule(f"direct-edit-delete:{chat_id}:{message_id}", 1.2, _retry)
+    except Exception:
+        _retry()
+
+
 def handle_direct_edit_insert_message(msg) -> bool:
     """Обрабатывает отправленный пользователем текст, который был вставлен кнопкой ✏️ из О6.
     Формат: EDITREC|chat_id|rid|day_key| сумма описание
@@ -1731,6 +1890,7 @@ def handle_direct_edit_insert_message(msg) -> bool:
         if not token_kind:
             return False
         _durable_note_source_consumed("direct_edit_insert")
+        _delete_direct_edit_service_message(chat_id, int(msg.message_id))
 
         # Формат: (EDITREC/EDITUSD|chat|rid|day| служебное...) + ниже обычный текст суммы.
         m = re.search(r"\((%s\|[^)]*)\)" % re.escape(token_kind), text)
@@ -1792,10 +1952,6 @@ def handle_direct_edit_insert_message(msg) -> bool:
             _durable_note_record_edit_witness(_durable_record_edit_witness(
                 target_chat_id, rid, amount=amount, note=note, source_finance_text=value_text, kind="direct_edit",
             ))
-        try:
-            bot.delete_message(chat_id, msg.message_id)
-        except Exception:
-            pass
         finance_changed(target_chat_id, day_key, reason="direct_edit_insert", delay=0.1)
         if token_kind == USD_DIRECT_EDIT_TOKEN:
             send_and_auto_delete(chat_id, f"✅ USD-запись обновлена: {fmt_num(amount)} USD {note}", 8)
@@ -1859,4 +2015,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup

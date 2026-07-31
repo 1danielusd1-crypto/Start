@@ -1,4 +1,4 @@
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -643,65 +643,8 @@ def bot_file_identity_lines() -> list[str]:
     return [f"🤖 Бот: {current_bot_sender_name()}", f"📄 Файл: {BOT_FILE_NAME}", f"🏷 Версия: {VERSION}"]
 
 
-VERSION_MENU_PAGE_SIZE = 7
 
-
-def _version_menu_keys() -> list[str]:
-    return list(BOT_BEHAVIOR_PROFILES.keys())
-
-
-def _version_menu_page(page: int = 0) -> tuple[int, int, list[str]]:
-    keys = _version_menu_keys()
-    pages = max(1, (len(keys) + VERSION_MENU_PAGE_SIZE - 1) // VERSION_MENU_PAGE_SIZE)
-    try:
-        page = max(0, min(pages - 1, int(page)))
-    except Exception:
-        page = 0
-    start = page * VERSION_MENU_PAGE_SIZE
-    return page, pages, keys[start:start + VERSION_MENU_PAGE_SIZE]
-
-
-def build_version_menu_text(page: int = 0) -> str:
-    active = active_bot_behavior_profile()
-    page, pages, keys = _version_menu_page(page)
-    active_cfg = BOT_BEHAVIOR_PROFILES.get(active, {})
-    lines = [
-        "🧩 Переключение версий / режимов",
-        *bot_file_identity_lines(),
-        "",
-        f"Сейчас: ✅ {active_cfg.get('title') or active}",
-        f"Страница {page + 1}/{pages}",
-        "",
-        "Это переключение совместимого профиля внутри текущего безопасного ядра v125. SQLite/MEGA, exact-once и финансовые данные не откатываются.",
-        "",
-    ]
-    for key in keys:
-        cfg = BOT_BEHAVIOR_PROFILES[key]
-        mark = "✅" if key == active else "▫️"
-        lines.append(f"{mark} {cfg['title']}")
-        lines.append(f"   {cfg['description']}")
-    lines.extend(["", "Выберите версию кнопкой ниже."])
-    return wm_owner("\n".join(lines), 9)
-
-
-def build_version_menu_keyboard(page: int = 0):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    active = active_bot_behavior_profile()
-    page, pages, keys = _version_menu_page(page)
-    for key in keys:
-        cfg = BOT_BEHAVIOR_PROFILES[key]
-        mark = "✅" if key == active else "▫️"
-        kb.row(IB(f"{mark} {cfg['title']}", callback_data=f"version_select:{key}:{page}"))
-    nav = []
-    if page > 0:
-        nav.append(IB("⬅️ Новее", callback_data=f"version_page:{page-1}"))
-    if page + 1 < pages:
-        nav.append(IB("Старее ➡️", callback_data=f"version_page:{page+1}"))
-    if nav:
-        kb.row(*nav)
-    kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
-    return kb
-
+# Переключение исторических профилей удалено в v137.
 
 def keep_alive_status_text() -> str:
     state = globals().get("KEEP_ALIVE_STATE") or {}
@@ -779,14 +722,8 @@ def build_info_keyboard(chat_id: int):
                 kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
         if layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
-        # Кнопка выбора версии присутствует при любом режиме, включая полный откат v81/v82.
         if version_mode_feature("keepalive_menu"):
-            kb.row(
-                IB(bot_behavior_profile_label(), callback_data="version_menu"),
-                IB("💓 Не спать", callback_data="keepalive_status"),
-            )
-        else:
-            kb.row(IB(bot_behavior_profile_label(), callback_data="version_menu"))
+            kb.row(IB("💓 Не спать", callback_data="keepalive_status"))
         kb.row(IB("⏱ Внутренние таймеры", callback_data="internal_timers"))
         kb.row(IB(excel_table_style_label(chat_id), callback_data="excel_style_menu"))
         kb.row(
@@ -2057,4 +1994,4 @@ def answer_callback_query_background(callback_id: str):
             bot_journal("callback_ack_queue_full", None, str(callback_id), "WARN")
         except Exception:
             pass
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup

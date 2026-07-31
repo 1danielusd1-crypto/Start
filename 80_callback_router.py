@@ -1,4 +1,4 @@
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup
 @bot.callback_query_handler(func=lambda c: True)
 
 def on_callback(call):
@@ -1263,38 +1263,19 @@ def on_callback(call):
             fast_ui_edit_message_text(chat_id, call.message.message_id, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id), purpose="internal_timer_back_info")
             return
 
-        if data_str == "version_menu" or data_str.startswith("version_page:"):
-            if not is_owner_chat(chat_id):
-                return
+        if data_str == "version_menu" or data_str.startswith("version_page:") or data_str.startswith("version_select:") or data_str == "version_back":
+            # Старые сообщения могут ещё содержать кнопку, но переключение профилей удалено.
             try:
-                page = int(data_str.split(":", 1)[1]) if data_str.startswith("version_page:") else 0
+                bot.answer_callback_query(call.id, "Переключение версий удалено", show_alert=False)
             except Exception:
-                page = 0
-            safe_edit(bot, call, build_version_menu_text(page), reply_markup=build_version_menu_keyboard(page))
-            return
-        if data_str.startswith("version_select:"):
-            if not is_owner_chat(chat_id):
-                return
-            parts = data_str.split(":")
-            profile_key = parts[1] if len(parts) > 1 else DEFAULT_BOT_BEHAVIOR_PROFILE
-            try:
-                page = int(parts[2]) if len(parts) > 2 else 0
-            except Exception:
-                page = 0
-            selected = set_bot_behavior_profile(profile_key)
-            bot_journal("version_profile_selected", chat_id, f"profile={selected} page={page}")
-            safe_edit(bot, call, build_version_menu_text(page), reply_markup=build_version_menu_keyboard(page))
-            return
-        if data_str == "version_back":
-            if not is_owner_chat(chat_id):
-                return
+                pass
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
         if data_str == "keepalive_status":
             if not is_owner_chat(chat_id):
                 return
             kb = types.InlineKeyboardMarkup()
-            kb.row(IB("🔙 Назад в Инфо", callback_data="version_back"))
+            kb.row(IB("🔙 Назад в Инфо", callback_data="journal_back"))
             safe_edit(bot, call, keep_alive_status_text(), reply_markup=kb)
             return
         if data_str == "journal_back":
@@ -1365,7 +1346,13 @@ def on_callback(call):
         if data_str in {"excel_style_toggle", "excel_style_menu"}:
             if not is_owner_chat(chat_id):
                 return
-            safe_edit(bot, call, build_excel_style_text(chat_id), reply_markup=build_excel_style_keyboard(chat_id))
+            mode = toggle_excel_interface_mode(chat_id)
+            bot_journal("excel_interface_toggle", chat_id, f"mode={mode}")
+            try:
+                bot.answer_callback_query(call.id, "Excel по новому" if mode == "new" else "Excel по старому", show_alert=False)
+            except Exception:
+                pass
+            safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
         if data_str.startswith("excel_style_set:"):
             if not is_owner_chat(chat_id):
@@ -1800,11 +1787,42 @@ def on_callback(call):
                 kind_label = "Excel статьи" if file_type == "xlsxstat" else "Excel"
                 safe_edit(
                     bot, call,
-                    f"📊 {kind_label}\nПериод: {mode}\n\nВыберите способ получения:",
+                    f"📊 {kind_label}\nПериод: {mode}\n\n" + ("Настройки включаются галочками:" if excel_interface_mode(target_chat_id) == "new" else "Выберите способ получения:"),
                     reply_markup=_period_excel_style_keyboard(scope, target_chat_id, mode, file_type, day_key_s, owner_day_key),
                 )
             except Exception as e:
                 log_error(f"exp_style_period: {e}")
+            return
+
+        if data_str.startswith("exp_new_period_toggle:"):
+            try:
+                _, scope, target_s, mode, file_type, option, day_key_s, owner_day_key = data_str.split(":")
+                target_chat_id = chat_id if scope == "d" or int(target_s or 0) == 0 else int(target_s)
+                options = toggle_excel_new_export_option(option)
+                safe_edit(
+                    bot, call,
+                    f"📊 Excel по новому\\nПериод: {mode}\\n\\nНастройки включаются галочками:",
+                    reply_markup=_period_excel_style_keyboard(scope, target_chat_id, mode, file_type, day_key_s, owner_day_key),
+                )
+                try: bot.answer_callback_query(call.id, "Настройка обновлена", show_alert=False)
+                except Exception: pass
+            except Exception as e:
+                log_error(f"exp_new_period_toggle: {e}")
+            return
+
+        if data_str.startswith("exp_new_period_send:"):
+            try:
+                _, scope, target_s, mode, file_type, delivery, day_key_s, owner_day_key = data_str.split(":")
+                target_chat_id = chat_id if scope == "d" or int(target_s or 0) == 0 else int(target_s)
+                options = normalize_excel_export_options(excel_new_export_options())
+                ok, info = submit_interactive_file_job(
+                    chat_id, "period_export", "Google Excel" if delivery == "google" else "Excel по новому",
+                    send_export_for_chat_to, chat_id, target_chat_id, mode, day_key_s, file_type, None, options, delivery,
+                )
+                try: bot.answer_callback_query(call.id, "Готовлю экспорт; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                except Exception: pass
+            except Exception as e:
+                log_error(f"exp_new_period_send: {e}")
             return
 
         if data_str.startswith("exp_send_period_style:"):
@@ -1829,13 +1847,42 @@ def on_callback(call):
                 kind_label = "Excel статьи" if file_type == "xlsxstat" else "Excel"
                 safe_edit(
                     bot, call,
-                    f"🎯 {kind_label} — точный период\n\nВыберите способ получения:",
+                    f"🎯 {kind_label} — точный период\n\n" + ("Настройки включаются галочками:" if excel_interface_mode(chat_id) == "new" else "Выберите способ получения:"),
                     reply_markup=_exact_excel_style_keyboard(
                         start_key, int(start_rid), end_key, int(end_rid), file_type, return_day_key,
                     ),
                 )
             except Exception as e:
                 log_error(f"exp_style_exact: {e}")
+            return
+
+        if data_str.startswith("exp_new_exact_toggle:"):
+            try:
+                _, start_key, start_rid, end_key, end_rid, file_type, option, return_day_key = data_str.split(":")
+                toggle_excel_new_export_option(option)
+                safe_edit(
+                    bot, call,
+                    "🎯 Excel по новому — точный период\\n\\nНастройки включаются галочками:",
+                    reply_markup=_exact_excel_style_keyboard(start_key, int(start_rid), end_key, int(end_rid), file_type, return_day_key),
+                )
+                try: bot.answer_callback_query(call.id, "Настройка обновлена", show_alert=False)
+                except Exception: pass
+            except Exception as e:
+                log_error(f"exp_new_exact_toggle: {e}")
+            return
+
+        if data_str.startswith("exp_new_exact_send:"):
+            try:
+                _, start_key, start_rid, end_key, end_rid, file_type, delivery, return_day_key = data_str.split(":")
+                options = normalize_excel_export_options(excel_new_export_options())
+                ok, info = submit_interactive_file_job(
+                    chat_id, "exact_export", "Google Excel точный" if delivery == "google" else "Excel по новому точный",
+                    send_exact_range_export, chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type, None, options, delivery,
+                )
+                try: bot.answer_callback_query(call.id, "Готовлю экспорт; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                except Exception: pass
+            except Exception as e:
+                log_error(f"exp_new_exact_send: {e}")
             return
 
         if data_str.startswith("exp_send_exact_style:"):
@@ -2648,4 +2695,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup

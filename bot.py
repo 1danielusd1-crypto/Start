@@ -1,11 +1,11 @@
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v136_excel_export_month_backnav"
-MODULE_FILE_VERSION = "v136_excel_export_month_backnav"
+MODULAR_VERSION = "bot_v137_excel_toggle_usd_gomonk_timers_cleanup"
+MODULE_FILE_VERSION = "v137_excel_toggle_usd_gomonk_timers_cleanup"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -122,4 +122,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup

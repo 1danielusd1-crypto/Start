@@ -1,4 +1,4 @@
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup
 import os
 import io
 import json
@@ -770,7 +770,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v136_excel_export_month_backnav"
+VERSION = "bot_v137_excel_toggle_usd_gomonk_timers_cleanup"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -3697,7 +3697,7 @@ def today_key() -> str:
 # - все маркеры заранее прописаны в WINDOW_MARKER_CONSTANTS;
 # - при нажатиях новые номера не создаются и данные бота на нумерацию не влияют.
 # ─────────────────────────────────────────────────────────────
-WINDOW_MARK_RE = re.compile(r"(?:^|\s)([СФП]\d{1,6}|[ов]\d{1,3})\s*$", re.IGNORECASE)
+WINDOW_MARK_RE = re.compile(r"(?:^|\s)([СФП]\d{1,6}|[ов]\d{1,3})(?:\s*⏳)?\s*$", re.IGNORECASE)
 _WINDOW_MARK_GROUPS = ("С", "Ф", "П")
 
 # ФИКСИРОВАННЫЕ МАРКЕРЫ ОКОН.
@@ -3890,6 +3890,18 @@ WINDOW_MARKER_CONSTANTS = {
     'exp_send_period_style:*': 'Ф180',
     'exp_style_exact:*': 'Ф181',
     'exp_send_exact_style:*': 'Ф182',
+    'internal_timers': 'Ф183',
+    'itmr_pick:*': 'Ф184',
+    'itmr_digit:*': 'Ф185',
+    'itmr_unit:*': 'Ф186',
+    'itmr_backspace': 'Ф187',
+    'itmr_clear': 'Ф188',
+    'itmr_apply': 'Ф189',
+    'itmr_back_info': 'Ф190',
+    'exp_new_period_toggle:*': 'Ф179',
+    'exp_new_period_send:*': 'Ф180',
+    'exp_new_exact_toggle:*': 'Ф181',
+    'exp_new_exact_send:*': 'Ф182',
     'exp_send:*:csv:*': 'Ф117',
     'exp_send:*:xlsx:*': 'Ф118',
     'd:*:backup_mass_chat': 'Ф119',
@@ -3955,23 +3967,33 @@ def has_window_mark(text: str) -> bool:
 def strip_window_mark(text: str) -> str:
     try:
         text = str(text or "")
-        text = re.sub(r"\n\s*<i>(?:[СФП]\d{1,6}|[ов]\d{1,3})</i>\s*$", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\n\s*(?:[СФП]\d{1,6}|[ов]\d{1,3})\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\n\s*<i>(?:[СФП]\d{1,6}|[ов]\d{1,3})(?:\s*⏳)?</i>\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\n\s*(?:[СФП]\d{1,6}|[ов]\d{1,3})(?:\s*⏳)?\s*$", "", text, flags=re.IGNORECASE)
         return text.rstrip()
     except Exception:
         return str(text or "")
 
 
+def _window_text_has_active_timer(text: str) -> bool:
+    """Показывает ⏳ рядом с маркером только у окон с активным auto-close/cancel/return."""
+    body = str(text or "")
+    return bool(re.search(
+        r"(?:⏳|⌛|до закрытия|осталось\s*[:：]|автоматическ[^\n]{0,48}(?:закры|отмен|возврат)|"
+        r"через\s+\d+\s*(?:сек|мин)|режим редактирования будет автоматически)",
+        body,
+        flags=re.IGNORECASE,
+    ))
+
+
 def window_mark(text: str, code: str, html_mode: bool = False) -> str:
-    """Добавляет чистый служебный маркер окна без декоративных пробелов/HTML-знаков."""
+    """Добавляет служебный маркер; ⏳ означает активный таймер окна."""
     try:
         text = strip_window_mark(str(text or ""))
         code = str(code or "").strip()
         if not code:
             return text
-        # Маркер показываем ровно как «Ф110», «С4», «П22» — без отступов,
-        # курсива, скобок и других лишних знаков. Это одинаково для HTML/plain.
-        return text + "\n\n" + code
+        suffix = code + (" ⏳" if _window_text_has_active_timer(text) else "")
+        return text + "\n\n" + suffix
     except Exception:
         return str(text or "")
 
@@ -5062,31 +5084,125 @@ def backup_excel_all_label() -> str:
 def _normalize_excel_table_style(value) -> str:
     raw = str(value or "").strip().lower()
     aliases = {
-        "new": "new_notes",
-        "notes": "new_notes",
-        "note": "new_notes",
-        "comments": "new_comments",
-        "comment": "new_comments",
-        "google": "google_notes",
-        "sheets": "google_notes",
-        "google_sheets": "google_notes",
-        "google_notes": "google_notes",
+        "new": "new_notes", "notes": "new_notes", "note": "new_notes",
+        "comments": "new_comments", "comment": "new_comments",
+        "plain": "new_plain", "new_plain": "new_plain",
+        "google": "google_notes", "sheets": "google_notes",
+        "google_sheets": "google_notes", "google_notes": "google_notes",
     }
     mode = aliases.get(raw, raw)
-    return mode if mode in {"old", "new_comments", "new_notes", "google_notes"} else ""
+    return mode if mode in {"old", "new_plain", "new_comments", "new_notes", "google_notes"} else ""
+
+
+def excel_interface_mode(chat_id: int | None = None) -> str:
+    """INFO switch: old interface (v136 chooser) or new checkbox recipe."""
+    gs = data.setdefault("_global_settings", {})
+    mode = str(gs.get("excel_interface_mode") or "old").strip().lower()
+    if mode not in {"old", "new"}:
+        mode = "old"
+        gs["excel_interface_mode"] = mode
+    return mode
+
+
+def set_excel_interface_mode(mode: str) -> str:
+    mode = "new" if str(mode or "").strip().lower() == "new" else "old"
+    data.setdefault("_global_settings", {})["excel_interface_mode"] = mode
+    save_data(data, root_only=True)
+    try:
+        if OWNER_ID:
+            schedule_config_backup_for_chats(int(OWNER_ID), delay=1.0)
+    except Exception:
+        pass
+    return mode
+
+
+def toggle_excel_interface_mode(chat_id: int | None = None) -> str:
+    return set_excel_interface_mode("new" if excel_interface_mode(chat_id) == "old" else "old")
+
+
+def excel_new_export_options() -> dict:
+    gs = data.setdefault("_global_settings", {})
+    raw = gs.get("excel_new_export_options")
+    if not isinstance(raw, dict):
+        raw = {}
+    options = {
+        "old_table": bool(raw.get("old_table", False)),
+        "comments": bool(raw.get("comments", False)),
+        "notes": bool(raw.get("notes", True)),
+        "description_column": bool(raw.get("description_column", False)),
+    }
+    # Old format is self-contained. Comments and Notes are mutually exclusive.
+    if options["old_table"]:
+        options.update({"comments": False, "notes": False, "description_column": True})
+    elif options["comments"] and options["notes"]:
+        options["comments"] = False
+    gs["excel_new_export_options"] = dict(options)
+    return options
+
+
+def toggle_excel_new_export_option(option: str) -> dict:
+    option = str(option or "").strip().lower()
+    options = excel_new_export_options()
+    if option == "old_table":
+        enabled = not options["old_table"]
+        options["old_table"] = enabled
+        if enabled:
+            options.update({"comments": False, "notes": False, "description_column": True})
+    elif option == "comments":
+        enabled = not options["comments"]
+        options.update({"old_table": False, "comments": enabled})
+        if enabled:
+            options["notes"] = False
+    elif option == "notes":
+        enabled = not options["notes"]
+        options.update({"old_table": False, "notes": enabled})
+        if enabled:
+            options["comments"] = False
+    elif option == "description_column":
+        enabled = not options["description_column"]
+        options["description_column"] = enabled
+        if not enabled:
+            options["old_table"] = False
+    data.setdefault("_global_settings", {})["excel_new_export_options"] = dict(options)
+    save_data(data, root_only=True)
+    try:
+        if OWNER_ID:
+            schedule_config_backup_for_chats(int(OWNER_ID), delay=1.0)
+    except Exception:
+        pass
+    return dict(options)
+
+
+def normalize_excel_export_options(value: dict | None = None) -> dict:
+    src = dict(value or excel_new_export_options())
+    out = {
+        "old_table": bool(src.get("old_table", False)),
+        "comments": bool(src.get("comments", False)),
+        "notes": bool(src.get("notes", False)),
+        "description_column": bool(src.get("description_column", False)),
+    }
+    if out["old_table"]:
+        out.update({"comments": False, "notes": False, "description_column": True})
+    elif out["comments"] and out["notes"]:
+        out["comments"] = False
+    return out
+
+
+def excel_export_options_style(options: dict | None = None) -> str:
+    opts = normalize_excel_export_options(options)
+    if opts["old_table"]:
+        return "old"
+    if opts["comments"]:
+        return "new_comments"
+    if opts["notes"]:
+        return "new_notes"
+    return "new_plain"
 
 
 def excel_table_style(chat_id: int) -> str:
-    """Глобальный формат: old / new_comments / new_notes / google_notes.
-
-    v124 хранил выбор отдельно в каждом чате. Из-за этого владелец мог выбрать
-    «Примечания» в INFO, а экспорт другого целевого чата всё ещё создавался в
-    его старом режиме «Комментарии». v125 хранит единственный глобальный выбор.
-    """
     gs = data.setdefault("_global_settings", {})
     mode = _normalize_excel_table_style(gs.get("excel_table_style_global"))
     if not mode:
-        # One-time migration: owner/global choice wins over a stale per-target chat setting.
         candidates = [gs.get("excel_table_style")]
         try:
             if OWNER_ID:
@@ -5108,10 +5224,7 @@ def set_excel_table_style(chat_id: int, mode: str) -> str:
     mode = _normalize_excel_table_style(mode) or "new_notes"
     gs = data.setdefault("_global_settings", {})
     gs["excel_table_style_global"] = mode
-    gs["excel_table_style"] = mode  # rollback compatibility mirror
-
-    # Current v125 reads only the global switch. Mirror just the owner/control chats
-    # for rollback compatibility; do not rewrite every finance chat merely to change UI.
+    gs["excel_table_style"] = mode
     touched = []
     for cid in (chat_id, int(OWNER_ID or 0)):
         if not cid or cid in touched:
@@ -5130,7 +5243,6 @@ def set_excel_table_style(chat_id: int, mode: str) -> str:
 
 
 def toggle_excel_table_style(chat_id: int) -> str:
-    """Compatibility helper: cycle OLD -> Comments -> Notes -> OLD."""
     order = ["old", "new_comments", "new_notes", "google_notes"]
     current = excel_table_style(chat_id)
     try:
@@ -5141,14 +5253,9 @@ def toggle_excel_table_style(chat_id: int) -> str:
 
 
 def excel_table_style_caption(chat_id: int) -> str:
-    mode = excel_table_style(chat_id)
-    if mode == "old":
-        return "СТАРОЕ"
-    if mode == "new_comments":
-        return "НОВОЕ • КОММЕНТАРИИ"
-    if mode == "google_notes":
-        return "GOOGLE SHEETS • ПРИМЕЧАНИЯ"
-    return "НОВОЕ • ПРИМЕЧАНИЯ"
+    if excel_interface_mode(chat_id) == "new":
+        return "ПО-НОВОМУ"
+    return "ПО-СТАРОМУ"
 
 
 def excel_annotation_mode(chat_id: int) -> str | None:
@@ -5161,37 +5268,25 @@ def excel_annotation_mode(chat_id: int) -> str | None:
 
 
 def excel_table_style_label(chat_id: int) -> str:
-    return "📊 Excel"
+    return "📊 Excel: по новому" if excel_interface_mode(chat_id) == "new" else "📊 Excel: по старому"
 
 
 def build_excel_style_text(chat_id: int) -> str:
     return wm_owner(
-        "📊 Excel\n\n"
-        "Формат единый для ВСЕХ XLSX-файлов и всех чатов.\n"
-        "• Старая — прежняя простая таблица.\n"
-        "• Новая в комментариях — цветная таблица + современные Excel Comments.\n"
-        "• Новая в примечаниях — цветная XLSX + классические Excel Notes.\n"
-        "• Google Sheets в примечаниях — Excel статьи создаётся прямо в Google Sheets через API; описание записывается в нативное поле Примечание.\n\n"
+        "📊 Excel\\n\\n"
+        "Кнопка в INFO теперь только переключает интерфейс экспорта.\\n"
+        "• По старому — меню выбора формата v136.\\n"
+        "• По новому — настройки с галочками в Ф179/Ф181.\\n\\n"
         f"Сейчас: {excel_table_style_caption(chat_id)}",
         9,
     )
 
 
 def build_excel_style_keyboard(chat_id: int):
-    mode = excel_table_style(chat_id)
     kb = types.InlineKeyboardMarkup(row_width=1)
-    choices = [
-        ("old", "Старая"),
-        ("new_comments", "Новая в комментариях"),
-        ("new_notes", "Новая в примечаниях (XLSX)"),
-        ("google_notes", "Google Sheets в примечаниях"),
-    ]
-    for value, label in choices:
-        mark = "✅" if mode == value else "⬜"
-        kb.row(IB(f"{mark} {label}", callback_data=f"excel_style_set:{value}"))
+    kb.row(IB(excel_table_style_label(chat_id), callback_data="excel_style_toggle"))
     kb.row(IB("🔙 Назад в Инфо", callback_data="journal_back"))
     return kb
-
 
 def _backup_target_all_state(target: str) -> tuple[int, int]:
     ids = [int(cid) for cid, _ in _collect_backup_menu_items()]
@@ -6540,11 +6635,10 @@ def build_info_text(chat_id: int) -> str:
             f"Финансовые сутки: с {finance_day_start_label(chat_id)}",
             f"Диспетчер: pending {UPDATE_DISPATCHER.stats().get('pending', 0)}",
             f"Таймер ввода: {_format_duration_short(internal_timer_seconds('input_wait'))}; окна: {_format_duration_short(internal_timer_seconds('window_auto_return'))}",
-            f"Excel все файлы: {excel_table_style_caption(chat_id)}",
+            f"Excel: {excel_table_style_caption(chat_id)}",
         ])
         if version_mode_feature("mega_priority"):
             lines.append(f"MEGA: {'приоритетный' if mega_backup_priority_enabled(chat_id) else 'обычный'} режим")
-        lines.append(f"Версия: {active_bot_behavior_profile_info().get('title')}")
     lines.extend(["", "Слеш-команды:"])
     commands = [
         "/ok — включить финансовый режим",
@@ -7352,4 +7446,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v136_excel_export_month_backnav
+# v137_excel_toggle_usd_gomonk_timers_cleanup

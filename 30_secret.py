@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v137_excel_toggle_usd_gomonk_timers_cleanup
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
@@ -330,6 +330,19 @@ def _upload_secret_record_media(chat_id: int, record: dict, remote_dir: str) -> 
     )
     if old_remote_path and not needs_video_recompress:
         return True
+    if record.get("mega_media_skip_reason"):
+        return True
+    try:
+        file_size = int((record.get("content") or {}).get("file_size") or 0)
+    except Exception:
+        file_size = 0
+    telegram_bot_download_limit = max(1, int(os.getenv("TELEGRAM_BOT_DOWNLOAD_LIMIT_BYTES", "19900000") or "19900000"))
+    if file_size > telegram_bot_download_limit:
+        record["mega_media_skip_reason"] = "telegram_bot_file_too_big"
+        record["mega_media_error"] = f"file is too big for Bot API download: {file_size} bytes"
+        record["mega_saved_at"] = now_local().isoformat(timespec="seconds")
+        bot_journal("secret_media_mega_skipped", chat_id, f"record={record.get('id')} size={file_size} reason=file_too_big")
+        return True
     local_dir = None
     try:
         file_info = bot.get_file(file_id)
@@ -367,7 +380,13 @@ def _upload_secret_record_media(chat_id: int, record: dict, remote_dir: str) -> 
                 log_error(f"secret old media cleanup {old_remote_path}: {e}")
         return True
     except Exception as e:
-        record["mega_media_error"] = str(e)[:300]
+        error_text = str(e)
+        record["mega_media_error"] = error_text[:300]
+        if "file is too big" in error_text.lower():
+            record["mega_media_skip_reason"] = "telegram_bot_file_too_big"
+            record["mega_saved_at"] = now_local().isoformat(timespec="seconds")
+            bot_journal("secret_media_mega_skipped", chat_id, f"record={record.get('id')} reason=file_too_big_api")
+            return True
         log_error(f"_upload_secret_record_media({chat_id}): {e}")
         return False
     finally:
@@ -2026,4 +2045,4 @@ def cmd_forward_copy_edit(msg):
         delete_message_later(msg.chat.id, msg.message_id, 1)
     except Exception as e:
         log_error(f"cmd_forward_copy_edit: {e}")
-# v135_reminders_secret_timers
+# v137_excel_toggle_usd_gomonk_timers_cleanup

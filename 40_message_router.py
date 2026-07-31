@@ -1,11 +1,11 @@
-# v133_usd_operations_parity_articles_paging
+# v137_excel_toggle_usd_gomonk_timers_cleanup
 
 
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
         "text", "photo", "video", "animation",
-        "audio", "voice", "video_note",
+        "audio", "voice", "video_note", "document",
         "sticker", "location", "venue", "contact",
         "dice", "poll",
         # v107: additional Telegram content which can still be copied/forwarded by message_id.
@@ -937,4 +937,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v133_usd_operations_parity_articles_paging
+# v137_excel_toggle_usd_gomonk_timers_cleanup
