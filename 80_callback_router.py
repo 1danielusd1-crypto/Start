@@ -1,4 +1,4 @@
-# v139_usd_gomonk_processes_secret_full_edit
+# v140_quick_expense_chat_descriptions_markers_nav
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -1342,6 +1342,36 @@ def on_callback(call):
                 return
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
+        if data_str.startswith("fw_chat_desc_menu:"):
+            day = data_str.split(":", 1)[1] or today_key()
+            safe_edit(bot, call, wm_owner("ℹ️ Описание чатов\nВыберите чат:", 183), reply_markup=build_forward_chat_description_menu(day))
+            return
+        if data_str.startswith("fw_chat_desc_pick:"):
+            _, cid_s, day = data_str.split(":", 2)
+            cid = int(cid_s)
+            safe_edit(bot, call, wm_owner(build_forward_chat_full_description(cid), 184), reply_markup=build_forward_chat_description_detail_keyboard(day))
+            return
+        if data_str.startswith("quick_expense_done:"):
+            draft_id = data_str.split(":", 1)[1]
+            item = (_quick_expense_drafts() or {}).get(draft_id)
+            if isinstance(item, dict):
+                item["status"] = "done"
+                save_data(data, chat_ids=[int(item.get("chat_id") or chat_id)])
+            try:
+                bot.edit_message_text("✅ Расход отмечен как заполненный.", chat_id, call.message.message_id)
+            except Exception:
+                pass
+            return
+        if data_str.startswith("quick_expense_delete:"):
+            draft_id = data_str.split(":", 1)[1]
+            item = (_quick_expense_drafts() or {}).pop(draft_id, None)
+            save_data(data, chat_ids=[chat_id])
+            try:
+                bot.delete_message(chat_id, call.message.message_id)
+            except Exception:
+                pass
+            return
+
         if data_str == "forward_menu_style_toggle":
             if not is_owner_chat(chat_id):
                 return
@@ -2540,6 +2570,7 @@ def on_callback(call):
             return
         if cmd == "forward_finmode_menu":
             kb = build_finance_toggle_chat_menu(day_key)
+            kb.row(IB("ℹ️ Описание чатов", callback_data=f"fw_chat_desc_menu:{day_key}"))
             safe_edit(
                 bot,
                 call,
@@ -2754,4 +2785,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v139_usd_gomonk_processes_secret_full_edit
+# v140_quick_expense_chat_descriptions_markers_nav

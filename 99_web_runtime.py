@@ -1,4 +1,4 @@
-# v138_parallel_lanes_ui_ack
+# v140_quick_expense_chat_descriptions_markers_nav
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -164,6 +164,28 @@ def _protect_pending_ui_timers_on_receipt(payload: dict):
         except Exception:
             pass
 
+
+
+
+@app.route("/quick-expense", methods=["GET", "POST"])
+def quick_expense_http():
+    key = request.args.get("key") or request.form.get("key") or request.headers.get("X-Quick-Expense-Key") or ""
+    if not quick_expense_key_valid(str(key)):
+        return "FORBIDDEN", 403
+    try:
+        requested_chat = request.args.get("chat_id") or request.form.get("chat_id")
+        chat_id = int(requested_chat) if requested_chat else quick_expense_target_chat_id()
+        draft = quick_expense_create_draft(chat_id, source="iphone_shortcut")
+        sent = bot.send_message(chat_id, quick_expense_text(draft), reply_markup=quick_expense_keyboard(draft["id"]))
+        draft["message_id"] = int(sent.message_id)
+        save_data(data, chat_ids=[chat_id])
+        delay_minutes = max(5, min(1440, int(os.getenv("QUICK_EXPENSE_REMINDER_MINUTES", "60") or "60")))
+        DELAYED_SCHEDULER.schedule(("quick_expense", draft["id"]), delay_minutes * 60, quick_expense_remind, draft["id"])
+        bot_journal("quick_expense_created", chat_id, f"draft={draft['id']} reminder={delay_minutes}m")
+        return "OK", 200
+    except Exception as e:
+        log_error(f"quick_expense_http: {e}")
+        return "ERROR", 500
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
@@ -600,4 +622,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v138_parallel_lanes_ui_ack
+# v140_quick_expense_chat_descriptions_markers_nav

@@ -3,7 +3,7 @@
   "layout": "flat_root",
   "file_marker": "v139_usd_gomonk_processes_secret_full_edit",
   "files": {
-    "00_core.py": "0a5ecc116f72e89e4faea5aa4bbc2e399e511a4f412a2f9d5acc50c8ba7401db",
+    "00_core.py": "a7e0c5f04ece6d5cded24dda65a9b9298b993a44c7b74f5ef1042373083f5d79",
     "10_mega_runtime.py": "a8f7215f15803a1283a0b83fb788d4df60ee2d0d199e29c439d813a41519f3d9",
     "20_callback_tokens.py": "082dad4fd1d5f477eec815df29cc5fc4d4b38be610f76447f89d83fce5d4b1ce",
     "30_secret.py": "5976dd3e0e9832a4868798e0183d20ce2dbdc25f1f5ee6fdf1be6ab21b8dd48f",
@@ -11,17 +11,17 @@
     "40_message_router.py": "f0c2bac34f85f5f538e8178b783d9b06687cac8e61318bd405c2c1c4ae5a619a",
     "50_forwarding.py": "0ffd805b69297ca8709069c8165f0d8c191fa1c645f58de90bec4d7282fe53c8",
     "60_finance_currency.py": "048386725b8cbcddd9bfea7221cf67f18753bc802aa983c0e3f28aea4c26c669",
-    "61_forwarding_ui.py": "e86b72768eb7759df772a1dea18207ac86554bdc627b409bd778d202c689b300",
+    "61_forwarding_ui.py": "971c87a96b8863bb7352e9d9931476bcf6d4601d5f5edffdab65b6bbc8fb9c73",
     "62_finance_ui.py": "87fe7d12c2bef12bd4dc1de0ba179eef1d3afe837f1a44abf37bac4730f754fb",
     "63_google_sheets.py": "59bf68233efbdf4536e49be838fee197d6289d6dc2fd77e964c35fb18bc723b1",
     "70_fast_ui.py": "48c200c810ee215d4217ca2ec008f97ab6aa1ee70257821dedd9b4c872cb7055",
-    "80_callback_router.py": "7a2a82087828566c410b763036927e99e30314e31eabf5c80e9209d8851f64ed",
+    "80_callback_router.py": "5149fd19f1a007846e5d0c5868aa6afb0e0b71e1ae07e729c30fa16e0595fa5a",
     "90_commands_exports.py": "ffd3c6a34aea3a29925613d8f32ba3a5769776c02773b06ec8ce4f3f691da7d7",
     "91_finance_records_handlers.py": "a548a35d455a15e37320b659b66464de0f48ebe88391e942fbe21d97a40c335a",
-    "99_web_runtime.py": "f8d6f51fa3b360cf99683010345ef6438cab89bcede464276e936f306f7569d4"
+    "99_web_runtime.py": "c4b7d8b7e74cfec1ea0ba70d14f873295da7ebb9d0d6ad2aa4c70770f2c19a7f"
   },
   "file_markers": {
-    "00_core.py": "v139_usd_gomonk_processes_secret_full_edit",
+    "00_core.py": "v140_quick_expense_chat_descriptions_markers_nav",
     "10_mega_runtime.py": "v139_usd_gomonk_processes_secret_full_edit",
     "20_callback_tokens.py": "v133_usd_operations_parity_articles_paging",
     "30_secret.py": "v139_usd_gomonk_processes_secret_full_edit",
@@ -29,13 +29,15 @@
     "40_message_router.py": "v139_usd_gomonk_processes_secret_full_edit",
     "50_forwarding.py": "v135_reminders_secret_timers",
     "60_finance_currency.py": "v139_usd_gomonk_processes_secret_full_edit",
-    "61_forwarding_ui.py": "v131_modular_stability",
+    "61_forwarding_ui.py": "v140_quick_expense_chat_descriptions_markers_nav",
     "62_finance_ui.py": "v136_excel_export_month_backnav",
     "63_google_sheets.py": "v137_excel_toggle_usd_gomonk_timers_cleanup",
     "70_fast_ui.py": "v139_usd_gomonk_processes_secret_full_edit",
-    "80_callback_router.py": "v139_usd_gomonk_processes_secret_full_edit",
+    "80_callback_router.py": "v140_quick_expense_chat_descriptions_markers_nav",
     "90_commands_exports.py": "v133_usd_operations_parity_articles_paging",
     "91_finance_records_handlers.py": "v138_parallel_lanes_ui_ack",
-    "99_web_runtime.py": "v138_parallel_lanes_ui_ack"
-  }
+    "99_web_runtime.py": "v140_quick_expense_chat_descriptions_markers_nav",
+    "bot.py": "v140_quick_expense_chat_descriptions_markers_nav"
+  },
+  "package_version": "bot_v140_quick_expense_chat_descriptions_markers_nav"
 }

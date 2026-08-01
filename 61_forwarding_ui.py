@@ -1,4 +1,4 @@
-# v131_modular_stability
+# v140_quick_expense_chat_descriptions_markers_nav
 def build_forward_root_menu(day_key: str):
     """Корневое меню пересылки: старый режим или новый визуальный режим пары A/B."""
     if forward_menu_new_style_enabled():
@@ -56,6 +56,7 @@ def build_forward_source_menu(day_key: str | None = None):
         IB("📡 Проверить чаты", callback_data="fw_probe_all"),
         IB("🗑 Удалённые", callback_data="fw_removed_list"),
     )
+    kb.row(IB("ℹ️ Описание чатов", callback_data=f"fw_chat_desc_menu:{day_key or today_key()}"))
 
     if day_key:
         kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
@@ -360,6 +361,7 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
         IB("📡 Проверить чаты", callback_data="fw_probe_all"),
         IB("🗑 Удалённые", callback_data="fw_removed_list"),
     )
+    kb.row(IB("ℹ️ Описание чатов", callback_data=f"fw_chat_desc_menu:{day_key or today_key()}"))
     if day_key:
         kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     else:
@@ -380,4 +382,51 @@ def build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: 
     if A:
         return build_forward_target_menu(A)
     return build_forward_source_menu(day_key)
-# v131_modular_stability
+
+def build_forward_chat_description_menu(day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    items, owner_item = _collect_forward_picker_items(include_owner=True, include_removed=True)
+    all_items = list(items) + ([owner_item] if owner_item else [])
+    buttons = [IB(chat_button_title(cid, title), callback_data=f"fw_chat_desc_pick:{int(cid)}:{day_key}") for cid, title in all_items]
+    add_buttons_in_rows(kb, buttons, 2)
+    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+def build_forward_chat_full_description(chat_id: int) -> str:
+    cid = int(chat_id)
+    known = collect_forward_menu_chats() or {}
+    meta = known.get(str(cid), {}) or {}
+    store = get_chat_store(cid) or {}
+    rules_out = (data.get("forward_rules", {}) or {}).get(str(cid), {}) or {}
+    rules_in = []
+    for src, dsts in (data.get("forward_rules", {}) or {}).items():
+        if str(cid) in (dsts or {}):
+            rules_in.append(int(src))
+    fin_out = (data.get("forward_finance", {}) or {}).get(str(cid), {}) or {}
+    secret_cfg = (data.get("secret_chats", {}) or {}).get(str(cid), {}) if isinstance(data.get("secret_chats", {}), dict) else {}
+    lines = [
+        "ℹ️ Полное описание чата",
+        f"Название: {get_chat_display_name(cid)}",
+        f"ID: {cid}",
+        f"Тип: {meta.get('type') or store.get('chat_type') or 'не определён'}",
+        f"Бот удалён/недоступен: {'да' if is_chat_bot_removed(cid) else 'нет'}",
+        f"Финансовый режим: {'включён' if is_finance_chat(cid) else 'выключен'}",
+        f"USD-операции: {'включены' if usd_transactions_view_enabled(cid) else 'выключены'}",
+        f"Скрытые финансы: {'включены' if is_hidden_finance_mode(cid) else 'выключены'}",
+        f"Записей в базе: {len(store.get('records', []) or [])}",
+        f"Пересылка ИЗ чата: {', '.join(get_chat_display_name(int(x)) for x in rules_out.keys()) or 'нет'}",
+        f"Пересылка В чат: {', '.join(get_chat_display_name(int(x)) for x in rules_in) or 'нет'}",
+        f"Финучёт пересылки ИЗ чата: {', '.join(get_chat_display_name(int(x)) for x,v in fin_out.items() if v) or 'нет'}",
+        f"Секретные настройки: {'есть' if secret_cfg else 'нет'}",
+        f"Последняя активность: {meta.get('updated_at') or store.get('last_activity') or 'нет данных'}",
+    ]
+    return "\n".join(lines)
+
+def build_forward_chat_description_detail_keyboard(day_key: str):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(IB("🔙 Назад к чатам", callback_data=f"fw_chat_desc_menu:{day_key}"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+# v140_quick_expense_chat_descriptions_markers_nav

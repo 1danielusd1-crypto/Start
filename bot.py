@@ -1,4 +1,4 @@
-# v139_usd_gomonk_processes_secret_full_edit
+# v140_quick_expense_chat_descriptions_markers_nav
 from pathlib import Path
 import hashlib
 import json
@@ -122,4 +122,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v139_usd_gomonk_processes_secret_full_edit
+# v140_quick_expense_chat_descriptions_markers_nav
