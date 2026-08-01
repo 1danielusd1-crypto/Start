@@ -1,4 +1,4 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v139_usd_gomonk_processes_secret_full_edit
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -22,41 +22,59 @@ def _v85_enabled(feature: str) -> bool:
         return False
 
 
-def _gomonk_is_usd_view(chat_id: int) -> bool:
+def _gomonk_currency(chat_id: int, currency: str | None = None) -> str:
+    explicit = str(currency or "").strip().lower()
+    if explicit in {"usd", "ars"}:
+        return explicit
     try:
-        return bool(usd_transactions_view_enabled(int(chat_id)) or financial_view_is_usd(get_chat_store(int(chat_id))))
+        store = get_chat_store(int(chat_id))
+        settings = store.setdefault("settings", {})
+        is_usd = bool(
+            usd_transactions_view_enabled(int(chat_id))
+            or financial_view_is_usd(store)
+            or str(settings.get("currency_mode") or "").lower() == "usd"
+            or str(settings.get("_active_currency_ledger") or "").lower() == "usd"
+        )
+        return "usd" if is_usd else "ars"
     except Exception:
-        return False
+        return "ars"
 
 
-def _gomonk_keys(chat_id: int) -> tuple[str, str, str]:
-    if _gomonk_is_usd_view(chat_id):
+def _gomonk_is_usd_view(chat_id: int) -> bool:
+    return _gomonk_currency(chat_id) == "usd"
+
+
+def _gomonk_keys(chat_id: int, currency: str | None = None) -> tuple[str, str, str]:
+    if _gomonk_currency(chat_id, currency) == "usd":
         return "usd_gomonk_enabled", "usd_gomonk_entries", "usd_remaining_with_gomonk"
     return "gomonk_enabled", "gomonk_entries", "remaining_with_gomonk"
 
 
-def _gomonk_settings(chat_id: int) -> dict:
+def _gomonk_settings(chat_id: int, currency: str | None = None) -> dict:
     settings = get_chat_store(int(chat_id)).setdefault("settings", {})
-    enabled_key, entries_key, remaining_key = _gomonk_keys(chat_id)
+    enabled_key, entries_key, remaining_key = _gomonk_keys(chat_id, currency)
     settings.setdefault(enabled_key, False)
     settings.setdefault(entries_key, [])
     settings.setdefault(remaining_key, True)
-    # Keep ARS keys for rollback compatibility without sharing them with USD.
+    # ARS и USD — два полностью независимых контура.
     settings.setdefault("gomonk_enabled", False)
     settings.setdefault("gomonk_entries", [])
     settings.setdefault("remaining_with_gomonk", True)
+    settings.setdefault("usd_gomonk_enabled", False)
+    settings.setdefault("usd_gomonk_entries", [])
+    settings.setdefault("usd_remaining_with_gomonk", True)
     return settings
 
 
-def gomonk_enabled(chat_id: int) -> bool:
-    settings = _gomonk_settings(chat_id)
-    enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id)
+def gomonk_enabled(chat_id: int, currency: str | None = None) -> bool:
+    settings = _gomonk_settings(chat_id, currency)
+    enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id, currency)
     return bool(settings.get(enabled_key, False))
 
 
-def gomonk_entries(chat_id: int) -> list[dict]:
-    settings = _gomonk_settings(chat_id)
-    _enabled_key, entries_key, _remaining_key = _gomonk_keys(chat_id)
+def gomonk_entries(chat_id: int, currency: str | None = None) -> list[dict]:
+    settings = _gomonk_settings(chat_id, currency)
+    _enabled_key, entries_key, _remaining_key = _gomonk_keys(chat_id, currency)
     out = []
     for item in (settings.get(entries_key) or []):
         if not isinstance(item, dict):
@@ -71,13 +89,13 @@ def gomonk_entries(chat_id: int) -> list[dict]:
     return out
 
 
-def gomonk_total(chat_id: int) -> float:
-    return sum(float(x.get("amount", 0) or 0) for x in gomonk_entries(chat_id))
+def gomonk_total(chat_id: int, currency: str | None = None) -> float:
+    return sum(float(x.get("amount", 0) or 0) for x in gomonk_entries(chat_id, currency))
 
 
-def toggle_gomonk_enabled(chat_id: int) -> bool:
-    settings = _gomonk_settings(chat_id)
-    enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id)
+def toggle_gomonk_enabled(chat_id: int, currency: str | None = None) -> bool:
+    settings = _gomonk_settings(chat_id, currency)
+    enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id, currency)
     settings[enabled_key] = not bool(settings.get(enabled_key, False))
     save_data(data, chat_ids=[int(chat_id)])
     schedule_config_backup_for_chats(int(chat_id))
@@ -107,20 +125,22 @@ def parse_gomonk_entries(text: str) -> list[dict]:
     return result
 
 
-def set_gomonk_entries(chat_id: int, entries: list[dict]):
-    settings = _gomonk_settings(chat_id)
-    _enabled_key, entries_key, _remaining_key = _gomonk_keys(chat_id)
+def set_gomonk_entries(chat_id: int, entries: list[dict], currency: str | None = None):
+    settings = _gomonk_settings(chat_id, currency)
+    _enabled_key, entries_key, _remaining_key = _gomonk_keys(chat_id, currency)
     settings[entries_key] = list(entries or [])[:30]
     save_data(data, chat_ids=[int(chat_id)])
     schedule_config_backup_for_chats(int(chat_id), delay=1.0)
 
 
-def gomonk_toggle_label(chat_id: int) -> str:
-    return "✅ Гомонковые ВКЛ" if gomonk_enabled(chat_id) else "❌ Гомонковые ВЫКЛ"
+def gomonk_toggle_label(chat_id: int, currency: str | None = None) -> str:
+    cur = _gomonk_currency(chat_id, currency).upper()
+    return f"✅ Гомонковые {cur} ВКЛ" if gomonk_enabled(chat_id, currency) else f"❌ Гомонковые {cur} ВЫКЛ"
 
 
-def gomonk_info_label(chat_id: int) -> str:
-    return "🧳 Гомонковые ВКЛ" if gomonk_enabled(chat_id) else "🧳 Гомонковые ВЫКЛ"
+def gomonk_info_label(chat_id: int, currency: str | None = None) -> str:
+    cur = _gomonk_currency(chat_id, currency).upper()
+    return f"🧳 Гомонковые {cur} ВКЛ" if gomonk_enabled(chat_id, currency) else f"🧳 Гомонковые {cur} ВЫКЛ"
 
 
 def _ensure_currency_ledgers(store: dict) -> str:
@@ -358,60 +378,70 @@ def format_category_amount(store: dict, amount: float, category_mixed: bool = Fa
         return f"{ars} ({fmt_usd_compact(amount, rate_info, signed=False, absolute=True)})"
     return ars
 
-def gomonk_summary_lines(chat_id: int) -> list[str]:
-    if not (_v85_enabled("gomonk_wallets") and gomonk_enabled(chat_id)):
+def gomonk_summary_lines(chat_id: int, currency: str | None = None) -> list[str]:
+    currency = _gomonk_currency(chat_id, currency)
+    if not (_v85_enabled("gomonk_wallets") and gomonk_enabled(chat_id, currency)):
         return []
-    entries = gomonk_entries(chat_id)
+    entries = gomonk_entries(chat_id, currency)
     if not entries:
-        return ["", f"🧮 Сумма гомонковых: {format_chat_amount(chat_id, 0, mixed_space=True)}"]
-    balance = float(get_chat_store(chat_id).get("balance", 0) or 0)
-    total = gomonk_total(chat_id)
+        zero = fmt_usd_native(0) if currency == "usd" else format_chat_amount(chat_id, 0, mixed_space=True)
+        return ["", f"🧮 Сумма гомонковых {currency.upper()}: {zero}"]
+    store = get_chat_store(chat_id)
+    balance = usd_balance_for_chat(chat_id) if (currency == "usd" and usd_transactions_view_enabled(chat_id)) else float(store.get("balance", 0) or 0)
+    total = gomonk_total(chat_id, currency)
+    fmt = (lambda value: fmt_usd_native(value)) if currency == "usd" else (lambda value: format_chat_amount(chat_id, value, mixed_space=True))
     return [
         "",
-        f"🧮 Сумма гомонковых: {format_chat_amount(chat_id, total, mixed_space=True)}",
-        f"🏦 Остаток без гомонковых: {format_chat_amount(chat_id, balance - total, mixed_space=True)}",
+        f"🧮 Сумма гомонковых {currency.upper()}: {fmt(total)}",
+        f"🏦 Остаток без гомонковых: {fmt(balance - total)}",
     ]
 
 
-def build_gomonk_menu_text(chat_id: int) -> str:
-    entries = gomonk_entries(chat_id)
-    currency_label = "USD" if _gomonk_is_usd_view(chat_id) else "ARS"
+def build_gomonk_menu_text(chat_id: int, currency: str | None = None) -> str:
+    currency = _gomonk_currency(chat_id, currency)
+    entries = gomonk_entries(chat_id, currency)
+    currency_label = currency.upper()
     lines = [
         f"🧳 Гомонковые • {currency_label}",
         "",
-        "Это суммы, которые резервируются отдельно и вычитаются из остатка по чату.",
+        "ARS и USD хранятся отдельно. Суммы резервируются и вычитаются только из выбранного контура.",
         "Формат нескольких сумм через двоеточие:",
         "Имя1 1000 : Имя2 5777 : 3000",
         "",
-        f"Режим: {'ВКЛ' if gomonk_enabled(chat_id) else 'ВЫКЛ'}",
+        f"Режим: {'ВКЛ' if gomonk_enabled(chat_id, currency) else 'ВЫКЛ'}",
     ]
+    fmt = (lambda value: fmt_usd_native(value)) if currency == "usd" else fmt_num
     if entries:
         lines.append("Сохранено:")
         for item in entries:
-            lines.append(f"• {item['name']}: {fmt_num(item['amount'])}")
-        lines.append(f"Итого: {fmt_num(gomonk_total(chat_id))}")
+            lines.append(f"• {item['name']}: {fmt(item['amount'])}")
+        lines.append(f"Итого: {fmt(gomonk_total(chat_id, currency))}")
     else:
         lines.append("Сохранённых сумм пока нет.")
     return wm_common("\n".join(lines), 9)
 
 
-def build_gomonk_menu_keyboard(chat_id: int):
+def build_gomonk_menu_keyboard(chat_id: int, currency: str | None = None):
+    currency = _gomonk_currency(chat_id, currency)
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB(gomonk_toggle_label(chat_id), callback_data="gomonk_toggle"))
-    template = f"({GOMONKI_INSERT_TOKEN})\nИмя1 1000 : Имя2 5777"
+    kb.row(IB(gomonk_toggle_label(chat_id, currency), callback_data=f"gomonk_toggle:{currency}"))
+    template = f"({GOMONKI_INSERT_TOKEN}|{currency.upper()})\nИмя1 1000 : Имя2 5777"
     kb.row(make_copy_or_inline_button("💰 Сумма", template, viewer_chat_id=chat_id))
-    kb.row(IB("🔙 Назад в Инфо", callback_data="gomonk_back"))
+    kb.row(IB("🔙 Назад в Инфо", callback_data=f"gomonk_back:{currency}"))
     return kb
 
 
 def handle_gomonk_insert_message(msg) -> bool:
     if getattr(msg, "content_type", None) != "text" or not _v85_enabled("gomonk_wallets"):
         return False
-    cleaned = sanitize_telegram_inserted_text(getattr(msg, "text", "") or "")
-    if GOMONKI_INSERT_TOKEN not in cleaned.upper():
+    raw = str(getattr(msg, "text", "") or "")
+    if GOMONKI_INSERT_TOKEN not in raw.upper():
         return False
     _durable_note_source_consumed("gomonk_insert")
     chat_id = int(msg.chat.id)
+    token = re.search(r"\(GOMONKI\|(USD|ARS)\)", raw, flags=re.IGNORECASE)
+    currency = token.group(1).lower() if token else _gomonk_currency(chat_id)
+    cleaned = re.sub(r"\(GOMONKI\|(?:USD|ARS)\)", "", raw, flags=re.IGNORECASE)
     entries = parse_gomonk_entries(cleaned)
     try:
         bot.delete_message(chat_id, msg.message_id)
@@ -420,26 +450,29 @@ def handle_gomonk_insert_message(msg) -> bool:
     if not entries:
         send_and_auto_delete(chat_id, "❌ Не нашёл сумм. Пример: Имя1 1000 : Имя2 5777", 12)
         return True
-    set_gomonk_entries(chat_id, entries)
-    _settings = _gomonk_settings(chat_id)
-    _enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id)
-    _settings[_enabled_key] = True
+    set_gomonk_entries(chat_id, entries, currency)
+    settings = _gomonk_settings(chat_id, currency)
+    enabled_key, _entries_key, _remaining_key = _gomonk_keys(chat_id, currency)
+    settings[enabled_key] = True
     save_data(data, chat_ids=[chat_id])
-    bot_journal("gomonk_values_saved", chat_id, f"count={len(entries)} total={gomonk_total(chat_id)}")
-    send_and_auto_delete(chat_id, f"✅ Гомонковые сохранены: {len(entries)}, сумма {fmt_num(gomonk_total(chat_id))}", 10)
+    total = gomonk_total(chat_id, currency)
+    shown = fmt_usd_native(total) if currency == "usd" else fmt_num(total)
+    bot_journal("gomonk_values_saved", chat_id, f"currency={currency} count={len(entries)} total={total}")
+    send_and_auto_delete(chat_id, f"✅ Гомонковые {currency.upper()} сохранены: {len(entries)}, сумма {shown}", 10)
     try:
-        open_gomonk_window(chat_id)
+        open_gomonk_window(chat_id, currency=currency)
         finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day") or today_key(), reason="gomonk_update", delay=0.05)
     except Exception:
         pass
     return True
 
 
-def open_gomonk_window(chat_id: int, message_id: int | None = None):
+def open_gomonk_window(chat_id: int, message_id: int | None = None, currency: str | None = None):
+    currency = _gomonk_currency(chat_id, currency)
     if message_id:
-        fast_ui_edit_message_text(chat_id, message_id, build_gomonk_menu_text(chat_id), reply_markup=build_gomonk_menu_keyboard(chat_id), purpose="gomonk_window")
+        fast_ui_edit_message_text(chat_id, message_id, build_gomonk_menu_text(chat_id, currency), reply_markup=build_gomonk_menu_keyboard(chat_id, currency), purpose="gomonk_window")
     else:
-        send_or_edit_stored_window(chat_id, "info_msg_id", build_gomonk_menu_text(chat_id), reply_markup=build_gomonk_menu_keyboard(chat_id), delay=None)
+        send_or_edit_stored_window(chat_id, "info_msg_id", build_gomonk_menu_text(chat_id, currency), reply_markup=build_gomonk_menu_keyboard(chat_id, currency), delay=None)
 
 
 def _opening_balance_before_day(store: dict, day_key: str) -> float:
@@ -455,49 +488,66 @@ def _opening_balance_before_day(store: dict, day_key: str) -> float:
 
 def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = None) -> str:
     store = get_chat_store(chat_id)
-    settings = _gomonk_settings(chat_id)
-    _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id)
+    currency = _gomonk_currency(chat_id)
+    settings = _gomonk_settings(chat_id, currency)
+    _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id, currency)
     if with_gomonk is None:
         with_gomonk = bool(settings.get(remaining_key, True))
-    reserve = gomonk_total(chat_id) if (with_gomonk and gomonk_enabled(chat_id)) else 0.0
-    running = _opening_balance_before_day(store, day_key)
+    reserve = gomonk_total(chat_id, currency) if (with_gomonk and gomonk_enabled(chat_id, currency)) else 0.0
+    view_usd = currency == "usd" and usd_transactions_view_enabled(int(chat_id))
+    if view_usd:
+        running = 0.0
+        for rec in sorted((store.get("records", []) or []), key=record_sort_key):
+            try:
+                if _record_day_key(rec) >= str(day_key):
+                    break
+                if financial_view_record_visible(store, rec):
+                    running += float(rec.get("usd_amount", 0) or 0)
+            except Exception:
+                pass
+        day_records = usd_records_for_day(int(chat_id), str(day_key))
+        current_balance = usd_balance_for_chat(int(chat_id))
+        amount_fmt = lambda value: fmt_usd_native(value)
+    else:
+        running = _opening_balance_before_day(store, day_key)
+        day_records = sorted((store.get("daily_records", {}) or {}).get(day_key, []) or [], key=record_sort_key)
+        current_balance = float(store.get("balance", 0) or 0)
+        amount_fmt = lambda value: format_chat_amount(chat_id, value, mixed_space=False)
     lines = [
-        "🧮 Остаток после каждого расхода",
+        f"🧮 Остаток после каждого расхода • {currency.upper()}",
         f"📅 {fmt_date_ddmmyy(day_key)}",
         f"Режим: {'с гомонковыми' if reserve else 'без гомонковых'}",
         "",
     ]
-    mode = currency_mode(chat_id)
     show_ost = remaining_ost_label_enabled(chat_id)
     shown = 0
-    for rec in sorted((store.get("daily_records", {}) or {}).get(day_key, []) or [], key=record_sort_key):
+    for rec in day_records:
         try:
-            amount = float(rec.get("amount", 0) or 0)
+            amount = float(rec.get("usd_amount", 0) or 0) if view_usd else float(rec.get("amount", 0) or 0)
         except Exception:
             continue
         running += amount
         if amount >= 0:
             continue
         shown += 1
-        rid = rec.get("short_id") or f"R{rec.get('id', '')}"
-        note = html.escape(str(rec.get("note") or "").strip())
+        rid = (rec.get("usd_short_id") or f"U{rec.get('id', '')}") if view_usd else (rec.get("short_id") or f"R{rec.get('id', '')}")
+        note = html.escape(str((rec.get("usd_note") or rec.get("note") or "") if view_usd else (rec.get("note") or "")).strip())
         after = running - reserve
-        amount_text = format_chat_amount(chat_id, amount, mixed_space=False)
-        after_text = format_chat_amount(chat_id, after, mixed_space=False) if mode == "usd" else fmt_num(after)
         label = "ост:" if show_ost else ""
-        lines.append(f"{rid} {amount_text} {note} ({label}{after_text})".rstrip())
+        lines.append(f"{rid} {amount_fmt(amount)} {note} ({label}{amount_fmt(after)})".rstrip())
     if not shown:
-        lines.append("За этот день расходов нет.")
-    current_remaining = float(store.get("balance", 0) or 0) - reserve
-    lines.extend(["", f"🏦 Текущий остаток по чату: {format_chat_amount(chat_id, current_remaining, mixed_space=True)}"])
+        lines.append(f"За этот день расходов {currency.upper()} нет.")
+    current_remaining = current_balance - reserve
+    lines.extend(["", f"🏦 Текущий остаток по чату: {amount_fmt(current_remaining)}"])
     if reserve:
-        lines.append(f"🧳 Вычтено гомонковых: {format_chat_amount(chat_id, reserve, mixed_space=True)}")
+        lines.append(f"🧳 Вычтено гомонковых {currency.upper()}: {amount_fmt(reserve)}")
     return wm_common("\n".join(lines), 9, html_mode=True)
 
 
 def build_remaining_keyboard(chat_id: int, day_key: str):
-    settings = _gomonk_settings(chat_id)
-    _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id)
+    currency = _gomonk_currency(chat_id)
+    settings = _gomonk_settings(chat_id, currency)
+    _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id, currency)
     with_g = bool(settings.get(remaining_key, True))
     try:
         dt = datetime.strptime(day_key, "%Y-%m-%d")
@@ -507,7 +557,7 @@ def build_remaining_keyboard(chat_id: int, day_key: str):
     prev_key = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
     next_key = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
     kb = types.InlineKeyboardMarkup(row_width=3)
-    # v91: если включён режим «Финансы-кнопки», записи идут первыми, сверху окна Ф91.
+    # Если включены финансовые кнопки, показываем записи текущего ARS/USD-контура.
     if effective_main_financial_value_buttons_enabled(chat_id):
         for rec in financial_value_records_for_day(chat_id, day_key)[:84]:
             try:
@@ -523,6 +573,7 @@ def build_remaining_keyboard(chat_id: int, day_key: str):
     kb.row(IB("Без гомонковых" if with_g else "С гомонковыми", callback_data=f"remaining_toggle:{day_key}"))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"), IB("❌ Закрыть", callback_data="aux_close"))
     return kb
+
 
 def open_remaining_window(chat_id: int, day_key: str, message_id: int | None = None):
     text = build_remaining_text(chat_id, day_key)
@@ -765,6 +816,7 @@ def render_usd_day_window(chat_id: int, day_key: str):
         footer.append(f"📈 Приход за день: +${fmt_num_plain(total_income)}")
     footer.append(f"📆 Остаток на конец дня: {('+' if day_balance >= 0 else '-')}${fmt_num_plain(abs(day_balance))}")
     footer.append(f"🏦 Остаток по чату: {('+' if total_balance >= 0 else '-')}${fmt_num_plain(abs(total_balance))}")
+    footer.extend(gomonk_summary_lines(chat_id, "usd"))
     total = total_income - total_expense
 
     if not record_lines:
@@ -2015,4 +2067,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v139_usd_gomonk_processes_secret_full_edit

@@ -1,4 +1,4 @@
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -554,6 +554,17 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
     result = {"consumes_source": False, "record_edits": [], "secret_edits": [], "secret_copy_edits": [], "reminder_edits": []}
     clean = str(text or "").strip()
     if not clean:
+        # Полный секретный текст может прийти документом .txt без caption.
+        # Такой update принадлежит активной сессии редактирования и не должен
+        # превращаться в новый source_secret/source_finance. Точный witness
+        # добавит обработчик после чтения файла.
+        try:
+            store = get_chat_store(int(source_chat_id))
+            secret_full_wait = store.get("secret_full_edit_wait") or {}
+            if secret_full_wait.get("type") == "secret_full_edit":
+                result["consumes_source"] = True
+        except Exception:
+            pass
         return result
 
     # Direct insert tokens are commands only in a NEW message. In edited_message they are
@@ -675,6 +686,20 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
                 int(finwin_wait.get("target_chat_id")), int(finwin_wait.get("rid")),
                 amount=amount, note=note, source_finance_text=value_text, kind="finwin_edit",
             ))
+            return result
+
+        secret_full_wait = store.get("secret_full_edit_wait") or {}
+        if secret_full_wait.get("type") == "secret_full_edit":
+            result["consumes_source"] = True
+            # Для полного секретного текста сохраняем пробелы/переносы как есть;
+            # receipt- и execution-witness нормализуют только края одинаково.
+            value_text = str(clean or "").strip()
+            if value_text:
+                result["secret_edits"].append(_durable_secret_edit_witness(
+                    int(secret_full_wait.get("target_chat_id")),
+                    int(secret_full_wait.get("record_id")),
+                    value_text,
+                ))
             return result
 
         edit_wait = store.get("edit_wait") or {}
@@ -821,6 +846,11 @@ def _durable_expected_effects(payload: dict) -> dict:
     out["secret_copy_edits"] = list(edit_expect.get("secret_copy_edits") or [])
     out["reminder_edits"] = list(edit_expect.get("reminder_edits") or [])
     edit_consumes_source = bool(edit_expect.get("consumes_source"))
+    # Unknown/read-only slash commands are never finance/secret/forward business sources.
+    # /izm_ remains a mutation command and is handled by its own exact edit route.
+    if text.startswith("/") and not text.lower().startswith("/izm_") and not edit_consumes_source:
+        return out
+    is_edited_update = bool((payload or {}).get("edited_message") or (payload or {}).get("edited_channel_post"))
     # Wait-state replies are commands/answers first.  Do not guess a direct finance effect
     # from the digits while a dedicated input state is active.
     waiting = bool(edit_consumes_source)
@@ -839,7 +869,14 @@ def _durable_expected_effects(payload: dict) -> dict:
     except Exception:
         marked = False
     try:
-        out["source_secret"] = bool(is_total_secret_mode(int(source_chat_id)) or marked)
+        if is_edited_update:
+            existing_secret = any(
+                isinstance(r, dict) and int(r.get("source_msg_id") or 0) == int(source_msg_id)
+                for r in _secret_records(int(source_chat_id))
+            )
+            out["source_secret"] = bool(existing_secret or marked)
+        else:
+            out["source_secret"] = bool(is_total_secret_mode(int(source_chat_id)) or marked)
     except Exception:
         out["source_secret"] = bool(marked)
     try:
@@ -849,8 +886,12 @@ def _durable_expected_effects(payload: dict) -> dict:
             "document", "sticker", "location", "venue", "contact", "dice", "poll",
             "game", "story", "paid_media", "invoice",
         }
+        existing_finance_record = True
+        if is_edited_update:
+            existing_finance_record = find_record_by_message_id(int(source_chat_id), int(source_msg_id)) is not None
         out["source_finance"] = bool(
-            (content_type in finance_handler_types)
+            existing_finance_record
+            and (content_type in finance_handler_types)
             and (not waiting)
             and (not edit_consumes_source)
             and (not out["source_secret"])
@@ -1598,6 +1639,19 @@ def _durable_note_secret_edit_witness(witness: dict):
         pass
 
 
+def _durable_note_reminder_edit_witness(witness: dict):
+    try:
+        ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
+        if not isinstance(ctx, dict) or not isinstance(witness, dict):
+            return
+        rows = ctx.setdefault("reminder_edits", [])
+        key = (int(witness.get("reminder_id")), str(witness.get("kind") or ""))
+        rows[:] = [r for r in rows if (int(r.get("reminder_id")), str(r.get("kind") or "")) != key]
+        rows.append(_delta_json_clone(witness))
+    except Exception:
+        pass
+
+
 def _durable_note_source_consumed(reason: str):
     """Tell the durable finalizer that the handler consumed this source before finance/forward routes."""
     try:
@@ -1621,6 +1675,7 @@ def _durable_execution_context_snapshot() -> dict:
             "source_consumed_reason": str(ctx.get("source_consumed_reason") or ""),
             "record_edits": _delta_json_clone(ctx.get("record_edits") or []),
             "secret_edits": _delta_json_clone(ctx.get("secret_edits") or []),
+            "reminder_edits": _delta_json_clone(ctx.get("reminder_edits") or []),
         }
     except Exception:
         return {}
@@ -1663,7 +1718,7 @@ def _durable_expected_after_execution(base_expected: dict | None, execution_ctx:
     expected["forward_targets"] = rebuilt
     expected["forward_decision_actual"] = bool(execution_ctx.get("forward_decision_reached"))
     # Exact post-handler edit witnesses override/extend receipt-time guesses.
-    for field, key_fields in (("record_edits", ("chat_id", "rid", "kind")), ("secret_edits", ("chat_id", "record_id"))):
+    for field, key_fields in (("record_edits", ("chat_id", "rid", "kind")), ("secret_edits", ("chat_id", "record_id")), ("reminder_edits", ("reminder_id", "kind"))):
         merged = list(expected.get(field, []) or [])
         for row in execution_ctx.get(field, []) or []:
             try:
@@ -1702,7 +1757,7 @@ def _durable_adjust_expected_for_captured_wait(task: dict | None, payload: dict,
             return expected
         deterministic = {
             "secret_wait", "category_add_wait", "category_edit_wait",
-            "edit_wait", "finwin_edit_wait", "forward_copy_edit_wait",
+            "edit_wait", "finwin_edit_wait", "forward_copy_edit_wait", "secret_full_edit_wait",
         }
         if any(k in waits and waits.get(k) for k in deterministic):
             adjusted = _delta_json_clone(expected)
@@ -1836,6 +1891,8 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
         }
         if first in mutation_commands or first.startswith("/izm_"):
             return True, f"{key}:mutation_command"
+        if first.startswith("/"):
+            return False, f"{key}:command_noncritical"
 
         try:
             chat_id = int(((msg.get("chat") or {}).get("id")))
@@ -6143,6 +6200,9 @@ def get_chat_store(chat_id: int) -> dict:
                     "gomonk_enabled": False,
                     "gomonk_entries": [],
                     "remaining_with_gomonk": True,
+                    "usd_gomonk_enabled": False,
+                    "usd_gomonk_entries": [],
+                    "usd_remaining_with_gomonk": True,
                     "usd_display_enabled": False,
                     "currency_mode": "ars",
                     "remaining_show_ost_label": True
@@ -6170,6 +6230,9 @@ def get_chat_store(chat_id: int) -> dict:
         store.setdefault("settings", {}).setdefault("gomonk_enabled", False)
         store.setdefault("settings", {}).setdefault("gomonk_entries", [])
         store.setdefault("settings", {}).setdefault("remaining_with_gomonk", True)
+        store.setdefault("settings", {}).setdefault("usd_gomonk_enabled", False)
+        store.setdefault("settings", {}).setdefault("usd_gomonk_entries", [])
+        store.setdefault("settings", {}).setdefault("usd_remaining_with_gomonk", True)
         store.setdefault("settings", {}).setdefault("usd_display_enabled", False)
         store.setdefault("settings", {}).setdefault("currency_mode", "ars_usd" if store.setdefault("settings", {}).get("usd_display_enabled", False) else "ars")
         store.setdefault("settings", {}).setdefault("remaining_show_ost_label", True)
@@ -8463,4 +8526,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit

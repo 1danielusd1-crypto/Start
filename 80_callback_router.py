@@ -1,4 +1,41 @@
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit
+
+def _forward_probe_all_background(owner_chat_id: int, message_id: int):
+    try:
+        ok, bad = probe_all_known_chats()
+        owner_store = get_chat_store(int(OWNER_ID))
+        owner_day_key = owner_store.get("current_view_day", today_key())
+        text = build_forward_status_text(
+            f"📡 Проверка чатов завершена. Доступно: {ok}. Удалено/нет доступа: {bad}.\n\n"
+            "Пересылка:\nВыберите чат A:"
+        )
+        fast_ui_edit_message_text(
+            int(owner_chat_id), int(message_id), text,
+            reply_markup=build_forward_source_menu(owner_day_key), purpose="forward_probe_all_done",
+        )
+    except Exception as exc:
+        log_error(f"forward_probe_all_background: {exc}")
+        try:
+            send_and_auto_delete(int(owner_chat_id), "❌ Проверка чатов завершилась с ошибкой. Смотрите журнал.", 12)
+        except Exception:
+            pass
+
+
+def _forward_probe_one_background(owner_chat_id: int, message_id: int, target_chat_id: int):
+    try:
+        ok = probe_bot_in_chat(int(target_chat_id))
+        status = "✅ бот снова доступен" if ok else "➖ бот удалён/нет доступа"
+        owner_store = get_chat_store(int(OWNER_ID))
+        owner_day_key = owner_store.get("current_view_day", today_key())
+        fast_ui_edit_message_text(
+            int(owner_chat_id), int(message_id),
+            build_forward_status_text(f"🗑 Удалённые чаты\n{get_chat_display_name(int(target_chat_id))}: {status}"),
+            reply_markup=build_removed_chats_menu(owner_day_key), purpose="forward_probe_one_done",
+        )
+    except Exception as exc:
+        log_error(f"forward_probe_one_background({target_chat_id}): {exc}")
+
+
 @bot.callback_query_handler(func=lambda c: True)
 
 def on_callback(call):
@@ -283,6 +320,21 @@ def on_callback(call):
                 )
             except Exception as e:
                 log_error(f"secret day view callback: {e}")
+            return
+        if data_str.startswith("secedfull:"):
+            try:
+                _, target_s, day_key, record_s = data_str.split(":", 3)
+                target_chat_id = int(target_s); record_id = int(record_s)
+                if not can_manage_secret_target(chat_id, target_chat_id):
+                    bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+                    return
+                begin_secret_full_edit(chat_id, target_chat_id, day_key, record_id, source_window_msg_id=call.message.message_id)
+                try:
+                    bot.answer_callback_query(call.id, "Полный текст показан ниже. Ответьте новым текстом.")
+                except Exception:
+                    pass
+            except Exception as e:
+                log_error(f"secret full edit callback: {e}")
             return
         if data_str.startswith("secedtoggle:"):
             try:
@@ -741,23 +793,23 @@ def on_callback(call):
             if data_str == "fw_probe_all":
                 owner_store = get_chat_store(int(OWNER_ID))
                 owner_day_key = owner_store.get("current_view_day", today_key())
-                # Сначала обновляем это же окно, но не создаём новое окно даже если edit не получится.
+                # Сетевые проверки всех чатов не выполняются в UI-потоке.
                 safe_edit_current_only(
-                    bot,
-                    call,
-                    build_forward_status_text("📡 Проверяю чаты...\nОкно не будет плодиться, результат появится здесь же."),
-                    reply_markup=build_forward_source_menu(owner_day_key)
+                    bot, call,
+                    build_forward_status_text("📡 Проверяю чаты в фоне...\nОкно обновится здесь же."),
+                    reply_markup=build_forward_source_menu(owner_day_key),
                 )
-                ok, bad = probe_all_known_chats()
-                owner_store = get_chat_store(int(OWNER_ID))
-                owner_day_key = owner_store.get("current_view_day", today_key())
-                kb = build_forward_source_menu(owner_day_key)
-                safe_edit_current_only(
-                    bot,
-                    call,
-                    build_forward_status_text(f"📡 Проверка чатов завершена. Доступно: {ok}. Удалено/нет доступа: {bad}.\n\nПересылка:\nВыберите чат A:"),
-                    reply_markup=kb
+                queued = MAINTENANCE_TASK_POOL.submit_unique(
+                    f"forward-probe-all:{int(chat_id)}",
+                    _forward_probe_all_background, int(chat_id), int(call.message.message_id),
                 )
+                try:
+                    bot.answer_callback_query(
+                        call.id, build_all_processes_toast(chat_id) if queued else "Проверка чатов уже выполняется",
+                        show_alert=False,
+                    )
+                except Exception:
+                    pass
                 return
             if data_str == "fw_removed_list":
                 owner_store = get_chat_store(int(OWNER_ID))
@@ -774,16 +826,21 @@ def on_callback(call):
                     cid = int(data_str.split(":", 1)[1])
                 except Exception:
                     return
-                ok = probe_bot_in_chat(cid)
-                status = "✅ бот снова доступен" if ok else "➖ бот удалён/нет доступа"
                 owner_store = get_chat_store(int(OWNER_ID))
                 owner_day_key = owner_store.get("current_view_day", today_key())
                 safe_edit_current_only(
-                    bot,
-                    call,
-                    f"🗑 Удалённые чаты\n{get_chat_display_name(cid)}: {status}",
-                    reply_markup=build_removed_chats_menu(owner_day_key)
+                    bot, call,
+                    build_forward_status_text(f"📡 Проверяю {get_chat_display_name(cid)} в фоне..."),
+                    reply_markup=build_removed_chats_menu(owner_day_key),
                 )
+                queued = MAINTENANCE_TASK_POOL.submit_unique(
+                    f"forward-probe-one:{cid}", _forward_probe_one_background,
+                    int(chat_id), int(call.message.message_id), int(cid),
+                )
+                try:
+                    bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if queued else "Проверка уже выполняется")
+                except Exception:
+                    pass
                 return
             if data_str == "fw_open":
                 owner_store = get_chat_store(int(OWNER_ID))
@@ -1096,7 +1153,7 @@ def on_callback(call):
             except Exception:
                 pass
             return
-        if data_str == "gomonk_open":
+        if data_str == "gomonk_open" or data_str.startswith("gomonk_open:"):
             if not _v85_enabled("gomonk_wallets"):
                 bot_journal("gomonk_blocked", chat_id, f"profile={active_bot_behavior_profile()}")
                 try:
@@ -1104,17 +1161,19 @@ def on_callback(call):
                 except Exception:
                     pass
                 return
-            bot_journal("gomonk_open", chat_id, f"profile={active_bot_behavior_profile()}")
-            open_gomonk_window(chat_id, call.message.message_id)
+            currency = data_str.split(":", 1)[1] if ":" in data_str else _gomonk_currency(chat_id)
+            bot_journal("gomonk_open", chat_id, f"currency={currency} profile={active_bot_behavior_profile()}")
+            open_gomonk_window(chat_id, call.message.message_id, currency=currency)
             return
-        if data_str == "gomonk_toggle":
+        if data_str == "gomonk_toggle" or data_str.startswith("gomonk_toggle:"):
             if not _v85_enabled("gomonk_wallets"):
                 return
-            new_state = toggle_gomonk_enabled(chat_id)
-            bot_journal("gomonk_toggle", chat_id, f"enabled={new_state}")
-            open_gomonk_window(chat_id, call.message.message_id)
+            currency = data_str.split(":", 1)[1] if ":" in data_str else _gomonk_currency(chat_id)
+            new_state = toggle_gomonk_enabled(chat_id, currency)
+            bot_journal("gomonk_toggle", chat_id, f"currency={currency} enabled={new_state}")
+            open_gomonk_window(chat_id, call.message.message_id, currency=currency)
             return
-        if data_str == "gomonk_back":
+        if data_str == "gomonk_back" or data_str.startswith("gomonk_back:"):
             fast_ui_edit_message_text(chat_id, call.message.message_id, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id), purpose="gomonk_back")
             return
         if data_str.startswith("remaining_open:"):
@@ -1127,8 +1186,10 @@ def on_callback(call):
             if not _v85_enabled("remaining_window"):
                 return
             day_key = data_str.split(":", 1)[1] or today_key()
-            settings = _gomonk_settings(chat_id)
-            settings["remaining_with_gomonk"] = not bool(settings.get("remaining_with_gomonk", True))
+            currency = _gomonk_currency(chat_id)
+            settings = _gomonk_settings(chat_id, currency)
+            _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id, currency)
+            settings[remaining_key] = not bool(settings.get(remaining_key, True))
             save_data(data, chat_ids=[chat_id])
             open_remaining_window(chat_id, day_key, call.message.message_id)
             return
@@ -1405,7 +1466,7 @@ def on_callback(call):
                 return
             ok, info = submit_interactive_file_job(chat_id, "runtime", "Runtime / Watcher ZIP", send_runtime_export_zip, chat_id, None, None)
             try:
-                bot.answer_callback_query(call.id, "Готовлю Runtime ZIP; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if ok else info[:180], show_alert=False)
             except Exception:
                 pass
             return
@@ -1760,7 +1821,7 @@ def on_callback(call):
                     send_export_for_chat_to, chat_id, target_chat_id, mode, view_day, file_type,
                 )
                 try:
-                    bot.answer_callback_query(call.id, "Готовлю файл; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                    bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if ok else info[:180], show_alert=False)
                 except Exception:
                     pass
                 return
@@ -1817,7 +1878,7 @@ def on_callback(call):
                     chat_id, "period_export", "Google Excel" if delivery == "google" else "Excel по новому",
                     send_export_for_chat_to, chat_id, target_chat_id, mode, day_key_s, file_type, None, options, delivery,
                 )
-                try: bot.answer_callback_query(call.id, "Готовлю экспорт; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                try: bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if ok else info[:180], show_alert=False)
                 except Exception: pass
             except Exception as e:
                 log_error(f"exp_new_period_send: {e}")
@@ -1832,7 +1893,7 @@ def on_callback(call):
                     send_export_for_chat_to, chat_id, target_chat_id, mode, day_key_s, file_type, style,
                 )
                 try:
-                    bot.answer_callback_query(call.id, "Готовлю экспорт; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                    bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if ok else info[:180], show_alert=False)
                 except Exception:
                     pass
             except Exception as e:
@@ -1877,7 +1938,7 @@ def on_callback(call):
                     chat_id, "exact_export", "Google Excel точный" if delivery == "google" else "Excel по новому точный",
                     send_exact_range_export, chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type, None, options, delivery,
                 )
-                try: bot.answer_callback_query(call.id, "Готовлю экспорт; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                try: bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if ok else info[:180], show_alert=False)
                 except Exception: pass
             except Exception as e:
                 log_error(f"exp_new_exact_send: {e}")
@@ -1891,7 +1952,7 @@ def on_callback(call):
                     send_exact_range_export, chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type, style,
                 )
                 try:
-                    bot.answer_callback_query(call.id, "Готовлю экспорт; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                    bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if ok else info[:180], show_alert=False)
                 except Exception:
                     pass
             except Exception as e:
@@ -2032,7 +2093,7 @@ def on_callback(call):
                     chat_id, chat_id, start_key, int(start_rid), end_key, int(end_rid), file_type,
                 )
                 try:
-                    bot.answer_callback_query(call.id, "Готовлю файл; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                    bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if ok else info[:180], show_alert=False)
                 except Exception:
                     pass
             except Exception as e:
@@ -2385,7 +2446,7 @@ def on_callback(call):
                 send_export_for_chat_to, chat_id, chat_id, mode, day_key, file_type,
             )
             try:
-                bot.answer_callback_query(call.id, "Готовлю файл; время показываю в сообщении" if ok else info[:180], show_alert=False)
+                bot.answer_callback_query(call.id, build_all_processes_toast(chat_id) if ok else info[:180], show_alert=False)
             except Exception:
                 pass
             return
@@ -2693,4 +2754,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit

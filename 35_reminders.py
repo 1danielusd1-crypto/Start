@@ -1,4 +1,4 @@
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit
 
 _REMINDER_THREAD_STARTED = False
 _REMINDER_THREAD_LOCK = threading.RLock()
@@ -817,6 +817,7 @@ def reminder_direct_input_message(msg):
             return
         _durable_note_source_consumed("reminder_interval_insert")
         cfg["interval_minutes"] = int(minutes)
+        _durable_note_reminder_edit_witness({"reminder_id": int(rid), "kind": "interval", "interval_minutes": int(minutes)})
         if cfg.get("enabled"):
             _reminder_rearm(cfg, immediate_if_valid=True)
         _reminder_touch(cfg); _reminder_save("reminder_interval_insert")
@@ -840,6 +841,7 @@ def reminder_direct_input_message(msg):
         return
     _durable_note_source_consumed("reminder_text_insert")
     cfg["text"] = value
+    _durable_note_reminder_edit_witness({"reminder_id": int(rid), "kind": "text", "text": str(value)})
     if cfg.get("enabled"):
         _reminder_rearm(cfg, immediate_if_valid=True)
     _reminder_touch(cfg); _reminder_save("reminder_text_insert")
@@ -1016,4 +1018,4 @@ def reminder_callback(call):
         rows = _reminder_items(); pages = max(1, (len(rows) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE); page = min(page, pages - 1)
         safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(day_key, page)); return
 
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit

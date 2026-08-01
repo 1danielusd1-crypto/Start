@@ -1,4 +1,4 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v139_usd_gomonk_processes_secret_full_edit
 
 
 @bot.message_handler(
@@ -27,6 +27,9 @@ def on_any_message(msg):
         bot_journal("message_received", chat_id, describe_msg_for_log(msg))
     except Exception:
         pass
+
+    if handle_secret_full_edit_reply(msg):
+        return
 
     if handle_secret_sequence(msg):
         return
@@ -937,4 +940,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v139_usd_gomonk_processes_secret_full_edit

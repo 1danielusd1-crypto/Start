@@ -1,4 +1,4 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v139_usd_gomonk_processes_secret_full_edit
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
@@ -1468,9 +1468,9 @@ def build_secret_edit_text(target_chat_id: int, day_key: str) -> str:
         ts = str(item.get("timestamp") or "")
         stamp = ts[11:19] if len(ts) >= 19 else ""
         body = re.sub(r"\s+", " ", _secret_record_display_text(item)).strip()
-        if len(body) > 68:
-            body = body[:68].rstrip()
-        lines.append(f"{idx}. {stamp} — {body}...")
+        if len(body) > 220:
+            body = body[:217].rstrip() + "…"
+        lines.append(f"{idx}. {stamp} — {body}")
     text = "\n".join(lines)
     return text if len(text) <= 3900 else text[:3890] + "\n…"
 
@@ -1491,7 +1491,7 @@ def build_secret_edit_keyboard(
         label = f"{idx}. {fmt_date_ddmmyy(day_key)} {stamp} ✏️"
         delete_label = "☑️ Удалить" if record_id in selected else "⬛ Удалить"
         kb.row(
-            make_copy_or_inline_button(label, compose_secret_edit_insert(target_chat_id, item), viewer_chat_id=viewer_chat_id),
+            IB(label, callback_data=f"secedfull:{target_chat_id}:{day_key}:{record_id}"),
             IB(delete_label, callback_data=f"secedtoggle:{target_chat_id}:{day_key}:{record_id}"),
         )
     if not _secret_day_records(target_chat_id, day_key):
@@ -1501,6 +1501,147 @@ def build_secret_edit_keyboard(
     kb.row(IB("🔙 Назад", callback_data=f"secview:{target_chat_id}:{day_key}"))
     kb.row(IB(_secret_close_label(remaining), callback_data="secclose"))
     return kb
+
+
+def _secret_full_edit_clear(viewer_chat_id: int, delete_helpers: bool = True):
+    store = get_chat_store(int(viewer_chat_id))
+    wait = store.get("secret_full_edit_wait") or {}
+    store["secret_full_edit_wait"] = None
+    save_data(data, chat_ids=[int(viewer_chat_id)])
+    try:
+        DELAYED_SCHEDULER.cancel(f"secret-full-edit-timeout:{int(viewer_chat_id)}")
+    except Exception:
+        pass
+    if delete_helpers:
+        for mid in list(wait.get("helper_message_ids") or []) + [wait.get("prompt_message_id")]:
+            try:
+                if mid:
+                    bot.delete_message(int(viewer_chat_id), int(mid))
+            except Exception:
+                pass
+    return wait
+
+
+def _secret_full_edit_timeout(viewer_chat_id: int, token: str):
+    wait = get_chat_store(int(viewer_chat_id)).get("secret_full_edit_wait") or {}
+    if str(wait.get("token") or "") != str(token):
+        return
+    _secret_full_edit_clear(int(viewer_chat_id), delete_helpers=True)
+    send_and_auto_delete(int(viewer_chat_id), "⌛ Изменение полного секретного текста отменено по таймеру.", 8)
+
+
+def begin_secret_full_edit(viewer_chat_id: int, target_chat_id: int, day_key: str, record_id: int, source_window_msg_id=None) -> bool:
+    viewer_chat_id = int(viewer_chat_id); target_chat_id = int(target_chat_id); record_id = int(record_id)
+    if not can_manage_secret_target(viewer_chat_id, target_chat_id):
+        return False
+    record = next((r for r in _secret_records(target_chat_id) if int(r.get("id") or 0) == record_id), None)
+    if not isinstance(record, dict):
+        send_and_auto_delete(viewer_chat_id, "❌ Секретная запись не найдена.", 8)
+        return False
+    _secret_full_edit_clear(viewer_chat_id, delete_helpers=True)
+    helper_ids = []
+    full_text = str(record.get("text") or "")
+    # В Telegram одно текстовое сообщение ограничено, поэтому старый текст показываем
+    # полностью частями и дополнительно отдаём одним UTF-8 TXT-файлом.
+    chunks = [full_text[i:i + 3300] for i in range(0, len(full_text), 3300)] or [""]
+    for idx, chunk in enumerate(chunks, 1):
+        sent = bot.send_message(viewer_chat_id, f"📄 Текущий полный текст ({idx}/{len(chunks)})\n\n{chunk}")
+        helper_ids.append(int(sent.message_id))
+    try:
+        txt = io.BytesIO(full_text.encode("utf-8"))
+        txt.name = f"secret_{record_id}_full_text.txt"
+        sent_file = bot.send_document(
+            viewer_chat_id, txt,
+            caption="📎 Полный текст одним файлом. Его можно отредактировать и прислать ответом на запрос ниже.",
+        )
+        helper_ids.append(int(sent_file.message_id))
+    except Exception as exc:
+        bot_journal("secret_full_edit_txt_send_failed", viewer_chat_id, str(exc), "WARN")
+    prompt = bot.send_message(
+        viewer_chat_id,
+        "✏️ Ответьте на это сообщение ПОЛНОСТЬЮ новым текстом.\n"
+        "До 4000 символов — обычным сообщением. Более длинный текст — UTF-8 файлом .txt.\n"
+        "Старый текст выше показан без обрезания и приложен одним файлом.",
+        reply_markup=types.ForceReply(selective=True, input_field_placeholder="Вставьте весь новый текст"),
+    )
+    token = f"{viewer_chat_id}:{target_chat_id}:{record_id}:{time.time_ns()}"
+    store = get_chat_store(viewer_chat_id)
+    store["secret_full_edit_wait"] = {
+        "type": "secret_full_edit", "token": token,
+        "target_chat_id": target_chat_id, "record_id": record_id, "day_key": str(day_key),
+        "prompt_message_id": int(prompt.message_id), "helper_message_ids": helper_ids,
+        "source_window_msg_id": int(source_window_msg_id or 0),
+        "expires_at": time.time() + internal_timer_seconds("input_wait", 40),
+    }
+    save_data(data, chat_ids=[viewer_chat_id])
+    DELAYED_SCHEDULER.schedule(
+        f"secret-full-edit-timeout:{viewer_chat_id}", internal_timer_seconds("input_wait", 40),
+        _secret_full_edit_timeout, viewer_chat_id, token,
+    )
+    return True
+
+
+def handle_secret_full_edit_reply(msg) -> bool:
+    content_type = str(getattr(msg, "content_type", None) or "")
+    if content_type not in {"text", "document"}:
+        return False
+    viewer_chat_id = int(msg.chat.id)
+    wait = get_chat_store(viewer_chat_id).get("secret_full_edit_wait") or {}
+    if wait.get("type") != "secret_full_edit":
+        return False
+    reply_id = int(getattr(getattr(msg, "reply_to_message", None), "message_id", 0) or 0)
+    if reply_id != int(wait.get("prompt_message_id") or 0):
+        return False
+    _durable_note_source_consumed("secret_full_edit_reply")
+    target_chat_id = int(wait.get("target_chat_id")); record_id = int(wait.get("record_id"))
+    if not can_manage_secret_target(viewer_chat_id, target_chat_id):
+        _secret_full_edit_clear(viewer_chat_id, delete_helpers=True)
+        return True
+    new_text = ""
+    if content_type == "text":
+        new_text = str(msg.text or "")
+        if len(new_text) > 4000:
+            send_and_auto_delete(viewer_chat_id, "❌ Текст длиннее 4000 символов. Пришлите его UTF-8 файлом .txt ответом на тот же запрос.", 12)
+            return True
+    else:
+        document = getattr(msg, "document", None)
+        file_name = str(getattr(document, "file_name", "") or "").lower()
+        mime_type = str(getattr(document, "mime_type", "") or "").lower()
+        if not (file_name.endswith(".txt") or mime_type.startswith("text/")):
+            send_and_auto_delete(viewer_chat_id, "❌ Нужен обычный UTF-8 файл .txt.", 10)
+            return True
+        try:
+            file_info = bot.get_file(document.file_id)
+            raw = bot.download_file(file_info.file_path)
+            if len(raw) > 512000:
+                raise ValueError("TXT больше 500 КБ")
+            new_text = raw.decode("utf-8-sig")
+        except Exception as exc:
+            bot_journal("secret_full_edit_txt_read_failed", viewer_chat_id, str(exc), "WARN")
+            send_and_auto_delete(viewer_chat_id, "❌ Не удалось прочитать TXT. Сохраните файл в UTF-8 и повторите.", 12)
+            return True
+    if not str(new_text).strip():
+        send_and_auto_delete(viewer_chat_id, "❌ Новый текст пустой. Ответьте на то же сообщение ещё раз.", 10)
+        return True
+    record = next((r for r in _secret_records(target_chat_id) if int(r.get("id") or 0) == record_id), None)
+    if not isinstance(record, dict):
+        _secret_full_edit_clear(viewer_chat_id, delete_helpers=True)
+        send_and_auto_delete(viewer_chat_id, "❌ Запись уже не найдена.", 8)
+        return True
+    record["text"] = new_text
+    record["edited_at"] = now_local().isoformat(timespec="seconds")
+    _durable_note_secret_edit_witness(_durable_secret_edit_witness(target_chat_id, record_id, new_text))
+    try:
+        bot.delete_message(viewer_chat_id, int(msg.message_id))
+    except Exception:
+        pass
+    _secret_full_edit_clear(viewer_chat_id, delete_helpers=True)
+    save_data(data, chat_ids=[target_chat_id, viewer_chat_id])
+    schedule_config_backup_for_chats(target_chat_id, viewer_chat_id, delay=0.2)
+    schedule_secret_mega_upload(target_chat_id)
+    refresh_secret_windows(target_chat_id)
+    send_and_auto_delete(viewer_chat_id, "✅ Полный секретный текст изменён.", 8)
+    return True
 
 
 def handle_secret_edit_insert_message(msg) -> bool:
@@ -2045,4 +2186,4 @@ def cmd_forward_copy_edit(msg):
         delete_message_later(msg.chat.id, msg.message_id, 1)
     except Exception as e:
         log_error(f"cmd_forward_copy_edit: {e}")
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v139_usd_gomonk_processes_secret_full_edit

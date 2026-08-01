@@ -1,4 +1,4 @@
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit
 import os
 import io
 import json
@@ -799,7 +799,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v138_parallel_lanes_ui_ack"
+VERSION = "bot_v139_usd_gomonk_processes_secret_full_edit"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1952,7 +1952,8 @@ def _version_mode_snapshot_fields() -> tuple[tuple[str, ...], tuple[str, ...]]:
     chat_fields = (
         "buttons_current_window", "journal_enabled", "main_article_buttons_enabled",
         "main_financial_value_buttons_enabled", "gomonk_enabled", "gomonk_entries",
-        "remaining_with_gomonk", "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
+        "remaining_with_gomonk", "usd_gomonk_enabled", "usd_gomonk_entries", "usd_remaining_with_gomonk",
+        "usd_display_enabled", "currency_mode", "remaining_show_ost_label", "quick_balance_enabled",
         "category_usd_enabled", "expense_category_order_slugs",
         "quick_balance_behavior", "quick_balance_user_selected", "hidden_finance",
         "usd_transactions_view",
@@ -2863,6 +2864,52 @@ def _file_job_busy_info() -> dict:
     return st
 
 
+def build_all_processes_toast(chat_id=None) -> str:
+    """Compact snapshot of every active business lane for Telegram callback toast."""
+    parts = []
+    try:
+        busy = _file_job_busy_info()
+        if busy:
+            elapsed = _file_job_elapsed_text(float(busy.get("elapsed") or 0))
+            phase = str(busy.get("phase") or "работаю")
+            parts.append(f"📄 {busy.get('label','файл')} {elapsed} · {phase}")
+    except Exception:
+        pass
+    pools = (
+        ("Сообщ", WEBHOOK_TASK_POOL), ("UI", UI_TASK_POOL),
+        ("Фин", FINANCE_TASK_POOL), ("Перес", FORWARD_TASK_POOL),
+        ("Восст", RECOVERY_TASK_POOL), ("Напом", REMINDER_TASK_POOL),
+        ("Бэкап", BACKUP_TASK_POOL), ("MEGAΔ", DELTA_TASK_POOL),
+        ("Экспорт", EXPORT_TASK_POOL), ("Общие", GENERAL_TASK_POOL),
+        ("Сервис", MAINTENANCE_TASK_POOL), ("Журнал", JOURNAL_TASK_POOL),
+        ("Таймер", DELAYED_TASK_POOL),
+        ("Дозвон", DOZVON_TASK_POOL),
+    )
+    for label, pool in pools:
+        try:
+            st = pool.stats()
+            active = int(st.get("active", 0) or 0)
+            pending = int(st.get("pending", 0) or 0)
+            if active or pending:
+                parts.append(f"{label} {active}/{pending}")
+        except Exception:
+            pass
+    try:
+        mt = globals().get("mega_task_stats")
+        if callable(mt):
+            st = mt() or {}
+            pending = int(st.get("pending", 0) or 0)
+            running = int(st.get("running", 0) or 0) + int(st.get("processing", 0) or 0)
+            if pending or running:
+                parts.append(f"Защита {running}/{pending}")
+    except Exception:
+        pass
+    if not parts:
+        return "✅ Активных процессов нет"
+    text = "⚙️ " + " · ".join(parts)
+    return text[:190]
+
+
 def _file_job_progress(phase: str, current=None, total=None, force: bool = False):
     """Update one temporary Telegram status message at a throttled rate."""
     ctx = _file_job_current()
@@ -2930,7 +2977,7 @@ def _file_job_tick(key: str):
     with _FILE_JOB_LOCK:
         alive = isinstance(_FILE_JOB_STATE.get(key), dict)
     if alive:
-        DELAYED_SCHEDULER.schedule(f"file-job-tick:{key}", 10.0, _file_job_tick, key)
+        DELAYED_SCHEDULER.schedule(f"file-job-tick:{key}", internal_timer_seconds("process_status_refresh", 10.0), _file_job_tick, key)
 
 
 def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
@@ -3006,7 +3053,7 @@ def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args
         if isinstance(existing, dict):
             started = float(existing.get("started_monotonic") or existing.get("queued_monotonic") or time.monotonic())
             elapsed = _file_job_elapsed_text(time.monotonic() - started)
-            return False, f"Уже выполняется: {existing.get('label','файл')} · {elapsed}"
+            return False, build_all_processes_toast(chat_id)
         meta = {
             "key": key,
             "chat_id": chat_id,
@@ -3030,10 +3077,10 @@ def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args
     if not ok:
         with _FILE_JOB_LOCK:
             _FILE_JOB_STATE.pop(key, None)
-        return False, "Экспорт уже занят"
+        return False, build_all_processes_toast(chat_id)
     try:
         DELAYED_SCHEDULER.cancel(f"file-job-tick:{key}")
-        DELAYED_SCHEDULER.schedule(f"file-job-tick:{key}", 10.0, _file_job_tick, key)
+        DELAYED_SCHEDULER.schedule(f"file-job-tick:{key}", internal_timer_seconds("process_status_refresh", 10.0), _file_job_tick, key)
     except Exception:
         pass
     try:
@@ -3730,7 +3777,7 @@ def today_key() -> str:
 # - все маркеры заранее прописаны в WINDOW_MARKER_CONSTANTS;
 # - при нажатиях новые номера не создаются и данные бота на нумерацию не влияют.
 # ─────────────────────────────────────────────────────────────
-WINDOW_MARK_RE = re.compile(r"(?:^|\s)([СФП]\d{1,6}|[ов]\d{1,3})(?:\s*⏳)?\s*$", re.IGNORECASE)
+WINDOW_MARK_RE = re.compile(r"(?:^|\s)([СФП]\d{1,6}|[ов]\d{1,3})(?:\s*[⏳⏰])?\s*$", re.IGNORECASE)
 _WINDOW_MARK_GROUPS = ("С", "Ф", "П")
 
 # ФИКСИРОВАННЫЕ МАРКЕРЫ ОКОН.
@@ -3776,6 +3823,7 @@ WINDOW_MARKER_CONSTANTS = {
     'secdelgo:*': 'С6',
     'secdelt:*': 'С7',
     'secedit:*': 'С8',
+    'secedfull:*': 'С8',
     'secedselected:*': 'С9',
     'secedtoggle:*': 'С10',
     'seclist:*': 'С11',
@@ -3957,8 +4005,11 @@ WINDOW_MARKER_CONSTANTS = {
     'main_financial_values_toggle': 'Ф135',
     'keepalive_status': 'Ф136',
     'gomonk_open': 'Ф137',
+    'gomonk_open:*': 'Ф137',
     'gomonk_toggle': 'Ф138',
+    'gomonk_toggle:*': 'Ф138',
     'gomonk_back': 'Ф139',
+    'gomonk_back:*': 'Ф139',
     'remaining_open:*': 'Ф140',
     'remaining_toggle:*': 'Ф141',
     'cat_pick_today_start': 'Ф142',
@@ -3970,7 +4021,11 @@ WINDOW_MARKER_CONSTANTS = {
     'info_delta_status': 'Ф148',
     'cat_usd_toggle_period:*': 'Ф150',
     'cat_order_open_sum:*': 'Ф151',
+    'cat_order_select_sum:*': 'Ф151',
+    'cat_order_position_sum:*': 'Ф151',
     'cat_order_open_exact:*': 'Ф152',
+    'cat_order_select_exact:*': 'Ф152',
+    'cat_order_position_exact:*': 'Ф152',
     'cat_order_move_sum:*': 'Ф153',
     'cat_order_move_exact:*': 'Ф154',
     'cat_other_sort:*': 'Ф155',
@@ -3986,6 +4041,9 @@ WINDOW_MARKER_CONSTANTS = {
     # v138: все окна напоминалки используют один фиксированный маркер. Последняя *
     # покрывает rem:list:page:day и остальные callback-хвосты без динамической нумерации.
     'rem:*': 'Ф191',
+    'mega_tasks_check': 'Ф192',
+    'mega_tasks_recover': 'Ф193',
+    'mega_tasks_retry_failed': 'Ф194',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -4003,8 +4061,8 @@ def has_window_mark(text: str) -> bool:
 def strip_window_mark(text: str) -> str:
     try:
         text = str(text or "")
-        text = re.sub(r"\n\s*<i>(?:[СФП]\d{1,6}|[ов]\d{1,3})(?:\s*⏳)?</i>\s*$", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\n\s*(?:[СФП]\d{1,6}|[ов]\d{1,3})(?:\s*⏳)?\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\n\s*<i>(?:[СФП]\d{1,6}|[ов]\d{1,3})(?:\s*[⏳⏰])?</i>\s*$", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\n\s*(?:[СФП]\d{1,6}|[ов]\d{1,3})(?:\s*[⏳⏰])?\s*$", "", text, flags=re.IGNORECASE)
         return text.rstrip()
     except Exception:
         return str(text or "")
@@ -4021,14 +4079,24 @@ def _window_text_has_active_timer(text: str) -> bool:
     ))
 
 
+# Ф40 — главное финансовое окно. Оно имеет периодический внутренний refresh,
+# поэтому рядом с его маркером всегда показываем отдельный значок часов.
+WINDOW_MARKER_CLOCK_CODES = {"Ф40"}
+
+
 def window_mark(text: str, code: str, html_mode: bool = False) -> str:
-    """Добавляет служебный маркер; ⏳ означает активный таймер окна."""
+    """Добавляет служебный маркер: ⏳ — auto-close/cancel/return, ⏰ — внутренний refresh."""
     try:
         text = strip_window_mark(str(text or ""))
         code = str(code or "").strip()
         if not code:
             return text
-        suffix = code + (" ⏳" if _window_text_has_active_timer(text) else "")
+        if _window_text_has_active_timer(text):
+            suffix = code + " ⏳"
+        elif code in WINDOW_MARKER_CLOCK_CODES:
+            suffix = code + " ⏰"
+        else:
+            suffix = code
         return text + "\n\n" + suffix
     except Exception:
         return str(text or "")
@@ -4278,6 +4346,8 @@ INTERNAL_TIMER_DEFS = {
     "window_auto_return": {"label": "🪟 Автовозврат обычных окон", "default": 120, "min": 5, "max": 7200},
     "command_cleanup": {"label": "🧹 Удаление команд пользователя", "default": 30, "min": 1, "max": 3600},
     "balance_collapse": {"label": "🏦 Сворачивание быстрого остатка", "default": 90, "min": 5, "max": 3600},
+    "main_window_refresh": {"label": "⏰ Обновление главного окна Ф40", "default": 5, "min": 1, "max": 300},
+    "process_status_refresh": {"label": "⚙️ Обновление статуса процессов", "default": 10, "min": 2, "max": 300},
 }
 _timer_input_sessions = {}
 _timer_input_lock = threading.RLock()
@@ -4334,6 +4404,7 @@ def build_internal_timers_text() -> str:
         "",
         "Настройки общие для всех обычных режимов бота.",
         "Секретный режим имеет собственные таймеры и здесь не меняется.",
+        "Ф40 и строка процессов теперь также управляются из этого меню.",
         "",
     ]
     for key, cfg in INTERNAL_TIMER_DEFS.items():
@@ -7323,7 +7394,9 @@ def refresh_balance_panel_now(chat_id: int):
         send_minimized_balance_panel(chat_id)
 
 
-def schedule_balance_panel_refresh(chat_id: int, delay: float = BALANCE_PANEL_REFRESH_DELAY):
+def schedule_balance_panel_refresh(chat_id: int, delay: float | None = None):
+    if delay is None:
+        delay = internal_timer_seconds("main_window_refresh", BALANCE_PANEL_REFRESH_DELAY)
     if finance_window_mode(chat_id) not in {"open", "first"}:
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
@@ -7482,4 +7555,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit

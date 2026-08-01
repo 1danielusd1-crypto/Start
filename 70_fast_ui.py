@@ -1,4 +1,4 @@
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -712,16 +712,16 @@ def build_info_keyboard(chat_id: int):
         if layout in {"v85", "v86", "v87"}:
             if layout == "v87":
                 kb.row(
-                    IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
+                    IB(gomonk_info_label(chat_id), callback_data=f"gomonk_open:{_gomonk_currency(chat_id)}"),
                     IB(currency_mode_label(chat_id), callback_data="currency_menu"),
                 )
             elif layout == "v86":
                 kb.row(
-                    IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
+                    IB(gomonk_info_label(chat_id), callback_data=f"gomonk_open:{_gomonk_currency(chat_id)}"),
                     IB(usd_display_label(chat_id), callback_data="usd_display_toggle"),
                 )
             else:
-                kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
+                kb.row(IB(gomonk_info_label(chat_id), callback_data=f"gomonk_open:{_gomonk_currency(chat_id)}"))
         if layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
         if version_mode_feature("keepalive_menu"):
@@ -746,16 +746,16 @@ def build_info_keyboard(chat_id: int):
         if layout in {"v85", "v86", "v87"}:
             if layout == "v87":
                 kb.row(
-                    IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
+                    IB(gomonk_info_label(chat_id), callback_data=f"gomonk_open:{_gomonk_currency(chat_id)}"),
                     IB(currency_mode_label(chat_id), callback_data="currency_menu"),
                 )
             elif layout == "v86":
                 kb.row(
-                    IB(gomonk_info_label(chat_id), callback_data="gomonk_open"),
+                    IB(gomonk_info_label(chat_id), callback_data=f"gomonk_open:{_gomonk_currency(chat_id)}"),
                     IB(usd_display_label(chat_id), callback_data="usd_display_toggle"),
                 )
             else:
-                kb.row(IB(gomonk_info_label(chat_id), callback_data="gomonk_open"))
+                kb.row(IB(gomonk_info_label(chat_id), callback_data=f"gomonk_open:{_gomonk_currency(chat_id)}"))
         elif layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
     kb.row(
@@ -1432,14 +1432,24 @@ def handle_categories_callback(call, data_str: str) -> bool:
             log_error(f"cat_usd_toggle_period: {e}")
         return True
 
+    def _refresh_layout_same_message(context: str, params: tuple, marker_action: str):
+        text = build_category_layout_text(store, context)
+        kb = build_category_layout_keyboard(store, context, params, chat_id=chat_id)
+        final_text = window_mark(strip_window_mark(text), _window_marker_code(marker_action, "Ф"))
+        try:
+            bot.edit_message_text(final_text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=kb)
+        except Exception as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
+        store["categories_msg_id"] = int(call.message.message_id)
+        register_open_window(chat_id, int(call.message.message_id), "categories", code=marker_action)
+        save_data(data, chat_ids=[int(chat_id)])
+        return int(call.message.message_id)
+
     if data_str.startswith("cat_order_open_sum:"):
         try:
             _, mode, start, end = data_str.split(":", 3)
-            send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store, "sum"),
-                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
-                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
-            )
+            _refresh_layout_same_message("sum", (mode, start, end), "cat_order_open_sum:*")
         except Exception as e:
             log_error(f"cat_order_open_sum: {e}")
         return True
@@ -1450,11 +1460,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             params = ("sum", mode, start, end)
             key = _category_order_selection_key(chat_id, params)
             _category_order_selection[key] = slug
-            send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store, "sum"),
-                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
-                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
-            )
+            _refresh_layout_same_message("sum", (mode, start, end), "cat_order_open_sum:*")
         except Exception as e:
             log_error(f"cat_order_select_sum: {e}")
         return True
@@ -1480,12 +1486,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
                     MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
                 )
                 schedule_config_backup_for_chats(chat_id, delay=0.4)
-                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="category_order_position_f36", delay=0.03)
-            send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store, "sum"),
-                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
-                preferred_message_id=call.message.message_id, marker_action="cat_order_open_sum:*",
-            )
+            _refresh_layout_same_message("sum", (mode, start, end), "cat_order_open_sum:*")
         except Exception as e:
             log_error(f"cat_order_position_sum: {e}")
         return True
@@ -1496,11 +1497,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             if move_expense_category_order(store, slug, direction):
                 save_data(data, chat_ids=[chat_id])
                 schedule_config_backup_for_chats(chat_id)
-            send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store, "sum"),
-                reply_markup=build_category_layout_keyboard(store, "sum", (mode, start, end), chat_id=chat_id),
-                preferred_message_id=call.message.message_id, marker_action="cat_order_move_sum:*",
-            )
+            _refresh_layout_same_message("sum", (mode, start, end), "cat_order_open_sum:*")
         except Exception as e:
             log_error(f"cat_order_move_sum: {e}")
         return True
@@ -1508,11 +1505,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
     if data_str.startswith("cat_order_open_exact:"):
         try:
             _, start_key, start_rid, end_key, end_rid = data_str.split(":")
-            send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store, "exact"),
-                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid)), chat_id=chat_id),
-                preferred_message_id=call.message.message_id, marker_action="cat_order_open_exact:*",
-            )
+            _refresh_layout_same_message("exact", (start_key, int(start_rid), end_key, int(end_rid)), "cat_order_open_exact:*")
         except Exception as e:
             log_error(f"cat_order_open_exact: {e}")
         return True
@@ -1523,11 +1516,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             params = (start_key, int(start_rid), end_key, int(end_rid))
             key = _category_order_selection_key(chat_id, params)
             _category_order_selection[key] = slug
-            send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store, "exact"),
-                reply_markup=build_category_layout_keyboard(store, "exact", params, chat_id=chat_id),
-                preferred_message_id=call.message.message_id, marker_action="cat_order_open_exact:*",
-            )
+            _refresh_layout_same_message("exact", params, "cat_order_open_exact:*")
         except Exception as e:
             log_error(f"cat_order_select_exact: {e}")
         return True
@@ -1553,12 +1542,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
                     MEGA_DELTA_PRIORITY_DELAY_SECONDS if mega_backup_priority_enabled() else MEGA_DELTA_DELAY_SECONDS,
                 )
                 schedule_config_backup_for_chats(chat_id, delay=0.4)
-                finance_changed(chat_id, store.get("current_view_day") or today_key(), reason="category_order_position", delay=0.03)
-            send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store, "exact"),
-                reply_markup=build_category_layout_keyboard(store, "exact", params, chat_id=chat_id),
-                preferred_message_id=call.message.message_id, marker_action="cat_order_open_exact:*",
-            )
+            _refresh_layout_same_message("exact", params, "cat_order_open_exact:*")
         except Exception as e:
             log_error(f"cat_order_position_exact: {e}")
         return True
@@ -1569,11 +1553,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
             if move_expense_category_order(store, slug, direction):
                 save_data(data, chat_ids=[chat_id])
                 schedule_config_backup_for_chats(chat_id)
-            send_or_edit_categories_window(
-                chat_id, build_category_layout_text(store, "exact"),
-                reply_markup=build_category_layout_keyboard(store, "exact", (start_key, int(start_rid), end_key, int(end_rid)), chat_id=chat_id),
-                preferred_message_id=call.message.message_id, marker_action="cat_order_move_exact:*",
-            )
+            _refresh_layout_same_message("exact", (start_key, int(start_rid), end_key, int(end_rid)), "cat_order_open_exact:*")
         except Exception as e:
             log_error(f"cat_order_move_exact: {e}")
         return True
@@ -2020,6 +2000,16 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
         _callback_ack_prune_locked()
         row = _CALLBACK_ACK_STATE.setdefault(callback_id, {"ts": time.time()})
         row["ts"] = time.time()
+        # A blank handler ACK becomes the common process panel for every permitted chat.
+        # Explicit alerts/messages remain unchanged.
+        if not str(text or "").strip() and not bool(kwargs.get("show_alert", False)):
+            process_text = build_all_processes_toast(row.get("chat_id"))
+            if args:
+                args = (process_text,) + tuple(args[1:])
+                kwargs.pop("text", None)
+            else:
+                kwargs["text"] = process_text
+            text = process_text
         if row.get("answered"):
             chat_id = row.get("chat_id")
             if str(text or "").strip() and not row.get("late_notice_sent"):
@@ -2053,17 +2043,20 @@ def _tracked_answer_callback_query(callback_query_id, *args, **kwargs):
 bot.answer_callback_query = _tracked_answer_callback_query
 
 
-def _answer_callback_query_quiet(callback_id: str):
+def _answer_callback_query_quiet(callback_id: str, chat_id=None):
     try:
-        bot.answer_callback_query(callback_id)
+        bot.answer_callback_query(callback_id, text=build_all_processes_toast(chat_id), show_alert=False)
     except Exception:
-        pass
+        try:
+            bot.answer_callback_query(callback_id)
+        except Exception:
+            pass
 
 
 def answer_callback_query_background(callback_id: str):
     """Immediate ACK from a callback handler, isolated from GENERAL/MEGA work."""
     key = f"callback-ack:{callback_id}"
-    if not CALLBACK_ACK_TASK_POOL.submit_unique(key, _answer_callback_query_quiet, callback_id):
+    if not CALLBACK_ACK_TASK_POOL.submit_unique(key, _answer_callback_query_quiet, callback_id, None):
         try:
             bot_journal("callback_ack_coalesced", None, str(callback_id))
         except Exception:
@@ -2087,5 +2080,6 @@ def schedule_callback_receipt_ack(callback_id: str, chat_id=None, delay: float |
         CALLBACK_RECEIPT_ACK_DELAY_SECONDS if delay is None else max(0.05, float(delay)),
         _answer_callback_query_quiet,
         callback_id,
+        chat_id,
     )
-# v138_parallel_lanes_ui_ack
+# v139_usd_gomonk_processes_secret_full_edit
