@@ -1,4 +1,4 @@
-# v133_usd_operations_parity_articles_paging
+# v140_iphone_expense_chat_info_markers_backnav
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -1248,6 +1248,47 @@ def schedule_cancel_wait(chat_id: int, delay: float = 15.0):
     _edit_cancel_timers[int(chat_id)] = deadline
 
 
+
+def _remember_known_chat_user(store: dict, msg) -> bool:
+    """Кэширует пользователей, которых бот реально видел в чате.
+
+    Telegram Bot API не выдаёт полный список участников группы, поэтому этот кэш
+    дополняет список администраторов в окне «Описание чатов».
+    """
+    try:
+        user = getattr(msg, "from_user", None)
+        if user is None or not getattr(user, "id", None):
+            return False
+        uid = str(int(user.id))
+        users = store.setdefault("known_users", {})
+        old = dict(users.get(uid) or {})
+        now_ts = time.time()
+        row = {
+            "id": int(user.id),
+            "first_name": str(getattr(user, "first_name", "") or ""),
+            "last_name": str(getattr(user, "last_name", "") or ""),
+            "username": str(getattr(user, "username", "") or "").lstrip("@") or None,
+            "is_bot": bool(getattr(user, "is_bot", False)),
+            "is_premium": bool(getattr(user, "is_premium", False)),
+            "language_code": str(getattr(user, "language_code", "") or "") or None,
+            "last_seen": old.get("last_seen") or now_local().isoformat(timespec="seconds"),
+            "last_seen_ts": float(old.get("last_seen_ts") or 0),
+        }
+        if now_ts - float(row.get("last_seen_ts") or 0) >= 3600 or not old:
+            row["last_seen"] = now_local().isoformat(timespec="seconds")
+            row["last_seen_ts"] = now_ts
+        changed = old != row
+        if changed:
+            users[uid] = row
+            if len(users) > 500:
+                ordered = sorted(users.items(), key=lambda item: float((item[1] or {}).get("last_seen_ts") or 0))
+                for old_uid, _ in ordered[:len(users) - 500]:
+                    users.pop(old_uid, None)
+        return changed
+    except Exception:
+        return False
+
+
 def update_chat_info_from_message(msg):
     """
     Обновляет информацию о чате в памяти.
@@ -1288,6 +1329,9 @@ def update_chat_info_from_message(msg):
     new_title = _chat_title_from_message(msg, info.get("title") or "")
     new_username = _chat_username_from_message(msg)
     new_type = msg.chat.type
+
+    if _remember_known_chat_user(store, msg):
+        changed = True
 
     if info.get("title") != new_title:
         info["title"] = new_title
@@ -1575,4 +1619,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v133_usd_operations_parity_articles_paging
+# v140_iphone_expense_chat_info_markers_backnav

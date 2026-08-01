@@ -1,4 +1,4 @@
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav
 import os
 import io
 import json
@@ -16,6 +16,7 @@ import subprocess
 import shutil
 import tempfile
 import calendar
+import secrets
 import hashlib
 import queue
 import heapq
@@ -799,7 +800,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v139_usd_gomonk_processes_secret_full_edit"
+VERSION = "bot_v140_iphone_expense_chat_info_markers_backnav"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -3889,10 +3890,6 @@ WINDOW_MARKER_CONSTANTS = {
     'd:*:fin_windows_menu': 'Ф51',
     'd:*:forward_finmode_menu': 'Ф52',
     'd:*:forward_menu': 'Ф53',
-    'fw_chat_desc_menu:*': 'Ф183',
-    'fw_chat_desc_pick:*': 'Ф184',
-    'quick_expense_done:*': 'Ф185',
-    'quick_expense_delete:*': 'Ф186',
     'd:*:info': 'Ф54',
     'd:*:next': 'Ф55',
     'd:*:open': 'Ф56',
@@ -4048,6 +4045,17 @@ WINDOW_MARKER_CONSTANTS = {
     'mega_tasks_check': 'Ф192',
     'mega_tasks_recover': 'Ф193',
     'mega_tasks_retry_failed': 'Ф194',
+    # v140: универсальный возврат, описание чатов и быстрый маркер расхода с iPhone.
+    'nav_prev': 'Ф195',
+    'chat_desc_menu:*': 'Ф196',
+    'chat_desc_open:*': 'Ф197',
+    'chat_desc_page:*': 'Ф197',
+    'expense_shortcut_info': 'Ф198',
+    'expense_shortcut_pick': 'Ф199',
+    'expense_shortcut_target:*': 'Ф200',
+    'expense_shortcut_regenerate': 'Ф201',
+    'expense_shortcut_test': 'Ф202',
+    'expense_shortcut_send_url': 'Ф203',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -4194,17 +4202,7 @@ def _window_marker_code(action_key: str, forced_group: str | None = None) -> str
     if group not in _WINDOW_MARK_GROUPS:
         group = "Ф"
     try:
-        try:
-            import inspect
-            caller = inspect.stack()[1]
-            place = f"{os.path.basename(caller.filename)}:{caller.lineno}:{caller.function}"
-        except Exception:
-            place = "unknown"
-        log_error(
-            f"WINDOW_MARKER_NOT_DECLARED: action={key}; expected_group={group}; "
-            f"temporary={WINDOW_MARKER_UNKNOWN[group]}; caller={place}. "
-            "Добавьте action в WINDOW_MARKER_CONSTANTS и присвойте постоянный номер окна."
-        )
+        log_error(f"WINDOW_MARKER_NOT_DECLARED: {key}")
     except Exception:
         pass
     return WINDOW_MARKER_UNKNOWN[group]
@@ -7569,81 +7567,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-
-# ─────────────────────────────────────────────────────────────
-# v140: быстрый черновик расхода с iPhone Shortcuts / Back Tap
-# ─────────────────────────────────────────────────────────────
-def quick_expense_target_chat_id() -> int:
-    raw = str(os.getenv("QUICK_EXPENSE_CHAT_ID", "") or "").strip()
-    try:
-        return int(raw) if raw else int(OWNER_ID)
-    except Exception:
-        return int(OWNER_ID)
-
-def quick_expense_key_valid(value: str) -> bool:
-    expected = str(os.getenv("QUICK_EXPENSE_KEY", "") or "").strip()
-    supplied = str(value or "").strip()
-    if not expected or not supplied:
-        return False
-    try:
-        import hmac
-        return hmac.compare_digest(expected, supplied)
-    except Exception:
-        return expected == supplied
-
-def _quick_expense_drafts() -> dict:
-    drafts = data.setdefault("quick_expense_drafts", {})
-    if not isinstance(drafts, dict):
-        drafts = {}
-        data["quick_expense_drafts"] = drafts
-    return drafts
-
-def quick_expense_create_draft(chat_id: int, source: str = "iphone") -> dict:
-    now = datetime.now(TZ)
-    draft_id = str(int(time.time() * 1000))
-    item = {
-        "id": draft_id, "chat_id": int(chat_id), "created_at": now.isoformat(),
-        "source": str(source or "iphone"), "status": "pending", "message_id": None,
-    }
-    _quick_expense_drafts()[draft_id] = item
-    save_data(data, chat_ids=[int(chat_id)])
-    return item
-
-def quick_expense_keyboard(draft_id: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    username = get_bot_username_cached() if "get_bot_username_cached" in globals() else ""
-    prefix = f"@{username} " if username else ""
-    kb.row(
-        IB("✍️ Вписать расход", switch_inline_query_current_chat=f"{prefix}сумма статья описание"[:256]),
-        IB("✅ Заполнено", callback_data=f"quick_expense_done:{draft_id}"),
-    )
-    kb.row(IB("🗑 Удалить отметку", callback_data=f"quick_expense_delete:{draft_id}"))
-    return kb
-
-def quick_expense_text(item: dict, reminder: bool = False) -> str:
-    try:
-        dt = datetime.fromisoformat(str(item.get("created_at") or ""))
-        stamp = dt.astimezone(TZ).strftime("%d.%m.%Y • %H:%M")
-    except Exception:
-        stamp = datetime.now(TZ).strftime("%d.%m.%Y • %H:%M")
-    head = "⏰ Не забудьте заполнить расход" if reminder else "⚠️ Был расход"
-    return f"{head}\n{stamp}\n\nСумма пока не указана."
-
-def quick_expense_remind(draft_id: str):
-    item = (_quick_expense_drafts() or {}).get(str(draft_id))
-    if not isinstance(item, dict) or item.get("status") != "pending":
-        return
-    try:
-        chat_id = int(item.get("chat_id"))
-        mid = int(item.get("message_id") or 0)
-        if mid:
-            bot.edit_message_text(quick_expense_text(item, True), chat_id, mid, reply_markup=quick_expense_keyboard(str(draft_id)))
-        else:
-            sent = bot.send_message(chat_id, quick_expense_text(item, True), reply_markup=quick_expense_keyboard(str(draft_id)))
-            item["message_id"] = int(sent.message_id)
-        save_data(data, chat_ids=[chat_id])
-        bot_journal("quick_expense_reminder", chat_id, f"draft={draft_id}")
-    except Exception as e:
-        log_error(f"quick_expense_remind({draft_id}): {e}")
-
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav

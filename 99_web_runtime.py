@@ -1,4 +1,4 @@
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -50,6 +50,36 @@ def keepalive_endpoint():
         "uptime_seconds": round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 1),
         "external_monitor_seen": bool(KEEP_ALIVE_STATE.get("external_monitor_at")),
     }, 200
+
+
+
+@app.route("/expense-ping/<token>", methods=["GET", "POST"])
+def expense_ping_endpoint(token: str):
+    """Защищённый endpoint для iPhone Shortcuts/Back Tap.
+
+    Событие сначала сохраняется в постоянную очередь бота, поэтому временная ошибка
+    Telegram не стирает отметку расхода: доставка будет повторена.
+    """
+    if not runtime_is_ready() or runtime_is_shutting_down():
+        return {"ok": False, "status": "booting"}, 503
+    cfg = expense_shortcut_config(False) or {}
+    expected = str(cfg.get("token") or "")
+    if not expected or not secrets.compare_digest(str(token or ""), expected):
+        return {"ok": False}, 404
+    try:
+        event_id, duplicate = enqueue_expense_ping_event("iphone_back_tap", force=False)
+        target_chat_id = int(expense_shortcut_config(True).get("target_chat_id") or 0)
+        return {
+            "ok": True,
+            "queued": True,
+            "duplicate_suppressed": bool(duplicate),
+            "event": event_id,
+            "target_chat_id": target_chat_id,
+            "time": now_local().isoformat(timespec="seconds"),
+        }, 202 if not duplicate else 200
+    except Exception as exc:
+        log_error(f"expense ping endpoint: {exc}")
+        return {"ok": False, "error": "queue_failed"}, 503
 
 
 def _refresh_callback_window_timers(chat_id: int, message_id: int, raw_callback: str):
@@ -164,28 +194,6 @@ def _protect_pending_ui_timers_on_receipt(payload: dict):
         except Exception:
             pass
 
-
-
-
-@app.route("/quick-expense", methods=["GET", "POST"])
-def quick_expense_http():
-    key = request.args.get("key") or request.form.get("key") or request.headers.get("X-Quick-Expense-Key") or ""
-    if not quick_expense_key_valid(str(key)):
-        return "FORBIDDEN", 403
-    try:
-        requested_chat = request.args.get("chat_id") or request.form.get("chat_id")
-        chat_id = int(requested_chat) if requested_chat else quick_expense_target_chat_id()
-        draft = quick_expense_create_draft(chat_id, source="iphone_shortcut")
-        sent = bot.send_message(chat_id, quick_expense_text(draft), reply_markup=quick_expense_keyboard(draft["id"]))
-        draft["message_id"] = int(sent.message_id)
-        save_data(data, chat_ids=[chat_id])
-        delay_minutes = max(5, min(1440, int(os.getenv("QUICK_EXPENSE_REMINDER_MINUTES", "60") or "60")))
-        DELAYED_SCHEDULER.schedule(("quick_expense", draft["id"]), delay_minutes * 60, quick_expense_remind, draft["id"])
-        bot_journal("quick_expense_created", chat_id, f"draft={draft['id']} reminder={delay_minutes}m")
-        return "OK", 200
-    except Exception as e:
-        log_error(f"quick_expense_http: {e}")
-        return "ERROR", 500
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
@@ -550,6 +558,11 @@ def main():
     log_info(f"Данные загружены из SQLite ({DB_FILE}). Версия бота: {VERSION}")
     runtime_set_phase("boot_webhook", "устанавливаю Telegram webhook")
     set_webhook()
+    # v140: повторить физические отметки расхода, которые были сохранены до временного сбоя Telegram/deploy.
+    try:
+        schedule_expense_ping_recovery(1.5)
+    except Exception as e:
+        log_error(f"expense ping recovery schedule: {e}")
     start_keep_alive_thread()
     try:
         start_reminder_scheduler()
@@ -622,4 +635,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav

@@ -1,4 +1,4 @@
-# v136_excel_export_month_backnav
+# v140_iphone_expense_chat_info_markers_backnav
 def finance_mode_compact_icon(chat_id: int) -> str:
     """v108: hidden finance and visible auto-window mode are shown independently."""
     try:
@@ -65,6 +65,7 @@ def build_finance_toggle_chat_menu(day_key: str):
         ))
 
     add_buttons_in_rows(kb, buttons, 2)
+    kb.row(IB("ℹ️ Описание чатов", callback_data="chat_desc_menu:finmode"))
     kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
@@ -707,4 +708,4 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     if financial_view_is_usd(store):
         label = "USD " + label
     return rows, label
-# v136_excel_export_month_backnav
+# v140_iphone_expense_chat_info_markers_backnav

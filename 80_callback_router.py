@@ -1,4 +1,4 @@
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -34,6 +34,40 @@ def _forward_probe_one_background(owner_chat_id: int, message_id: int, target_ch
         )
     except Exception as exc:
         log_error(f"forward_probe_one_background({target_chat_id}): {exc}")
+
+
+
+def _chat_description_background(viewer_chat_id: int, message_id: int, target_chat_id: int, origin: str, day_key: str, page: int = 0, refresh: bool = False):
+    try:
+        pages = get_chat_description_pages(int(target_chat_id), refresh=bool(refresh))
+        total = max(1, len(pages))
+        page = max(0, min(int(page or 0), total - 1))
+        text = pages[page] if pages else "ℹ️ Нет доступной информации о чате."
+        kb = build_chat_description_detail_keyboard(
+            int(viewer_chat_id), str(origin), str(day_key), int(target_chat_id), page, total
+        )
+        fast_ui_edit_message_text(
+            int(viewer_chat_id), int(message_id), text,
+            reply_markup=kb, purpose="chat_description_detail",
+        )
+        register_open_window(
+            int(viewer_chat_id), int(message_id), "chat_description",
+            code=f"chat_desc_open:{origin}:{int(target_chat_id)}", day_key=str(day_key),
+            params={"target_chat_id": int(target_chat_id), "origin": str(origin), "page": page},
+        )
+    except Exception as exc:
+        log_error(f"chat description background {target_chat_id}: {exc}")
+        try:
+            fast_ui_edit_message_text(
+                int(viewer_chat_id), int(message_id),
+                f"❌ Не удалось получить описание чата {get_chat_display_name(int(target_chat_id))}.\n{str(exc)[:500]}",
+                reply_markup=build_chat_description_detail_keyboard(
+                    int(viewer_chat_id), str(origin), str(day_key), int(target_chat_id), 0, 1
+                ),
+                purpose="chat_description_error",
+            )
+        except Exception:
+            pass
 
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -73,6 +107,158 @@ def on_callback(call):
             update_chat_info_from_message(call.message)
         except Exception:
             pass
+
+        # Центрально запоминаем предыдущее окно даже для старых обработчиков,
+        # которые ещё редактируют Telegram-сообщение напрямую.
+        if data_str not in {"nav_prev", "aux_close", "info_close", "secclose", "secmclose"} and not str(data_str).endswith(":back_main"):
+            try:
+                remember_previous_window(call)
+            except Exception:
+                pass
+
+        if data_str == "nav_prev":
+            if restore_previous_window(call):
+                return
+            return
+
+        if data_str.startswith("chat_desc_menu:"):
+            if not is_owner_chat(chat_id):
+                try:
+                    bot.answer_callback_query(call.id, "Описание чатов доступно владельцу.", show_alert=True)
+                except Exception:
+                    pass
+                return
+            origin = str(data_str.split(":", 1)[1] or "forward")
+            day_key = get_chat_store(chat_id).get("current_view_day") or today_key()
+            safe_edit(
+                bot, call, build_chat_description_menu_text(),
+                reply_markup=build_chat_description_menu(chat_id, origin, day_key),
+            )
+            return
+
+        if data_str.startswith("chat_desc_open:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                _, origin, target_s = data_str.split(":", 2)
+                target_chat_id = int(target_s)
+            except Exception:
+                return
+            day_key = get_chat_store(chat_id).get("current_view_day") or today_key()
+            safe_edit(
+                bot, call,
+                f"⏳ Собираю полную информацию о чате {get_chat_display_name(target_chat_id)}…",
+                reply_markup=build_chat_description_detail_keyboard(chat_id, origin, day_key, target_chat_id, 0, 1),
+            )
+            key = f"chat-description:{chat_id}:{call.message.message_id}:{target_chat_id}"
+            if not GENERAL_TASK_POOL.submit_unique(
+                key, _chat_description_background, chat_id, call.message.message_id, target_chat_id, origin, day_key, 0, True
+            ):
+                try:
+                    bot.answer_callback_query(call.id, "Описание этого чата уже собирается.")
+                except Exception:
+                    pass
+            return
+
+        if data_str.startswith("chat_desc_page:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                _, origin, target_s, page_s = data_str.split(":", 3)
+                target_chat_id = int(target_s)
+                page = max(0, int(page_s))
+            except Exception:
+                return
+            day_key = get_chat_store(chat_id).get("current_view_day") or today_key()
+            key = f"chat-description:{chat_id}:{call.message.message_id}:{target_chat_id}"
+            GENERAL_TASK_POOL.submit_unique(
+                key, _chat_description_background, chat_id, call.message.message_id,
+                target_chat_id, origin, day_key, page, False
+            )
+            return
+
+        if data_str == "expense_shortcut_info":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(
+                bot, call, build_expense_shortcut_text(chat_id),
+                reply_markup=build_expense_shortcut_keyboard(chat_id), parse_mode="HTML",
+            )
+            return
+
+        if data_str == "expense_shortcut_pick":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(
+                bot, call, "🎯 Выберите чат, куда отправлять отметку «Был расход».",
+                reply_markup=build_expense_shortcut_chat_menu(chat_id),
+            )
+            return
+
+        if data_str.startswith("expense_shortcut_target:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                target_chat_id = int(data_str.split(":", 1)[1])
+            except Exception:
+                return
+            if answer_removed_chat(call, target_chat_id):
+                return
+            expense_shortcut_set_target(target_chat_id)
+            safe_edit(
+                bot, call, build_expense_shortcut_text(chat_id),
+                reply_markup=build_expense_shortcut_keyboard(chat_id), parse_mode="HTML",
+            )
+            return
+
+        if data_str == "expense_shortcut_send_url":
+            if not is_owner_chat(chat_id):
+                return
+            url = expense_shortcut_url()
+            if not url:
+                try:
+                    bot.answer_callback_query(call.id, "APP_URL/WEBHOOK_URL не определён", show_alert=True)
+                except Exception:
+                    pass
+                return
+            try:
+                bot.send_message(
+                    chat_id,
+                    "📋 Скопируйте ссылку целиком и вставьте её в действие URL приложения «Команды»:\n\n"
+                    f"<code>{html.escape(url)}</code>\n\nНе пересылайте эту ссылку другим людям.",
+                    parse_mode="HTML", disable_web_page_preview=True,
+                )
+            except Exception as exc:
+                log_error(f"expense shortcut send url: {exc}")
+            return
+
+        if data_str == "expense_shortcut_regenerate":
+            if not is_owner_chat(chat_id):
+                return
+            expense_shortcut_regenerate_token()
+            safe_edit(
+                bot, call, build_expense_shortcut_text(chat_id),
+                reply_markup=build_expense_shortcut_keyboard(chat_id), parse_mode="HTML",
+            )
+            try:
+                bot.answer_callback_query(call.id, "Создана новая секретная ссылка")
+            except Exception:
+                pass
+            return
+
+        if data_str == "expense_shortcut_test":
+            if not is_owner_chat(chat_id):
+                return
+            event_id, duplicate = enqueue_expense_ping_event("telegram_test", force=True)
+            try:
+                bot.answer_callback_query(call.id, f"Тест поставлен в очередь: {event_id[-8:]}")
+            except Exception:
+                pass
+            safe_edit(
+                bot, call, build_expense_shortcut_text(chat_id),
+                reply_markup=build_expense_shortcut_keyboard(chat_id), parse_mode="HTML",
+            )
+            return
 
         if data_str.startswith("ojr:"):
             if not is_owner_chat(chat_id):
@@ -1342,36 +1528,6 @@ def on_callback(call):
                 return
             safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
             return
-        if data_str.startswith("fw_chat_desc_menu:"):
-            day = data_str.split(":", 1)[1] or today_key()
-            safe_edit(bot, call, wm_owner("ℹ️ Описание чатов\nВыберите чат:", 183), reply_markup=build_forward_chat_description_menu(day))
-            return
-        if data_str.startswith("fw_chat_desc_pick:"):
-            _, cid_s, day = data_str.split(":", 2)
-            cid = int(cid_s)
-            safe_edit(bot, call, wm_owner(build_forward_chat_full_description(cid), 184), reply_markup=build_forward_chat_description_detail_keyboard(day))
-            return
-        if data_str.startswith("quick_expense_done:"):
-            draft_id = data_str.split(":", 1)[1]
-            item = (_quick_expense_drafts() or {}).get(draft_id)
-            if isinstance(item, dict):
-                item["status"] = "done"
-                save_data(data, chat_ids=[int(item.get("chat_id") or chat_id)])
-            try:
-                bot.edit_message_text("✅ Расход отмечен как заполненный.", chat_id, call.message.message_id)
-            except Exception:
-                pass
-            return
-        if data_str.startswith("quick_expense_delete:"):
-            draft_id = data_str.split(":", 1)[1]
-            item = (_quick_expense_drafts() or {}).pop(draft_id, None)
-            save_data(data, chat_ids=[chat_id])
-            try:
-                bot.delete_message(chat_id, call.message.message_id)
-            except Exception:
-                pass
-            return
-
         if data_str == "forward_menu_style_toggle":
             if not is_owner_chat(chat_id):
                 return
@@ -2570,7 +2726,6 @@ def on_callback(call):
             return
         if cmd == "forward_finmode_menu":
             kb = build_finance_toggle_chat_menu(day_key)
-            kb.row(IB("ℹ️ Описание чатов", callback_data=f"fw_chat_desc_menu:{day_key}"))
             safe_edit(
                 bot,
                 call,
@@ -2785,4 +2940,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav

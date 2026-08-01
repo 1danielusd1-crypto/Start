@@ -1,4 +1,4 @@
-# v139_usd_gomonk_processes_secret_full_edit
+# v140_iphone_expense_chat_info_markers_backnav
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -93,7 +93,12 @@ def _run_pending_ui_edit(key):
 def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "fast_ui") -> str:
     try:
         if "secret" not in str(purpose or "").lower():
+            reply_markup = ensure_previous_back_nav_keyboard(reply_markup, int(chat_id), int(message_id))
             reply_markup = ensure_main_back_nav_keyboard(reply_markup, int(chat_id))
+    except Exception:
+        pass
+    try:
+        text = _ensure_window_marker_for_render(text, reply_markup, int(chat_id), int(message_id), purpose)
     except Exception:
         pass
     key = _ui_edit_key(chat_id, message_id)
@@ -113,12 +118,7 @@ def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_ma
             _ui_edit_pending[key] = payload
             scheduler_key = f"ui-edit:{int(chat_id)}:{int(message_id)}"
             DELAYED_SCHEDULER.cancel(scheduler_key)
-            deadline = DELAYED_SCHEDULER.schedule(
-                scheduler_key,
-                wait + 0.05,
-                _run_pending_ui_edit,
-                key,
-            )
+            deadline = DELAYED_SCHEDULER.schedule(scheduler_key, wait + 0.05, _run_pending_ui_edit, key)
             _ui_edit_timers[key] = deadline
             return "scheduled"
         _ui_edit_last_ts[key] = now_ts
@@ -132,19 +132,208 @@ def cancel_fast_ui_edit(chat_id: int, message_id: int):
         _ui_edit_timers.pop(key, None)
     DELAYED_SCHEDULER.cancel(f"ui-edit:{int(chat_id)}:{int(message_id)}")
 
+
+# v140: история окон для универсальной кнопки «Назад».
+_WINDOW_NAV_HISTORY_LOCK = threading.RLock()
+_WINDOW_NAV_HISTORY = defaultdict(list)
+_WINDOW_NAV_HISTORY_LIMIT = 12
+_WINDOW_MARKER_MISSING_THROTTLE = {}
+
+
+def _serialize_inline_keyboard(reply_markup):
+    if reply_markup is None:
+        return None
+    rows_out = []
+    try:
+        for row in list(getattr(reply_markup, "keyboard", None) or []):
+            row_out = []
+            for btn in row or []:
+                try:
+                    if hasattr(btn, "to_dict"):
+                        row_out.append(btn.to_dict())
+                    else:
+                        row_out.append({
+                            "text": getattr(btn, "text", ""),
+                            "callback_data": getattr(btn, "callback_data", None),
+                            "url": getattr(btn, "url", None),
+                            "switch_inline_query": getattr(btn, "switch_inline_query", None),
+                            "switch_inline_query_current_chat": getattr(btn, "switch_inline_query_current_chat", None),
+                        })
+                except Exception:
+                    continue
+            if row_out:
+                rows_out.append(row_out)
+    except Exception:
+        return None
+    return rows_out
+
+
+def _deserialize_inline_keyboard(rows_data):
+    if not rows_data:
+        return None
+    kb = types.InlineKeyboardMarkup()
+    for row in rows_data:
+        buttons = []
+        for raw in row or []:
+            try:
+                if hasattr(types.InlineKeyboardButton, "de_json"):
+                    btn = types.InlineKeyboardButton.de_json(raw)
+                else:
+                    allowed = {
+                        k: v for k, v in dict(raw or {}).items()
+                        if k in {
+                            "url", "callback_data", "switch_inline_query",
+                            "switch_inline_query_current_chat", "callback_game",
+                            "pay", "login_url", "web_app", "copy_text"
+                        } and v is not None
+                    }
+                    btn = types.InlineKeyboardButton(str((raw or {}).get("text") or ""), **allowed)
+                buttons.append(btn)
+            except Exception:
+                continue
+        if buttons:
+            kb.row(*buttons)
+    return kb
+
+
+def _window_nav_key(chat_id: int, message_id: int):
+    return (int(chat_id), int(message_id))
+
+
+def remember_previous_window(call):
+    try:
+        msg = call.message
+        key = _window_nav_key(msg.chat.id, msg.message_id)
+        text = getattr(msg, "text", None) or getattr(msg, "caption", None) or ""
+        markup = _serialize_inline_keyboard(getattr(msg, "reply_markup", None))
+        if not text and not markup:
+            return False
+        snap = {"text": str(text), "markup": markup, "parse_mode": None, "saved_at": time.time()}
+        with _WINDOW_NAV_HISTORY_LOCK:
+            stack = _WINDOW_NAV_HISTORY[key]
+            if stack and stack[-1].get("text") == snap["text"] and stack[-1].get("markup") == snap["markup"]:
+                return True
+            stack.append(snap)
+            if len(stack) > _WINDOW_NAV_HISTORY_LIMIT:
+                del stack[:-_WINDOW_NAV_HISTORY_LIMIT]
+        return True
+    except Exception:
+        return False
+
+
+def window_has_previous(chat_id: int, message_id: int) -> bool:
+    with _WINDOW_NAV_HISTORY_LOCK:
+        return bool(_WINDOW_NAV_HISTORY.get(_window_nav_key(chat_id, message_id)))
+
+
+def ensure_previous_back_nav_keyboard(reply_markup, chat_id: int, message_id: int):
+    if reply_markup is None:
+        reply_markup = types.InlineKeyboardMarkup()
+    try:
+        callbacks, labels = [], []
+        for row in list(getattr(reply_markup, "keyboard", None) or []):
+            for btn in row or []:
+                callbacks.append(str(getattr(btn, "callback_data", "") or ""))
+                labels.append(str(getattr(btn, "text", "") or ""))
+        has_own_back = any(
+            (("back" in cb.casefold() and "back_main" not in cb.casefold()) or cb.startswith("nav_prev"))
+            for cb in callbacks
+        ) or any(("назад" in t.casefold() and "осн" not in t.casefold()) for t in labels)
+        if not has_own_back and window_has_previous(chat_id, message_id):
+            reply_markup.row(IB("🔙 Назад", callback_data="nav_prev"))
+    except Exception:
+        pass
+    return reply_markup
+
+
+def restore_previous_window(call) -> bool:
+    chat_id = int(call.message.chat.id)
+    message_id = int(call.message.message_id)
+    key = _window_nav_key(chat_id, message_id)
+    with _WINDOW_NAV_HISTORY_LOCK:
+        stack = _WINDOW_NAV_HISTORY.get(key) or []
+        snap = stack.pop() if stack else None
+        if not stack:
+            _WINDOW_NAV_HISTORY.pop(key, None)
+    if not snap:
+        try:
+            bot.answer_callback_query(call.id, "История окна очищена после перезапуска. Используйте «Назад осн. окно».")
+        except Exception:
+            pass
+        return False
+    markup = _deserialize_inline_keyboard(snap.get("markup"))
+    try:
+        markup = ensure_previous_back_nav_keyboard(markup, chat_id, message_id)
+        markup = ensure_main_back_nav_keyboard(markup, chat_id)
+    except Exception:
+        pass
+    result = fast_ui_edit_message_text(
+        chat_id, message_id, str(snap.get("text") or ""), reply_markup=markup,
+        parse_mode=snap.get("parse_mode"), purpose="nav_prev_restore",
+    )
+    return result in {"ok", "scheduled", "rate_limited"}
+
+
+def _suggest_window_marker(group: str) -> str:
+    try:
+        nums = []
+        for value in WINDOW_MARKER_CONSTANTS.values():
+            value = str(value or "")
+            if value.startswith(group) and value[len(group):].isdigit():
+                nums.append(int(value[len(group):]))
+        return f"{group}{(max(nums) + 1) if nums else 1}"
+    except Exception:
+        return f"{group}?"
+
+
+def journal_missing_window_marker(raw_action: str, chat_id=None, message_id=None, text: str = "", reply_markup=None, purpose: str = ""):
+    raw = str(raw_action or "")
+    normalized = _normalize_window_action(raw)
+    group = _window_group_for_action(normalized)
+    first_line_rows = strip_window_mark(str(text or "")).strip().splitlines()[:1]
+    first_line = (first_line_rows[0] if first_line_rows else "")[:140]
+    try:
+        marker_key = _window_key_from_markup(reply_markup) if reply_markup is not None else ""
+    except Exception:
+        marker_key = ""
+    throttle_key = (normalized, int(chat_id or 0), int(message_id or 0), str(purpose or ""))
+    now_ts = time.time()
+    if now_ts - float(_WINDOW_MARKER_MISSING_THROTTLE.get(throttle_key, 0) or 0) < 30:
+        return
+    _WINDOW_MARKER_MISSING_THROTTLE[throttle_key] = now_ts
+    detail = (
+        f"raw={raw[:220]}; normalized={normalized}; chat={chat_id}; msg={message_id}; "
+        f"purpose={purpose}; first_line={first_line!r}; markup_key={marker_key}; "
+        f"suggested={_suggest_window_marker(group)}"
+    )
+    try:
+        bot_journal("window_marker_missing", chat_id, detail, "ERROR")
+    except Exception:
+        log_error("WINDOW_MARKER_MISSING_DETAIL: " + detail)
+
+
+def _ensure_window_marker_for_render(text: str, reply_markup, chat_id: int, message_id: int, purpose: str = "") -> str:
+    body = str(text or "")
+    if has_window_mark(body) or reply_markup is None:
+        return body
+    key = _window_key_from_markup(reply_markup)
+    code = _window_marker_code(key)
+    if str(code).endswith("9998"):
+        journal_missing_window_marker(key, chat_id, message_id, body, reply_markup, purpose)
+    return window_mark(body, code)
+
 def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
-    """Быстрое обновление окна.
-    Не держит callback при Telegram 429 и собирает частые клики в одно последнее обновление.
-    """
+    """Быстрое обновление окна с маркером, историей и безопасным fallback."""
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
+    raw_action = str(getattr(call, "data", "") or "")
+    if raw_action != "nav_prev":
+        remember_previous_window(call)
     try:
-        text = auto_window_mark(
-            text,
-            getattr(call, "data", ""),
-            owner_chat=is_owner_chat(chat_id),
-            html_mode=(str(parse_mode or "").upper() == "HTML")
-        )
+        code = window_code_for_callback(raw_action, owner_chat=is_owner_chat(chat_id))
+        if str(code).endswith("9998"):
+            journal_missing_window_marker(raw_action, chat_id, msg_id, text, reply_markup, "safe_edit")
+        text = window_mark(text, code, html_mode=(str(parse_mode or "").upper() == "HTML"))
     except Exception:
         pass
     if reply_markup is None:
@@ -153,14 +342,12 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
         except Exception:
             pass
     try:
+        reply_markup = ensure_previous_back_nav_keyboard(reply_markup, chat_id, msg_id)
         reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
     except Exception:
         pass
     result = fast_ui_edit_message_text(
-        chat_id, msg_id, text,
-        reply_markup=reply_markup,
-        parse_mode=parse_mode,
-        purpose="safe_edit_fast",
+        chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_fast"
     )
     if result in {"ok", "scheduled", "rate_limited"}:
         if result == "rate_limited":
@@ -169,12 +356,10 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
             except Exception:
                 pass
         try:
-            _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
+            _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
         except Exception:
             pass
         return
-
-    # Только если старое сообщение реально потеряно, создаём новое окно.
     try:
         if chat_buttons_current_window_enabled(chat_id):
             try:
@@ -186,16 +371,11 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
         pass
     try:
         sent = _tg_call_retry(
-            bot.send_message,
-            chat_id,
-            text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-            attempts=1,
-            purpose="safe_edit_send_fallback",
+            bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode,
+            attempts=1, purpose="safe_edit_send_fallback",
         )
         try:
-            _touch_v98_auto_close_for_callback(chat_id, sent.message_id, getattr(call, "data", ""))
+            _touch_v98_auto_close_for_callback(chat_id, sent.message_id, raw_action)
         except Exception:
             pass
     except Exception as e:
@@ -204,16 +384,17 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
 
 
 def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
-    """Редактирует только текущее окно, без создания нового и без ожидания retry_after."""
+    """Редактирует только текущее окно, без создания нового."""
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
+    raw_action = str(getattr(call, "data", "") or "")
+    if raw_action != "nav_prev":
+        remember_previous_window(call)
     try:
-        text = auto_window_mark(
-            text,
-            getattr(call, "data", ""),
-            owner_chat=is_owner_chat(chat_id),
-            html_mode=(str(parse_mode or "").upper() == "HTML")
-        )
+        code = window_code_for_callback(raw_action, owner_chat=is_owner_chat(chat_id))
+        if str(code).endswith("9998"):
+            journal_missing_window_marker(raw_action, chat_id, msg_id, text, reply_markup, "safe_edit_current_only")
+        text = window_mark(text, code, html_mode=(str(parse_mode or "").upper() == "HTML"))
     except Exception:
         pass
     if reply_markup is None:
@@ -222,14 +403,13 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
         except Exception:
             pass
     try:
+        reply_markup = ensure_previous_back_nav_keyboard(reply_markup, chat_id, msg_id)
         reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
     except Exception:
         pass
     result = fast_ui_edit_message_text(
-        chat_id, msg_id, text,
-        reply_markup=reply_markup,
-        parse_mode=parse_mode,
-        purpose="safe_edit_current_only_fast",
+        chat_id, msg_id, text, reply_markup=reply_markup,
+        parse_mode=parse_mode, purpose="safe_edit_current_only_fast",
     )
     if result == "rate_limited":
         try:
@@ -237,10 +417,11 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
         except Exception:
             pass
     try:
-        _touch_v98_auto_close_for_callback(chat_id, msg_id, getattr(call, "data", ""))
+        _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
     except Exception:
         pass
     return result in {"ok", "scheduled", "rate_limited"}
+
 
 CATEGORY_PAGE_SAFE_CHARS = 3300
 
@@ -667,6 +848,232 @@ def keep_alive_status_text() -> str:
     return wm_owner("\n".join(lines), 9)
 
 
+
+# v140: быстрый физический маркер расхода с iPhone через Back Tap → Shortcuts → HTTPS.
+_EXPENSE_SHORTCUT_LOCK = threading.RLock()
+_EXPENSE_SHORTCUT_EVENT_LIMIT = 200
+_EXPENSE_SHORTCUT_RETRY_SECONDS = 30.0
+
+
+def _expense_shortcut_root() -> dict:
+    return data.setdefault("_global_settings", {}).setdefault("expense_shortcut", {})
+
+
+def _expense_shortcut_persist():
+    try:
+        save_data(data, root_only=True)
+    except TypeError:
+        save_data(data)
+    try:
+        _mark_global_snapshot_pending()
+    except Exception:
+        pass
+    try:
+        if OWNER_ID:
+            schedule_config_backup_for_chats(int(OWNER_ID), delay=0.4)
+            schedule_quick_backup(int(OWNER_ID), 0.4)
+    except Exception:
+        pass
+
+
+def expense_shortcut_config(create: bool = True) -> dict:
+    with _EXPENSE_SHORTCUT_LOCK:
+        cfg = _expense_shortcut_root()
+        changed = False
+        if create and not str(cfg.get("token") or "").strip():
+            cfg["token"] = secrets.token_urlsafe(24)
+            changed = True
+        if create and not cfg.get("target_chat_id") and OWNER_ID:
+            cfg["target_chat_id"] = int(OWNER_ID)
+            changed = True
+        if "text" not in cfg:
+            cfg["text"] = "💸 Был расход"
+            changed = True
+        if "events" not in cfg or not isinstance(cfg.get("events"), list):
+            cfg["events"] = []
+            changed = True
+        if changed:
+            _expense_shortcut_persist()
+        return cfg
+
+
+def expense_shortcut_url() -> str:
+    cfg = expense_shortcut_config(True)
+    base = str(WEBHOOK_URL or APP_URL or "").strip().rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/expense-ping/{cfg.get('token')}"
+
+
+def expense_shortcut_set_target(chat_id: int):
+    with _EXPENSE_SHORTCUT_LOCK:
+        cfg = expense_shortcut_config(True)
+        cfg["target_chat_id"] = int(chat_id)
+        _expense_shortcut_persist()
+    return int(chat_id)
+
+
+def expense_shortcut_regenerate_token() -> str:
+    with _EXPENSE_SHORTCUT_LOCK:
+        cfg = expense_shortcut_config(True)
+        cfg["token"] = secrets.token_urlsafe(24)
+        _expense_shortcut_persist()
+        return str(cfg["token"])
+
+
+def _expense_shortcut_find_event(event_id: str):
+    cfg = expense_shortcut_config(True)
+    for row in cfg.get("events") or []:
+        if str((row or {}).get("id")) == str(event_id):
+            return row
+    return None
+
+
+def _expense_shortcut_cleanup_events_locked(cfg: dict):
+    events = list(cfg.get("events") or [])
+    # Сохраняем все pending/ошибки и только последние успешно доставленные.
+    pending = [e for e in events if str((e or {}).get("status")) != "sent"]
+    sent = [e for e in events if str((e or {}).get("status")) == "sent"][-80:]
+    cfg["events"] = (pending + sent)[-_EXPENSE_SHORTCUT_EVENT_LIMIT:]
+
+
+def enqueue_expense_ping_event(source: str = "iphone", force: bool = False) -> tuple[str, bool]:
+    """Сначала сохраняет событие, затем фоном отправляет Telegram-сообщение."""
+    with _EXPENSE_SHORTCUT_LOCK:
+        cfg = expense_shortcut_config(True)
+        now_ts = time.time()
+        if not force:
+            for old in reversed(cfg.get("events") or []):
+                if now_ts - float((old or {}).get("created_ts") or 0) <= 6.0:
+                    if str((old or {}).get("source")) == str(source):
+                        return str(old.get("id")), True
+                else:
+                    break
+        event_id = f"xp_{int(now_ts * 1000)}_{secrets.token_hex(4)}"
+        row = {
+            "id": event_id,
+            "created_ts": now_ts,
+            "created_at": now_local().isoformat(timespec="seconds"),
+            "target_chat_id": int(cfg.get("target_chat_id") or OWNER_ID or 0),
+            "text": str(cfg.get("text") or "💸 Был расход"),
+            "source": str(source or "iphone"),
+            "status": "pending",
+            "attempts": 0,
+            "last_error": "",
+        }
+        cfg.setdefault("events", []).append(row)
+        _expense_shortcut_cleanup_events_locked(cfg)
+        _expense_shortcut_persist()
+    GENERAL_TASK_POOL.submit(f"expense-ping:{event_id}", _deliver_expense_ping_event, event_id)
+    return event_id, False
+
+
+def _deliver_expense_ping_event(event_id: str):
+    with _EXPENSE_SHORTCUT_LOCK:
+        row = _expense_shortcut_find_event(event_id)
+        if not row or str(row.get("status")) == "sent":
+            return True
+        row["attempts"] = int(row.get("attempts") or 0) + 1
+        target_chat_id = int(row.get("target_chat_id") or 0)
+        created_at = str(row.get("created_at") or now_local().isoformat(timespec="seconds"))
+        base_text = str(row.get("text") or "💸 Был расход")
+    try:
+        dt = datetime.fromisoformat(created_at)
+    except Exception:
+        dt = now_local()
+    text = f"{base_text}\n⏰ {dt.strftime('%d.%m.%Y %H:%M')}\n📱 Быстрая отметка с iPhone"
+    try:
+        sent = _tg_call_retry(
+            bot.send_message, target_chat_id, text,
+            attempts=2, purpose="expense_ping_send",
+        )
+        with _EXPENSE_SHORTCUT_LOCK:
+            row = _expense_shortcut_find_event(event_id)
+            if row:
+                row["status"] = "sent"
+                row["sent_at"] = now_local().isoformat(timespec="seconds")
+                row["telegram_message_id"] = int(getattr(sent, "message_id", 0) or 0)
+                row["last_error"] = ""
+                _expense_shortcut_cleanup_events_locked(expense_shortcut_config(True))
+                _expense_shortcut_persist()
+        try:
+            bot_journal("expense_ping_sent", target_chat_id, f"event={event_id} source={row.get('source') if row else ''}")
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        with _EXPENSE_SHORTCUT_LOCK:
+            row = _expense_shortcut_find_event(event_id)
+            if row:
+                row["status"] = "pending"
+                row["last_error"] = str(exc)[:300]
+                _expense_shortcut_persist()
+        try:
+            bot_journal("expense_ping_retry", target_chat_id, f"event={event_id} error={str(exc)[:240]}", "WARN")
+        except Exception:
+            pass
+        DELAYED_SCHEDULER.schedule(
+            f"expense-ping-retry:{event_id}", _EXPENSE_SHORTCUT_RETRY_SECONDS,
+            _deliver_expense_ping_event, event_id,
+        )
+        return False
+
+
+def schedule_expense_ping_recovery(delay: float = 1.0):
+    def _job():
+        cfg = expense_shortcut_config(False)
+        for row in list((cfg or {}).get("events") or []):
+            if str((row or {}).get("status")) != "sent" and row.get("id"):
+                GENERAL_TASK_POOL.submit(f"expense-ping:{row.get('id')}", _deliver_expense_ping_event, str(row.get("id")))
+    DELAYED_SCHEDULER.schedule("expense-ping-recovery", max(0.1, float(delay)), _job)
+
+
+def build_expense_shortcut_text(chat_id: int) -> str:
+    cfg = expense_shortcut_config(True)
+    target = int(cfg.get("target_chat_id") or OWNER_ID or chat_id)
+    url = expense_shortcut_url()
+    pending = sum(1 for e in cfg.get("events") or [] if str((e or {}).get("status")) != "sent")
+    url_text = html.escape(url) if url else "APP_URL/WEBHOOK_URL не определён"
+    return (
+        "📱 Быстрый расход с iPhone\n\n"
+        f"Чат назначения: {html.escape(get_chat_display_name(target))}\n"
+        f"ID: <code>{target}</code>\n"
+        f"Ожидают доставки: {pending}\n\n"
+        "Скопируйте эту личную ссылку в приложение «Команды»:\n"
+        f"<code>{url_text}</code>\n\n"
+        "Тройное касание задней панели запустит команду, а бот отправит «💸 Был расход». "
+        "Ссылка секретная: не публикуйте её."
+    )
+
+
+def build_expense_shortcut_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB("🎯 Выбрать чат", callback_data="expense_shortcut_pick"))
+    kb.row(IB("📋 Прислать ссылку отдельно", callback_data="expense_shortcut_send_url"))
+    kb.row(IB("🧪 Проверить сейчас", callback_data="expense_shortcut_test"))
+    kb.row(IB("🔐 Создать новую секретную ссылку", callback_data="expense_shortcut_regenerate"))
+    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+    kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day}:back_main"))
+    return kb
+
+
+def build_expense_shortcut_chat_menu(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    current = int(expense_shortcut_config(True).get("target_chat_id") or OWNER_ID or chat_id)
+    buttons = []
+    for cid in collect_all_known_chat_ids(include_owner=True):
+        if is_chat_bot_removed(cid):
+            continue
+        icon = "✅" if int(cid) == current else "▫️"
+        buttons.append(IB(f"{icon} {chat_button_title(cid)}", callback_data=f"expense_shortcut_target:{cid}"))
+    add_buttons_in_rows(kb, buttons, 2)
+    kb.row(IB("🔙 Назад", callback_data="expense_shortcut_info"))
+    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day}:back_main"))
+    return kb
+
+
 def build_info_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     layout = version_mode_layout()
@@ -727,6 +1134,7 @@ def build_info_keyboard(chat_id: int):
         if version_mode_feature("keepalive_menu"):
             kb.row(IB("💓 Не спать", callback_data="keepalive_status"))
         kb.row(IB("⏱ Внутренние таймеры", callback_data="internal_timers"))
+        kb.row(IB("📱 Быстрый расход iPhone", callback_data="expense_shortcut_info"))
         kb.row(IB(excel_table_style_label(chat_id), callback_data="excel_style_menu"))
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
@@ -2082,4 +2490,4 @@ def schedule_callback_receipt_ack(callback_id: str, chat_id=None, delay: float |
         callback_id,
         chat_id,
     )
-# v139_usd_gomonk_processes_secret_full_edit
+# v140_iphone_expense_chat_info_markers_backnav

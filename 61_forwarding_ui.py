@@ -1,4 +1,4 @@
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav
 def build_forward_root_menu(day_key: str):
     """Корневое меню пересылки: старый режим или новый визуальный режим пары A/B."""
     if forward_menu_new_style_enabled():
@@ -35,6 +35,218 @@ def _collect_forward_picker_items(include_owner: bool = True, include_removed: b
 
 
 
+def _chat_description_origin_back(origin: str, day_key: str) -> str:
+    return f"d:{day_key}:forward_finmode_menu" if str(origin) == "finmode" else f"d:{day_key}:forward_menu"
+
+
+def build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for cid in collect_all_known_chat_ids(include_owner=True):
+        try:
+            if is_chat_bot_removed(int(cid)):
+                continue
+        except Exception:
+            pass
+        buttons.append(IB(chat_button_title(int(cid)), callback_data=f"chat_desc_open:{origin}:{int(cid)}"))
+    add_buttons_in_rows(kb, buttons, 2)
+    kb.row(IB("🔙 Назад", callback_data=_chat_description_origin_back(origin, day_key)))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+
+def build_chat_description_menu_text() -> str:
+    return (
+        "ℹ️ Описание чатов\n\n"
+        "Выберите чат. Бот покажет карточку Telegram, количество участников, "
+        "администраторов и пользователей, которых он реально видел в сообщениях."
+    )
+
+
+def _chat_user_line(user, prefix: str = "") -> str:
+    try:
+        uid = int(getattr(user, "id", 0) or 0)
+        first = str(getattr(user, "first_name", "") or "")
+        last = str(getattr(user, "last_name", "") or "")
+        name = (first + " " + last).strip() or "Без имени"
+        username = str(getattr(user, "username", "") or "").lstrip("@")
+        premium = "Premium" if bool(getattr(user, "is_premium", False)) else "обычный"
+        bot_mark = "бот" if bool(getattr(user, "is_bot", False)) else premium
+        return f"{prefix}{name}" + (f" (@{username})" if username else "") + f" — ID {uid}; {bot_mark}"
+    except Exception:
+        return f"{prefix}не удалось прочитать пользователя"
+
+
+def _known_user_line(row: dict, prefix: str = "") -> str:
+    row = row or {}
+    name = (str(row.get("first_name") or "") + " " + str(row.get("last_name") or "")).strip() or "Без имени"
+    username = str(row.get("username") or "").lstrip("@")
+    kind = "бот" if row.get("is_bot") else ("Premium" if row.get("is_premium") else "обычный")
+    return f"{prefix}{name}" + (f" (@{username})" if username else "") + f" — ID {row.get('id')}; {kind}; видел: {row.get('last_seen') or 'неизвестно'}"
+
+
+_CHAT_DESCRIPTION_CACHE_LOCK = threading.RLock()
+_CHAT_DESCRIPTION_CACHE = {}
+_CHAT_DESCRIPTION_CACHE_SECONDS = 300.0
+
+
+def _split_chat_description_pages(text: str, limit: int = 3300):
+    lines = str(text or "").splitlines()
+    pages, current, size = [], [], 0
+    for line in lines:
+        chunk = str(line)
+        # Очень длинную строку режем без потери текста.
+        pieces = [chunk[i:i + limit] for i in range(0, len(chunk), limit)] or [""]
+        for piece in pieces:
+            add = len(piece) + 1
+            if current and size + add > limit:
+                pages.append("\n".join(current))
+                current, size = [], 0
+            current.append(piece)
+            size += add
+    if current or not pages:
+        pages.append("\n".join(current))
+    total = len(pages)
+    return [f"{page}\n\nСтраница {idx}/{total}" for idx, page in enumerate(pages, 1)]
+
+
+def get_chat_description_pages(target_chat_id: int, refresh: bool = False):
+    key = int(target_chat_id)
+    now_ts = time.time()
+    if not refresh:
+        with _CHAT_DESCRIPTION_CACHE_LOCK:
+            cached = _CHAT_DESCRIPTION_CACHE.get(key)
+            if cached and now_ts < float(cached.get("expires") or 0):
+                return list(cached.get("pages") or [])
+    text = build_chat_description_detail(key)
+    pages = _split_chat_description_pages(text)
+    with _CHAT_DESCRIPTION_CACHE_LOCK:
+        _CHAT_DESCRIPTION_CACHE[key] = {"pages": list(pages), "expires": now_ts + _CHAT_DESCRIPTION_CACHE_SECONDS}
+    return pages
+
+
+def build_chat_description_detail(target_chat_id: int) -> str:
+    target_chat_id = int(target_chat_id)
+    store = get_chat_store(target_chat_id)
+    info = store.get("info") or {}
+    chat_obj = None
+    errors = []
+    try:
+        chat_obj = _tg_call_retry(bot.get_chat, target_chat_id, attempts=2, purpose="chat_description_get_chat")
+        update_chat_info_from_chat_object(chat_obj)
+    except Exception as exc:
+        errors.append(f"getChat: {str(exc)[:180]}")
+
+    def attr(name, default=None):
+        return getattr(chat_obj, name, default) if chat_obj is not None else info.get(name, default)
+
+    title = str(attr("title", "") or "").strip()
+    first = str(attr("first_name", "") or "").strip()
+    last = str(attr("last_name", "") or "").strip()
+    if not title:
+        title = (first + " " + last).strip() or get_chat_display_name(target_chat_id)
+    username = str(attr("username", "") or "").strip().lstrip("@")
+    chat_type = str(attr("type", info.get("type") or "unknown") or "unknown")
+
+    member_count = None
+    try:
+        fn = getattr(bot, "get_chat_member_count", None) or getattr(bot, "get_chat_members_count", None)
+        if fn:
+            member_count = int(_tg_call_retry(fn, target_chat_id, attempts=2, purpose="chat_description_member_count"))
+    except Exception as exc:
+        errors.append(f"memberCount: {str(exc)[:160]}")
+
+    admins = []
+    if chat_type in {"group", "supergroup", "channel"}:
+        try:
+            admins = list(_tg_call_retry(bot.get_chat_administrators, target_chat_id, attempts=2, purpose="chat_description_admins") or [])
+        except Exception as exc:
+            errors.append(f"administrators: {str(exc)[:160]}")
+
+    lines = [
+        "ℹ️ Полное описание чата",
+        "",
+        f"Название: {title}",
+        f"ID чата: {target_chat_id}",
+        f"Тип: {chat_type}",
+        f"Username: @{username}" if username else "Username: нет",
+    ]
+    if member_count is not None:
+        lines.append(f"Количество участников: {member_count}")
+    for label, name in (
+        ("Описание", "description"), ("Bio", "bio"), ("Ссылка-приглашение", "invite_link"),
+        ("Связанный чат", "linked_chat_id"), ("Автоудаление, сек", "message_auto_delete_time"),
+        ("Медленный режим, сек", "slow_mode_delay"),
+    ):
+        value = attr(name, None)
+        if value not in (None, "", 0, False):
+            lines.append(f"{label}: {value}")
+    lines.extend([
+        f"Форум: {'да' if bool(attr('is_forum', False)) else 'нет'}",
+        f"Защищённый контент: {'да' if bool(attr('has_protected_content', False)) else 'нет'}",
+        f"Бот удалён/нет доступа: {'да' if is_chat_bot_removed(target_chat_id) else 'нет'}",
+        f"Финансовый режим: {'включён' if is_finance_mode(target_chat_id) else 'выключен'}",
+        f"Скрытые финансы: {'включены' if is_hidden_finance_mode(target_chat_id) else 'выключены'}",
+        "",
+    ])
+
+    if chat_type == "private":
+        try:
+            member = _tg_call_retry(bot.get_chat_member, target_chat_id, target_chat_id, attempts=1, purpose="chat_description_private_member")
+            user = getattr(member, "user", None)
+            if user:
+                lines.append("Пользователь:")
+                lines.append(_chat_user_line(user, "• "))
+        except Exception:
+            known = list((store.get("known_users") or {}).values())
+            if known:
+                lines.append("Пользователь, которого видел бот:")
+                lines.append(_known_user_line(known[-1], "• "))
+    else:
+        lines.append(f"Администраторы: {len(admins)}")
+        for member in admins[:100]:
+            user = getattr(member, "user", None)
+            status = str(getattr(member, "status", "") or "")
+            custom_title = str(getattr(member, "custom_title", "") or "")
+            suffix = f"; статус {status}" + (f"; должность {custom_title}" if custom_title else "")
+            lines.append((_chat_user_line(user, "• ") if user else "• неизвестный администратор") + suffix)
+        known_users = list((store.get("known_users") or {}).values())
+        known_users.sort(key=lambda row: float((row or {}).get("last_seen_ts") or 0), reverse=True)
+        admin_ids = {int(getattr(getattr(m, "user", None), "id", 0) or 0) for m in admins}
+        known_non_admin = [row for row in known_users if int((row or {}).get("id") or 0) not in admin_ids]
+        lines.extend(["", f"Другие пользователи, которых видел бот: {len(known_non_admin)}"])
+        for row in known_non_admin[:150]:
+            lines.append(_known_user_line(row, "• "))
+        lines.extend([
+            "",
+            "Важно: обычный Telegram Bot API не отдаёт боту полный список всех участников группы. "
+            "Поэтому здесь показаны точное количество, администраторы и накопленный список пользователей, писавших после включения этого учёта.",
+        ])
+    if errors:
+        lines.extend(["", "Ограничения/ошибки получения:"] + [f"• {e}" for e in errors])
+    return "\n".join(lines)
+
+
+def build_chat_description_detail_keyboard(viewer_chat_id: int, origin: str, day_key: str, target_chat_id: int = 0, page: int = 0, total_pages: int = 1):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    target_chat_id = int(target_chat_id or 0)
+    page = max(0, int(page or 0))
+    total_pages = max(1, int(total_pages or 1))
+    if total_pages > 1 and target_chat_id:
+        nav = []
+        if page > 0:
+            nav.append(IB("⬅️ Предыдущая", callback_data=f"chat_desc_page:{origin}:{target_chat_id}:{page - 1}"))
+        nav.append(IB(f"{page + 1}/{total_pages}", callback_data="none"))
+        if page + 1 < total_pages:
+            nav.append(IB("Следующая ➡️", callback_data=f"chat_desc_page:{origin}:{target_chat_id}:{page + 1}"))
+        kb.row(*nav)
+    kb.row(IB("🔄 Обновить данные", callback_data=f"chat_desc_open:{origin}:{target_chat_id}" if target_chat_id else f"chat_desc_menu:{origin}"))
+    kb.row(IB("🔙 Назад к чатам", callback_data=f"chat_desc_menu:{origin}"))
+    kb.row(IB("🔙 Назад в предыдущее меню", callback_data=_chat_description_origin_back(origin, day_key)))
+    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+
 def build_forward_source_menu(day_key: str | None = None):
     if forward_menu_new_style_enabled():
         return build_forward_new_menu(day_key)
@@ -52,11 +264,11 @@ def build_forward_source_menu(day_key: str | None = None):
     if owner_item:
         kb.row(IB(chat_button_title(owner_item[0], owner_item[1]), callback_data=f"fw_src:{owner_item[0]}"))
 
+    kb.row(IB("ℹ️ Описание чатов", callback_data="chat_desc_menu:forward"))
     kb.row(
         IB("📡 Проверить чаты", callback_data="fw_probe_all"),
         IB("🗑 Удалённые", callback_data="fw_removed_list"),
     )
-    kb.row(IB("ℹ️ Описание чатов", callback_data=f"fw_chat_desc_menu:{day_key or today_key()}"))
 
     if day_key:
         kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
@@ -357,11 +569,11 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
     elif not shown_pairs:
         kb.row(IB("Нет доступных чатов", callback_data="none"))
 
+    kb.row(IB("ℹ️ Описание чатов", callback_data="chat_desc_menu:forward"))
     kb.row(
         IB("📡 Проверить чаты", callback_data="fw_probe_all"),
         IB("🗑 Удалённые", callback_data="fw_removed_list"),
     )
-    kb.row(IB("ℹ️ Описание чатов", callback_data=f"fw_chat_desc_menu:{day_key or today_key()}"))
     if day_key:
         kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     else:
@@ -382,51 +594,4 @@ def build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: 
     if A:
         return build_forward_target_menu(A)
     return build_forward_source_menu(day_key)
-
-def build_forward_chat_description_menu(day_key: str):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    items, owner_item = _collect_forward_picker_items(include_owner=True, include_removed=True)
-    all_items = list(items) + ([owner_item] if owner_item else [])
-    buttons = [IB(chat_button_title(cid, title), callback_data=f"fw_chat_desc_pick:{int(cid)}:{day_key}") for cid, title in all_items]
-    add_buttons_in_rows(kb, buttons, 2)
-    kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:forward_menu"))
-    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
-    return kb
-
-def build_forward_chat_full_description(chat_id: int) -> str:
-    cid = int(chat_id)
-    known = collect_forward_menu_chats() or {}
-    meta = known.get(str(cid), {}) or {}
-    store = get_chat_store(cid) or {}
-    rules_out = (data.get("forward_rules", {}) or {}).get(str(cid), {}) or {}
-    rules_in = []
-    for src, dsts in (data.get("forward_rules", {}) or {}).items():
-        if str(cid) in (dsts or {}):
-            rules_in.append(int(src))
-    fin_out = (data.get("forward_finance", {}) or {}).get(str(cid), {}) or {}
-    secret_cfg = (data.get("secret_chats", {}) or {}).get(str(cid), {}) if isinstance(data.get("secret_chats", {}), dict) else {}
-    lines = [
-        "ℹ️ Полное описание чата",
-        f"Название: {get_chat_display_name(cid)}",
-        f"ID: {cid}",
-        f"Тип: {meta.get('type') or store.get('chat_type') or 'не определён'}",
-        f"Бот удалён/недоступен: {'да' if is_chat_bot_removed(cid) else 'нет'}",
-        f"Финансовый режим: {'включён' if is_finance_chat(cid) else 'выключен'}",
-        f"USD-операции: {'включены' if usd_transactions_view_enabled(cid) else 'выключены'}",
-        f"Скрытые финансы: {'включены' if is_hidden_finance_mode(cid) else 'выключены'}",
-        f"Записей в базе: {len(store.get('records', []) or [])}",
-        f"Пересылка ИЗ чата: {', '.join(get_chat_display_name(int(x)) for x in rules_out.keys()) or 'нет'}",
-        f"Пересылка В чат: {', '.join(get_chat_display_name(int(x)) for x in rules_in) or 'нет'}",
-        f"Финучёт пересылки ИЗ чата: {', '.join(get_chat_display_name(int(x)) for x,v in fin_out.items() if v) or 'нет'}",
-        f"Секретные настройки: {'есть' if secret_cfg else 'нет'}",
-        f"Последняя активность: {meta.get('updated_at') or store.get('last_activity') or 'нет данных'}",
-    ]
-    return "\n".join(lines)
-
-def build_forward_chat_description_detail_keyboard(day_key: str):
-    kb = types.InlineKeyboardMarkup()
-    kb.row(IB("🔙 Назад к чатам", callback_data=f"fw_chat_desc_menu:{day_key}"))
-    kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
-    return kb
-
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav

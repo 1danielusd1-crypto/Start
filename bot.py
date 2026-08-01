@@ -1,11 +1,11 @@
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v139_usd_gomonk_processes_secret_full_edit"
-MODULE_FILE_VERSION = "v139_usd_gomonk_processes_secret_full_edit"
+MODULAR_VERSION = "bot_v140_iphone_expense_chat_info_markers_backnav"
+MODULE_FILE_VERSION = "v140_iphone_expense_chat_info_markers_backnav"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -122,4 +122,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v140_quick_expense_chat_descriptions_markers_nav
+# v140_iphone_expense_chat_info_markers_backnav
