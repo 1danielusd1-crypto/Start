@@ -1,4 +1,4 @@
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -66,6 +66,22 @@ def expense_ping_endpoint(token: str):
     expected = str(cfg.get("token") or "")
     if not expected or not secrets.compare_digest(str(token or ""), expected):
         return {"ok": False}, 404
+    if "safety_profile_new_enabled" in globals() and safety_profile_new_enabled():
+        try:
+            rate_key = f"{request.remote_addr or 'unknown'}:{str(token)[-8:]}"
+            now_ts = time.time()
+            bucket = _IPHONE_ENDPOINT_RUNTIME[rate_key]
+            while bucket and now_ts - float(bucket[0]) > 60.0:
+                bucket.popleft()
+            if len(bucket) >= 10:
+                try:
+                    bot_journal("expense_ping_rate_limited", None, f"key={rate_key}", "WARN")
+                except Exception:
+                    pass
+                return {"ok": False, "error": "rate_limited"}, 429
+            bucket.append(now_ts)
+        except Exception:
+            pass
     try:
         event_id, duplicate = enqueue_expense_ping_event("iphone_back_tap", force=False)
         target_chat_id = int(expense_shortcut_config(True).get("target_chat_id") or 0)
@@ -568,6 +584,10 @@ def main():
         start_reminder_scheduler()
     except Exception as e:
         log_error(f"reminder scheduler start: {e}")
+    try:
+        start_safety_schedulers()
+    except Exception as e:
+        log_error(f"safety schedulers start: {e}")
 
     if boot_recovery_remaining > 0:
         runtime_set_phase("boot_recovery_background", f"осталось {boot_recovery_remaining}; webhook временно 503")
@@ -635,4 +655,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety

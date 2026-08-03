@@ -1,14 +1,15 @@
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v140_iphone_expense_chat_info_markers_backnav"
-MODULE_FILE_VERSION = "v140_iphone_expense_chat_info_markers_backnav"
+MODULAR_VERSION = "bot_v141_operation_ledger_windows_expense_reminders_safety"
+MODULE_FILE_VERSION = "v141_operation_ledger_windows_expense_reminders_safety"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
+    '15_operation_safety.py',
     '20_callback_tokens.py',
     '30_secret.py',
     '35_reminders.py',
@@ -122,4 +123,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety

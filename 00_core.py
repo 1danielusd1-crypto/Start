@@ -1,4 +1,4 @@
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety
 import os
 import io
 import json
@@ -800,7 +800,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v140_iphone_expense_chat_info_markers_backnav"
+VERSION = "bot_v141_operation_ledger_windows_expense_reminders_safety"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -4056,6 +4056,22 @@ WINDOW_MARKER_CONSTANTS = {
     'expense_shortcut_regenerate': 'Ф201',
     'expense_shortcut_test': 'Ф202',
     'expense_shortcut_send_url': 'Ф203',
+    # v141: центр процессов, профиль защиты, целостность и неразобранные расходы.
+    'process_center': 'Ф204',
+    'problem_tasks': 'Ф205',
+    'safety_profile_toggle': 'Ф206',
+    'safety_profile_open': 'Ф206',
+    'integrity_status': 'Ф207',
+    'expense_inbox_open': 'Ф208',
+    'expense_draft_open:*': 'Ф209',
+    'expense_draft_resolved:*': 'Ф210',
+    'expense_draft_dismiss:*': 'Ф210',
+    'expense_evening_toggle': 'Ф211',
+    'expense_evening_now': 'Ф212',
+    'expense_evening_done': 'Ф213',
+    'security_roles:*': 'Ф214',
+    'security_role_user:*': 'Ф215',
+    'security_role_set:*': 'Ф216',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
@@ -7567,4 +7583,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety

@@ -1,4 +1,4 @@
-# v139_usd_gomonk_processes_secret_full_edit
+# v141_operation_ledger_windows_expense_reminders_safety
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -21,28 +21,35 @@ def mega_missing_commands():
 
 
 def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = True):
-    """Один MEGAcmd вызов за раз: на Render 512MB параллельные mega-* давали пики памяти."""
+    """Один MEGAcmd вызов за раз; в новом профиле — retry и circuit breaker."""
     args = list(args or [])
     exe = shutil.which(cmd)
     if not exe:
         raise RuntimeError(f"MEGAcmd command not found: {cmd}")
-    with MEGA_COMMAND_LOCK:
-        try:
-            res = subprocess.run(
-                [exe] + args,
-                capture_output=True,
-                text=True,
-                timeout=timeout or MEGA_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
-    if check and res.returncode != 0:
-        out = (res.stdout or "").strip()
-        err = (res.stderr or "").strip()
-        msg = (err or out or f"returncode={res.returncode}")[:800]
-        # Не печатаем пароль/логин-команду в лог.
-        raise RuntimeError(f"{cmd} failed: {msg}")
-    return res
+
+    def _execute_once():
+        with MEGA_COMMAND_LOCK:
+            try:
+                res = subprocess.run(
+                    [exe] + args,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout or MEGA_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
+        if check and res.returncode != 0:
+            out = (res.stdout or "").strip()
+            err = (res.stderr or "").strip()
+            msg = (err or out or f"returncode={res.returncode}")[:800]
+            # Не печатаем пароль/логин-команду в лог.
+            raise RuntimeError(f"{cmd} failed: {msg}")
+        return res
+
+    guard = globals().get("guarded_external_call")
+    if callable(guard):
+        return guard(f"mega:{cmd}", _execute_once, attempts=2, base_delay=0.6)
+    return _execute_once()
 
 
 def mega_login_if_needed() -> bool:
@@ -1457,9 +1464,11 @@ def schedule_durable_task_finalize_retry(update_id, chat_id, update_type: str = 
             report = _durable_effect_report(payload_copy or {}, expected_copy or {}) if payload_copy else {}
             reason = f"needs_review: durable effects not proven; missing={report.get('missing', [])}; ambiguous={report.get('ambiguous', [])}"
             mega_task_finish(key, False, reason)
+            # Отсутствие доказательства — жёлтое состояние, а не подтверждённая ошибка.
+            # Оно остаётся в MEGA/failed и в «Инфо → Проблемные задачи», но не пугает
+            # пользователя после обычного редактирования/выбора настройки.
             try:
-                if OWNER_ID:
-                    bot.send_message(int(OWNER_ID), f"⚠️ Задача {key} требует проверки и сохранена в MEGA/failed.\nАвтоповтор специально не выполнен, чтобы не создать дубль.\n{reason[:760]}")
+                bot_journal("durable_needs_review_silent", chat_id, f"update={key}; {reason[:700]}", "WARN")
             except Exception:
                 pass
             return
@@ -2029,6 +2038,12 @@ def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
     if not mega_tasks_active():
         return False
     key = _mega_task_id(update_id)
+    try:
+        if "operation_begin_durable" in globals():
+            operation_begin_durable(key, task_payload)
+            operation_step(operation_for_update(key), "saved_locally", "durable payload prepared", persist=False)
+    except Exception as _op_exc:
+        log_error(f"operation ledger begin update={key}: {_op_exc}")
     known = mega_task_known_state(key)
     if known in {"pending", "running", "done"}:
         return True
@@ -2056,6 +2071,11 @@ def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
                 err = (mv.stderr or mv.stdout or "")[:500]
                 raise RuntimeError(f"task candidate move failed: {err}")
         _mega_task_update_registry(key, "pending", remote_final)
+        try:
+            if "operation_step" in globals():
+                operation_step(operation_for_update(key), "saved_to_mega", remote_final, persist=False)
+        except Exception:
+            pass
         with _MEGA_TASK_LOCK:
             _mega_task_counters["persisted"] += 1
         bot_journal("mega_task_timing", None, f"phase=persist update={key} elapsed={time.monotonic()-_timing_started:.3f}s")
@@ -2126,6 +2146,11 @@ def mega_task_begin(update_id, allow_existing_running: bool = False) -> bool:
             pass
         else:
             return False
+        try:
+            if "operation_step" in globals():
+                operation_step(operation_for_update(key), "effect_running", f"state={mega_task_known_state(key)}", persist=False)
+        except Exception:
+            pass
         return True
     finally:
         if mega_task_known_state(key) != "running":
@@ -2180,6 +2205,15 @@ def mega_task_finish(update_id, success: bool, error: str = "") -> bool:
         _mega_task_prune_done_async()
     if not ok:
         _mega_task_last_error = f"finalize {target} failed for {key}: {error}"[:500]
+    try:
+        if success and ok and "operation_complete" in globals():
+            operation_complete(operation_for_update(key), "durable task completed")
+        elif (not success) and str(error or "").startswith("needs_review") and "operation_review" in globals():
+            operation_review(operation_for_update(key), error)
+        elif (not success) and "operation_fail" in globals():
+            operation_fail(operation_for_update(key), error or "durable task failed")
+    except Exception as _op_exc:
+        log_error(f"operation ledger finish update={key}: {_op_exc}")
     bot_journal("mega_task_timing", None, f"phase=finish update={key} target={target} ok={ok} elapsed={time.monotonic()-_timing_started:.3f}s")
     return ok
 
@@ -2435,7 +2469,9 @@ def _mega_task_recover_one(update_id, state: str, remote_path: str):
             mega_task_finish(key, False, reason)
             bot_journal("mega_task_needs_review", chat_id, f"update_id={key} {reason}")
             try:
-                if OWNER_ID:
+                # В новом профиле жёлтые сомнения видны в «Инфо → Проблемные задачи».
+                # Не засоряем чат страшным уведомлением, если ошибка не доказана.
+                if OWNER_ID and not ("safety_profile_new_enabled" in globals() and safety_profile_new_enabled()):
                     bot.send_message(int(OWNER_ID), f"⚠️ Задача {key} после перезапуска НЕ повторена, чтобы не создать дубль.\n{reason[:850]}")
             except Exception:
                 pass
@@ -8526,4 +8562,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v139_usd_gomonk_processes_secret_full_edit
+# v141_operation_ledger_windows_expense_reminders_safety

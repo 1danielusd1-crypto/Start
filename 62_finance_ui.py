@@ -1,4 +1,4 @@
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety
 def finance_mode_compact_icon(chat_id: int) -> str:
     """v108: hidden finance and visible auto-window mode are shown independently."""
     try:
@@ -402,6 +402,7 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, sour
     """
     bot_journal("record_update_start", chat_id, f"rid={rid} amount={amount} note={note} msg={source_msg_id or ''}")
     chat_id = int(chat_id); rid = int(rid)
+    op_id = operation_begin("finance_edit", chat_id, target=str(rid), payload={"amount": amount, "note": note, "source_msg_id": source_msg_id}, critical=True) if "operation_begin" in globals() else ""
     store = get_chat_store(chat_id)
     active = _ensure_currency_ledgers(store)
 
@@ -434,8 +435,10 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, sour
             elif key == "usd_records": touched_ledgers.add("usd")
             elif key == "records": touched_ledgers.add(active)
     if not targets:
+        if op_id and "operation_review" in globals(): operation_review(op_id, "record not found")
         return False
 
+    before_snapshot = copy.deepcopy(targets[0][1]) if targets else {}
     for _key, target in targets:
         target["amount"] = amount
         target["note"] = note
@@ -465,6 +468,12 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, sour
     rebuild_month_short_ids(chat_id)
     rebuild_global_records()
     save_data(data, chat_ids=[chat_id])
+    try:
+        finance_cache_invalidate(chat_id, "finance_edit")
+        finance_integrity_append(chat_id, "edit", targets[0][1] if targets else {"id": rid}, details={"before": before_snapshot})
+    except Exception as _integrity_exc:
+        log_error(f"finance edit integrity: {_integrity_exc}")
+    if op_id and "operation_complete" in globals(): operation_complete(op_id, f"record={rid}")
     return True
 
 
@@ -477,6 +486,8 @@ def delete_selected_records(chat_id: int, day_key: str) -> int:
         if not selected:
             return 0
 
+        op_id = operation_begin("finance_bulk_delete", chat_id, target=str(day_key), payload={"selected": sorted(selected)}, critical=True) if "operation_begin" in globals() else ""
+        deleted_snapshot = [copy.deepcopy(r) for r in (store.get("records", []) or []) if int(r.get("id", -1)) in selected]
         before = len(store.get("records", []) or [])
         store["records"] = [r for r in (store.get("records", []) or []) if int(r.get("id", -1)) not in selected]
 
@@ -497,6 +508,12 @@ def delete_selected_records(chat_id: int, day_key: str) -> int:
         rebuild_global_records()
         save_data(data)
         finance_changed(chat_id, day_key, reason="delete_selected", delay=0.1)
+        try:
+            finance_cache_invalidate(chat_id, "finance_bulk_delete")
+            finance_integrity_append(chat_id, "bulk_delete", {"ids": sorted(selected)}, details={"records": deleted_snapshot})
+        except Exception as _integrity_exc:
+            log_error(f"finance bulk delete integrity: {_integrity_exc}")
+        if op_id and "operation_complete" in globals(): operation_complete(op_id, f"deleted={deleted}")
         return deleted
 
 
@@ -708,4 +725,4 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     if financial_view_is_usd(store):
         label = "USD " + label
     return rows, label
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety

@@ -1,4 +1,4 @@
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v141_operation_ledger_windows_expense_reminders_safety
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -10,6 +10,14 @@ GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv(
 ).strip()
 _GOOGLE_TOKEN_CACHE = {"token": "", "expires_at": 0.0}
 _GOOGLE_TOKEN_LOCK = threading.RLock()
+
+
+def _google_request_guarded(name: str, method, *args, attempts: int = 1, **kwargs):
+    """Circuit breaker/retry for safe Google calls; mutating requests use attempts=1."""
+    guard = globals().get("guarded_external_call")
+    if callable(guard):
+        return guard(f"google:{name}", method, *args, attempts=max(1, int(attempts)), base_delay=0.7, **kwargs)
+    return method(*args, **kwargs)
 
 
 def _b64url(data: bytes) -> str:
@@ -86,10 +94,11 @@ def _google_access_token() -> str:
         ).encode("ascii")
         signature = _google_sign_rs256(signing_input, info["private_key"])
         assertion = signing_input.decode("ascii") + "." + _b64url(signature)
-        response = requests.post(
+        response = _google_request_guarded(
+            "oauth", requests.post,
             info.get("token_uri") or "https://oauth2.googleapis.com/token",
             data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion},
-            timeout=30,
+            timeout=30, attempts=2,
         )
         if response.status_code >= 300:
             raise RuntimeError(f"Google OAuth {response.status_code}: {response.text[:500]}")
@@ -162,11 +171,12 @@ def _google_sheets_create_category_report(title: str, rows: list[list], layout: 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     # First verify that this service account can actually open the shared spreadsheet.
-    meta = requests.get(
+    meta = _google_request_guarded(
+        "metadata", requests.get,
         f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}",
         headers=headers,
         params={"fields": "spreadsheetId,properties.title,sheets.properties(sheetId,title)"},
-        timeout=45,
+        timeout=45, attempts=2,
     )
     if meta.status_code >= 300:
         detail = meta.text[:700]
@@ -195,7 +205,8 @@ def _google_sheets_create_category_report(title: str, rows: list[list], layout: 
     tab_title = _google_sheet_tab_title(title)
 
     # Add a fresh tab to the existing spreadsheet. The returned sheetId is then used for updates.
-    add_sheet = requests.post(
+    add_sheet = _google_request_guarded(
+        "add_sheet", requests.post,
         f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate",
         headers=headers,
         json={"requests": [{"addSheet": {"properties": {
@@ -206,7 +217,7 @@ def _google_sheets_create_category_report(title: str, rows: list[list], layout: 
                 "frozenRowCount": 1 if layout in {"compact", "category_compact"} else 2,
             },
         }}}]},
-        timeout=60,
+        timeout=60, attempts=1,
     )
     if add_sheet.status_code >= 300:
         raise RuntimeError(f"Google Sheets add tab {add_sheet.status_code}: {add_sheet.text[:700]}")
@@ -266,11 +277,12 @@ def _google_sheets_create_category_report(title: str, rows: list[list], layout: 
             }
         }
     }]
-    update = requests.post(
+    update = _google_request_guarded(
+        "update_sheet", requests.post,
         f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate",
         headers=headers,
         json={"requests": requests_payload},
-        timeout=90,
+        timeout=90, attempts=1,
     )
     if update.status_code >= 300:
         raise RuntimeError(f"Google Sheets update {update.status_code}: {update.text[:700]}")
@@ -283,7 +295,8 @@ def _google_sheets_create_category_report(title: str, rows: list[list], layout: 
         if str(note or "").strip()
     }
     if expected_notes:
-        verify = requests.get(
+        verify = _google_request_guarded(
+            "verify_notes", requests.get,
             f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}",
             headers=headers,
             params={
@@ -291,7 +304,7 @@ def _google_sheets_create_category_report(title: str, rows: list[list], layout: 
                 "ranges": f"'{tab_title.replace(chr(39), chr(39)*2)}'!A1:{_xlsx_col_name(max_cols)}{max(1, len(rows))}",
                 "fields": "sheets(data(rowData(values(note))))",
             },
-            timeout=60,
+            timeout=60, attempts=2,
         )
         if verify.status_code >= 300:
             raise RuntimeError(f"Google Sheets note verify {verify.status_code}: {verify.text[:700]}")
@@ -807,4 +820,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v137_excel_toggle_usd_gomonk_timers_cleanup
+# v141_operation_ledger_windows_expense_reminders_safety

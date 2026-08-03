@@ -1,4 +1,4 @@
-# v139_usd_gomonk_processes_secret_full_edit
+# v141_operation_ledger_windows_expense_reminders_safety
 
 
 @bot.message_handler(
@@ -413,6 +413,7 @@ def _add_record_to_currency_ledger(
     records = store.setdefault(records_key, [])
     daily = store.setdefault(daily_key, {})
     rid = int(store.get(next_key, 1) or 1)
+    op_id = operation_begin("finance_add", chat_id, target=f"{ledger}:{rid}", payload={"amount": amount, "note": note, "currency": ledger}, critical=True) if "operation_begin" in globals() else ""
     source_msg_id = getattr(source_msg, "message_id", None) if source_msg else None
     source_order_msg_id = (
         getattr(source_msg, "source_order_msg_id", None)
@@ -442,6 +443,12 @@ def _add_record_to_currency_ledger(
         rebuilt.setdefault(_record_day_key(r), []).append(r)
     store[daily_key] = rebuilt
     store[balance_key] = sum(float(r.get("amount", 0) or 0) for r in records)
+    try:
+        finance_cache_invalidate(chat_id, f"finance_add_{ledger}")
+        finance_integrity_append(chat_id, "add", rec, details={"currency": ledger})
+    except Exception as _integrity_exc:
+        log_error(f"finance currency add integrity: {_integrity_exc}")
+    if op_id and "operation_complete" in globals(): operation_complete(op_id, f"record={rid} currency={ledger}")
 
 
 def handle_finance_text(msg):
@@ -452,6 +459,17 @@ def handle_finance_text(msg):
     """
 
     chat_id = msg.chat.id
+    try:
+        uid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
+        if "safety_profile_new_enabled" in globals() and safety_profile_new_enabled() and not security_user_allowed(uid, "finance_input"):
+            send_and_auto_delete(chat_id, "⛔ У вас нет права добавлять финансовые записи.", 8)
+            try:
+                bot_journal("security_finance_input_blocked", chat_id, f"user={uid}", "WARN")
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
     bot_journal("finance_text_start", chat_id, describe_msg_for_log(msg))
     text = _message_text_for_finance(msg)
     if not text:
@@ -940,4 +958,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v139_usd_gomonk_processes_secret_full_edit
+# v141_operation_ledger_windows_expense_reminders_safety

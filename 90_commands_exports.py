@@ -1,4 +1,4 @@
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -145,6 +145,8 @@ def add_record_to_chat(
     source_finance_text: str = "",
 ):
     bot_journal("record_add_start", chat_id, f"amount={amount} note={note}")
+    op_id = operation_begin("finance_add", chat_id, target=str(day_key or "auto"), payload={"amount": amount, "note": note}, critical=True) if "operation_begin" in globals() else ""
+    if op_id and "operation_step" in globals(): operation_step(op_id, "saved_locally", "intent recorded", persist=False)
     with locked_chat(chat_id):
         store = get_chat_store(chat_id)
         rid = store.get("next_id", 1)
@@ -170,6 +172,7 @@ def add_record_to_chat(
                     if operation_key and not existing.get("operation_key"):
                         existing["operation_key"] = operation_key
                     bot_journal("finance_duplicate_blocked", chat_id, f"source_msg_id={source_msg_id} operation_key={operation_key}")
+                    if op_id and "operation_complete" in globals(): operation_complete(op_id, "duplicate blocked; existing record reused")
                     return existing
 
         rec = {
@@ -200,11 +203,19 @@ def add_record_to_chat(
 
         rebuild_month_short_ids(chat_id)
         rebuild_global_records()
+        try:
+            finance_cache_invalidate(chat_id, "finance_add")
+            finance_integrity_append(chat_id, "add", rec)
+        except Exception as _integrity_exc:
+            log_error(f"finance add integrity: {_integrity_exc}")
+        if op_id and "operation_complete" in globals(): operation_complete(op_id, f"record={rec.get('id')}")
         return rec
 
 def delete_record_in_chat(chat_id: int, rid: int):
+    op_id = operation_begin("finance_delete", chat_id, target=str(rid), payload={"rid": rid}, critical=True) if "operation_begin" in globals() else ""
     with locked_chat(chat_id):
         store = get_chat_store(chat_id)
+        deleted_record = next((copy.deepcopy(x) for x in store.get("records", []) if int(x.get("id", -1)) == int(rid)), None)
 
         store["records"] = [x for x in store["records"] if x["id"] != rid]
 
@@ -218,6 +229,12 @@ def delete_record_in_chat(chat_id: int, rid: int):
         renumber_chat_records(chat_id)
         store["balance"] = sum(x["amount"] for x in store["records"])
         rebuild_global_records()
+        try:
+            finance_cache_invalidate(chat_id, "finance_delete")
+            finance_integrity_append(chat_id, "delete", deleted_record or {"id": rid})
+        except Exception as _integrity_exc:
+            log_error(f"finance delete integrity: {_integrity_exc}")
+        if op_id and "operation_complete" in globals(): operation_complete(op_id, f"record={rid}")
 
 def renumber_chat_records(chat_id: int):
     """Перенумеровывает записи по реальной хронологии поступления сообщений."""
@@ -1619,4 +1636,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety

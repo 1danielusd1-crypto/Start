@@ -1,4 +1,4 @@
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -94,6 +94,15 @@ def on_callback(call):
             pass
 
         try:
+            user_id = int(getattr(getattr(call, "from_user", None), "id", 0) or 0)
+            if "safety_permission_allowed" in globals() and not safety_permission_allowed(user_id, chat_id, data_str):
+                bot.answer_callback_query(call.id, "Недостаточно прав для этого действия.", show_alert=True)
+                bot_journal("permission_denied", chat_id, f"user={user_id} action={data_str}", "WARN")
+                return
+        except Exception:
+            pass
+
+        try:
             # Любая кнопка в любом окне секретного режима означает, что пользователь
             # ещё работает с окном: перезапускаем отсчёт автозакрытия с 01:30.
             touch_secret_window_timer_for_callback(chat_id, call.message.message_id, data_str)
@@ -175,6 +184,144 @@ def on_callback(call):
                 key, _chat_description_background, chat_id, call.message.message_id,
                 target_chat_id, origin, day_key, page, False
             )
+            return
+
+        if data_str == "process_center":
+            safe_edit(bot, call, build_process_center_text(chat_id), reply_markup=build_process_center_keyboard(chat_id))
+            return
+
+        if data_str == "problem_tasks":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(bot, call, build_problem_tasks_text(), reply_markup=build_problem_tasks_keyboard(chat_id))
+            return
+
+        if data_str == "safety_profile_open":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(bot, call, safety_profile_text(), reply_markup=build_safety_profile_keyboard(chat_id))
+            return
+
+        if data_str == "safety_profile_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            mode = toggle_safety_profile_mode()
+            try:
+                bot.answer_callback_query(call.id, f"Защита: {'по-новому' if mode == 'new' else 'по-старому'}")
+            except Exception:
+                pass
+            safe_edit(bot, call, safety_profile_text(), reply_markup=build_safety_profile_keyboard(chat_id))
+            return
+
+        if data_str.startswith("security_roles:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                page = int(data_str.split(":", 1)[1])
+            except Exception:
+                page = 0
+            safe_edit(bot, call, build_security_roles_text(page), reply_markup=build_security_roles_keyboard(page))
+            return
+
+        if data_str.startswith("security_role_user:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                _p, uid_raw, page_raw = data_str.split(":", 2)
+                uid, page = int(uid_raw), int(page_raw)
+            except Exception:
+                return
+            safe_edit(bot, call, build_security_role_user_text(uid), reply_markup=build_security_role_user_keyboard(uid, page))
+            return
+
+        if data_str.startswith("security_role_set:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                _p, uid_raw, role, page_raw = data_str.split(":", 3)
+                uid, page = int(uid_raw), int(page_raw)
+            except Exception:
+                return
+            security_set_role(uid, role)
+            try:
+                bot.answer_callback_query(call.id, f"Роль: {security_role_label(security_role_for_user(uid))}")
+            except Exception:
+                pass
+            safe_edit(bot, call, build_security_role_user_text(uid), reply_markup=build_security_role_user_keyboard(uid, page))
+            return
+
+        if data_str == "integrity_status":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(bot, call, finance_integrity_text(), reply_markup=build_integrity_keyboard(chat_id))
+            return
+
+        if data_str == "expense_inbox_open":
+            if not is_owner_chat(chat_id):
+                return
+            safe_edit(bot, call, expense_inbox_text(), reply_markup=build_expense_inbox_keyboard(chat_id))
+            return
+
+        if data_str.startswith("expense_draft_open:"):
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                draft_id = int(data_str.split(":", 1)[1])
+            except Exception:
+                return
+            safe_edit(bot, call, build_expense_draft_text(draft_id), reply_markup=build_expense_draft_detail_keyboard(draft_id, chat_id))
+            return
+
+        if data_str.startswith("expense_draft_resolved:") or data_str.startswith("expense_draft_dismiss:"):
+            try:
+                draft_id = int(data_str.split(":", 1)[1])
+            except Exception:
+                return
+            status = "resolved" if data_str.startswith("expense_draft_resolved:") else "dismissed"
+            if not (is_owner_chat(chat_id) or int(((_expense_inbox_root().get("items") or {}).get(str(draft_id)) or {}).get("target_chat_id") or 0) == int(chat_id)):
+                return
+            expense_draft_mark(draft_id, status)
+            try:
+                bot.answer_callback_query(call.id, "Отметка закрыта")
+            except Exception:
+                pass
+            if is_owner_chat(chat_id):
+                safe_edit(bot, call, expense_inbox_text(), reply_markup=build_expense_inbox_keyboard(chat_id))
+            else:
+                try:
+                    bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+                except Exception:
+                    pass
+            return
+
+        if data_str == "expense_evening_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            enabled = toggle_evening_reconciliation()
+            try:
+                bot.answer_callback_query(call.id, "Вечерняя сверка включена" if enabled else "Вечерняя сверка выключена")
+            except Exception:
+                pass
+            safe_edit(bot, call, expense_inbox_text(), reply_markup=build_expense_inbox_keyboard(chat_id))
+            return
+
+        if data_str == "expense_evening_now":
+            if not is_owner_chat(chat_id):
+                return
+            GENERAL_TASK_POOL.submit_unique("expense-evening-now", send_evening_reconciliation, True)
+            try:
+                bot.answer_callback_query(call.id, "Сверка отправляется")
+            except Exception:
+                pass
+            return
+
+        if data_str == "expense_evening_done":
+            if not is_owner_chat(chat_id):
+                return
+            try:
+                bot.edit_message_text("✅ Вечерняя сверка завершена. Все расходы внесены.", chat_id=chat_id, message_id=call.message.message_id)
+            except Exception:
+                pass
             return
 
         if data_str == "expense_shortcut_info":
@@ -2940,4 +3087,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety

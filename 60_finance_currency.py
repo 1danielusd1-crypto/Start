@@ -1,4 +1,4 @@
-# v139_usd_gomonk_processes_secret_full_edit
+# v141_operation_ledger_windows_expense_reminders_safety
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -748,18 +748,23 @@ def ensure_usd_migration_for_chat(chat_id: int) -> int:
 
 def usd_records_for_month(chat_id: int, month_key: str) -> list[dict]:
     ensure_usd_migration_for_chat(int(chat_id))
-    rows = []
-    for rec in get_chat_store(int(chat_id)).get("records", []) or []:
-        try:
-            if not _record_day_key(rec).startswith(str(month_key)[:7]):
+    store = get_chat_store(int(chat_id))
+    records = list(store.get("records", []) or [])
+    key = ("usd_month", int(chat_id), str(month_key)[:7], len(records), int(store.get("next_id", 0) or 0))
+    def _build():
+        rows = []
+        for rec in records:
+            try:
+                if not _record_day_key(rec).startswith(str(month_key)[:7]):
+                    continue
+                usd_amount = float(rec.get("usd_amount", 0) or 0)
+                if not usd_amount:
+                    continue
+                rows.append(rec)
+            except Exception:
                 continue
-            usd_amount = float(rec.get("usd_amount", 0) or 0)
-            if not usd_amount:
-                continue
-            rows.append(rec)
-        except Exception:
-            continue
-    return sorted(rows, key=record_sort_key)
+        return sorted(rows, key=record_sort_key)
+    return finance_cache_get(key, _build, ttl=30.0) if "finance_cache_get" in globals() else _build()
 
 
 def usd_balance_for_chat(chat_id: int) -> float:
@@ -776,7 +781,11 @@ def usd_balance_for_chat(chat_id: int) -> float:
 def usd_records_for_day(chat_id: int, day_key: str) -> list[dict]:
     ensure_usd_migration_for_chat(int(chat_id))
     store = get_chat_store(int(chat_id))
-    return [r for r in financial_view_records_for_day_store(store, str(day_key)) if abs(float(r.get("usd_amount", 0) or 0)) > 0]
+    records = list(store.get("records", []) or [])
+    key = ("usd_day", int(chat_id), str(day_key), len(records), int(store.get("next_id", 0) or 0))
+    def _build():
+        return [r for r in financial_view_records_for_day_store(store, str(day_key)) if abs(float(r.get("usd_amount", 0) or 0)) > 0]
+    return finance_cache_get(key, _build, ttl=20.0) if "finance_cache_get" in globals() else _build()
 
 
 def render_usd_day_window(chat_id: int, day_key: str):
@@ -2067,4 +2076,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v139_usd_gomonk_processes_secret_full_edit
+# v141_operation_ledger_windows_expense_reminders_safety

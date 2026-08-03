@@ -1,4 +1,4 @@
-# v138_parallel_lanes_ui_ack
+# v141_operation_ledger_windows_expense_reminders_safety
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -317,6 +317,8 @@ def schedule_full_backup_only(chat_id: int, delay: float = 3.0):
         if not BACKUP_TASK_POOL.submit(f"full:{chat_id}", _run_full_chat_backup, chat_id):
             log_error(f"FULL BACKUP QUEUE FULL, RETRY: {chat_id}")
             schedule_full_backup_only(chat_id, BACKUP_BUSY_RETRY_SECONDS)
+    # Один ключ на чат: серия правок объединяется в один тяжёлый backup.
+    DELAYED_SCHEDULER.cancel(f"full-backup:{chat_id}")
     DELAYED_SCHEDULER.schedule(f"full-backup:{chat_id}", delay, _fire)
 
 
@@ -350,6 +352,10 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
     """
     chat_id = int(chat_id)
     day_key = day_key or get_chat_store(chat_id).get("current_view_day") or today_key()
+    try:
+        finance_cache_invalidate(chat_id, f"finance_changed:{reason}")
+    except Exception:
+        pass
 
     try:
         with locked_chat(chat_id):
@@ -1400,4 +1406,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v138_parallel_lanes_ui_ack
+# v141_operation_ledger_windows_expense_reminders_safety

@@ -1,4 +1,4 @@
-# v140_iphone_expense_chat_info_markers_backnav
+# v141_operation_ledger_windows_expense_reminders_safety
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -981,12 +981,22 @@ def _deliver_expense_ping_event(event_id: str):
         dt = datetime.fromisoformat(created_at)
     except Exception:
         dt = now_local()
-    text = f"{base_text}\n⏰ {dt.strftime('%d.%m.%Y %H:%M')}\n📱 Быстрая отметка с iPhone"
+    draft = expense_draft_for_event(event_id, target_chat_id, created_at) if "expense_draft_for_event" in globals() else {"id": 0}
+    draft_id = int((draft or {}).get("id") or 0)
+    text = (
+        f"❓ Расход №{draft_id}\n"
+        f"{base_text}\n⏰ {dt.strftime('%d.%m.%Y %H:%M')}\n"
+        "📱 Быстрая отметка с iPhone\n\n"
+        "Сумма и статья пока не заполнены."
+    )
     try:
+        markup = expense_draft_message_keyboard(draft_id, target_chat_id) if draft_id and "expense_draft_message_keyboard" in globals() else None
         sent = _tg_call_retry(
-            bot.send_message, target_chat_id, text,
+            bot.send_message, target_chat_id, text, reply_markup=markup,
             attempts=2, purpose="expense_ping_send",
         )
+        if draft_id and "expense_draft_set_message" in globals():
+            expense_draft_set_message(draft_id, int(getattr(sent, "message_id", 0) or 0))
         with _EXPENSE_SHORTCUT_LOCK:
             row = _expense_shortcut_find_event(event_id)
             if row:
@@ -1135,6 +1145,15 @@ def build_info_keyboard(chat_id: int):
             kb.row(IB("💓 Не спать", callback_data="keepalive_status"))
         kb.row(IB("⏱ Внутренние таймеры", callback_data="internal_timers"))
         kb.row(IB("📱 Быстрый расход iPhone", callback_data="expense_shortcut_info"))
+        kb.row(
+            IB("⚠️ Неразобранные расходы", callback_data="expense_inbox_open"),
+            IB("⚙️ Процессы", callback_data="process_center"),
+        )
+        kb.row(
+            IB(safety_profile_label(), callback_data="safety_profile_toggle"),
+            IB("🧯 Проблемные задачи", callback_data="problem_tasks"),
+        )
+        kb.row(IB("🔗 Целостность финансов", callback_data="integrity_status"))
         kb.row(IB(excel_table_style_label(chat_id), callback_data="excel_style_menu"))
         kb.row(
             IB("📘 Инструкция", callback_data="info_instruction"),
@@ -1166,6 +1185,7 @@ def build_info_keyboard(chat_id: int):
                 kb.row(IB(gomonk_info_label(chat_id), callback_data=f"gomonk_open:{_gomonk_currency(chat_id)}"))
         elif layout == "v83":
             kb.row(IB(main_article_buttons_label(chat_id), callback_data="main_articles_toggle"))
+        kb.row(IB("⚙️ Процессы", callback_data="process_center"))
     kb.row(
         IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
         IB("❌ Закрыть", callback_data="info_close"),
@@ -2490,4 +2510,101 @@ def schedule_callback_receipt_ack(callback_id: str, chat_id=None, delay: float |
         callback_id,
         chat_id,
     )
-# v140_iphone_expense_chat_info_markers_backnav
+
+
+def build_process_center_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(IB("🔄 Обновить", callback_data="process_center"))
+    if is_owner_chat(chat_id):
+        kb.row(IB("🧯 Проблемные задачи", callback_data="problem_tasks"))
+    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+    kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"), IB("❌ Закрыть", callback_data="info_close"))
+    return kb
+
+
+def build_problem_tasks_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB("🔄 Обновить", callback_data="problem_tasks"))
+    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+    kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
+    kb.row(IB("❌ Закрыть", callback_data="info_close"))
+    return kb
+
+
+def build_safety_profile_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB(safety_profile_label(), callback_data="safety_profile_toggle"))
+    kb.row(IB("👥 Права пользователей", callback_data="security_roles:0"))
+    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+    kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
+    return kb
+
+
+def build_security_roles_text(page: int = 0) -> str:
+    rows = security_known_users()
+    page_size = 10
+    pages = max(1, (len(rows) + page_size - 1) // page_size)
+    page = max(0, min(int(page or 0), pages - 1))
+    return (
+        "👥 ПРАВА ПОЛЬЗОВАТЕЛЕЙ\n\n"
+        "Работают только когда профиль защиты включён «ПО-НОВОМУ».\n"
+        "Обычный — прежние разрешения. Ограниченные роли запрещают лишние действия.\n\n"
+        f"Пользователей: {len(rows)}\nСтраница: {page+1}/{pages}"
+    )
+
+
+def build_security_roles_keyboard(page: int = 0):
+    rows = security_known_users()
+    page_size = 10
+    pages = max(1, (len(rows) + page_size - 1) // page_size)
+    page = max(0, min(int(page or 0), pages - 1))
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    start = page * page_size
+    for row in rows[start:start + page_size]:
+        uid = int(row.get("id") or 0)
+        name = security_user_display(uid)
+        if len(name) > 22:
+            name = name[:21] + "…"
+        kb.row(IB(f"{name} · {security_role_label(security_role_for_user(uid))}", callback_data=f"security_role_user:{uid}:{page}"))
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(IB("⬅️", callback_data=f"security_roles:{page-1}"))
+        nav.append(IB(f"{page+1}/{pages}", callback_data="none"))
+        if page + 1 < pages:
+            nav.append(IB("➡️", callback_data=f"security_roles:{page+1}"))
+        kb.row(*nav)
+    kb.row(IB("⬅️ Назад", callback_data="safety_profile_open"))
+    return kb
+
+
+def build_security_role_user_text(user_id: int) -> str:
+    uid = int(user_id)
+    role = security_role_for_user(uid)
+    return (
+        "👤 ПРАВА ПОЛЬЗОВАТЕЛЯ\n\n"
+        f"Имя: {security_user_display(uid)}\n"
+        f"ID: {uid}\n"
+        f"Роль: {security_role_label(role)}\n\n"
+        "Выберите один понятный профиль. Владелец всегда имеет полный доступ."
+    )
+
+
+def build_security_role_user_keyboard(user_id: int, page: int = 0):
+    uid = int(user_id)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for role in ("standard", "view_only", "expense_input", "finance_admin", "forward_manager", "secret_manager", "reminder_manager"):
+        mark = "✅ " if security_role_for_user(uid) == role else "▫️ "
+        kb.row(IB(mark + security_role_label(role), callback_data=f"security_role_set:{uid}:{role}:{int(page)}"))
+    kb.row(IB("⬅️ К пользователям", callback_data=f"security_roles:{int(page)}"))
+    return kb
+
+
+def build_integrity_keyboard(chat_id: int):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB("🔍 Проверить заново", callback_data="integrity_status"))
+    day = get_chat_store(chat_id).get("current_view_day") or today_key()
+    kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
+    return kb
+
+# v141_operation_ledger_windows_expense_reminders_safety
