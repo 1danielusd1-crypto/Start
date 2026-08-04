@@ -1,4 +1,4 @@
-# v135_reminders_secret_timers
+# v142_expense_priority_reminder_groups
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -1876,7 +1876,10 @@ def _flush_media_group_forward_locked(source_chat_id: int, media_group_id: str):
         return
 
     messages = sorted(messages, key=lambda m: m.message_id)
-    targets = resolve_forward_targets(source_chat_id)
+    targets = sorted(
+        list(resolve_forward_targets(source_chat_id) or []),
+        key=lambda row: (0 if bool(row[2]) else 1),
+    )
     if not targets:
         for src_msg in messages:
             try:
@@ -1996,6 +1999,76 @@ def _collect_media_group_for_forward(source_chat_id: int, msg):
     _media_group_timers[cache_key] = deadline
 
 
+def _forward_targets_stage(source_chat_id: int, msg, targets: list, final_stage: bool = False) -> None:
+    """Выполняет уже выбранную часть направлений, не смешивая очереди."""
+    source_chat_id = int(source_chat_id)
+    source_msg_id = int(getattr(msg, "message_id", 0) or 0)
+    try:
+        for dst_chat_id, _mode, finance_enabled in list(targets or []):
+            _forward_single_to_target(source_chat_id, msg, int(dst_chat_id), bool(finance_enabled))
+    finally:
+        if final_stage and source_msg_id:
+            _forward_outcome_update(source_chat_id, source_msg_id, state="completed")
+
+
+def _forward_normal_stage(source_chat_id: int, msg, targets: list) -> None:
+    _forward_targets_stage(source_chat_id, msg, targets, final_stage=True)
+
+
+def _forward_financial_stage(source_chat_id: int, msg, finance_targets: list, normal_targets: list) -> None:
+    """Сначала финансовые копии и записи, затем обычные/секретные назначения."""
+    source_chat_id = int(source_chat_id)
+    source_msg_id = int(getattr(msg, "message_id", 0) or 0)
+    try:
+        _forward_targets_stage(source_chat_id, msg, finance_targets, final_stage=False)
+    finally:
+        if normal_targets:
+            if not FORWARD_TASK_POOL.submit(source_chat_id, _forward_normal_stage, source_chat_id, msg, list(normal_targets)):
+                log_error(f"FORWARD QUEUE FULL AFTER FIN STAGE, INLINE FALLBACK: {source_chat_id}")
+                _forward_normal_stage(source_chat_id, msg, list(normal_targets))
+        elif source_msg_id:
+            _forward_outcome_update(source_chat_id, source_msg_id, state="completed")
+
+
+def schedule_financial_forward_pipeline(source_chat_id: int, msg) -> None:
+    """Финансовые назначения идут раньше всех остальных, без потери exact-once защиты."""
+    source_chat_id = int(source_chat_id)
+    source_msg_id = int(getattr(msg, "message_id", 0) or 0)
+    try:
+        # Альбом должен собраться целиком; внутри его назначения тоже сортируются ФИН первыми.
+        if getattr(msg, "media_group_id", None) and getattr(msg, "content_type", None) in ("photo", "video", "document", "audio"):
+            if not FORWARD_TASK_POOL.submit(source_chat_id, _forward_with_finance_priority, source_chat_id, msg):
+                log_error(f"MEDIA FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
+                _forward_with_finance_priority(source_chat_id, msg)
+            return
+        targets = list(resolve_forward_targets(source_chat_id) or [])
+        if not targets:
+            if source_msg_id:
+                _forward_outcome_update(source_chat_id, source_msg_id, state="no_targets")
+            return
+        finance_targets = [row for row in targets if bool(row[2])]
+        normal_targets = [row for row in targets if not bool(row[2])]
+        if source_msg_id:
+            _forward_outcome_update(source_chat_id, source_msg_id, state="dispatching")
+        if finance_targets:
+            ok = FIN_FORWARD_TASK_POOL.submit(
+                source_chat_id, _forward_financial_stage, source_chat_id, msg,
+                list(finance_targets), list(normal_targets),
+            )
+            if not ok:
+                log_error(f"FIN-FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
+                _forward_financial_stage(source_chat_id, msg, list(finance_targets), list(normal_targets))
+        else:
+            ok = FORWARD_TASK_POOL.submit(source_chat_id, _forward_normal_stage, source_chat_id, msg, list(normal_targets))
+            if not ok:
+                log_error(f"FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
+                _forward_normal_stage(source_chat_id, msg, list(normal_targets))
+    except Exception as exc:
+        log_error(f"schedule_financial_forward_pipeline {source_chat_id}: {exc}")
+        if source_msg_id:
+            _forward_outcome_update(source_chat_id, source_msg_id, state="failed")
+
+
 def forward_any_message(source_chat_id: int, msg):
     try:
         source_msg_id = int(getattr(msg, "message_id", 0) or 0)
@@ -2007,7 +2080,10 @@ def forward_any_message(source_chat_id: int, msg):
             _forward_outcome_skip(source_chat_id, msg, "edited_source")
             return
 
-        targets = resolve_forward_targets(source_chat_id)
+        targets = sorted(
+            list(resolve_forward_targets(source_chat_id) or []),
+            key=lambda row: (0 if bool(row[2]) else 1),
+        )
         if not targets:
             if source_msg_id:
                 _forward_outcome_update(source_chat_id, source_msg_id, state="no_targets")
@@ -2030,4 +2106,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v135_reminders_secret_timers
+# v142_expense_priority_reminder_groups

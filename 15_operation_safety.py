@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups
 
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
@@ -520,7 +520,7 @@ def process_finish(process_id: str, ok: bool | None = True, details: str = ""):
 def _pool_process_rows() -> list[dict]:
     rows = []
     for name in (
-        "UI_TASK_POOL", "CONTENT_TASK_POOL", "FINANCE_TASK_POOL", "FORWARD_TASK_POOL",
+        "UI_TASK_POOL", "CONTENT_TASK_POOL", "FINANCE_TASK_POOL", "FIN_FORWARD_TASK_POOL", "FORWARD_TASK_POOL",
         "EXPORT_TASK_POOL", "BACKUP_TASK_POOL", "DELTA_TASK_POOL", "RECOVERY_TASK_POOL",
         "REMINDER_TASK_POOL", "GENERAL_TASK_POOL", "MAINTENANCE_TASK_POOL",
     ):
@@ -652,7 +652,99 @@ def _expense_inbox_root() -> dict:
     root.setdefault("evening_enabled", True)
     root.setdefault("evening_hour", 21)
     root.setdefault("evening_last_date", "")
+    root.setdefault("quick_message_buttons_enabled", True)
+    root.setdefault("recent_event_migration_v142_at", "")
     return root
+
+
+def expense_quick_buttons_enabled() -> bool:
+    return bool(_expense_inbox_root().get("quick_message_buttons_enabled", True))
+
+
+def expense_quick_buttons_label() -> str:
+    return "📱 Отметка: С КНОПКАМИ" if expense_quick_buttons_enabled() else "📱 Отметка: БЕЗ КНОПОК"
+
+
+def toggle_expense_quick_buttons() -> bool:
+    root = _expense_inbox_root()
+    root["quick_message_buttons_enabled"] = not bool(root.get("quick_message_buttons_enabled", True))
+    _root_save("expense_quick_buttons_toggle")
+    return bool(root["quick_message_buttons_enabled"])
+
+
+def _expense_event_dt(row: dict):
+    try:
+        value = str((row or {}).get("created_at") or "")
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=now_local().tzinfo)
+        return dt
+    except Exception:
+        try:
+            return datetime.fromtimestamp(float((row or {}).get("created_ts") or 0), tz=now_local().tzinfo)
+        except Exception:
+            return None
+
+
+def migrate_recent_expense_shortcut_events(days: int = 2, refresh_messages: bool = False) -> dict:
+    """Подхватывает быстрые отметки v140/v141 за последние 48 часов."""
+    cfg_fn = globals().get("expense_shortcut_config")
+    if not callable(cfg_fn):
+        return {"imported": 0, "updated": 0, "seen": 0}
+    try:
+        shortcut = cfg_fn(False) or {}
+    except Exception:
+        shortcut = {}
+    cutoff = now_local() - timedelta(days=max(1, int(days or 2)))
+    imported = updated = seen = 0
+    for event in list(shortcut.get("events") or []):
+        if not isinstance(event, dict) or not event.get("id"):
+            continue
+        dt = _expense_event_dt(event)
+        if dt is None or dt < cutoff:
+            continue
+        seen += 1
+        event_id = str(event.get("id"))
+        target = int(event.get("target_chat_id") or shortcut.get("target_chat_id") or OWNER_ID or 0)
+        before = None
+        with _EXPENSE_INBOX_LOCK:
+            for existing in (_expense_inbox_root().get("items") or {}).values():
+                if str((existing or {}).get("source_event_id") or "") == event_id:
+                    before = existing
+                    break
+        draft = expense_draft_for_event(event_id, target, dt.isoformat(timespec="seconds"))
+        if before is None:
+            imported += 1
+        mid = int(event.get("telegram_message_id") or 0)
+        if mid and int((draft or {}).get("telegram_message_id") or 0) != mid:
+            with _EXPENSE_INBOX_LOCK:
+                draft["telegram_message_id"] = mid
+        if refresh_messages and mid and target:
+            try:
+                text_fn = globals().get("expense_compact_message_text")
+                text = text_fn(dt.isoformat(timespec="seconds")) if callable(text_fn) else f"💸 iPhone · {dt.strftime('%H:%M')}"
+                markup = expense_draft_message_keyboard(int(draft.get("id") or 0), target)
+                bot.edit_message_text(text, chat_id=target, message_id=mid, reply_markup=markup)
+                updated += 1
+            except Exception as exc:
+                if "message is not modified" not in str(exc).lower():
+                    try:
+                        bot.edit_message_reply_markup(
+                            chat_id=target,
+                            message_id=mid,
+                            reply_markup=expense_draft_message_keyboard(int(draft.get("id") or 0), target),
+                        )
+                        updated += 1
+                    except Exception:
+                        pass
+    root = _expense_inbox_root()
+    root["recent_event_migration_v142_at"] = now_local().isoformat(timespec="seconds")
+    _root_save("expense_recent_event_migration")
+    try:
+        bot_journal("expense_recent_events_migrated", OWNER_ID, f"seen={seen} imported={imported} updated={updated}")
+    except Exception:
+        pass
+    return {"imported": imported, "updated": updated, "seen": seen}
 
 
 def expense_draft_create(source: str, target_chat_id: int, created_at: str | None = None, source_event_id: str = "") -> dict:
@@ -936,6 +1028,12 @@ def start_safety_schedulers():
         if _SAFETY_SCHEDULERS_STARTED:
             return
         _SAFETY_SCHEDULERS_STARTED = True
+        try:
+            GENERAL_TASK_POOL.submit_unique(
+                "expense-recent-migration-v142", migrate_recent_expense_shortcut_events, 2, False
+            )
+        except Exception:
+            pass
         threading.Thread(target=_evening_reconciliation_loop, name="expense-evening-reconcile", daemon=True).start()
 
 
@@ -945,6 +1043,8 @@ def expense_draft_insert_value(draft_id: int) -> str:
 
 
 def expense_draft_message_keyboard(draft_id: int, viewer_chat_id: int):
+    if not expense_quick_buttons_enabled():
+        return None
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.row(make_copy_or_inline_button(
         "✍️ Заполнить расход", expense_draft_insert_value(draft_id), viewer_chat_id=viewer_chat_id,
@@ -1047,4 +1147,4 @@ def expense_draft_input_message(msg):
     finally:
         msg.text = original_text
 
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups

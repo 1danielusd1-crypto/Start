@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -1368,9 +1368,12 @@ def wait_durable_subtasks(chat_id, timeout: float = 20.0, wait_forward: bool = T
     if chat_id is None or not wait_forward:
         return True
     key = int(chat_id)
-    if not FORWARD_TASK_POOL.wait_key_idle(key, max(0.5, float(timeout))):
-        log_error(f"DURABLE CHILD QUEUE TIMEOUT pool={FORWARD_TASK_POOL.name} chat={key}")
-        return False
+    deadline = time.monotonic() + max(0.5, float(timeout))
+    for pool in (FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL):
+        remaining = max(0.5, deadline - time.monotonic())
+        if not pool.wait_key_idle(key, remaining):
+            log_error(f"DURABLE CHILD QUEUE TIMEOUT pool={pool.name} chat={key}")
+            return False
     return True
 
 
@@ -4137,6 +4140,7 @@ def runtime_heartbeat_snapshot(event: str = "heartbeat") -> dict:
             "recovery": RECOVERY_TASK_POOL.stats().get("pending", 0),
             "reminder": REMINDER_TASK_POOL.stats().get("pending", 0),
             "finance": FINANCE_TASK_POOL.stats().get("pending", 0),
+            "fin_forward": FIN_FORWARD_TASK_POOL.stats().get("pending", 0),
             "forward": FORWARD_TASK_POOL.stats().get("pending", 0),
             "delta": DELTA_TASK_POOL.stats().get("pending", 0),
             "backup": BACKUP_TASK_POOL.stats().get("pending", 0),
@@ -4159,7 +4163,7 @@ def _runtime_disk_stats() -> dict:
 def _runtime_pool_stats() -> dict:
     pools = (
         WEBHOOK_TASK_POOL, UI_TASK_POOL, CALLBACK_ACK_TASK_POOL, RECOVERY_TASK_POOL, REMINDER_TASK_POOL,
-        FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL,
+        FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL,
         BACKUP_TASK_POOL, EXPORT_TASK_POOL, GENERAL_TASK_POOL, MAINTENANCE_TASK_POOL, JOURNAL_TASK_POOL,
         DELAYED_TASK_POOL, DOZVON_TASK_POOL,
     )
@@ -4807,7 +4811,7 @@ def _lowram_business_busy() -> bool:
     try:
         for pool_name in (
             "WEBHOOK_TASK_POOL", "UI_TASK_POOL", "RECOVERY_TASK_POOL", "REMINDER_TASK_POOL",
-            "FINANCE_TASK_POOL", "FORWARD_TASK_POOL", "DELTA_TASK_POOL", "BACKUP_TASK_POOL"
+            "FINANCE_TASK_POOL", "FIN_FORWARD_TASK_POOL", "FORWARD_TASK_POOL", "DELTA_TASK_POOL", "BACKUP_TASK_POOL"
         ):
             pool = globals().get(pool_name)
             if pool is None:
@@ -4971,7 +4975,7 @@ def runtime_continue_boot_recovery_background():
 
 
 def runtime_queue_drain_status() -> dict:
-    critical = (WEBHOOK_TASK_POOL, FINANCE_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL)
+    critical = (WEBHOOK_TASK_POOL, FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL, DELTA_TASK_POOL)
     stats = {p.name: p.stats() for p in critical}
     # KeyedTaskPool.pending includes active jobs today, but keep both counters explicit for diagnostics.
     stats["critical_pending"] = sum(int(v.get("pending", 0) or 0) for v in stats.values() if isinstance(v, dict))
@@ -8562,4 +8566,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups

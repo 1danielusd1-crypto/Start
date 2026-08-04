@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -322,6 +322,45 @@ def on_callback(call):
                 bot.edit_message_text("✅ Вечерняя сверка завершена. Все расходы внесены.", chat_id=chat_id, message_id=call.message.message_id)
             except Exception:
                 pass
+            return
+
+        if data_str == "expense_quick_buttons_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            enabled = toggle_expense_quick_buttons()
+            GENERAL_TASK_POOL.submit_unique(
+                "expense-recent-migration-refresh",
+                migrate_recent_expense_shortcut_events, 2, True,
+            )
+            try:
+                bot.answer_callback_query(
+                    call.id,
+                    "Кнопки быстрых отметок включены" if enabled else "Кнопки быстрых отметок убраны",
+                )
+            except Exception:
+                pass
+            # Сохраняем пользователя в том же окне, из которого он переключил режим.
+            current_text = str(getattr(getattr(call, "message", None), "text", "") or "")
+            if "Быстрый расход" in current_text:
+                safe_edit(
+                    bot, call, build_expense_shortcut_text(chat_id),
+                    reply_markup=build_expense_shortcut_keyboard(chat_id), parse_mode="HTML",
+                )
+            else:
+                day = get_chat_store(chat_id).get("current_view_day") or today_key()
+                safe_edit(bot, call, build_info_text(chat_id, day), reply_markup=build_info_keyboard(chat_id))
+            return
+
+        if data_str == "reminder_ui_mode_toggle":
+            if not is_owner_chat(chat_id):
+                return
+            mode = toggle_reminder_ui_mode()
+            try:
+                bot.answer_callback_query(call.id, "Напоминалка по-новому" if mode == "new" else "Напоминалка по-старому")
+            except Exception:
+                pass
+            day = get_chat_store(chat_id).get("current_view_day") or today_key()
+            safe_edit(bot, call, build_info_text(chat_id, day), reply_markup=build_info_keyboard(chat_id))
             return
 
         if data_str == "expense_shortcut_info":
@@ -3087,4 +3126,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups

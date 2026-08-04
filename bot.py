@@ -1,11 +1,11 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v141_operation_ledger_windows_expense_reminders_safety"
-MODULE_FILE_VERSION = "v141_operation_ledger_windows_expense_reminders_safety"
+MODULAR_VERSION = "bot_v142_expense_priority_reminder_groups"
+MODULE_FILE_VERSION = "v142_expense_priority_reminder_groups"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -123,4 +123,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups

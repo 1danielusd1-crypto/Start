@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -968,6 +968,10 @@ def propagate_edited_to_copies(msg):
     if not links:
         return
 
+    links = sorted(
+        list(links),
+        key=lambda pair: (0 if get_forward_finance(source_chat_id, int(pair[0])) else 1),
+    )
     for dst_chat_id, dst_msg_id in links:
         try:
             finance_enabled = get_forward_finance(source_chat_id, dst_chat_id)
@@ -1406,4 +1410,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups

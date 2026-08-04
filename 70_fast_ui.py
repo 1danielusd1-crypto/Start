@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -701,7 +701,7 @@ def all_task_pool_stats() -> list[dict]:
     return [
         WEBHOOK_TASK_POOL.stats(), UI_TASK_POOL.stats(), CALLBACK_ACK_TASK_POOL.stats(),
         RECOVERY_TASK_POOL.stats(), REMINDER_TASK_POOL.stats(),
-        FINANCE_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
+        FINANCE_TASK_POOL.stats(), FIN_FORWARD_TASK_POOL.stats(), FORWARD_TASK_POOL.stats(),
         DELTA_TASK_POOL.stats(), BACKUP_TASK_POOL.stats(), EXPORT_TASK_POOL.stats(), GENERAL_TASK_POOL.stats(),
         MAINTENANCE_TASK_POOL.stats(), JOURNAL_TASK_POOL.stats(), DELAYED_TASK_POOL.stats(), DOZVON_TASK_POOL.stats(),
     ]
@@ -968,6 +968,20 @@ def enqueue_expense_ping_event(source: str = "iphone", force: bool = False) -> t
     return event_id, False
 
 
+def expense_compact_message_text(created_at: str | None = None) -> str:
+    """Короткая отметка, чтобы не занимать место в финансовом чате."""
+    try:
+        dt = datetime.fromisoformat(str(created_at or ""))
+    except Exception:
+        dt = now_local()
+    now_dt = now_local()
+    if dt.date() == now_dt.date():
+        stamp = dt.strftime("%H:%M")
+    else:
+        stamp = dt.strftime("%d.%m %H:%M")
+    return f"💸 iPhone · {stamp}"
+
+
 def _deliver_expense_ping_event(event_id: str):
     with _EXPENSE_SHORTCUT_LOCK:
         row = _expense_shortcut_find_event(event_id)
@@ -976,19 +990,13 @@ def _deliver_expense_ping_event(event_id: str):
         row["attempts"] = int(row.get("attempts") or 0) + 1
         target_chat_id = int(row.get("target_chat_id") or 0)
         created_at = str(row.get("created_at") or now_local().isoformat(timespec="seconds"))
-        base_text = str(row.get("text") or "💸 Был расход")
     try:
         dt = datetime.fromisoformat(created_at)
     except Exception:
         dt = now_local()
     draft = expense_draft_for_event(event_id, target_chat_id, created_at) if "expense_draft_for_event" in globals() else {"id": 0}
     draft_id = int((draft or {}).get("id") or 0)
-    text = (
-        f"❓ Расход №{draft_id}\n"
-        f"{base_text}\n⏰ {dt.strftime('%d.%m.%Y %H:%M')}\n"
-        "📱 Быстрая отметка с iPhone\n\n"
-        "Сумма и статья пока не заполнены."
-    )
+    text = expense_compact_message_text(created_at)
     try:
         markup = expense_draft_message_keyboard(draft_id, target_chat_id) if draft_id and "expense_draft_message_keyboard" in globals() else None
         sent = _tg_call_retry(
@@ -1048,7 +1056,9 @@ def build_expense_shortcut_text(chat_id: int) -> str:
         "📱 Быстрый расход с iPhone\n\n"
         f"Чат назначения: {html.escape(get_chat_display_name(target))}\n"
         f"ID: <code>{target}</code>\n"
-        f"Ожидают доставки: {pending}\n\n"
+        f"Ожидают доставки: {pending}\n"
+        f"Кнопки в сообщении: {'ВКЛ' if expense_quick_buttons_enabled() else 'ВЫКЛ'}\n"
+        f"Подхвачены отметки за 2 дня: {html.escape(str(_expense_inbox_root().get('recent_event_migration_v142_at') or 'ещё нет'))}\n\n"
         "Скопируйте эту личную ссылку в приложение «Команды»:\n"
         f"<code>{url_text}</code>\n\n"
         "Тройное касание задней панели запустит команду, а бот отправит «💸 Был расход». "
@@ -1061,6 +1071,7 @@ def build_expense_shortcut_keyboard(chat_id: int):
     kb.row(IB("🎯 Выбрать чат", callback_data="expense_shortcut_pick"))
     kb.row(IB("📋 Прислать ссылку отдельно", callback_data="expense_shortcut_send_url"))
     kb.row(IB("🧪 Проверить сейчас", callback_data="expense_shortcut_test"))
+    kb.row(IB(expense_quick_buttons_label(), callback_data="expense_quick_buttons_toggle"))
     kb.row(IB("🔐 Создать новую секретную ссылку", callback_data="expense_shortcut_regenerate"))
     day = get_chat_store(chat_id).get("current_view_day") or today_key()
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
@@ -1145,6 +1156,10 @@ def build_info_keyboard(chat_id: int):
             kb.row(IB("💓 Не спать", callback_data="keepalive_status"))
         kb.row(IB("⏱ Внутренние таймеры", callback_data="internal_timers"))
         kb.row(IB("📱 Быстрый расход iPhone", callback_data="expense_shortcut_info"))
+        kb.row(
+            IB(expense_quick_buttons_label(), callback_data="expense_quick_buttons_toggle"),
+            IB(reminder_ui_mode_label(), callback_data="reminder_ui_mode_toggle"),
+        )
         kb.row(
             IB("⚠️ Неразобранные расходы", callback_data="expense_inbox_open"),
             IB("⚙️ Процессы", callback_data="process_center"),
@@ -2607,4 +2622,4 @@ def build_integrity_keyboard(chat_id: int):
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
 
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups

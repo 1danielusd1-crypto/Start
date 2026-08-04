@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups
 import os
 import io
 import json
@@ -325,8 +325,16 @@ REMINDER_TASK_POOL = KeyedTaskPool(
 )
 FINANCE_TASK_POOL = KeyedTaskPool(
     "finance",
-    _env_int("FINANCE_WORKERS", 2, 2, 12),
-    _env_int("FINANCE_MAX_PENDING", 1000, 100, 5000),
+    _env_int("FINANCE_WORKERS", 3, 2, 12),
+    _env_int("FINANCE_MAX_PENDING", 1200, 100, 5000),
+)
+# v142: финансовая пересылка получает отдельную высокоприоритетную линию.
+# Она сохраняет порядок одного исходного чата, но не ждёт обычную пересылку,
+# SECRET, напоминалки, Excel и тяжёлые резервные задачи.
+FIN_FORWARD_TASK_POOL = KeyedTaskPool(
+    "fin-forward",
+    _env_int("FIN_FORWARD_WORKERS", 4, 2, 12),
+    _env_int("FIN_FORWARD_MAX_PENDING", 1800, 100, 6000),
 )
 FORWARD_TASK_POOL = KeyedTaskPool(
     "forward",
@@ -771,8 +779,13 @@ def schedule_forward_any_message(source_chat_id: int, msg):
             _forward_outcome_update(source_chat_id, mid, state="scheduled")
     except Exception:
         pass
-    if not FORWARD_TASK_POOL.submit(int(source_chat_id), _forward_with_finance_priority, source_chat_id, msg):
-        log_error(f"FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
+    # v142: финансовые назначения проходят отдельной первой стадией.
+    pipeline = globals().get("schedule_financial_forward_pipeline")
+    if callable(pipeline):
+        pipeline(int(source_chat_id), msg)
+        return
+    if not FIN_FORWARD_TASK_POOL.submit(int(source_chat_id), _forward_with_finance_priority, source_chat_id, msg):
+        log_error(f"FIN-FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
         _forward_with_finance_priority(source_chat_id, msg)
 
 
@@ -800,7 +813,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v141_operation_ledger_windows_expense_reminders_safety"
+VERSION = "bot_v142_expense_priority_reminder_groups"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -2878,7 +2891,7 @@ def build_all_processes_toast(chat_id=None) -> str:
         pass
     pools = (
         ("Сообщ", WEBHOOK_TASK_POOL), ("UI", UI_TASK_POOL),
-        ("Фин", FINANCE_TASK_POOL), ("Перес", FORWARD_TASK_POOL),
+        ("Фин", FINANCE_TASK_POOL), ("ФинПерес", FIN_FORWARD_TASK_POOL), ("Перес", FORWARD_TASK_POOL),
         ("Восст", RECOVERY_TASK_POOL), ("Напом", REMINDER_TASK_POOL),
         ("Бэкап", BACKUP_TASK_POOL), ("MEGAΔ", DELTA_TASK_POOL),
         ("Экспорт", EXPORT_TASK_POOL), ("Общие", GENERAL_TASK_POOL),
@@ -7583,4 +7596,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups

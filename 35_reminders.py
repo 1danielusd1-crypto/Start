@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v142_expense_priority_reminder_groups
 
 _REMINDER_THREAD_STARTED = False
 _REMINDER_THREAD_LOCK = threading.RLock()
@@ -12,6 +12,35 @@ _REMINDER_MONTHS_RU = [
     "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
 ]
+_REMINDER_GROUP_INTERVAL_MINUTES = 120
+_REMINDER_GROUP_LOCK = threading.RLock()
+
+
+def reminder_ui_mode() -> str:
+    mode = str(data.setdefault("_global_settings", {}).get("reminder_ui_mode_v142") or "new").strip().lower()
+    return mode if mode in {"old", "new"} else "new"
+
+
+def reminder_ui_new_enabled() -> bool:
+    return reminder_ui_mode() == "new"
+
+
+def set_reminder_ui_mode(mode: str) -> str:
+    mode = "new" if str(mode).strip().lower() == "new" else "old"
+    data.setdefault("_global_settings", {})["reminder_ui_mode_v142"] = mode
+    try:
+        _reminder_save("reminder_ui_mode")
+    except Exception:
+        save_data(data, root_only=True)
+    return mode
+
+
+def toggle_reminder_ui_mode() -> str:
+    return set_reminder_ui_mode("old" if reminder_ui_new_enabled() else "new")
+
+
+def reminder_ui_mode_label() -> str:
+    return "⏰ Напоминалка: ПО-НОВОМУ" if reminder_ui_new_enabled() else "⏰ Напоминалка: ПО-СТАРОМУ"
 
 
 def _reminder_owner_id() -> int | None:
@@ -1013,6 +1042,42 @@ def reminder_callback(call):
     except Exception:
         pass
 
+    if action == "schedule":
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        safe_edit(bot, call, reminder_schedule_text(rid), reply_markup=reminder_schedule_keyboard(rid, page, day_key))
+        return
+    if action == "preview":
+        rid = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        safe_edit(bot, call, reminder_preview_text(rid), reply_markup=reminder_preview_keyboard(rid, page, day_key, chat_id))
+        return
+    if action == "group_open":
+        target_chat_id = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        safe_edit(bot, call, reminder_group_text(target_chat_id, day_key), reply_markup=reminder_group_keyboard(target_chat_id, page, day_key))
+        return
+    if action == "group_set2h":
+        target_chat_id = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        reminder_group_set_two_hours(target_chat_id, day_key)
+        safe_edit(bot, call, reminder_group_text(target_chat_id, day_key), reply_markup=reminder_group_keyboard(target_chat_id, page, day_key))
+        return
+    if action == "group_sync":
+        target_chat_id = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        reminder_group_sync_from_first(target_chat_id, day_key)
+        safe_edit(bot, call, reminder_group_text(target_chat_id, day_key), reply_markup=reminder_group_keyboard(target_chat_id, page, day_key))
+        return
+    if action == "group_toggle":
+        target_chat_id = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        reminder_group_toggle_all(target_chat_id, day_key)
+        safe_edit(bot, call, reminder_group_text(target_chat_id, day_key), reply_markup=reminder_group_keyboard(target_chat_id, page, day_key))
+        return
+    if action == "group_test":
+        target_chat_id = int(parts[2]); page = int(parts[3]); day_key = parts[4]
+        REMINDER_TASK_POOL.submit_unique(f"reminder-group-test:{target_chat_id}", _reminder_group_send_job, target_chat_id, day_key, True)
+        try:
+            bot.answer_callback_query(call.id, "Объединённая напоминалка отправляется")
+        except Exception:
+            pass
+        return
+
     if action == "completed":
         page = int(parts[2]) if len(parts) > 2 else 0
         delete_mode = bool(int(parts[3])) if len(parts) > 3 and str(parts[3]).isdigit() else False
@@ -1215,4 +1280,510 @@ def reminder_callback(call):
         rows = _reminder_items(); pages = max(1, (len(rows) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE); page = min(page, pages - 1)
         safe_edit(bot, call, build_reminder_list_text(), reply_markup=build_reminder_list_keyboard(day_key, page)); return
 
-# v141_operation_ledger_windows_expense_reminders_safety
+
+# ─────────────────────────────────────────────────────────────
+# v142: упрощённая оболочка напоминалки + объединение по чату
+# ─────────────────────────────────────────────────────────────
+_BUILD_REMINDER_LIST_TEXT_V141 = build_reminder_list_text
+_BUILD_REMINDER_LIST_KEYBOARD_V141 = build_reminder_list_keyboard
+_BUILD_REMINDER_MENU_TEXT_V141 = build_reminder_menu_text
+_BUILD_REMINDER_MENU_KEYBOARD_V141 = build_reminder_menu_keyboard
+
+
+def _reminder_date_allowed_for_day(cfg: dict, day_key: str) -> bool:
+    try:
+        d = datetime.strptime(str(day_key), "%Y-%m-%d").date()
+    except Exception:
+        d = now_local().date()
+    start = _reminder_parse_date((cfg or {}).get("start_date"))
+    end = _reminder_parse_date((cfg or {}).get("end_date"))
+    return not ((start and d < start) or (end and d > end))
+
+
+def _reminder_single_chat_id(cfg: dict) -> int | None:
+    ids = []
+    for raw in (cfg or {}).get("chat_ids") or []:
+        try:
+            ids.append(int(raw))
+        except Exception:
+            pass
+    ids = list(dict.fromkeys(ids))
+    return ids[0] if len(ids) == 1 else None
+
+
+def reminder_group_members(target_chat_id: int, day_key: str | None = None, enabled_only: bool = False) -> list[tuple[int, dict]]:
+    target_chat_id = int(target_chat_id)
+    day_key = str(day_key or today_key())
+    rows = []
+    for rid, cfg in _reminder_items():
+        if _reminder_single_chat_id(cfg) != target_chat_id:
+            continue
+        if enabled_only and not bool(cfg.get("enabled")):
+            continue
+        if not _reminder_date_allowed_for_day(cfg, day_key):
+            continue
+        rows.append((int(rid), cfg))
+    rows.sort(key=lambda row: row[0])
+    return rows
+
+
+def _reminder_group_map(day_key: str | None = None, enabled_only: bool = False) -> dict[int, list[tuple[int, dict]]]:
+    day_key = str(day_key or today_key())
+    grouped = defaultdict(list)
+    for rid, cfg in _reminder_items():
+        cid = _reminder_single_chat_id(cfg)
+        if cid is None:
+            continue
+        if enabled_only and not bool(cfg.get("enabled")):
+            continue
+        if not _reminder_date_allowed_for_day(cfg, day_key):
+            continue
+        grouped[int(cid)].append((int(rid), cfg))
+    return {cid: sorted(rows, key=lambda row: row[0]) for cid, rows in grouped.items() if len(rows) >= 2}
+
+
+def _reminder_new_list_entries(day_key: str) -> list[tuple[str, int, object]]:
+    groups = _reminder_group_map(day_key, enabled_only=False)
+    grouped_ids = {rid for rows in groups.values() for rid, _cfg in rows}
+    entries = []
+    for cid, rows in groups.items():
+        entries.append(("group", min(rid for rid, _ in rows), (cid, rows)))
+    for rid, cfg in _reminder_items():
+        if rid not in grouped_ids:
+            entries.append(("item", int(rid), (int(rid), cfg)))
+    entries.sort(key=lambda row: row[1])
+    return entries
+
+
+def build_reminder_list_text() -> str:
+    if not reminder_ui_new_enabled():
+        return _BUILD_REMINDER_LIST_TEXT_V141()
+    rows = _reminder_items()
+    groups = _reminder_group_map(today_key(), enabled_only=False)
+    enabled = sum(1 for _rid, cfg in rows if bool(cfg.get("enabled")))
+    return (
+        "⏰ НАПОМИНАЛКИ · ПРОСТОЙ РЕЖИМ\n\n"
+        f"Текущих: {len(rows)} · активных: {enabled}\n"
+        f"Объединённых чатов: {len(groups)}\n"
+        f"Завершённых: {len(_reminder_completed_items())}\n\n"
+        "Настройка идёт по шагам: текст → чаты → период → расписание → проверка.\n"
+        "Если в одном чате несколько напоминалок, бот объединяет их в одно сообщение каждые 2 часа."
+    )
+
+
+def build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
+    if not reminder_ui_new_enabled():
+        return _BUILD_REMINDER_LIST_KEYBOARD_V141(day_key, page)
+    day_key = str(day_key or today_key())
+    entries = _reminder_new_list_entries(day_key)
+    pages = max(1, (len(entries) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE)
+    page = max(0, min(int(page or 0), pages - 1))
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.row(IB("+добавить⏰", callback_data=f"rem:add:{page}:{day_key}"))
+    start = page * _REMINDER_LIST_PAGE_SIZE
+    for kind, _order, payload in entries[start:start + _REMINDER_LIST_PAGE_SIZE]:
+        if kind == "group":
+            cid, members = payload
+            title = chat_button_title(int(cid)) if "chat_button_title" in globals() else get_chat_display_name(int(cid))
+            active = sum(1 for _rid, cfg in members if bool(cfg.get("enabled")))
+            label = pad_button_label_41(f"👥 {title} · {len(members)} шт · {active} акт")
+            kb.row(IB(label, callback_data=f"rem:group_open:{int(cid)}:{page}:{day_key}"))
+        else:
+            rid, cfg = payload
+            pos = _reminder_position(rid) or rid
+            kb.row(IB(_reminder_button_label(pos, cfg), callback_data=f"rem:open:{rid}:{page}:{day_key}"))
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(IB("⬅️", callback_data=f"rem:list:{page-1}:{day_key}"))
+        nav.append(IB(f"{page+1}/{pages}", callback_data="none"))
+        if page + 1 < pages:
+            nav.append(IB("➡️", callback_data=f"rem:list:{page+1}:{day_key}"))
+        kb.row(*nav)
+    kb.row(IB(f"✅ Завершённые ({len(_reminder_completed_items())})", callback_data="rem:completed:0:0"))
+    kb.row(IB("⬅️ Назад", callback_data=f"d:{day_key}:back_main"))
+    return kb
+
+
+def _reminder_step_state(cfg: dict) -> list[str]:
+    return [
+        "✅" if str(cfg.get("text") or "").strip() else "❌",
+        "✅" if (cfg.get("chat_ids") or []) else "❌",
+        "✅" if int(cfg.get("interval_minutes", 0) or 0) >= 5 else "❌",
+        "✅" if str(cfg.get("start_date") or "").strip() else "❌",
+    ]
+
+
+def build_reminder_menu_text(reminder_id: int) -> str:
+    if not reminder_ui_new_enabled():
+        return _BUILD_REMINDER_MENU_TEXT_V141(reminder_id)
+    cfg = _reminder_cfg(reminder_id)
+    if not cfg:
+        return "⏰ Напоминалка не найдена."
+    steps = _reminder_step_state(cfg)
+    preview = re.sub(r"\s+", " ", str(cfg.get("text") or "").strip())
+    if len(preview) > 110:
+        preview = preview[:107] + "..."
+    state = "✅ АКТИВНО" if cfg.get("enabled") and not _reminder_is_completed(cfg) else "❌ ВЫКЛЮЧЕНО"
+    if _reminder_is_completed(cfg):
+        state = "✅ ЗАВЕРШЕНО"
+    return (
+        f"⏰ НАПОМИНАЛКА №{_reminder_position(reminder_id) or reminder_id}\n\n"
+        f"{steps[0]} 1. Текст: {preview or 'не задан'}\n"
+        f"{steps[1]} 2. Чаты: {len(cfg.get('chat_ids') or [])}\n"
+        f"{steps[2]} 3. Период: {_reminder_interval_label(cfg.get('interval_minutes', 120))}\n"
+        f"{steps[3]} 4. Расписание: {_reminder_fmt_date(cfg.get('start_date'))} · "
+        f"{int(cfg.get('start_hour',8)):02d}:00–{int(cfg.get('end_hour',22)):02d}:59\n\n"
+        f"Состояние: {state}\nСледующая: {_reminder_fmt_dt(cfg.get('next_run_at'))}"
+    )
+
+
+def build_reminder_menu_keyboard(reminder_id: int, day_key: str | None = None, page: int = 0, viewer_chat_id: int | None = None):
+    if not reminder_ui_new_enabled():
+        return _BUILD_REMINDER_MENU_KEYBOARD_V141(reminder_id, day_key, page, viewer_chat_id)
+    day_key = str(day_key or today_key())
+    cfg = _reminder_cfg(reminder_id)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    if not cfg:
+        kb.row(IB("⬅️ К напоминалкам", callback_data=_reminder_return_callback(page, day_key)))
+        return kb
+    kb.row(
+        make_copy_or_inline_button("1️⃣ Текст", compose_reminder_text_insert_value(reminder_id, cfg.get("text") or ""), viewer_chat_id=viewer_chat_id),
+        IB(f"2️⃣ Чаты · {len(cfg.get('chat_ids') or [])}", callback_data=f"rem:chats:{reminder_id}:0:{page}:{day_key}"),
+    )
+    kb.row(
+        IB(f"3️⃣ Период · {_reminder_interval_label(cfg.get('interval_minutes',120))}", callback_data=f"rem:interval:{reminder_id}:{page}:{day_key}"),
+        IB("4️⃣ Расписание", callback_data=f"rem:schedule:{reminder_id}:{page}:{day_key}"),
+    )
+    kb.row(IB("5️⃣ Проверить и включить", callback_data=f"rem:preview:{reminder_id}:{page}:{day_key}"))
+    state_label = "✅ Активно" if cfg.get("enabled") and not _reminder_is_completed(cfg) else "❌ Выключено"
+    kb.row(
+        IB(state_label, callback_data=f"rem:toggle:{reminder_id}:{page}:{day_key}"),
+        IB("Изменить📝", callback_data=f"rem:editmenu:{reminder_id}:{page}:{day_key}"),
+    )
+    kb.row(IB("⬅️ К напоминалкам", callback_data=_reminder_return_callback(page, day_key)))
+    return kb
+
+
+def reminder_schedule_text(reminder_id: int) -> str:
+    cfg = _reminder_cfg(reminder_id) or {}
+    end = _reminder_fmt_date(cfg.get("end_date")) if cfg.get("end_date") else "без конца"
+    return (
+        "4️⃣ РАСПИСАНИЕ\n\n"
+        f"Даты: {_reminder_fmt_date(cfg.get('start_date'))} → {end}\n"
+        f"Время: {int(cfg.get('start_hour',8)):02d}:00 → {int(cfg.get('end_hour',22)):02d}:59"
+    )
+
+
+def reminder_schedule_keyboard(reminder_id: int, page: int, day_key: str):
+    cfg = _reminder_cfg(reminder_id) or {}
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(IB("📅 Даты", callback_data=f"rem:dates:{reminder_id}:{page}:{day_key}"))
+    kb.row(
+        IB(f"🕗 С {int(cfg.get('start_hour',8)):02d}:00", callback_data=f"rem:hours:start:{reminder_id}:{page}:{day_key}"),
+        IB(f"🕙 До {int(cfg.get('end_hour',22)):02d}:59", callback_data=f"rem:hours:end:{reminder_id}:{page}:{day_key}"),
+    )
+    kb.row(IB("⬅️ Назад", callback_data=f"rem:open:{reminder_id}:{page}:{day_key}"))
+    return kb
+
+
+def _reminder_preview_times(cfg: dict, count: int = 3) -> list[datetime]:
+    tmp = copy.deepcopy(cfg or {})
+    now_dt = now_local()
+    due = _reminder_parse_dt(tmp.get("next_run_at"))
+    if due is None or due < now_dt:
+        due = _reminder_next_valid_start(now_dt, tmp)
+    out = []
+    for _ in range(max(1, int(count))):
+        if due is None:
+            break
+        out.append(due)
+        _reminder_advance_after_send(due, tmp)
+        due = _reminder_parse_dt(tmp.get("next_run_at"))
+    return out
+
+
+def reminder_preview_text(reminder_id: int) -> str:
+    cfg = _reminder_cfg(reminder_id) or {}
+    errors = []
+    if not str(cfg.get("text") or "").strip():
+        errors.append("не задан текст")
+    if not (cfg.get("chat_ids") or []):
+        errors.append("не выбран чат")
+    times = _reminder_preview_times(cfg, 3)
+    lines = ["5️⃣ ПРОВЕРКА НАПОМИНАЛКИ", ""]
+    lines.append("Сообщение:")
+    lines.append("НАПОМИНАЛКА🕰️")
+    lines.append(str(cfg.get("text") or "не задано")[:900])
+    lines += ["", "Чаты:"]
+    for raw in (cfg.get("chat_ids") or [])[:12]:
+        try:
+            lines.append("• " + get_chat_display_name(int(raw)))
+        except Exception:
+            pass
+    lines += ["", "Ближайшие отправки:"]
+    lines.extend("• " + dt.strftime("%d.%m %H:%M") for dt in times)
+    if errors:
+        lines += ["", "❌ Нельзя включить: " + ", ".join(errors)]
+    else:
+        lines += ["", "✅ Настройки готовы."]
+    return "\n".join(lines)
+
+
+def reminder_preview_keyboard(reminder_id: int, page: int, day_key: str, viewer_chat_id: int):
+    cfg = _reminder_cfg(reminder_id) or {}
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    valid = bool(str(cfg.get("text") or "").strip() and (cfg.get("chat_ids") or []))
+    if valid:
+        label = "❌ Выключить" if cfg.get("enabled") else "✅ Включить"
+        kb.row(IB(label, callback_data=f"rem:toggle:{reminder_id}:{page}:{day_key}"))
+    kb.row(IB("⬅️ Назад", callback_data=f"rem:open:{reminder_id}:{page}:{day_key}"))
+    return kb
+
+
+def _reminder_group_state_root() -> dict:
+    return data.setdefault("_global_settings", {}).setdefault("reminder_groups_v142", {})
+
+
+def _reminder_group_key(target_chat_id: int, day_key: str) -> str:
+    return f"{str(day_key)}:{int(target_chat_id)}"
+
+
+def reminder_group_text(target_chat_id: int, day_key: str) -> str:
+    members = reminder_group_members(target_chat_id, day_key, enabled_only=False)
+    active = sum(1 for _rid, cfg in members if bool(cfg.get("enabled")))
+    lines = [
+        "👥 ОБЪЕДИНЁННАЯ НАПОМИНАЛКА",
+        "",
+        f"Чат: {get_chat_display_name(int(target_chat_id))}",
+        f"Напоминалок: {len(members)} · активных: {active}",
+        "Общий ритм при совместной работе: каждые 2 часа.",
+        "",
+    ]
+    for idx, (_rid, cfg) in enumerate(members, 1):
+        text = re.sub(r"\s+", " ", str(cfg.get("text") or "без текста").strip())
+        lines.append(f"{idx}. {text[:180]}")
+    lines += ["", "Можно открыть каждую отдельно или применить общие настройки ко всем."]
+    return "\n".join(lines)
+
+
+def reminder_group_keyboard(target_chat_id: int, page: int, day_key: str):
+    members = reminder_group_members(target_chat_id, day_key, enabled_only=False)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for idx, (rid, cfg) in enumerate(members, 1):
+        kb.row(IB(_reminder_button_label(idx, cfg), callback_data=f"rem:open:{rid}:{page}:{day_key}"))
+    any_disabled = any(not bool(cfg.get("enabled")) for _rid, cfg in members)
+    kb.row(IB("✅ Включить все" if any_disabled else "❌ Выключить все", callback_data=f"rem:group_toggle:{int(target_chat_id)}:{page}:{day_key}"))
+    kb.row(IB("🔁 Всем каждые 2 часа", callback_data=f"rem:group_set2h:{int(target_chat_id)}:{page}:{day_key}"))
+    kb.row(IB("🧩 Настройки первой → всем", callback_data=f"rem:group_sync:{int(target_chat_id)}:{page}:{day_key}"))
+    kb.row(IB("🧪 Напомнить сейчас", callback_data=f"rem:group_test:{int(target_chat_id)}:{page}:{day_key}"))
+    kb.row(IB("⬅️ К напоминалкам", callback_data=f"rem:list:{page}:{day_key}"))
+    return kb
+
+
+def reminder_group_set_two_hours(target_chat_id: int, day_key: str) -> None:
+    with _REMINDER_CONFIG_LOCK:
+        for _rid, cfg in reminder_group_members(target_chat_id, day_key, enabled_only=False):
+            cfg["interval_minutes"] = _REMINDER_GROUP_INTERVAL_MINUTES
+            if cfg.get("enabled"):
+                _reminder_rearm(cfg, immediate_if_valid=True)
+            _reminder_touch(cfg)
+    _reminder_save("reminder_group_2h")
+
+
+def reminder_group_sync_from_first(target_chat_id: int, day_key: str) -> None:
+    with _REMINDER_CONFIG_LOCK:
+        members = reminder_group_members(target_chat_id, day_key, enabled_only=False)
+        if not members:
+            return
+        src = members[0][1]
+        shared = {
+            "start_date": src.get("start_date") or today_key(),
+            "end_date": src.get("end_date") or "",
+            "start_hour": int(src.get("start_hour", 8)),
+            "end_hour": int(src.get("end_hour", 22)),
+            "interval_minutes": _REMINDER_GROUP_INTERVAL_MINUTES,
+        }
+        for _rid, cfg in members:
+            cfg.update(shared)
+            if cfg.get("enabled"):
+                _reminder_rearm(cfg, immediate_if_valid=True)
+            _reminder_touch(cfg)
+    _reminder_save("reminder_group_sync")
+
+
+def reminder_group_toggle_all(target_chat_id: int, day_key: str) -> None:
+    with _REMINDER_CONFIG_LOCK:
+        members = reminder_group_members(target_chat_id, day_key, enabled_only=False)
+        enable = any(not bool(cfg.get("enabled")) for _rid, cfg in members)
+        for _rid, cfg in members:
+            if enable and str(cfg.get("text") or "").strip():
+                cfg["enabled"] = True
+                cfg["completed_at"] = ""
+                cfg["completion_reason"] = ""
+                cfg["interval_minutes"] = _REMINDER_GROUP_INTERVAL_MINUTES
+                _reminder_rearm(cfg, immediate_if_valid=True)
+            elif not enable:
+                cfg["enabled"] = False
+                cfg["next_run_at"] = ""
+            _reminder_touch(cfg)
+    _reminder_save("reminder_group_toggle")
+
+
+def _reminder_group_message_text(members: list[tuple[int, dict]]) -> str:
+    lines = ["НАПОМИНАЛКА🕰️", ""]
+    budget = 3850
+    for idx, (_rid, cfg) in enumerate(members, 1):
+        text = str(cfg.get("text") or "").strip()
+        block = f"{idx}. {text}"
+        if sum(len(x) + 1 for x in lines) + len(block) > budget:
+            remain = max(0, budget - sum(len(x) + 1 for x in lines) - 2)
+            if remain:
+                lines.append(block[:remain] + "…")
+            break
+        lines.append(block)
+    return "\n".join(lines)
+
+
+def _reminder_group_next_time(now_dt: datetime, members: list[tuple[int, dict]]):
+    candidate = now_dt + timedelta(minutes=_REMINDER_GROUP_INTERVAL_MINUTES)
+    for _ in range(16):
+        if any(_reminder_date_allowed(candidate, cfg) and _reminder_time_allowed(candidate, cfg) for _rid, cfg in members):
+            return candidate
+        next_day = candidate.date() + timedelta(days=1)
+        start_hour = min(int(cfg.get("start_hour", 8)) for _rid, cfg in members)
+        candidate = datetime.combine(next_day, datetime.min.time(), tzinfo=now_dt.tzinfo).replace(hour=start_hour)
+    return None
+
+
+def _reminder_group_delete_message(target_chat_id: int, message_id: int) -> None:
+    if not message_id:
+        return
+    try:
+        bot.delete_message(int(target_chat_id), int(message_id))
+    except Exception:
+        pass
+
+
+def _reminder_group_send_job(target_chat_id: int, day_key: str, force: bool = False) -> None:
+    target_chat_id = int(target_chat_id)
+    day_key = str(day_key or today_key())
+    now_dt = now_local()
+    with _REMINDER_CONFIG_LOCK:
+        members = reminder_group_members(target_chat_id, day_key, enabled_only=not force)
+        if not force:
+            members = [row for row in members if _reminder_date_allowed(now_dt, row[1]) and _reminder_time_allowed(now_dt, row[1])]
+        if len(members) < 2:
+            return
+        state = _reminder_group_state_root().setdefault(_reminder_group_key(target_chat_id, day_key), {})
+        old_group_mid = int(state.get("last_message_id") or 0)
+        old_individual = []
+        for _rid, cfg in members:
+            old = (cfg.get("last_message_ids") or {}).pop(str(target_chat_id), None)
+            if old:
+                old_individual.append(int(old))
+        snapshot = [(rid, copy.deepcopy(cfg)) for rid, cfg in members]
+    try:
+        sent = bot.send_message(target_chat_id, _reminder_group_message_text(snapshot))
+    except Exception as exc:
+        log_error(f"reminder group send {target_chat_id}: {exc}")
+        with _REMINDER_GROUP_LOCK:
+            state = _reminder_group_state_root().setdefault(_reminder_group_key(target_chat_id, day_key), {})
+            state["next_run_at"] = (now_dt + timedelta(minutes=5)).isoformat(timespec="seconds")
+            state["last_error"] = str(exc)[:300]
+        _reminder_save("reminder_group_retry")
+        return
+    for mid in set(old_individual + ([old_group_mid] if old_group_mid else [])):
+        if mid and int(mid) != int(sent.message_id):
+            _reminder_group_delete_message(target_chat_id, mid)
+    next_dt = _reminder_group_next_time(now_dt, snapshot)
+    with _REMINDER_CONFIG_LOCK:
+        state = _reminder_group_state_root().setdefault(_reminder_group_key(target_chat_id, day_key), {})
+        state.update({
+            "target_chat_id": target_chat_id,
+            "day_key": day_key,
+            "member_ids": [rid for rid, _cfg in snapshot],
+            "last_message_id": int(sent.message_id),
+            "last_sent_at": now_dt.isoformat(timespec="seconds"),
+            "next_run_at": next_dt.isoformat(timespec="seconds") if next_dt else "",
+            "last_error": "",
+        })
+        for rid, _old_cfg in snapshot:
+            cfg = _reminder_cfg(rid)
+            if not cfg:
+                continue
+            cfg["last_sent_at"] = now_dt.isoformat(timespec="seconds")
+            cfg["next_run_at"] = next_dt.isoformat(timespec="seconds") if next_dt else ""
+            cfg["interval_minutes"] = _REMINDER_GROUP_INTERVAL_MINUTES
+            _reminder_touch(cfg)
+    _reminder_save("reminder_group_sent")
+    try:
+        bot_journal("reminder_group_sent", target_chat_id, f"members={[rid for rid,_ in snapshot]} message_id={sent.message_id}")
+    except Exception:
+        pass
+
+
+def _reminder_finance_priority_busy() -> bool:
+    try:
+        for pool in (FINANCE_TASK_POOL, FIN_FORWARD_TASK_POOL):
+            st = pool.stats()
+            if int(st.get("pending", 0) or 0) > 0 or int(st.get("active", 0) or 0) > 0:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _reminder_cleanup_stale_groups(active_keys: set[str]) -> None:
+    root = _reminder_group_state_root()
+    for key in list(root.keys()):
+        if key in active_keys:
+            continue
+        row = root.pop(key, {}) or {}
+        mid = int(row.get("last_message_id") or 0)
+        cid = int(row.get("target_chat_id") or 0)
+        if mid and cid:
+            pool = globals().get("GENERAL_TASK_POOL")
+            if pool:
+                pool.submit_unique(f"reminder-group-clean:{cid}:{mid}", _reminder_group_delete_message, cid, mid)
+
+
+def _reminder_tick() -> None:
+    """Finance first; then grouped reminders; then ordinary reminders."""
+    if _reminder_finance_priority_busy():
+        return
+    now_dt = now_local()
+    day_key = now_dt.strftime("%Y-%m-%d")
+    completed_changed = False
+    with _REMINDER_CONFIG_LOCK:
+        for rid, cfg in _reminder_items():
+            if _reminder_end_has_passed(cfg, now_dt):
+                _reminder_mark_completed(rid, cfg, "end_date_finished", delete_messages=True)
+                completed_changed = True
+    groups = _reminder_group_map(day_key, enabled_only=True)
+    active_group_keys = {_reminder_group_key(cid, day_key) for cid in groups}
+    _reminder_cleanup_stale_groups(active_group_keys)
+    grouped_ids = set()
+    for cid, members in groups.items():
+        grouped_ids.update(rid for rid, _cfg in members)
+        state = _reminder_group_state_root().setdefault(_reminder_group_key(cid, day_key), {})
+        due = _reminder_parse_dt(state.get("next_run_at"))
+        if due is None:
+            member_due = [_reminder_parse_dt(cfg.get("next_run_at")) for _rid, cfg in members]
+            member_due = [x for x in member_due if x is not None]
+            due = min(member_due) if member_due else now_dt
+            state["next_run_at"] = due.isoformat(timespec="seconds")
+        if now_dt >= due and any(_reminder_time_allowed(now_dt, cfg) for _rid, cfg in members):
+            REMINDER_TASK_POOL.submit_unique(f"reminder-group:{cid}:{day_key}", _reminder_group_send_job, cid, day_key, False)
+    for rid, cfg in _reminder_items():
+        if int(rid) in grouped_ids:
+            continue
+        try:
+            if _reminder_due_now(cfg, now_dt):
+                if not REMINDER_TASK_POOL.submit_unique(f"reminder:{rid}", _reminder_tick_job, rid):
+                    bot_journal("reminder_dispatch_coalesced", None, f"reminder_id={rid}")
+        except Exception as exc:
+            log_error(f"reminder {rid} due check: {exc}")
+    if completed_changed:
+        _reminder_save("reminder_completed_tick")
+# v142_expense_priority_reminder_groups
