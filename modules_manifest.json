@@ -1,6 +1,6 @@
 {
-  "version": "bot_v145_memory_guard_streaming_forensics",
-  "file_marker": "v145_memory_guard_streaming_forensics",
+  "version": "bot_v146_window_epoch_lazy_refresh_durable",
+  "file_marker": "v146_window_epoch_lazy_refresh_durable",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -20,10 +20,11 @@
     "80_callback_router.py",
     "90_commands_exports.py",
     "91_finance_records_handlers.py",
+    "92_v146_stability.py",
     "99_web_runtime.py"
   ],
   "files": {
-    "00_core.py": "6b121bed9a4e9b45d7217c0871702657756d160d1fee4d5996c1074aa3f3daf8",
+    "00_core.py": "0326dcb1b3ba365e0cadf3043218af8fbb5d2677fba16019da96f5bb46d9ee63",
     "10_mega_runtime.py": "51a415919d7132fa9a0abc19383275fcb6b6d3a589585d529950fe5e6909beaf",
     "15_operation_safety.py": "b8a868fc87024d947287c858195ab6db57e8a540d29e01285e46f10cbf96990e",
     "16_window_diagnostics.py": "f7a3538efbca8a6eb50766102dc3d62ecdd3e833ec8e5b74a9542bb7a5a98c6c",
@@ -41,10 +42,11 @@
     "80_callback_router.py": "49fe70d89607c88821b9bd1bad7bbad02c93c6cfbbdec16caf83b65494688f2d",
     "90_commands_exports.py": "80f35e21f9f44aff20ee13a1ed65e1d9b80f759012f5dad86901de6911f6a507",
     "91_finance_records_handlers.py": "0e210f17f647a80a633ce3d9e1fbcdf497621e6ade4d91db334c1145f5b44210",
+    "92_v146_stability.py": "9b8e0e745b5ed760dbb18a12c39d144d48695860cb00fe439a2b4345aa9f910c",
     "99_web_runtime.py": "85fad195a9b0448d2bb5ce99c77acaba1e61c072b7e21c794fa13b060529d5b9"
   },
   "file_markers": {
-    "00_core.py": "v145_memory_guard_streaming_forensics",
+    "00_core.py": "v146_window_epoch_lazy_refresh_durable",
     "10_mega_runtime.py": "v145_memory_guard_streaming_forensics",
     "15_operation_safety.py": "v143_audit_stability_exact_wait_reminders_memory",
     "16_window_diagnostics.py": "v145_memory_guard_streaming_forensics",
@@ -62,6 +64,7 @@
     "80_callback_router.py": "v143_audit_stability_exact_wait_reminders_memory",
     "90_commands_exports.py": "v145_memory_guard_streaming_forensics",
     "91_finance_records_handlers.py": "v145_memory_guard_streaming_forensics",
+    "92_v146_stability.py": "v146_window_epoch_lazy_refresh_durable",
     "99_web_runtime.py": "v145_memory_guard_streaming_forensics"
   }
 }

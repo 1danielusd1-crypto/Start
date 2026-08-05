@@ -1,11 +1,11 @@
-# v145_memory_guard_streaming_forensics
+# v146_window_epoch_lazy_refresh_durable
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v145_memory_guard_streaming_forensics"
-MODULE_FILE_VERSION = "v145_memory_guard_streaming_forensics"
+MODULAR_VERSION = "bot_v146_window_epoch_lazy_refresh_durable"
+MODULE_FILE_VERSION = "v146_window_epoch_lazy_refresh_durable"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -25,6 +25,7 @@ MODULAR_SOURCE_PARTS = [
     '80_callback_router.py',
     '90_commands_exports.py',
     '91_finance_records_handlers.py',
+    '92_v146_stability.py',
     '99_web_runtime.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
@@ -125,4 +126,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v145_memory_guard_streaming_forensics
+# v146_window_epoch_lazy_refresh_durable

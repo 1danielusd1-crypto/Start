@@ -1,4 +1,4 @@
-# v145_memory_guard_streaming_forensics
+# v146_window_epoch_lazy_refresh_durable
 import os
 import io
 import json
@@ -843,7 +843,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v145_memory_guard_streaming_forensics"
+VERSION = "bot_v146_window_epoch_lazy_refresh_durable"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -7712,4 +7712,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v145_memory_guard_streaming_forensics
+# v146_window_epoch_lazy_refresh_durable
