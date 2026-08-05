@@ -1,4 +1,4 @@
-# v142_expense_priority_reminder_groups
+# v144_window_mutation_diagnostics
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -25,8 +25,22 @@ def _perform_fast_ui_edit(payload: dict) -> str:
     reply_markup = payload.get("reply_markup")
     parse_mode = payload.get("parse_mode")
     purpose = payload.get("purpose") or "fast_ui_edit"
+
+    def _call_with_window_context(method, *args, **kwargs):
+        diag_context = globals().get("window_diag_context")
+        values = {
+            "purpose": purpose,
+            "request_id": payload.get("_window_diag_request_id"),
+            "expected_seq": payload.get("_window_diag_expected_seq"),
+            "window_force": True,
+        }
+        if callable(diag_context):
+            with diag_context(**values):
+                return _tg_call_retry(method, *args, **kwargs)
+        return _tg_call_retry(method, *args, **kwargs)
+
     try:
-        _tg_call_retry(
+        _call_with_window_context(
             bot.edit_message_text,
             text,
             chat_id=chat_id,
@@ -50,7 +64,7 @@ def _perform_fast_ui_edit(payload: dict) -> str:
         if "message to edit not found" in low or "message can't be edited" in low:
             return "not_found"
         try:
-            _tg_call_retry(
+            _call_with_window_context(
                 bot.edit_message_caption,
                 chat_id=chat_id,
                 message_id=message_id,
@@ -79,7 +93,6 @@ def _perform_fast_ui_edit(payload: dict) -> str:
                 pass
             return "failed"
 
-
 def _run_pending_ui_edit(key):
     with _ui_edit_lock:
         payload = _ui_edit_pending.pop(key, None)
@@ -87,6 +100,12 @@ def _run_pending_ui_edit(key):
         if not payload:
             return
         _ui_edit_last_ts[key] = time.time()
+    try:
+        diag_apply = globals().get("window_diag_fast_ui_apply")
+        if callable(diag_apply):
+            diag_apply(payload, delayed=True)
+    except Exception:
+        pass
     _perform_fast_ui_edit(payload)
 
 
@@ -110,18 +129,37 @@ def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_ma
         "parse_mode": parse_mode,
         "purpose": purpose,
     }
+    try:
+        diag_prepare = globals().get("window_diag_prepare_fast_ui_payload")
+        if callable(diag_prepare):
+            payload = diag_prepare(payload) or payload
+    except Exception:
+        pass
     now_ts = time.time()
     with _ui_edit_lock:
         last_ts = float(_ui_edit_last_ts.get(key, 0) or 0)
         wait = max(0.0, effective_ui_edit_interval() - (now_ts - last_ts))
         if wait > 0:
+            replaced_payload = _ui_edit_pending.get(key)
             _ui_edit_pending[key] = payload
             scheduler_key = f"ui-edit:{int(chat_id)}:{int(message_id)}"
             DELAYED_SCHEDULER.cancel(scheduler_key)
             deadline = DELAYED_SCHEDULER.schedule(scheduler_key, wait + 0.05, _run_pending_ui_edit, key)
             _ui_edit_timers[key] = deadline
+            try:
+                diag_scheduled = globals().get("window_diag_fast_ui_scheduled")
+                if callable(diag_scheduled):
+                    diag_scheduled(payload, wait + 0.05, replaced_payload=replaced_payload)
+            except Exception:
+                pass
             return "scheduled"
         _ui_edit_last_ts[key] = now_ts
+    try:
+        diag_apply = globals().get("window_diag_fast_ui_apply")
+        if callable(diag_apply):
+            diag_apply(payload, delayed=False)
+    except Exception:
+        pass
     return _perform_fast_ui_edit(payload)
 
 
@@ -370,10 +408,29 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
     except Exception:
         pass
     try:
-        sent = _tg_call_retry(
-            bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode,
-            attempts=1, purpose="safe_edit_send_fallback",
-        )
+        try:
+            diag_note = globals().get("window_diag_note_recreate")
+            if callable(diag_note):
+                diag_note(chat_id, msg_id, result, "safe_edit_send_fallback")
+        except Exception:
+            pass
+        diag_context = globals().get("window_diag_context")
+        if callable(diag_context):
+            with diag_context(
+                purpose="safe_edit_send_fallback",
+                recreate_from=msg_id,
+                recreate_reason=result,
+                window_force=True,
+            ):
+                sent = _tg_call_retry(
+                    bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode,
+                    attempts=1, purpose="safe_edit_send_fallback",
+                )
+        else:
+            sent = _tg_call_retry(
+                bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode,
+                attempts=1, purpose="safe_edit_send_fallback",
+            )
         try:
             _touch_v98_auto_close_for_callback(chat_id, sent.message_id, raw_action)
         except Exception:
@@ -2622,4 +2679,4 @@ def build_integrity_keyboard(chat_id: int):
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
 
-# v142_expense_priority_reminder_groups
+# v144_window_mutation_diagnostics

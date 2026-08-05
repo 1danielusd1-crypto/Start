@@ -1,4 +1,4 @@
-# v142_expense_priority_reminder_groups
+# v143_audit_stability_exact_wait_reminders_memory
 
 _REMINDER_THREAD_STARTED = False
 _REMINDER_THREAD_LOCK = threading.RLock()
@@ -14,6 +14,8 @@ _REMINDER_MONTHS_RU = [
 ]
 _REMINDER_GROUP_INTERVAL_MINUTES = 120
 _REMINDER_GROUP_LOCK = threading.RLock()
+_REMINDER_FINANCE_BUSY_SINCE = 0.0
+_REMINDER_FINANCE_PRIORITY_GRACE_SECONDS = 60.0
 
 
 def reminder_ui_mode() -> str:
@@ -1672,7 +1674,11 @@ def _reminder_group_send_job(target_chat_id: int, day_key: str, force: bool = Fa
     with _REMINDER_CONFIG_LOCK:
         members = reminder_group_members(target_chat_id, day_key, enabled_only=not force)
         if not force:
-            members = [row for row in members if _reminder_date_allowed(now_dt, row[1]) and _reminder_time_allowed(now_dt, row[1])]
+            members = [row for row in members if (
+                _reminder_date_allowed(now_dt, row[1])
+                and _reminder_time_allowed(now_dt, row[1])
+                and _reminder_due_now(row[1], now_dt)
+            )]
         if len(members) < 2:
             return
         state = _reminder_group_state_root().setdefault(_reminder_group_key(target_chat_id, day_key), {})
@@ -1749,41 +1755,85 @@ def _reminder_cleanup_stale_groups(active_keys: set[str]) -> None:
 
 
 def _reminder_tick() -> None:
-    """Finance first; then grouped reminders; then ordinary reminders."""
-    if _reminder_finance_priority_busy():
-        return
-    now_dt = now_local()
-    day_key = now_dt.strftime("%Y-%m-%d")
-    completed_changed = False
+    """Old mode sends every reminder individually; new mode groups only reminders due now.
+
+    A configured same-day group no longer suppresses a single reminder whose partner is not
+    currently due or is outside its active hours. Finance has a bounded 60-second priority
+    window so reminders cannot starve forever.
+    """
+    global _REMINDER_FINANCE_BUSY_SINCE
+    now_dt = now_local(); day_key = now_dt.strftime("%Y-%m-%d")
+    finance_busy = _reminder_finance_priority_busy()
+    if finance_busy:
+        if not _REMINDER_FINANCE_BUSY_SINCE:
+            _REMINDER_FINANCE_BUSY_SINCE = time.monotonic()
+        busy_for = time.monotonic() - _REMINDER_FINANCE_BUSY_SINCE
+        if busy_for < _REMINDER_FINANCE_PRIORITY_GRACE_SECONDS:
+            return
+        try:
+            bot_journal("reminder_finance_priority_expired", None, f"busy_for={busy_for:.1f}s; overdue reminders allowed")
+        except Exception:
+            pass
+    else:
+        _REMINDER_FINANCE_BUSY_SINCE = 0.0
+
+    completed_changed = False; due_rows = []
     with _REMINDER_CONFIG_LOCK:
         for rid, cfg in _reminder_items():
             if _reminder_end_has_passed(cfg, now_dt):
                 _reminder_mark_completed(rid, cfg, "end_date_finished", delete_messages=True)
                 completed_changed = True
-    groups = _reminder_group_map(day_key, enabled_only=True)
-    active_group_keys = {_reminder_group_key(cid, day_key) for cid in groups}
+                continue
+            try:
+                if _reminder_due_now(cfg, now_dt):
+                    due_rows.append((int(rid), cfg))
+            except Exception as exc:
+                log_error(f"reminder {rid} due check: {exc}")
+
+    # Old profile must change scheduler behavior, not only button layout.
+    if not reminder_ui_new_enabled():
+        _reminder_cleanup_stale_groups(set())
+        for rid, _cfg in due_rows:
+            if not REMINDER_TASK_POOL.submit_unique(f"reminder:{rid}", _reminder_tick_job, rid):
+                bot_journal("reminder_dispatch_coalesced", None, f"reminder_id={rid}")
+        if completed_changed:
+            _reminder_save("reminder_completed_tick")
+        return
+
+    configured_groups = _reminder_group_map(day_key, enabled_only=True)
+    active_group_keys = {_reminder_group_key(cid, day_key) for cid in configured_groups}
     _reminder_cleanup_stale_groups(active_group_keys)
-    grouped_ids = set()
-    for cid, members in groups.items():
-        grouped_ids.update(rid for rid, _cfg in members)
-        state = _reminder_group_state_root().setdefault(_reminder_group_key(cid, day_key), {})
-        due = _reminder_parse_dt(state.get("next_run_at"))
-        if due is None:
-            member_due = [_reminder_parse_dt(cfg.get("next_run_at")) for _rid, cfg in members]
-            member_due = [x for x in member_due if x is not None]
-            due = min(member_due) if member_due else now_dt
-            state["next_run_at"] = due.isoformat(timespec="seconds")
-        if now_dt >= due and any(_reminder_time_allowed(now_dt, cfg) for _rid, cfg in members):
-            REMINDER_TASK_POOL.submit_unique(f"reminder-group:{cid}:{day_key}", _reminder_group_send_job, cid, day_key, False)
-    for rid, cfg in _reminder_items():
-        if int(rid) in grouped_ids:
+
+    due_by_chat = defaultdict(list)
+    for rid, cfg in due_rows:
+        cid = _reminder_single_chat_id(cfg)
+        if cid is None:
             continue
+        if _reminder_date_allowed(now_dt, cfg) and _reminder_time_allowed(now_dt, cfg):
+            due_by_chat[int(cid)].append((rid, cfg))
+
+    grouped_ids = set(); grouped_count = 0
+    for cid, members in due_by_chat.items():
+        if len(members) < 2:
+            continue
+        grouped_ids.update(rid for rid, _cfg in members)
+        grouped_count += 1
+        REMINDER_TASK_POOL.submit_unique(f"reminder-group:{cid}:{day_key}", _reminder_group_send_job, cid, day_key, False)
+
+    individual_count = 0
+    for rid, _cfg in due_rows:
+        if rid in grouped_ids:
+            continue
+        individual_count += 1
+        if not REMINDER_TASK_POOL.submit_unique(f"reminder:{rid}", _reminder_tick_job, rid):
+            bot_journal("reminder_dispatch_coalesced", None, f"reminder_id={rid}")
+    if due_rows:
         try:
-            if _reminder_due_now(cfg, now_dt):
-                if not REMINDER_TASK_POOL.submit_unique(f"reminder:{rid}", _reminder_tick_job, rid):
-                    bot_journal("reminder_dispatch_coalesced", None, f"reminder_id={rid}")
-        except Exception as exc:
-            log_error(f"reminder {rid} due check: {exc}")
+            bot_journal("reminder_tick_dispatch", None,
+                        f"mode=new due={len(due_rows)} groups={grouped_count} individual={individual_count} finance_busy={int(finance_busy)}")
+        except Exception:
+            pass
     if completed_changed:
         _reminder_save("reminder_completed_tick")
-# v142_expense_priority_reminder_groups
+
+# v143_audit_stability_exact_wait_reminders_memory

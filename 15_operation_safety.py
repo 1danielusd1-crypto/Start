@@ -1,4 +1,4 @@
-# v142_expense_priority_reminder_groups
+# v143_audit_stability_exact_wait_reminders_memory
 
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
@@ -7,11 +7,11 @@ _FINANCE_INTEGRITY_LOCK = threading.RLock()
 _FINANCE_CACHE_LOCK = threading.RLock()
 _SECURITY_BREAKER_LOCK = threading.RLock()
 
-_OPERATION_KEEP = 1500
-_OPERATION_RECENT_KEEP = 250
-_FINANCE_INTEGRITY_KEEP = 12000
-_EXPENSE_DRAFT_KEEP = 500
-_PROCESS_RECENT_KEEP = 120
+_OPERATION_KEEP = 400
+_OPERATION_RECENT_KEEP = 100
+_FINANCE_INTEGRITY_KEEP = 2000
+_EXPENSE_DRAFT_KEEP = 300
+_PROCESS_RECENT_KEEP = 80
 _FINANCE_VIEW_CACHE = {}
 _PROCESS_RUNTIME = {"active": {}, "recent": deque(maxlen=_PROCESS_RECENT_KEEP)}
 _SECURITY_BREAKERS = {}
@@ -39,6 +39,15 @@ def _root_save(reason: str = "settings") -> None:
             schedule_delta_backup(int(OWNER_ID), delay=0.8, reason=reason)
     except Exception:
         pass
+
+
+def _root_save_coalesced(reason: str = "runtime", delay: float = 1.5) -> None:
+    """Diagnostic ledgers may lag briefly; business data/durable MEGA tasks do not."""
+    scheduler = globals().get("DELAYED_SCHEDULER")
+    if scheduler is None:
+        _root_save(reason)
+        return
+    scheduler.schedule("v143-root-ledger-save", max(0.2, float(delay)), _root_save, str(reason))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -130,7 +139,7 @@ _SENSITIVE_ACTION_PREFIXES = (
 )
 
 _SECURITY_ROLE_PRESETS = {
-    "standard": ("Обычный", {"view", "finance_input", "finance_manage", "export", "forward_manage", "secret_manage", "reminder_manage"}),
+    "standard": ("Обычный", {"view", "finance_input"}),
     "view_only": ("Только просмотр", {"view", "export"}),
     "expense_input": ("Только ввод расходов", {"view", "finance_input"}),
     "finance_admin": ("Администратор финансов", {"view", "finance_input", "finance_manage", "export"}),
@@ -275,9 +284,11 @@ def safety_permission_allowed(user_id: int | None, chat_id: int | None, action: 
     except Exception:
         pass
     action = str(action or "")
-    if action.startswith(_SENSITIVE_ACTION_PREFIXES):
+    normalized = action.split(":", 2)[2] if action.startswith("d:") and action.count(":") >= 2 else action
+    normalized = str(normalized or "").strip().lower()
+    if normalized.startswith(tuple(str(x).lower() for x in _SENSITIVE_ACTION_PREFIXES)):
         return False
-    return security_user_allowed(uid, _security_callback_capability(action))
+    return security_user_allowed(uid, _security_callback_capability(normalized))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -304,6 +315,32 @@ def _operation_trim_locked(root: dict) -> None:
             items.pop(key, None)
 
 
+def _compact_operation_payload(payload: dict | None) -> dict:
+    src = payload or {}
+    if not isinstance(src, dict):
+        return {"value": str(src)[:500]}
+    out = {}
+    for key, value in src.items():
+        k = str(key)[:80]
+        if k in {"expected_effects"} and isinstance(value, dict):
+            out[k] = {
+                "source_finance": bool(value.get("source_finance")),
+                "source_secret": bool(value.get("source_secret")),
+                "forward_targets": len(value.get("forward_targets") or []),
+                "record_edits": len(value.get("record_edits") or []),
+                "reminder_edits": len(value.get("reminder_edits") or []),
+            }
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            out[k] = value if not isinstance(value, str) else value[:500]
+        elif isinstance(value, (list, tuple)):
+            out[k] = list(value)[:20]
+        elif isinstance(value, dict):
+            out[k] = {str(a)[:60]: (b[:300] if isinstance(b, str) else b) for a,b in list(value.items())[:20]}
+        if len(out) >= 24:
+            break
+    return out
+
+
 def operation_begin(kind: str, chat_id=None, target: str = "", payload: dict | None = None,
                     operation_id: str | None = None, critical: bool = True) -> str:
     with _OPERATION_LOCK:
@@ -328,14 +365,14 @@ def operation_begin(kind: str, chat_id=None, target: str = "", payload: dict | N
             "created_at": now_local().isoformat(timespec="microseconds"),
             "updated_at": now_local().isoformat(timespec="microseconds"),
             "steps": [{"name": "created", "at": now_local().isoformat(timespec="microseconds")}],
-            "payload": _delta_json_clone(payload or {}) if "_delta_json_clone" in globals() else copy.deepcopy(payload or {}),
+            "payload": _compact_operation_payload(payload),
             "error": "",
         }
         root.setdefault("items", {})[op_id] = row
         root.setdefault("order", []).append(op_id)
         _operation_trim_locked(root)
     process_register(op_id, row["kind"], row.get("chat_id"), phase="создано", cancellable=False)
-    _root_save("operation_begin")
+    _root_save_coalesced("operation_begin")
     return op_id
 
 
@@ -350,11 +387,11 @@ def operation_step(op_id: str, step: str, details: str = "", persist: bool = Tru
             "name": str(step or "running"), "details": str(details or "")[:500],
             "at": now_local().isoformat(timespec="microseconds"),
         })
-        if len(row["steps"]) > 30:
-            row["steps"] = row["steps"][-30:]
+        if len(row["steps"]) > 12:
+            row["steps"] = row["steps"][-12:]
     process_update(str(op_id), phase=str(step or "running"), details=details)
     if persist:
-        _root_save("operation_step")
+        _root_save_coalesced("operation_step")
     return True
 
 
@@ -370,7 +407,7 @@ def operation_complete(op_id: str, details: str = "") -> bool:
         row["error"] = ""
         row.setdefault("steps", []).append({"name": "completed", "details": str(details or "")[:500], "at": row["completed_at"]})
     process_finish(str(op_id), ok=True, details=details)
-    _root_save("operation_complete")
+    _root_save_coalesced("operation_complete")
     return True
 
 
@@ -385,7 +422,7 @@ def operation_review(op_id: str, reason: str = "") -> bool:
         row["updated_at"] = now_local().isoformat(timespec="microseconds")
         row.setdefault("steps", []).append({"name": "needs_review", "details": row["error"], "at": row["updated_at"]})
     process_finish(str(op_id), ok=None, details=reason)
-    _root_save("operation_review")
+    _root_save_coalesced("operation_review")
     return True
 
 
@@ -400,7 +437,7 @@ def operation_fail(op_id: str, error: str = "") -> bool:
         row["updated_at"] = now_local().isoformat(timespec="microseconds")
         row.setdefault("steps", []).append({"name": "failed", "details": row["error"], "at": row["updated_at"]})
     process_finish(str(op_id), ok=False, details=error)
-    _root_save("operation_fail")
+    _root_save_coalesced("operation_fail")
     return True
 
 
@@ -697,11 +734,14 @@ def migrate_recent_expense_shortcut_events(days: int = 2, refresh_messages: bool
         shortcut = {}
     cutoff = now_local() - timedelta(days=max(1, int(days or 2)))
     imported = updated = seen = 0
+    duplicate = too_old = missing_message_id = refresh_failed = 0
+    total_events = len(list(shortcut.get("events") or []))
     for event in list(shortcut.get("events") or []):
         if not isinstance(event, dict) or not event.get("id"):
             continue
         dt = _expense_event_dt(event)
         if dt is None or dt < cutoff:
+            too_old += 1
             continue
         seen += 1
         event_id = str(event.get("id"))
@@ -715,7 +755,11 @@ def migrate_recent_expense_shortcut_events(days: int = 2, refresh_messages: bool
         draft = expense_draft_for_event(event_id, target, dt.isoformat(timespec="seconds"))
         if before is None:
             imported += 1
+        else:
+            duplicate += 1
         mid = int(event.get("telegram_message_id") or 0)
+        if not mid:
+            missing_message_id += 1
         if mid and int((draft or {}).get("telegram_message_id") or 0) != mid:
             with _EXPENSE_INBOX_LOCK:
                 draft["telegram_message_id"] = mid
@@ -736,15 +780,18 @@ def migrate_recent_expense_shortcut_events(days: int = 2, refresh_messages: bool
                         )
                         updated += 1
                     except Exception:
-                        pass
+                        refresh_failed += 1
     root = _expense_inbox_root()
     root["recent_event_migration_v142_at"] = now_local().isoformat(timespec="seconds")
     _root_save("expense_recent_event_migration")
     try:
-        bot_journal("expense_recent_events_migrated", OWNER_ID, f"seen={seen} imported={imported} updated={updated}")
+        bot_journal("expense_recent_events_migrated", OWNER_ID,
+                    f"total={total_events} seen_48h={seen} imported={imported} existing={duplicate} updated={updated} "
+                    f"too_old_or_bad_date={too_old} missing_message_id={missing_message_id} refresh_failed={refresh_failed}")
     except Exception:
         pass
-    return {"imported": imported, "updated": updated, "seen": seen}
+    return {"imported": imported, "updated": updated, "seen": seen, "existing": duplicate,
+            "too_old": too_old, "missing_message_id": missing_message_id, "refresh_failed": refresh_failed}
 
 
 def expense_draft_create(source: str, target_chat_id: int, created_at: str | None = None, source_event_id: str = "") -> dict:
@@ -964,6 +1011,8 @@ def _integrity_root() -> dict:
     root = _root_settings().setdefault("finance_integrity_v141", {})
     root.setdefault("events", [])
     root.setdefault("tips", {})
+    root.setdefault("anchor", {})
+    root.setdefault("event_seq", 0)
     return root
 
 
@@ -971,14 +1020,45 @@ def _integrity_canonical(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _integrity_compact_record(record: dict | None) -> dict:
+    rec = record or {}
+    if not isinstance(rec, dict):
+        return {"value": str(rec)[:300]}
+    keep = ("id", "amount", "note", "date", "day", "timestamp", "currency", "source_msg_id", "operation_key", "ids")
+    return {k: copy.deepcopy(rec.get(k)) for k in keep if k in rec}
+
+def _finance_integrity_upload_anchor(anchor: dict) -> None:
+    tmp = None
+    try:
+        if not globals().get("mega_is_configured") or not mega_is_configured():
+            return
+        remote = f"{str(globals().get('MEGA_BACKUP_DIR') or '/TelegramBotBackups').rstrip('/')}/integrity"
+        mega_ensure_remote_path(remote)
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        name = f"finance_anchor_{int(anchor.get('seq') or 0):08d}_{str(anchor.get('hash') or '')[:12]}.json"
+        tmp = os.path.join(MEGA_LOCAL_TMP_DIR, name)
+        _atomic_json_dump(tmp, {"kind":"finance_integrity_anchor", "bot_version":VERSION, **anchor})
+        _mega_run("mega-put", [tmp, remote], check=True, timeout=MEGA_TIMEOUT)
+        bot_journal("finance_integrity_anchor_saved", anchor.get("chat_id"), f"seq={anchor.get('seq')} hash={anchor.get('hash')}")
+    except Exception as exc:
+        log_error(f"finance integrity anchor: {exc}")
+    finally:
+        try:
+            if tmp and os.path.exists(tmp): os.remove(tmp)
+        except Exception:
+            pass
+
+
 def finance_integrity_append(chat_id: int, action: str, record: dict | None = None, details: dict | None = None) -> str:
     cid = int(chat_id)
     with _FINANCE_INTEGRITY_LOCK:
         root = _integrity_root(); tips = root.setdefault("tips", {})
         prev = str(tips.get(str(cid)) or "")
+        root["event_seq"] = int(root.get("event_seq") or 0) + 1
+        seq = int(root["event_seq"])
         payload = {
-            "chat_id": cid, "action": str(action), "record": copy.deepcopy(record or {}),
-            "details": copy.deepcopy(details or {}), "at": now_local().isoformat(timespec="microseconds"),
+            "seq": seq, "chat_id": cid, "action": str(action), "record": _integrity_compact_record(record),
+            "details": _compact_operation_payload(details), "at": now_local().isoformat(timespec="microseconds"),
             "prev": prev,
         }
         digest = hashlib.sha256((prev + "|" + _integrity_canonical(payload)).encode("utf-8")).hexdigest()
@@ -987,7 +1067,15 @@ def finance_integrity_append(chat_id: int, action: str, record: dict | None = No
         tips[str(cid)] = digest
         if len(root["events"]) > _FINANCE_INTEGRITY_KEEP:
             root["events"] = root["events"][-_FINANCE_INTEGRITY_KEEP:]
-    _root_save("finance_integrity")
+        anchor = None
+        if seq % 50 == 0:
+            anchor = {"seq": seq, "chat_id": cid, "hash": digest, "at": payload["at"]}
+            root["anchor"] = dict(anchor)
+    _root_save_coalesced("finance_integrity", 1.0)
+    if anchor:
+        pool = globals().get("GENERAL_TASK_POOL")
+        if pool is not None:
+            pool.submit_unique(f"integrity-anchor:{seq}", _finance_integrity_upload_anchor, anchor)
     return digest
 
 
@@ -1020,6 +1108,34 @@ def finance_integrity_text() -> str:
         f"Результат: {'✅ цепочка цела' if report.get('ok') else '🔴 обнаружена проблема'}\n"
         f"Подробности: {report.get('error') or 'нет'}"
     )
+
+
+def runtime_audit_metrics() -> dict:
+    """Compact counters included in diagnostics without serializing large payloads."""
+    try:
+        op_root = _operation_root(); integ = _integrity_root(); inbox = _expense_inbox_root()
+        lock = globals().get("_FORWARD_OUTCOME_LOCK")
+        if lock is not None:
+            with lock:
+                forward_outcomes = len(globals().get("_FORWARD_OUTCOMES") or {})
+        else:
+            forward_outcomes = len(globals().get("_FORWARD_OUTCOMES") or {})
+        batches = len(globals().get("_FIN_FORWARD_BATCHES") or {})
+        return {
+            "operation_items": len(op_root.get("items") or {}),
+            "operation_order": len(op_root.get("order") or []),
+            "integrity_events": len(integ.get("events") or []),
+            "integrity_anchor": dict(integ.get("anchor") or {}),
+            "expense_drafts": len(inbox.get("items") or {}),
+            "finance_cache_entries": len(_FINANCE_VIEW_CACHE),
+            "forward_outcomes": forward_outcomes,
+            "finance_forward_batches": batches,
+            "reminder_mode": reminder_ui_mode() if "reminder_ui_mode" in globals() else "",
+            "reminder_groups": len((_reminder_group_state_root() if "_reminder_group_state_root" in globals() else {}) or {}),
+            "journal_buffer_rows": len(globals().get("_JOURNAL_DURABLE_BUFFER") or []),
+        }
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
 
 
 def start_safety_schedulers():
@@ -1147,4 +1263,4 @@ def expense_draft_input_message(msg):
     finally:
         msg.text = original_text
 
-# v142_expense_priority_reminder_groups
+# v143_audit_stability_exact_wait_reminders_memory

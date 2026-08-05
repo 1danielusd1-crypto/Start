@@ -1,4 +1,4 @@
-# v142_expense_priority_reminder_groups
+# v143_audit_stability_exact_wait_reminders_memory
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -99,8 +99,20 @@ def on_callback(call):
                 bot.answer_callback_query(call.id, "Недостаточно прав для этого действия.", show_alert=True)
                 bot_journal("permission_denied", chat_id, f"user={user_id} action={data_str}", "WARN")
                 return
-        except Exception:
-            pass
+        except Exception as perm_exc:
+            # New safety profile is fail-closed: an internal permission error must never
+            # silently grant a destructive/export/restore callback. Owners retain access.
+            try:
+                is_owner = bool(user_id and (int(user_id) == int(OWNER_ID or 0) or int(user_id) in {int(x) for x in get_additional_owner_ids()}))
+            except Exception:
+                is_owner = False
+            log_error(f"SECURITY_PERMISSION_ERROR user={locals().get('user_id',0)} chat={chat_id} action={data_str}: {perm_exc}")
+            if not is_owner and ("safety_profile_new_enabled" in globals() and safety_profile_new_enabled()):
+                try:
+                    bot.answer_callback_query(call.id, "Проверка прав временно недоступна. Действие заблокировано.", show_alert=True)
+                except Exception:
+                    pass
+                return
 
         try:
             # Любая кнопка в любом окне секретного режима означает, что пользователь
@@ -3126,4 +3138,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v142_expense_priority_reminder_groups
+# v143_audit_stability_exact_wait_reminders_memory

@@ -1,4 +1,4 @@
-# v142_expense_priority_reminder_groups
+# v144_window_mutation_diagnostics
 import os
 import io
 import json
@@ -292,40 +292,40 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 128) -> i
 
 WEBHOOK_TASK_POOL = KeyedTaskPool(
     "content",
-    _env_int("WEBHOOK_WORKERS", 4, 2, 16),
+    _env_int("WEBHOOK_WORKERS", 2, 2, 8),
     _env_int("WEBHOOK_MAX_PENDING", 2000, 100, 10000),
 )
 # v138: callback/UI updates have a reserved lane. A long finance/forward durable finalizer
 # can no longer occupy every content worker and leave inline buttons waiting in the same queue.
 UI_TASK_POOL = KeyedTaskPool(
     "ui",
-    _env_int("UI_WORKERS", 4, 2, 12),
+    _env_int("UI_WORKERS", 2, 2, 8),
     _env_int("UI_MAX_PENDING", 1500, 100, 6000),
 )
 # Telegram callback acknowledgements are tiny network calls and must not share GENERAL with
 # MEGA/runtime/restore work. The dedicated delayed scheduler provides a receipt-level fallback.
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool(
     "callback-ack",
-    _env_int("CALLBACK_ACK_WORKERS", 2, 1, 4),
+    _env_int("CALLBACK_ACK_WORKERS", 1, 1, 3),
     _env_int("CALLBACK_ACK_MAX_PENDING", 2000, 100, 10000),
 )
 # Durable verification/recovery may wait for forwarding and delta witnesses for up to tens of
 # seconds. It is isolated from both content and UI lanes.
 RECOVERY_TASK_POOL = KeyedTaskPool(
     "recovery",
-    _env_int("RECOVERY_WORKERS", 2, 1, 4),
+    _env_int("RECOVERY_WORKERS", 1, 1, 3),
     _env_int("RECOVERY_MAX_PENDING", 1000, 100, 5000),
 )
 # Reminder delivery has its own workers so Telegram/network latency in reminders cannot stop
 # callback menus or finance/forward processing.
 REMINDER_TASK_POOL = KeyedTaskPool(
     "reminder",
-    _env_int("REMINDER_WORKERS", 2, 1, 4),
+    _env_int("REMINDER_WORKERS", 1, 1, 3),
     _env_int("REMINDER_MAX_PENDING", 500, 50, 3000),
 )
 FINANCE_TASK_POOL = KeyedTaskPool(
     "finance",
-    _env_int("FINANCE_WORKERS", 3, 2, 12),
+    _env_int("FINANCE_WORKERS", 2, 2, 8),
     _env_int("FINANCE_MAX_PENDING", 1200, 100, 5000),
 )
 # v142: финансовая пересылка получает отдельную высокоприоритетную линию.
@@ -813,7 +813,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v142_expense_priority_reminder_groups"
+VERSION = "bot_v144_window_mutation_diagnostics"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -970,7 +970,7 @@ FORWARD_MEDIA_GROUP_DELAY = 0.8
 # must distinguish "not forwarded by design", "still pending", "delivered", and "failed".
 _FORWARD_OUTCOME_LOCK = threading.RLock()
 _FORWARD_OUTCOMES = {}
-_FORWARD_OUTCOME_MAX = 2500
+_FORWARD_OUTCOME_MAX = 800
 
 def _forward_outcome_key(source_chat_id: int, source_msg_id: int):
     return (int(source_chat_id), int(source_msg_id))
@@ -1562,13 +1562,13 @@ bot_journal_lock = threading.RLock()
 # Это НЕ синхронная запись на каждую строку: обычная работа бота не должна ждать сеть.
 BOT_JOURNAL_DURABLE_ENABLED = str(os.getenv("BOT_JOURNAL_DURABLE_ENABLED", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}
 try:
-    BOT_JOURNAL_DURABLE_FLUSH_SECONDS = max(10.0, min(300.0, float(os.getenv("BOT_JOURNAL_DURABLE_FLUSH_SECONDS", "30") or "30")))
+    BOT_JOURNAL_DURABLE_FLUSH_SECONDS = max(10.0, min(300.0, float(os.getenv("BOT_JOURNAL_DURABLE_FLUSH_SECONDS", "120") or "120")))
 except Exception:
-    BOT_JOURNAL_DURABLE_FLUSH_SECONDS = 30.0
+    BOT_JOURNAL_DURABLE_FLUSH_SECONDS = 120.0
 try:
-    BOT_JOURNAL_DURABLE_FLUSH_ROWS = max(10, min(500, int(os.getenv("BOT_JOURNAL_DURABLE_FLUSH_ROWS", "50") or "50")))
+    BOT_JOURNAL_DURABLE_FLUSH_ROWS = max(10, min(500, int(os.getenv("BOT_JOURNAL_DURABLE_FLUSH_ROWS", "100") or "100")))
 except Exception:
-    BOT_JOURNAL_DURABLE_FLUSH_ROWS = 50
+    BOT_JOURNAL_DURABLE_FLUSH_ROWS = 100
 try:
     BOT_JOURNAL_DURABLE_REMOTE_KEEP = max(200, min(10000, int(os.getenv("BOT_JOURNAL_DURABLE_REMOTE_KEEP", "3000") or "3000")))
 except Exception:
@@ -2361,8 +2361,12 @@ def _journal_write_row(row: dict):
 def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
     """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
     try:
-        # Если регистрация выключена — не пишем обычные действия. Ошибки остаются в /errors.
-        if str(action or "") not in {"journal_toggle", "journal_chat_toggle", "journal_export_requested"} and str(level or "INFO").upper() != "ERROR":
+        # Если регистрация выключена — не пишем обычные действия. Ошибки и полная
+        # трассировка окон v144 остаются всегда: иначе причина самопроизвольной
+        # смены окна потеряется именно в том чате, который не был выбран вручную.
+        action_name = str(action or "")
+        always_record = action_name.startswith("window_")
+        if not always_record and action_name not in {"journal_toggle", "journal_chat_toggle", "journal_export_requested"} and str(level or "INFO").upper() != "ERROR":
             if not journal_should_record(chat_id):
                 return None
         _ws = WEBHOOK_TASK_POOL.stats()
@@ -2411,6 +2415,14 @@ def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"
                 pass
         if not JOURNAL_TASK_POOL.submit("journal-file", _journal_write_row, dict(row)):
             _journal_write_row(row)
+        if str(level or "").upper() in {"ERROR", "CRITICAL"}:
+            try:
+                flush_fn = globals().get("journal_flush_to_mega")
+                scheduler = globals().get("DELAYED_SCHEDULER")
+                if callable(flush_fn) and scheduler is not None:
+                    scheduler.schedule("journal-error-flush", 5.0, flush_fn, True)
+            except Exception:
+                pass
         return row
     except Exception:
         return None
@@ -2758,6 +2770,7 @@ def _journal_diagnostic_snapshot() -> dict:
         "delayed_scheduler": DELAYED_SCHEDULER.stats() if "DELAYED_SCHEDULER" in globals() else {},
         "mega_tasks": mega_task_registry_stats() if "mega_task_registry_stats" in globals() else {},
         "durable_journal": journal_durable_stats() if "journal_durable_stats" in globals() else {},
+        "window_diagnostics": window_diagnostic_snapshot() if callable(globals().get("window_diagnostic_snapshot")) else {},
         "priority": {
             "order": ["finance", "forward", "other"],
             "forward_finance_priority_max_wait_seconds": globals().get("FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS"),
@@ -3142,6 +3155,15 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
                     fh.write(f"{r.get('ts','')} | {r.get('level','')} | {r.get('event','')} | {r.get('detail','')}\n")
             except Exception as e:
                 fh.write(f"runtime events unavailable: {e}\n")
+            fh.write("\n==================== WINDOW MUTATION TRACE ====================\n")
+            try:
+                window_tail_fn = globals().get("window_diagnostic_tail")
+                window_rows = window_tail_fn(800) if callable(window_tail_fn) else []
+                for row in window_rows:
+                    fh.write(json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
+                fh.write(f"[window trace rows: {len(window_rows)}]\n")
+            except Exception as e:
+                fh.write(f"window diagnostics unavailable: {e}\n")
             fh.write("\n==================== ACTION JOURNAL (MEGA STREAM) ====================\n")
             _file_job_progress("читаю журнал из MEGA", force=True)
             remote_count = _journal_stream_mega_rows_to_file(fh, int(limit))
@@ -3160,6 +3182,10 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("probable_render_idle_*: probable sleep/wake estimate.\n")
             fh.write("process_restart_or_unknown + high RAM/no SIGTERM: suspect OOM/hard kill.\n")
             fh.write("v125: fast 3-day 💰Перес repaint, global Excel mode and verified Notes/Comments separation.\n")
+            fh.write("window_stale_edit_apply: отложенное старое обновление применилось после другого изменения этого сообщения.\n")
+            fh.write("window_recreated: старое окно не удалось изменить, поэтому бот создал новое сообщение.\n")
+            fh.write("window_duplicate_marker_candidate: одновременно обнаружены два окна с одинаковой меткой.\n")
+            fh.write("window_registry_changed: реестр переименовал/переклассифицировал то же Telegram-сообщение.\n")
         _file_job_progress("отправляю файл в Telegram", force=True)
         with open(tmp_path, "rb") as fh:
             _tg_call_retry(
@@ -4085,9 +4111,17 @@ WINDOW_MARKER_CONSTANTS = {
     'security_roles:*': 'Ф214',
     'security_role_user:*': 'Ф215',
     'security_role_set:*': 'Ф216',
+    # v143: aliases emitted by render/update helpers after callback normalization.
+    'info': 'Ф54',
+    'edit_list': 'Ф49',
+    'csv_menu': 'Ф74',
+    'command_window_id': 'Ф40',
+    'о1': 'О1',
 }
 
 WINDOW_MARKER_UNKNOWN = {"С": "С9998", "Ф": "Ф9998", "П": "П9998"}
+_WINDOW_MARKER_UNKNOWN_LOGGED = {}
+_WINDOW_MARKER_UNKNOWN_LOG_TTL = 600.0
 
 
 def has_window_mark(text: str) -> bool:
@@ -4202,7 +4236,11 @@ def _marker_constant_pattern_matches(pattern: str, key: str) -> bool:
 
 
 def _window_marker_code(action_key: str, forced_group: str | None = None) -> str:
-    key = _normalize_window_action(action_key)
+    raw_key = str(action_key or "").strip()
+    # Already-rendered marker codes are values, not callback action names.
+    if re.fullmatch(r"[СФПОВсов]\d{1,6}", raw_key, flags=re.IGNORECASE):
+        return raw_key.upper().replace("В", "В").replace("О", "О")
+    key = _normalize_window_action(raw_key)
     # v119: stored windows inherit the marker of their real navigation callback.
     # Example: stored:command_window_id:d:*:back_main -> Ф40 instead of noisy Ф9998.
     if key.startswith("stored:"):
@@ -4231,7 +4269,11 @@ def _window_marker_code(action_key: str, forced_group: str | None = None) -> str
     if group not in _WINDOW_MARK_GROUPS:
         group = "Ф"
     try:
-        log_error(f"WINDOW_MARKER_NOT_DECLARED: {key}")
+        now_m = time.monotonic()
+        last = float(_WINDOW_MARKER_UNKNOWN_LOGGED.get(key, 0.0) or 0.0)
+        if now_m - last >= _WINDOW_MARKER_UNKNOWN_LOG_TTL:
+            _WINDOW_MARKER_UNKNOWN_LOGGED[key] = now_m
+            log_error(f"WINDOW_MARKER_NOT_DECLARED: raw={raw_key!r} normalized={key!r} group={group}")
     except Exception:
         pass
     return WINDOW_MARKER_UNKNOWN[group]
@@ -6524,6 +6566,8 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
     except Exception:
         pass
     message_id = store.get(store_key)
+    recreate_from = 0
+    recreate_reason = ""
 
     if message_id:
         try:
@@ -6557,11 +6601,29 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
                 if "message is not modified" in str(e2).lower():
                     schedule_stored_window_delete(chat_id, store_key, delay)
                     return message_id
+                recreate_from = int(message_id or 0)
+                recreate_reason = f"text={str(e)[:180]} | caption={str(e2)[:180]}"
+                try:
+                    diag_note = globals().get("window_diag_note_recreate")
+                    if callable(diag_note):
+                        diag_note(chat_id, recreate_from, recreate_reason, f"stored:{store_key}")
+                except Exception:
+                    pass
                 unregister_open_window(chat_id, message_id)
                 store[store_key] = None
                 save_data(data)
 
-    sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    diag_context = globals().get("window_diag_context")
+    if recreate_from and callable(diag_context):
+        with diag_context(
+            purpose=f"stored:{store_key}:send_fallback",
+            recreate_from=recreate_from,
+            recreate_reason=recreate_reason,
+            window_force=True,
+        ):
+            sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    else:
+        sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
     store[store_key] = sent.message_id
     register_open_window(chat_id, sent.message_id, "stored", code=store_key, day_key=store.get("current_view_day"))
     save_data(data)
@@ -7596,4 +7658,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v142_expense_priority_reminder_groups
+# v144_window_mutation_diagnostics

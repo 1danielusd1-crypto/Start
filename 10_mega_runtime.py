@@ -1,4 +1,4 @@
-# v142_expense_priority_reminder_groups
+# v144_window_mutation_diagnostics
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -1357,24 +1357,63 @@ def _repair_missing_durable_forward(payload: dict) -> bool:
     return bool(all_ok and _durable_forward_effect_complete(payload))
 
 
-def wait_durable_subtasks(chat_id, timeout: float = 20.0, wait_forward: bool = True) -> bool:
-    """Wait only for business effects that are actually asynchronous.
+def wait_durable_subtasks(chat_id, timeout: float = 20.0, wait_forward: bool = True, payload: dict | None = None, expected: dict | None = None, update_id=None) -> bool:
+    """Wait for this exact source message, never for an entire chat queue.
 
-    Finance add/edit is committed synchronously before schedule_finalize(); FINANCE_TASK_POOL
-    mainly refreshes UI/backup work.  Waiting for that queue used to hold an edit webhook for
-    ~20 seconds and then falsely fail source_finance.  Forward delivery is genuinely async,
-    therefore only that queue is part of the durable business barrier.
+    Consecutive finance messages may share the same source chat key. Waiting for key-idle
+    incorrectly included later messages and produced false 20-second failures. v143 polls the
+    source_chat_id:source_message_id outcome and concrete delivery witnesses only.
     """
     if chat_id is None or not wait_forward:
         return True
-    key = int(chat_id)
+    if not isinstance(payload, dict):
+        # Legacy payload-less path: do not block unrelated later work. Verification below
+        # remains authoritative and will keep the task recoverable when evidence is missing.
+        return True
+    raw, source_chat_id, source_msg_id, group_id = _durable_payload_message(payload)
+    if not isinstance(raw, dict) or source_chat_id is None or source_msg_id is None:
+        return True
     deadline = time.monotonic() + max(0.5, float(timeout))
-    for pool in (FIN_FORWARD_TASK_POOL, FORWARD_TASK_POOL):
-        remaining = max(0.5, deadline - time.monotonic())
-        if not pool.wait_key_idle(key, remaining):
-            log_error(f"DURABLE CHILD QUEUE TIMEOUT pool={pool.name} chat={key}")
+    started = time.monotonic(); last_state = ""; last_targets = {}
+    try:
+        bot_journal("durable_forward_wait_start", chat_id,
+                    f"update={update_id} source={source_chat_id}:{source_msg_id} group={group_id or '-'} timeout={timeout}")
+    except Exception:
+        pass
+    while True:
+        outcome = _forward_outcome_snapshot(int(source_chat_id), int(source_msg_id))
+        last_state = str(outcome.get("state") or "")
+        last_targets = outcome.get("targets") or {}
+        try:
+            report = _durable_effect_report(payload, expected if isinstance(expected, dict) else None)
+            if bool(report.get("complete")):
+                try:
+                    bot_journal("durable_forward_wait_done", chat_id,
+                                f"update={update_id} source={source_chat_id}:{source_msg_id} state={last_state or '-'} elapsed={time.monotonic()-started:.3f}s complete=1")
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            report = {"complete": False}
+        pending = _durable_forward_work_still_pending(payload)
+        final_state = last_state.startswith("skip:") or last_state in {"completed", "failed", "no_targets"}
+        if final_state and not pending:
+            try:
+                bot_journal("durable_forward_wait_done", chat_id,
+                            f"update={update_id} source={source_chat_id}:{source_msg_id} state={last_state} elapsed={time.monotonic()-started:.3f}s complete=0 verify_next=1")
+            except Exception:
+                pass
+            return True
+        if time.monotonic() >= deadline:
+            qf = FIN_FORWARD_TASK_POOL.stats(); qn = FORWARD_TASK_POOL.stats()
+            target_state = {str(k): str((v or {}).get("state") or "") for k,v in list(last_targets.items())[:20]}
+            log_error(
+                f"DURABLE EXACT FORWARD TIMEOUT update={update_id} source={source_chat_id}:{source_msg_id} "
+                f"state={last_state or '-'} targets={target_state} finQ={qf.get('pending')}/{qf.get('active')} "
+                f"fwdQ={qn.get('pending')}/{qn.get('active')}"
+            )
             return False
-    return True
+        time.sleep(0.05)
 
 
 def finalize_durable_task_after_business(update_id, chat_id, update_type: str = "other", payload: dict | None = None, expected_effects: dict | None = None) -> bool:
@@ -1396,7 +1435,7 @@ def finalize_durable_task_after_business(update_id, chat_id, update_type: str = 
     )
     if isinstance(payload, dict) and callback_target is None:
         wait_forward = bool(wait_forward or _durable_forward_work_still_pending(payload))
-    if not wait_durable_subtasks(chat_id, timeout=20.0, wait_forward=wait_forward):
+    if not wait_durable_subtasks(chat_id, timeout=20.0, wait_forward=wait_forward, payload=payload, expected=expected, update_id=key):
         return False
     if isinstance(payload, dict) and callback_target is None:
         expected = _durable_apply_live_forward_outcome(payload, expected)
@@ -2397,10 +2436,32 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
         update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
     previous_ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
     critical_callback_target = _durable_callback_target_chat(payload) if isinstance(payload, dict) else None
+    callback_data = ""
+    source_message_id = None
+    source_user_id = None
+    try:
+        if isinstance(payload, dict):
+            callback = payload.get("callback_query") or {}
+            if isinstance(callback, dict):
+                callback_data = str(callback.get("data") or "")
+                source_user_id = ((callback.get("from") or {}).get("id") if isinstance(callback.get("from"), dict) else None)
+                callback_message = callback.get("message") or {}
+                if isinstance(callback_message, dict):
+                    source_message_id = callback_message.get("message_id")
+            if source_message_id is None:
+                message_payload = payload.get("message") or payload.get("edited_message") or payload.get("channel_post") or payload.get("edited_channel_post") or {}
+                if isinstance(message_payload, dict):
+                    source_message_id = message_payload.get("message_id")
+                    source_user_id = source_user_id or ((message_payload.get("from") or {}).get("id") if isinstance(message_payload.get("from"), dict) else None)
+    except Exception:
+        callback_data = ""
     _TELEGRAM_UPDATE_CONTEXT.value = {
         "update_id": update_id,
         "chat_id": update_chat_id,
         "update_type": str(update_type or "other"),
+        "callback_data": callback_data,
+        "message_id": source_message_id,
+        "user_id": source_user_id,
         "critical_callback": critical_callback_target is not None,
         "critical_callback_target": critical_callback_target,
         "deferred_quick_chats": set(),
@@ -4205,6 +4266,7 @@ def runtime_snapshot(extra: dict | None = None) -> dict:
         },
         "keep_alive": dict(KEEP_ALIVE_STATE) if "KEEP_ALIVE_STATE" in globals() else {},
         "memory_guard": _runtime_memory_pressure(),
+        "audit_metrics": (runtime_audit_metrics() if "runtime_audit_metrics" in globals() else {}),
         "previous_runtime": previous,
         "events": events,
     }
@@ -5145,6 +5207,7 @@ def build_runtime_watcher_text() -> str:
     proc = snap.get("process") or {}
     disk = snap.get("disk") or {}
     mega = snap.get("mega_tasks") or {}
+    audit = snap.get("audit_metrics") or {}
     prev = snap.get("previous_runtime") or {}
     prev_state = prev.get("state") or {}
     prev_render = prev.get("render") or {}
@@ -5174,6 +5237,10 @@ def build_runtime_watcher_text() -> str:
         f"RAM лимит cgroup: {proc.get('limit_mb') if proc.get('limit_mb') is not None else '—'} MB; использование: {proc.get('rss_percent_limit') if proc.get('rss_percent_limit') is not None else '—'}%",
         f"Диск: занято {disk.get('used_mb') if disk.get('used_mb') is not None else '—'} MB; свободно {disk.get('free_mb') if disk.get('free_mb') is not None else '—'} MB",
         f"Потоков Python: {proc.get('threads')}",
+        f"Runtime объекты: операции {audit.get('operation_items','—')} | integrity {audit.get('integrity_events','—')} | "
+        f"forward outcomes {audit.get('forward_outcomes','—')} | fin batches {audit.get('finance_forward_batches','—')}",
+        f"Кэши/буферы: finance {audit.get('finance_cache_entries','—')} | expense {audit.get('expense_drafts','—')} | "
+        f"journal {audit.get('journal_buffer_rows','—')} | reminder mode {audit.get('reminder_mode','—')}",
         "",
         "BOOT / Telegram gate:",
         f"Restore: attempted={st.get('restore_attempted')} ok={st.get('restore_ok')} | {str(st.get('restore_detail') or '—')[:220]}",
@@ -8566,4 +8633,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v142_expense_priority_reminder_groups
+# v144_window_mutation_diagnostics

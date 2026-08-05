@@ -1,4 +1,4 @@
-# v142_expense_priority_reminder_groups
+# v143_audit_stability_exact_wait_reminders_memory
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -1999,6 +1999,86 @@ def _collect_media_group_for_forward(source_chat_id: int, msg):
     _media_group_timers[cache_key] = deadline
 
 
+
+# v143: one finance source message may fan out to several financial destinations.
+# Destinations run in parallel, while key source:destination keeps strict order for that pair.
+_FIN_FORWARD_BATCH_LOCK = threading.RLock()
+_FIN_FORWARD_BATCHES = {}
+
+def _fin_forward_batch_id(source_chat_id: int, source_msg_id: int) -> str:
+    return f"{int(source_chat_id)}:{int(source_msg_id)}"
+
+def _fin_forward_batch_finish_target(batch_id: str, dst_chat_id: int, ok: bool, elapsed: float, error: str = "") -> None:
+    follow = None
+    with _FIN_FORWARD_BATCH_LOCK:
+        row = _FIN_FORWARD_BATCHES.get(str(batch_id))
+        if not isinstance(row, dict):
+            return
+        row.setdefault("targets", {})[str(int(dst_chat_id))] = {
+            "ok": bool(ok), "elapsed": round(float(elapsed), 3), "error": str(error or "")[:300],
+        }
+        row["remaining"] = max(0, int(row.get("remaining", 0)) - 1)
+        if row["remaining"] == 0:
+            follow = dict(row)
+            _FIN_FORWARD_BATCHES.pop(str(batch_id), None)
+    try:
+        bot_journal("finance_forward_target_done", follow.get("source_chat_id") if follow else None,
+                    f"batch={batch_id} dst={int(dst_chat_id)} ok={bool(ok)} elapsed={elapsed:.3f}s error={str(error or '')[:180]}",
+                    "INFO" if ok else "ERROR")
+    except Exception:
+        pass
+    if not follow:
+        return
+    source_chat_id = int(follow.get("source_chat_id"))
+    source_msg_id = int(follow.get("source_msg_id"))
+    normal_targets = list(follow.get("normal_targets") or [])
+    started = float(follow.get("started_mono") or time.monotonic())
+    if normal_targets:
+        if not FORWARD_TASK_POOL.submit(source_chat_id, _forward_normal_stage, source_chat_id, follow.get("msg"), normal_targets):
+            log_error(f"FORWARD QUEUE FULL AFTER FIN BATCH, INLINE FALLBACK: {source_chat_id}")
+            _forward_normal_stage(source_chat_id, follow.get("msg"), normal_targets)
+    elif source_msg_id:
+        _forward_outcome_update(source_chat_id, source_msg_id, state="completed")
+    try:
+        target_rows = follow.get("targets") or {}
+        failed = sum(1 for x in target_rows.values() if not bool((x or {}).get("ok")))
+        bot_journal("finance_forward_batch_done", source_chat_id,
+                    f"batch={batch_id} targets={len(target_rows)} failed={failed} elapsed={time.monotonic()-started:.3f}s")
+    except Exception:
+        pass
+
+def _fin_forward_target_job(batch_id: str, source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool) -> None:
+    started = time.monotonic(); ok = False; err = ""
+    try:
+        ok = bool(_forward_single_to_target(int(source_chat_id), msg, int(dst_chat_id), bool(finance_enabled)))
+    except Exception as exc:
+        err = str(exc)
+        log_error(f"FIN-FORWARD TARGET {source_chat_id}->{dst_chat_id}: {exc}")
+    finally:
+        _fin_forward_batch_finish_target(batch_id, int(dst_chat_id), ok, time.monotonic()-started, err)
+
+def _start_financial_forward_batch(source_chat_id: int, msg, finance_targets: list, normal_targets: list) -> None:
+    source_chat_id = int(source_chat_id)
+    source_msg_id = int(getattr(msg, "message_id", 0) or 0)
+    batch_id = _fin_forward_batch_id(source_chat_id, source_msg_id)
+    with _FIN_FORWARD_BATCH_LOCK:
+        _FIN_FORWARD_BATCHES[batch_id] = {
+            "source_chat_id": source_chat_id, "source_msg_id": source_msg_id, "msg": msg,
+            "normal_targets": list(normal_targets or []), "remaining": len(finance_targets or []),
+            "targets": {}, "started_mono": time.monotonic(),
+        }
+    try:
+        bot_journal("finance_forward_batch_started", source_chat_id,
+                    f"batch={batch_id} finance_targets={len(finance_targets or [])} normal_targets={len(normal_targets or [])}")
+    except Exception:
+        pass
+    for dst_chat_id, _mode, finance_enabled in list(finance_targets or []):
+        task_key = f"{source_chat_id}:{int(dst_chat_id)}"
+        if not FIN_FORWARD_TASK_POOL.submit(task_key, _fin_forward_target_job, batch_id, source_chat_id, msg, int(dst_chat_id), bool(finance_enabled)):
+            log_error(f"FIN-FORWARD TARGET QUEUE FULL, INLINE FALLBACK: {task_key}")
+            _fin_forward_target_job(batch_id, source_chat_id, msg, int(dst_chat_id), bool(finance_enabled))
+
+
 def _forward_targets_stage(source_chat_id: int, msg, targets: list, final_stage: bool = False) -> None:
     """Выполняет уже выбранную часть направлений, не смешивая очереди."""
     source_chat_id = int(source_chat_id)
@@ -2051,13 +2131,7 @@ def schedule_financial_forward_pipeline(source_chat_id: int, msg) -> None:
         if source_msg_id:
             _forward_outcome_update(source_chat_id, source_msg_id, state="dispatching")
         if finance_targets:
-            ok = FIN_FORWARD_TASK_POOL.submit(
-                source_chat_id, _forward_financial_stage, source_chat_id, msg,
-                list(finance_targets), list(normal_targets),
-            )
-            if not ok:
-                log_error(f"FIN-FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
-                _forward_financial_stage(source_chat_id, msg, list(finance_targets), list(normal_targets))
+            _start_financial_forward_batch(source_chat_id, msg, list(finance_targets), list(normal_targets))
         else:
             ok = FORWARD_TASK_POOL.submit(source_chat_id, _forward_normal_stage, source_chat_id, msg, list(normal_targets))
             if not ok:
@@ -2106,4 +2180,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v142_expense_priority_reminder_groups
+# v143_audit_stability_exact_wait_reminders_memory
