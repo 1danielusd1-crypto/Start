@@ -1,4 +1,4 @@
-# v144_window_mutation_diagnostics
+# v145_memory_guard_streaming_forensics
 import os
 import io
 import json
@@ -39,6 +39,14 @@ from flask import Flask, request
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from pathlib import Path
+
+# v145: keep worker thread stacks compact on the 512 MB Render container.
+# 2 MB is ample for these I/O-bound workers and avoids 30-40 oversized stacks.
+try:
+    _BOT_THREAD_STACK_KB = max(512, min(8192, int(os.getenv("BOT_THREAD_STACK_KB", "2048") or "2048")))
+    threading.stack_size(_BOT_THREAD_STACK_KB * 1024)
+except Exception:
+    _BOT_THREAD_STACK_KB = 0
 
 window_locks = defaultdict(threading.Lock)
 
@@ -155,6 +163,9 @@ class KeyedTaskPool:
                     else:
                         self._by_key.pop(key, None)
                         self._active_keys.discard(key)
+                # Drop references to Telegram updates / media payloads immediately instead
+                # of keeping them alive in worker locals until the next task arrives.
+                task = func = args = kwargs = None
                 self._ready.task_done()
 
     def wait_key_idle(self, key, timeout: float = 15.0) -> bool:
@@ -207,6 +218,24 @@ class DelayedTaskScheduler:
         self._failed_dispatch = 0
         threading.Thread(target=self._worker, name=f"{self.executor_pool.name}-scheduler", daemon=True).start()
 
+    def _compact_locked(self, force: bool = False):
+        live = len(self._deadlines)
+        threshold = max(128, live * 4 + 64)
+        if not force and len(self._heap) <= threshold:
+            return 0
+        before = len(self._heap)
+        self._heap = [
+            item for item in self._heap
+            if int(self._versions.get(item[2], 0)) == int(item[3])
+            and self._deadlines.get(item[2]) == item[0]
+        ]
+        heapq.heapify(self._heap)
+        return max(0, before - len(self._heap))
+
+    def compact(self) -> int:
+        with self._cv:
+            return self._compact_locked(True)
+
     def schedule(self, key, delay: float, func, *args, **kwargs):
         key = str(key)
         run_at = time.time() + max(0.0, float(delay or 0))
@@ -217,6 +246,7 @@ class DelayedTaskScheduler:
             self._deadlines[key] = run_at
             heapq.heappush(self._heap, (run_at, self._seq, key, version, func, args, kwargs))
             self._submitted += 1
+            self._compact_locked(False)
             self._cv.notify_all()
         return run_at
 
@@ -293,74 +323,74 @@ def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 128) -> i
 WEBHOOK_TASK_POOL = KeyedTaskPool(
     "content",
     _env_int("WEBHOOK_WORKERS", 2, 2, 8),
-    _env_int("WEBHOOK_MAX_PENDING", 2000, 100, 10000),
+    _env_int("WEBHOOK_MAX_PENDING", 400, 50, 2000),
 )
 # v138: callback/UI updates have a reserved lane. A long finance/forward durable finalizer
 # can no longer occupy every content worker and leave inline buttons waiting in the same queue.
 UI_TASK_POOL = KeyedTaskPool(
     "ui",
     _env_int("UI_WORKERS", 2, 2, 8),
-    _env_int("UI_MAX_PENDING", 1500, 100, 6000),
+    _env_int("UI_MAX_PENDING", 400, 50, 2000),
 )
 # Telegram callback acknowledgements are tiny network calls and must not share GENERAL with
 # MEGA/runtime/restore work. The dedicated delayed scheduler provides a receipt-level fallback.
 CALLBACK_ACK_TASK_POOL = KeyedTaskPool(
     "callback-ack",
     _env_int("CALLBACK_ACK_WORKERS", 1, 1, 3),
-    _env_int("CALLBACK_ACK_MAX_PENDING", 2000, 100, 10000),
+    _env_int("CALLBACK_ACK_MAX_PENDING", 600, 50, 3000),
 )
 # Durable verification/recovery may wait for forwarding and delta witnesses for up to tens of
 # seconds. It is isolated from both content and UI lanes.
 RECOVERY_TASK_POOL = KeyedTaskPool(
     "recovery",
     _env_int("RECOVERY_WORKERS", 1, 1, 3),
-    _env_int("RECOVERY_MAX_PENDING", 1000, 100, 5000),
+    _env_int("RECOVERY_MAX_PENDING", 300, 50, 1500),
 )
 # Reminder delivery has its own workers so Telegram/network latency in reminders cannot stop
 # callback menus or finance/forward processing.
 REMINDER_TASK_POOL = KeyedTaskPool(
     "reminder",
     _env_int("REMINDER_WORKERS", 1, 1, 3),
-    _env_int("REMINDER_MAX_PENDING", 500, 50, 3000),
+    _env_int("REMINDER_MAX_PENDING", 250, 20, 1000),
 )
 FINANCE_TASK_POOL = KeyedTaskPool(
     "finance",
     _env_int("FINANCE_WORKERS", 2, 2, 8),
-    _env_int("FINANCE_MAX_PENDING", 1200, 100, 5000),
+    _env_int("FINANCE_MAX_PENDING", 400, 50, 2000),
 )
 # v142: финансовая пересылка получает отдельную высокоприоритетную линию.
 # Она сохраняет порядок одного исходного чата, но не ждёт обычную пересылку,
 # SECRET, напоминалки, Excel и тяжёлые резервные задачи.
 FIN_FORWARD_TASK_POOL = KeyedTaskPool(
     "fin-forward",
-    _env_int("FIN_FORWARD_WORKERS", 4, 2, 12),
-    _env_int("FIN_FORWARD_MAX_PENDING", 1800, 100, 6000),
+    _env_int("FIN_FORWARD_WORKERS", 2, 1, 6),
+    _env_int("FIN_FORWARD_MAX_PENDING", 500, 50, 2500),
 )
 FORWARD_TASK_POOL = KeyedTaskPool(
     "forward",
-    _env_int("FORWARD_WORKERS", 2, 2, 12),
-    _env_int("FORWARD_MAX_PENDING", 1500, 100, 5000),
+    _env_int("FORWARD_WORKERS", 2, 1, 6),
+    _env_int("FORWARD_MAX_PENDING", 500, 50, 2500),
 )
 BACKUP_TASK_POOL = KeyedTaskPool(
     "backup",
     _env_int("BACKUP_WORKERS", 1, 1, 2),
-    _env_int("BACKUP_MAX_PENDING", 300, 50, 1500),
+    _env_int("BACKUP_MAX_PENDING", 120, 20, 500),
 )
 # v90: маленькие аварийные delta не ждут Excel/канал/полный файл чата в backup queue.
 DELTA_TASK_POOL = KeyedTaskPool(
     "delta",
     _env_int("DELTA_WORKERS", 1, 1, 2),
-    _env_int("DELTA_MAX_PENDING", 500, 50, 2000),
+    _env_int("DELTA_MAX_PENDING", 300, 30, 1200),
 )
 EXPORT_TASK_POOL = KeyedTaskPool(
     "export",
     _env_int("EXPORT_WORKERS", 1, 1, 2),
-    _env_int("EXPORT_MAX_PENDING", 300, 20, 2000),
+    _env_int("EXPORT_MAX_PENDING", 40, 5, 200),
 )
 GENERAL_TASK_POOL = KeyedTaskPool(
     "general",
     _env_int("GENERAL_WORKERS", 1, 1, 6),
-    _env_int("GENERAL_MAX_PENDING", 500, 50, 2000),
+    _env_int("GENERAL_MAX_PENDING", 250, 20, 1000),
 )
 # v117: slow cosmetic retro-updates must never block business callbacks/general work.
 # One low-priority worker is intentionally isolated from finance/forward/webhook/export.
@@ -372,12 +402,12 @@ MAINTENANCE_TASK_POOL = KeyedTaskPool(
 JOURNAL_TASK_POOL = KeyedTaskPool(
     "journal",
     _env_int("JOURNAL_WORKERS", 1, 1, 2),
-    _env_int("JOURNAL_MAX_PENDING", 3000, 500, 10000),
+    _env_int("JOURNAL_MAX_PENDING", 800, 100, 4000),
 )
 DELAYED_TASK_POOL = KeyedTaskPool(
     "delayed",
     _env_int("DELAYED_WORKERS", 1, 1, 6),
-    _env_int("DELAYED_MAX_PENDING", 1000, 100, 5000),
+    _env_int("DELAYED_MAX_PENDING", 500, 50, 2000),
 )
 DOZVON_TASK_POOL = KeyedTaskPool(
     "dozvon",
@@ -813,7 +843,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v144_window_mutation_diagnostics"
+VERSION = "bot_v145_memory_guard_streaming_forensics"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -3020,7 +3050,12 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
                 st["started_monotonic"] = time.monotonic()
                 st["phase"] = "запуск"
         _file_job_progress("запуск", force=True)
-        result = func(*args, **kwargs)
+        mem_ctx = globals().get("memory_operation")
+        if callable(mem_ctx):
+            with mem_ctx(f"file:{job_meta.get('kind') or 'export'}", {"chat_id": job_meta.get("chat_id"), "label": job_meta.get("label")}, heavy=True):
+                result = func(*args, **kwargs)
+        else:
+            result = func(*args, **kwargs)
         ok = (result is not False)
         if not ok:
             error_text = "операция завершилась без подтверждения"
@@ -3074,6 +3109,18 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
 def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
     """Start one heavy user-requested file job; duplicate taps are coalesced."""
     chat_id = int(chat_id)
+    gate = globals().get("memory_heavy_allowed")
+    if callable(gate):
+        try:
+            allowed, reason = gate(str(kind or "export"))
+        except Exception:
+            allowed, reason = True, ""
+        if not allowed:
+            try:
+                send_and_auto_delete(chat_id, f"🧠 {reason}", 15)
+            except Exception:
+                pass
+            return False, reason or "сервер временно разгружает память"
     key = _INTERACTIVE_FILE_JOB_KEY
     with _FILE_JOB_LOCK:
         existing = _FILE_JOB_STATE.get(key)
@@ -3147,6 +3194,12 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             json.dump(diag, fh, ensure_ascii=False, indent=2, default=str)
             fh.write("\n\n==================== DURABLE JOURNAL ====================\n")
             json.dump(journal_durable_stats(), fh, ensure_ascii=False, indent=2, default=str)
+            fh.write("\n\n==================== MEMORY FORENSICS ====================\n")
+            try:
+                mem_fn = globals().get("memory_forensics_snapshot")
+                json.dump(mem_fn(deep=True) if callable(mem_fn) else {"available": False}, fh, ensure_ascii=False, indent=2, default=str)
+            except Exception as e:
+                fh.write(f"memory forensics unavailable: {e}")
             fh.write("\n\n==================== RUNTIME EVENTS ====================\n")
             try:
                 with _RUNTIME_LOCK:
@@ -3180,6 +3233,7 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
             fh.write("deploy_new_commit_*: Git commit changed — strong deploy evidence.\n")
             fh.write("planned_restart_same_commit: same commit + graceful SIGTERM.\n")
             fh.write("probable_render_idle_*: probable sleep/wake estimate.\n")
+            fh.write("probable_memory_oom_or_hard_kill: cgroup OOM event or memory peak >=90% of limit.\n")
             fh.write("process_restart_or_unknown + high RAM/no SIGTERM: suspect OOM/hard kill.\n")
             fh.write("v125: fast 3-day 💰Перес repaint, global Excel mode and verified Notes/Comments separation.\n")
             fh.write("window_stale_edit_apply: отложенное старое обновление применилось после другого изменения этого сообщения.\n")
@@ -7658,4 +7712,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v144_window_mutation_diagnostics
+# v145_memory_guard_streaming_forensics

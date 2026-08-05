@@ -1,4 +1,4 @@
-# v142_expense_priority_reminder_groups
+# v145_memory_guard_streaming_forensics
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -684,16 +684,25 @@ def handle_document(msg):
             )
             return
 
+        tmp_path = f"restore_{chat_id}_{fname}"
         try:
             file_info = bot.get_file(file.file_id)
-            raw = bot.download_file(file_info.file_path)
+            stream_fn = globals().get("telegram_download_to_file")
+            if callable(stream_fn):
+                max_restore = max(1024 * 1024, int(os.getenv("RESTORE_FILE_MAX_BYTES", str(100 * 1024 * 1024)) or str(100 * 1024 * 1024)))
+                stream_fn(file_info.file_path, tmp_path, max_bytes=max_restore)
+            else:
+                raw = bot.download_file(file_info.file_path)
+                with open(tmp_path, "wb") as f:
+                    f.write(raw)
+                raw = None
         except Exception as e:
+            try:
+                if os.path.exists(tmp_path): os.remove(tmp_path)
+            except Exception:
+                pass
             send_and_auto_delete(chat_id, f"❌ Ошибка скачивания: {e}")
             return
-
-        tmp_path = f"restore_{chat_id}_{fname}"
-        with open(tmp_path, "wb") as f:
-            f.write(raw)
 
         try:
             if fname == "data.json":
@@ -1410,4 +1419,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v142_expense_priority_reminder_groups
+# v145_memory_guard_streaming_forensics

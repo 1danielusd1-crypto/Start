@@ -1,4 +1,4 @@
-# v144_window_mutation_diagnostics
+# v145_memory_guard_streaming_forensics
 # ─────────────────────────────────────────────────────────────
 # v144: полная трассировка жизненного цикла Telegram-окон.
 # Записывает только метаданные, хеши и короткий заголовок — полный текст окна,
@@ -7,8 +7,8 @@
 import inspect as _window_diag_inspect
 
 WINDOW_DIAGNOSTICS_ENABLED = str(os.getenv("WINDOW_DIAGNOSTICS_ENABLED", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
-WINDOW_DIAGNOSTICS_TAIL_LIMIT = max(100, min(5000, int(os.getenv("WINDOW_DIAGNOSTICS_TAIL_LIMIT", "1500") or "1500")))
-WINDOW_DIAGNOSTICS_STATE_LIMIT = max(200, min(10000, int(os.getenv("WINDOW_DIAGNOSTICS_STATE_LIMIT", "2500") or "2500")))
+WINDOW_DIAGNOSTICS_TAIL_LIMIT = max(100, min(5000, int(os.getenv("WINDOW_DIAGNOSTICS_TAIL_LIMIT", "1000") or "1000")))
+WINDOW_DIAGNOSTICS_STATE_LIMIT = max(200, min(10000, int(os.getenv("WINDOW_DIAGNOSTICS_STATE_LIMIT", "1500") or "1500")))
 _WINDOW_DIAG_LOCK = threading.RLock()
 _WINDOW_DIAG_EVENTS = deque(maxlen=WINDOW_DIAGNOSTICS_TAIL_LIMIT)
 _WINDOW_DIAG_STATE = {}
@@ -596,5 +596,33 @@ def window_diagnostic_tail(limit: int = 500) -> list[dict]:
         return [copy.deepcopy(x) for x in list(_WINDOW_DIAG_EVENTS)[-limit:]]
 
 
+def window_diag_compact_for_memory(level: str = "warning") -> dict:
+    """Shrink only in-RAM window trace. Durable journal rows remain in MEGA."""
+    level = str(level or "warning").lower()
+    event_keep = {"warning": 600, "high": 350, "critical": 220, "emergency": 120}.get(level, 600)
+    state_keep = {"warning": 1000, "high": 650, "critical": 400, "emergency": 250}.get(level, 1000)
+    with _WINDOW_DIAG_LOCK:
+        before_events = len(_WINDOW_DIAG_EVENTS)
+        before_states = len(_WINDOW_DIAG_STATE)
+        if before_events > event_keep:
+            tail = list(_WINDOW_DIAG_EVENTS)[-event_keep:]
+            _WINDOW_DIAG_EVENTS.clear(); _WINDOW_DIAG_EVENTS.extend(tail)
+        if before_states > state_keep:
+            ordered = sorted(_WINDOW_DIAG_STATE.items(), key=lambda kv: int((kv[1] or {}).get("seq") or 0), reverse=True)
+            keep_keys = {k for k, _ in ordered[:state_keep]}
+            for key in list(_WINDOW_DIAG_STATE):
+                if key not in keep_keys:
+                    _WINDOW_DIAG_STATE.pop(key, None)
+        return {
+            "level": level,
+            "events": [before_events, len(_WINDOW_DIAG_EVENTS)],
+            "states": [before_states, len(_WINDOW_DIAG_STATE)],
+        }
+
+
+def window_diagnostic_stats() -> dict:
+    return window_diagnostic_snapshot()
+
+
 _install_window_transport_diagnostics()
-# v144_window_mutation_diagnostics
+# v145_memory_guard_streaming_forensics

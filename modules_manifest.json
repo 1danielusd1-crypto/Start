@@ -1,11 +1,12 @@
 {
-  "version": "bot_v144_window_mutation_diagnostics",
-  "file_marker": "v144_window_mutation_diagnostics",
+  "version": "bot_v145_memory_guard_streaming_forensics",
+  "file_marker": "v145_memory_guard_streaming_forensics",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
     "15_operation_safety.py",
     "16_window_diagnostics.py",
+    "17_memory_runtime.py",
     "20_callback_tokens.py",
     "30_secret.py",
     "35_reminders.py",
@@ -22,12 +23,13 @@
     "99_web_runtime.py"
   ],
   "files": {
-    "00_core.py": "2c8106efe5cb70773b37c7cdaaac358fdf329d4a3844cdd0eac6e794509277af",
-    "10_mega_runtime.py": "062b96b6686656ff836b502105e3791d802843e5509bda2fd22b090fbbe98248",
+    "00_core.py": "6b121bed9a4e9b45d7217c0871702657756d160d1fee4d5996c1074aa3f3daf8",
+    "10_mega_runtime.py": "51a415919d7132fa9a0abc19383275fcb6b6d3a589585d529950fe5e6909beaf",
     "15_operation_safety.py": "b8a868fc87024d947287c858195ab6db57e8a540d29e01285e46f10cbf96990e",
-    "16_window_diagnostics.py": "2f9f276fdc32303bb3daf1886a0afe602d790fe1646058b530ab6a12926bfcf0",
+    "16_window_diagnostics.py": "f7a3538efbca8a6eb50766102dc3d62ecdd3e833ec8e5b74a9542bb7a5a98c6c",
+    "17_memory_runtime.py": "2651d93ed6e24964e1b523156cf42ce9e490b6077914b602d122c4b00c7c31c4",
     "20_callback_tokens.py": "082dad4fd1d5f477eec815df29cc5fc4d4b38be610f76447f89d83fce5d4b1ce",
-    "30_secret.py": "5976dd3e0e9832a4868798e0183d20ce2dbdc25f1f5ee6fdf1be6ab21b8dd48f",
+    "30_secret.py": "ff2d5047c5c242221c87eeb0b97eeee103e4e9e6a6076462659ff2637c64a55c",
     "35_reminders.py": "e1ff944ee854614ac2baa0ad98944f7ecf0250c7869f4c2022b44feba43ae595",
     "40_message_router.py": "e263a082546d18ef934d1e23a05fbe5146b3341b8c941f6ca1b4cb66b60b4838",
     "50_forwarding.py": "670e884bd639a914833c8ecabb1f89ee07cbbcafd58f57efab20df77c9865f53",
@@ -37,17 +39,18 @@
     "63_google_sheets.py": "a47b4cf258aec7f2da4cf17b4c740a51a3e85d25fc67e242041e8ffa0f39b540",
     "70_fast_ui.py": "b10d2b4c5df133756a06bdac98e9a4116590216d9a9e0b6c54db33c58ce1c046",
     "80_callback_router.py": "49fe70d89607c88821b9bd1bad7bbad02c93c6cfbbdec16caf83b65494688f2d",
-    "90_commands_exports.py": "e12b6855386d223934204e5d538e59ff28827a9299e82d6434b7c7e61a6f80cf",
-    "91_finance_records_handlers.py": "528937fcdf57fc133f693380d38e56ba14953ab6be4ea223169da38fbccc7fb4",
-    "99_web_runtime.py": "ccfb0df9e5e55d67f767fd0fc4f010a910676a773d080c366b960068ef299cd1"
+    "90_commands_exports.py": "80f35e21f9f44aff20ee13a1ed65e1d9b80f759012f5dad86901de6911f6a507",
+    "91_finance_records_handlers.py": "0e210f17f647a80a633ce3d9e1fbcdf497621e6ade4d91db334c1145f5b44210",
+    "99_web_runtime.py": "85fad195a9b0448d2bb5ce99c77acaba1e61c072b7e21c794fa13b060529d5b9"
   },
   "file_markers": {
-    "00_core.py": "v144_window_mutation_diagnostics",
-    "10_mega_runtime.py": "v144_window_mutation_diagnostics",
+    "00_core.py": "v145_memory_guard_streaming_forensics",
+    "10_mega_runtime.py": "v145_memory_guard_streaming_forensics",
     "15_operation_safety.py": "v143_audit_stability_exact_wait_reminders_memory",
-    "16_window_diagnostics.py": "v144_window_mutation_diagnostics",
+    "16_window_diagnostics.py": "v145_memory_guard_streaming_forensics",
+    "17_memory_runtime.py": "v145_memory_guard_streaming_forensics",
     "20_callback_tokens.py": "v133_usd_operations_parity_articles_paging",
-    "30_secret.py": "v139_usd_gomonk_processes_secret_full_edit",
+    "30_secret.py": "v145_memory_guard_streaming_forensics",
     "35_reminders.py": "v143_audit_stability_exact_wait_reminders_memory",
     "40_message_router.py": "v141_operation_ledger_windows_expense_reminders_safety",
     "50_forwarding.py": "v143_audit_stability_exact_wait_reminders_memory",
@@ -57,8 +60,8 @@
     "63_google_sheets.py": "v141_operation_ledger_windows_expense_reminders_safety",
     "70_fast_ui.py": "v144_window_mutation_diagnostics",
     "80_callback_router.py": "v143_audit_stability_exact_wait_reminders_memory",
-    "90_commands_exports.py": "v141_operation_ledger_windows_expense_reminders_safety",
-    "91_finance_records_handlers.py": "v142_expense_priority_reminder_groups",
-    "99_web_runtime.py": "v141_operation_ledger_windows_expense_reminders_safety"
+    "90_commands_exports.py": "v145_memory_guard_streaming_forensics",
+    "91_finance_records_handlers.py": "v145_memory_guard_streaming_forensics",
+    "99_web_runtime.py": "v145_memory_guard_streaming_forensics"
   }
 }

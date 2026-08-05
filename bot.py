@@ -1,16 +1,17 @@
-# v144_window_mutation_diagnostics
+# v145_memory_guard_streaming_forensics
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v144_window_mutation_diagnostics"
-MODULE_FILE_VERSION = "v144_window_mutation_diagnostics"
+MODULAR_VERSION = "bot_v145_memory_guard_streaming_forensics"
+MODULE_FILE_VERSION = "v145_memory_guard_streaming_forensics"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
     '15_operation_safety.py',
     '16_window_diagnostics.py',
+    '17_memory_runtime.py',
     '20_callback_tokens.py',
     '30_secret.py',
     '35_reminders.py',
@@ -124,4 +125,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v144_window_mutation_diagnostics
+# v145_memory_guard_streaming_forensics

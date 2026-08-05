@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v145_memory_guard_streaming_forensics
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -1575,11 +1575,16 @@ def maybe_prompt_owner_for_json_restore(msg, fname: str) -> bool:
             return False
 
         file_info = bot.get_file(msg.document.file_id)
-        raw = bot.download_file(file_info.file_path)
-
         tmp_name = f"owner_json_restore_{int(msg.chat.id)}_{int(msg.message_id)}_{_safe_tmp_json_name(fname)}"
-        with open(tmp_name, "wb") as f:
-            f.write(raw)
+        stream_fn = globals().get("telegram_download_to_file")
+        if callable(stream_fn):
+            max_restore = max(1024 * 1024, int(os.getenv("RESTORE_FILE_MAX_BYTES", str(100 * 1024 * 1024)) or str(100 * 1024 * 1024)))
+            stream_fn(file_info.file_path, tmp_name, max_bytes=max_restore)
+        else:
+            raw = bot.download_file(file_info.file_path)
+            with open(tmp_name, "wb") as f:
+                f.write(raw)
+            raw = None
 
         payload = _load_json(tmp_name, None)
         if not isinstance(payload, dict):
@@ -1636,4 +1641,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v141_operation_ledger_windows_expense_reminders_safety
+# v145_memory_guard_streaming_forensics

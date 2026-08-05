@@ -1,4 +1,4 @@
-# v139_usd_gomonk_processes_secret_full_edit
+# v145_memory_guard_streaming_forensics
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
@@ -292,21 +292,33 @@ def _compress_secret_video_low(input_path: str, output_path: str) -> bool:
     if not shutil.which("ffmpeg"):
         return False
     try:
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", input_path,
-                "-vf", "scale='min(640,iw)':-2",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "33",
-                "-maxrate", "700k", "-bufsize", "1400k",
-                "-c:a", "aac", "-b:a", "64k",
-                "-movflags", "+faststart",
-                output_path,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=max(180, MEGA_TIMEOUT * 2),
-            check=False,
-        )
+        pressure_fn = globals().get("_runtime_memory_pressure")
+        pressure = pressure_fn() if callable(pressure_fn) else {}
+        if str(pressure.get("level") or "normal") in {"critical", "emergency"}:
+            bot_journal("secret_video_compress_skipped_memory", None, json.dumps(pressure, ensure_ascii=False, default=str), "WARN")
+            return False
+        def _run_ffmpeg():
+            return subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", input_path,
+                    "-vf", "scale='min(640,iw)':-2",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "33",
+                    "-maxrate", "700k", "-bufsize", "1400k",
+                    "-c:a", "aac", "-b:a", "64k",
+                    "-movflags", "+faststart",
+                    output_path,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=max(180, MEGA_TIMEOUT * 2),
+                check=False,
+            )
+        mem_ctx = globals().get("memory_operation")
+        if callable(mem_ctx):
+            with mem_ctx("ffmpeg:secret_video", {"input_mb": round(os.path.getsize(input_path)/1024/1024, 1) if os.path.exists(input_path) else None}, heavy=True):
+                result = _run_ffmpeg()
+        else:
+            result = _run_ffmpeg()
         return bool(
             result.returncode == 0
             and os.path.exists(output_path)
@@ -347,7 +359,6 @@ def _upload_secret_record_media(chat_id: int, record: dict, remote_dir: str) -> 
     try:
         file_info = bot.get_file(file_id)
         telegram_path = str(getattr(file_info, "file_path", "") or "")
-        raw = bot.download_file(telegram_path)
         remote_name = _secret_media_remote_name(record, telegram_path)
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
         local_dir = tempfile.mkdtemp(
@@ -355,8 +366,14 @@ def _upload_secret_record_media(chat_id: int, record: dict, remote_dir: str) -> 
             dir=MEGA_LOCAL_TMP_DIR,
         )
         local_path = os.path.join(local_dir, remote_name)
-        with open(local_path, "wb") as media_file:
-            media_file.write(raw)
+        stream_fn = globals().get("telegram_download_to_file")
+        if callable(stream_fn):
+            stream_fn(telegram_path, local_path, max_bytes=telegram_bot_download_limit)
+        else:
+            raw = bot.download_file(telegram_path)
+            with open(local_path, "wb") as media_file:
+                media_file.write(raw)
+            raw = None
         upload_path = local_path
         if content_type in {"video", "video_note", "animation"}:
             compressed_name = os.path.splitext(remote_name)[0] + "_low.mp4"
@@ -2186,4 +2203,4 @@ def cmd_forward_copy_edit(msg):
         delete_message_later(msg.chat.id, msg.message_id, 1)
     except Exception as e:
         log_error(f"cmd_forward_copy_edit: {e}")
-# v139_usd_gomonk_processes_secret_full_edit
+# v145_memory_guard_streaming_forensics

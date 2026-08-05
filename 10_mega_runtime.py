@@ -1,4 +1,4 @@
-# v144_window_mutation_diagnostics
+# v145_memory_guard_streaming_forensics
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -28,16 +28,24 @@ def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = Tru
         raise RuntimeError(f"MEGAcmd command not found: {cmd}")
 
     def _execute_once():
-        with MEGA_COMMAND_LOCK:
-            try:
-                res = subprocess.run(
-                    [exe] + args,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout or MEGA_TIMEOUT,
-                )
-            except subprocess.TimeoutExpired:
-                raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
+        mem_ctx = globals().get("memory_operation")
+        def _run_command():
+            with MEGA_COMMAND_LOCK:
+                try:
+                    return subprocess.run(
+                        [exe] + args,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout or MEGA_TIMEOUT,
+                    )
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
+        if callable(mem_ctx):
+            safe_args = [os.path.basename(str(a)) if i == 0 else str(a)[:80] for i, a in enumerate(args[:3])]
+            with mem_ctx(f"mega:{cmd}", {"args": safe_args}, heavy=cmd in {"mega-find", "mega-get", "mega-put"}, quiet=True):
+                res = _run_command()
+        else:
+            res = _run_command()
         if check and res.returncode != 0:
             out = (res.stdout or "").strip()
             err = (res.stderr or "").strip()
@@ -4038,7 +4046,11 @@ def runtime_is_shutting_down() -> bool:
 
 
 def _runtime_memory_stats() -> dict:
-    out = {"rss_mb": None, "peak_rss_mb": None, "limit_mb": None, "rss_percent_limit": None}
+    out = {
+        "rss_mb": None, "peak_rss_mb": None, "limit_mb": None, "rss_percent_limit": None,
+        "container_current_mb": None, "container_peak_mb": None, "container_percent_limit": None,
+        "effective_mb": None, "cgroup_events": {},
+    }
     try:
         status = Path("/proc/self/status").read_text(errors="ignore") if os.path.exists("/proc/self/status") else ""
         for line in status.splitlines():
@@ -4048,21 +4060,51 @@ def _runtime_memory_stats() -> dict:
                 out["peak_rss_mb"] = round(float(line.split()[1]) / 1024.0, 1)
     except Exception:
         pass
-    # Render runs in a cgroup.  Read the real container limit instead of hard-coding 512 MB.
-    try:
-        raw = None
-        for candidate in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
-            if os.path.exists(candidate):
+
+    def _read_cgroup_number(paths):
+        for candidate in paths:
+            try:
+                if not os.path.exists(candidate):
+                    continue
                 raw = Path(candidate).read_text(errors="ignore").strip()
-                if raw:
-                    break
-        if raw and raw.lower() != "max":
-            limit = int(raw)
-            # Ignore host-sized sentinel values from old cgroup implementations.
-            if 0 < limit < (1 << 60):
-                out["limit_mb"] = round(limit / 1024.0 / 1024.0, 1)
-                if out.get("rss_mb") is not None and out["limit_mb"] > 0:
-                    out["rss_percent_limit"] = round(100.0 * float(out["rss_mb"]) / float(out["limit_mb"]), 1)
+                if not raw or raw.lower() == "max":
+                    continue
+                value = int(raw)
+                if 0 < value < (1 << 60):
+                    return value
+            except Exception:
+                continue
+        return None
+
+    try:
+        limit = _read_cgroup_number(("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"))
+        current = _read_cgroup_number(("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"))
+        peak = _read_cgroup_number(("/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory/memory.max_usage_in_bytes"))
+        if limit is not None:
+            out["limit_mb"] = round(limit / 1024.0 / 1024.0, 1)
+        if current is not None:
+            out["container_current_mb"] = round(current / 1024.0 / 1024.0, 1)
+        if peak is not None:
+            out["container_peak_mb"] = round(peak / 1024.0 / 1024.0, 1)
+        if out.get("limit_mb"):
+            if out.get("rss_mb") is not None:
+                out["rss_percent_limit"] = round(100.0 * float(out["rss_mb"]) / float(out["limit_mb"]), 1)
+            if out.get("container_current_mb") is not None:
+                out["container_percent_limit"] = round(100.0 * float(out["container_current_mb"]) / float(out["limit_mb"]), 1)
+        out["effective_mb"] = out.get("container_current_mb") if out.get("container_current_mb") is not None else out.get("rss_mb")
+        events_path = "/sys/fs/cgroup/memory.events"
+        if os.path.exists(events_path):
+            events = {}
+            for line in Path(events_path).read_text(errors="ignore").splitlines():
+                parts = line.split()
+                if len(parts) == 2:
+                    try: events[str(parts[0])] = int(parts[1])
+                    except Exception: pass
+            out["cgroup_events"] = events
+        else:
+            fail_path = "/sys/fs/cgroup/memory/memory.failcnt"
+            if os.path.exists(fail_path):
+                out["cgroup_events"] = {"failcnt": int(Path(fail_path).read_text(errors="ignore").strip() or 0)}
     except Exception:
         pass
     return out
@@ -4075,21 +4117,43 @@ def _runtime_memory_stats() -> dict:
 # ─────────────────────────────────────────────────────────────
 def _runtime_memory_pressure() -> dict:
     mem = _runtime_memory_stats()
-    rss = mem.get("rss_mb")
-    limit = mem.get("limit_mb")
-    pct = mem.get("rss_percent_limit")
-    level = "normal"
-    try:
-        p = float(pct or 0.0)
-        if p >= 90.0:
-            level = "critical"
-        elif p >= 82.0:
-            level = "high"
-        elif p >= 70.0:
-            level = "warning"
-    except Exception:
-        pass
-    return {"level": level, "rss_mb": rss, "limit_mb": limit, "percent": pct}
+    effective = mem.get("effective_mb") if mem.get("effective_mb") is not None else mem.get("rss_mb")
+    pct = mem.get("container_percent_limit") if mem.get("container_percent_limit") is not None else mem.get("rss_percent_limit")
+    level_fn = globals().get("memory_level")
+    if callable(level_fn):
+        try:
+            level = level_fn({
+                "effective_mb": effective,
+                "container_percent": pct,
+                "python_rss_mb": mem.get("rss_mb"),
+                "container_current_mb": mem.get("container_current_mb"),
+            })
+        except Exception:
+            level = "normal"
+    else:
+        level = "normal"
+        try:
+            used = float(effective or 0.0); p = float(pct or 0.0)
+            if used >= 440.0 or p >= 86.0:
+                level = "emergency"
+            elif used >= 400.0 or p >= 78.0:
+                level = "critical"
+            elif used >= 350.0 or p >= 68.0:
+                level = "high"
+            elif used >= 300.0 or p >= 58.0:
+                level = "warning"
+        except Exception:
+            pass
+    return {
+        "level": level,
+        "rss_mb": mem.get("rss_mb"),
+        "container_mb": mem.get("container_current_mb"),
+        "effective_mb": effective,
+        "limit_mb": mem.get("limit_mb"),
+        "percent": pct,
+        "container_peak_mb": mem.get("container_peak_mb"),
+        "cgroup_events": mem.get("cgroup_events") or {},
+    }
 
 
 def _runtime_previous_summary(prev: dict) -> dict:
@@ -4125,33 +4189,41 @@ def _runtime_previous_summary(prev: dict) -> dict:
         "process": {
             "rss_mb": proc.get("rss_mb"),
             "peak_rss_mb": proc.get("peak_rss_mb"),
+            "container_current_mb": proc.get("container_current_mb"),
+            "container_peak_mb": proc.get("container_peak_mb"),
             "limit_mb": proc.get("limit_mb"),
             "rss_percent_limit": proc.get("rss_percent_limit"),
+            "container_percent_limit": proc.get("container_percent_limit"),
+            "cgroup_events": dict(proc.get("cgroup_events") or {}),
             "uptime_seconds": proc.get("uptime_seconds"),
         },
     }
 
 
 def _runtime_emergency_trim(reason: str = "memory_pressure") -> dict:
-    """Best-effort RAM cleanup. Never changes finance/forward/business state."""
+    """Best-effort RAM cleanup. Never discards finance/forward state or unsaved journal rows."""
+    trim_fn = globals().get("memory_trim")
+    if callable(trim_fn):
+        try:
+            return trim_fn(reason, force=True)
+        except Exception as exc:
+            runtime_event("memory_trim_delegate_error", str(exc), "WARN")
     before = _runtime_memory_pressure()
     try:
         with bot_journal_lock:
-            if len(BOT_ACTION_LOG) > 250:
-                tail = list(BOT_ACTION_LOG)[-250:]
-                BOT_ACTION_LOG.clear()
-                BOT_ACTION_LOG.extend(tail)
-    except Exception:
-        pass
-    try:
-        with _JOURNAL_DURABLE_LOCK:
-            if len(_JOURNAL_DURABLE_BUFFER) > 300:
-                del _JOURNAL_DURABLE_BUFFER[:-300]
+            if len(BOT_ACTION_LOG) > 160:
+                tail = list(BOT_ACTION_LOG)[-160:]
+                BOT_ACTION_LOG.clear(); BOT_ACTION_LOG.extend(tail)
     except Exception:
         pass
     try:
         import gc
         gc.collect()
+    except Exception:
+        pass
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
     except Exception:
         pass
     after = _runtime_memory_pressure()
@@ -4189,8 +4261,12 @@ def runtime_heartbeat_snapshot(event: str = "heartbeat") -> dict:
             "pid": os.getpid(),
             "rss_mb": mem.get("rss_mb"),
             "peak_rss_mb": mem.get("peak_rss_mb"),
+            "container_current_mb": mem.get("container_current_mb"),
+            "container_peak_mb": mem.get("container_peak_mb"),
             "limit_mb": mem.get("limit_mb"),
             "rss_percent_limit": mem.get("rss_percent_limit"),
+            "container_percent_limit": mem.get("container_percent_limit"),
+            "cgroup_events": mem.get("cgroup_events") or {},
             "threads": threading.active_count(),
             "uptime_seconds": round(max(0.0, time.monotonic() - _RUNTIME_STARTED_MONO), 3),
         },
@@ -4266,6 +4342,7 @@ def runtime_snapshot(extra: dict | None = None) -> dict:
         },
         "keep_alive": dict(KEEP_ALIVE_STATE) if "KEEP_ALIVE_STATE" in globals() else {},
         "memory_guard": _runtime_memory_pressure(),
+        "memory_runtime": (memory_runtime_summary() if "memory_runtime_summary" in globals() else {}),
         "audit_metrics": (runtime_audit_metrics() if "runtime_audit_metrics" in globals() else {}),
         "previous_runtime": previous,
         "events": events,
@@ -4505,6 +4582,18 @@ def runtime_classify_previous(prev: dict) -> str:
         (idle_before_shutdown is not None and idle_before_shutdown >= 13.5 * 60)
         or (not graceful and idle_to_new_start is not None and idle_to_new_start >= 13.5 * 60)
     )
+
+    if not graceful:
+        try:
+            prev_proc = prev.get("process") or {}
+            events = prev_proc.get("cgroup_events") or {}
+            oom_kill = int(events.get("oom_kill", 0) or 0) + int(events.get("oom_group_kill", 0) or 0)
+            peak = float(prev_proc.get("container_peak_mb") or prev_proc.get("peak_rss_mb") or 0.0)
+            limit = float(prev_proc.get("limit_mb") or 0.0)
+            if oom_kill > 0 or (limit > 0 and peak / limit >= 0.90):
+                return "probable_memory_oom_or_hard_kill"
+        except Exception:
+            pass
 
     if graceful:
         if probable_idle and signal_name in {"SIGTERM", ""}:
@@ -4908,6 +4997,9 @@ def _lowram_idle_sweep_job():
                 try:
                     import gc
                     gc.collect()
+                    trim_fn = globals().get("memory_malloc_trim")
+                    if callable(trim_fn):
+                        trim_fn()
                 except Exception:
                     pass
                 loaded_after = _loaded_fields_count()
@@ -5208,6 +5300,9 @@ def build_runtime_watcher_text() -> str:
     disk = snap.get("disk") or {}
     mega = snap.get("mega_tasks") or {}
     audit = snap.get("audit_metrics") or {}
+    memrt = snap.get("memory_runtime") or {}
+    memquick = memrt.get("quick") or {}
+    memstate = memrt.get("state") or {}
     prev = snap.get("previous_runtime") or {}
     prev_state = prev.get("state") or {}
     prev_render = prev.get("render") or {}
@@ -5233,8 +5328,11 @@ def build_runtime_watcher_text() -> str:
         f"PID/host: {proc.get('pid')} / {proc.get('hostname')}",
         "",
         "Ресурсы:",
-        f"RAM сейчас: {proc.get('rss_mb') if proc.get('rss_mb') is not None else '—'} MB; пик: {proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—'} MB",
-        f"RAM лимит cgroup: {proc.get('limit_mb') if proc.get('limit_mb') is not None else '—'} MB; использование: {proc.get('rss_percent_limit') if proc.get('rss_percent_limit') is not None else '—'}%",
+        f"Python RAM: {proc.get('rss_mb') if proc.get('rss_mb') is not None else '—'} MB; пик: {proc.get('peak_rss_mb') if proc.get('peak_rss_mb') is not None else '—'} MB",
+        f"Контейнер RAM: {proc.get('container_current_mb') if proc.get('container_current_mb') is not None else '—'} MB; пик: {proc.get('container_peak_mb') if proc.get('container_peak_mb') is not None else '—'} MB",
+        f"RAM лимит cgroup: {proc.get('limit_mb') if proc.get('limit_mb') is not None else '—'} MB; контейнер: {proc.get('container_percent_limit') if proc.get('container_percent_limit') is not None else '—'}%",
+        f"Memory guard: {memrt.get('level') or '—'} | trim {memstate.get('trim_count','—')} | malloc_trim {memstate.get('malloc_trim_count','—')} | blocked exports {memstate.get('blocked_heavy_jobs','—')}",
+        f"Дочерние процессы: {len(memrt.get('children') or [])}; RAM детей {memrt.get('children_rss_mb','—')} MB",
         f"Диск: занято {disk.get('used_mb') if disk.get('used_mb') is not None else '—'} MB; свободно {disk.get('free_mb') if disk.get('free_mb') is not None else '—'} MB",
         f"Потоков Python: {proc.get('threads')}",
         f"Runtime объекты: операции {audit.get('operation_items','—')} | integrity {audit.get('integrity_events','—')} | "
@@ -5253,7 +5351,7 @@ def build_runtime_watcher_text() -> str:
     ]
     for name in (
         "content", "ui", "callback-ack", "recovery", "reminder",
-        "finance", "forward", "delta", "backup", "export",
+        "finance", "fin-forward", "forward", "delta", "backup", "export",
         "general", "maintenance", "journal", "delayed", "dozvon",
     ):
         q = queues.get(name) or {}
@@ -6512,39 +6610,22 @@ def _xlsx_cell_xml(row_idx: int, col_idx: int, value, style: int | None = None) 
     return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(value)}</t></is></c>'
 
 def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данные") -> None:
-    """Минимальный XLSX без внешних библиотек: дата / сумма / заметка."""
+    """Минимальный XLSX; sheet XML пишется потоково во временный файл."""
     rows = rows or [["date", "amount", "note"]]
-    sheet_rows = []
-    for r_idx, row in enumerate(rows, start=1):
-        cells = []
-        for c_idx, value in enumerate(row, start=1):
-            cells.append(_xlsx_cell_xml(r_idx, c_idx, value, style=1 if r_idx == 1 else None))
-        sheet_rows.append(f'<row r="{r_idx}">' + "".join(cells) + '</row>')
-
-    sheet_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
-<cols><col min="1" max="1" width="13" customWidth="1"/><col min="2" max="2" width="42" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="14" customWidth="1"/><col min="5" max="10" width="18" customWidth="1"/></cols>
-<sheetData>""" + "".join(sheet_rows) + """</sheetData>
-</worksheet>"""
-
     workbook_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets><sheet name="{_xlsx_xml_escape(sheet_name)[:31]}" sheetId="1" r:id="rId1"/></sheets>
 <calcPr calcId="191029" fullCalcOnLoad="1" forceFullCalc="1"/>
 </workbook>"""
-
     rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"""
-
     workbook_rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>"""
-
     content_types_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -6553,7 +6634,6 @@ def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данн�
 <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>"""
-
     styles_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>
@@ -6563,14 +6643,34 @@ def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данн�
 <cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>"""
-
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", content_types_xml)
-        z.writestr("_rels/.rels", rels_xml)
-        z.writestr("xl/workbook.xml", workbook_xml)
-        z.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
-        z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
-        z.writestr("xl/styles.xml", styles_xml)
+    sheet_tmp = None
+    try:
+        fd, sheet_tmp = tempfile.mkstemp(prefix="xlsx_sheet_", suffix=".xml", dir=MEGA_LOCAL_TMP_DIR if os.path.isdir(MEGA_LOCAL_TMP_DIR) else None)
+        os.close(fd)
+        with open(sheet_tmp, "w", encoding="utf-8", newline="") as sheet:
+            sheet.write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n')
+            sheet.write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\n')
+            sheet.write('<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>\n')
+            sheet.write('<cols><col min="1" max="1" width="13" customWidth="1"/><col min="2" max="2" width="42" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="14" customWidth="1"/><col min="5" max="10" width="18" customWidth="1"/></cols>\n<sheetData>')
+            for r_idx, row in enumerate(rows, start=1):
+                sheet.write(f'<row r="{r_idx}">')
+                for c_idx, value in enumerate(row, start=1):
+                    sheet.write(_xlsx_cell_xml(r_idx, c_idx, value, style=1 if r_idx == 1 else None))
+                sheet.write('</row>')
+            sheet.write('</sheetData>\n</worksheet>')
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("[Content_Types].xml", content_types_xml)
+            z.writestr("_rels/.rels", rels_xml)
+            z.writestr("xl/workbook.xml", workbook_xml)
+            z.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+            z.write(sheet_tmp, "xl/worksheets/sheet1.xml")
+            z.writestr("xl/styles.xml", styles_xml)
+    finally:
+        try:
+            if sheet_tmp and os.path.exists(sheet_tmp):
+                os.remove(sheet_tmp)
+        except Exception:
+            pass
 
 
 def _xlsx_income_expense_values(amount):
@@ -6826,27 +6926,11 @@ def _write_tabl_lsx_xlsx(
     if len(widths) < max_cols:
         widths.extend([18] * (max_cols - len(widths)))
     freeze_rows = max(0, int(freeze_rows or 0))
-    sheet_rows = []
-    for r_idx, row in enumerate(rows, start=1):
-        cells = []
-        st_row = styles[r_idx - 1] if r_idx - 1 < len(styles) else []
-        for c_idx in range(1, max_cols + 1):
-            value = row[c_idx - 1] if c_idx - 1 < len(row) else ""
-            style = st_row[c_idx - 1] if c_idx - 1 < len(st_row) else 0
-            cells.append(_xlsx_cell_xml2(r_idx, c_idx, value, style=style))
-        height = ' ht="22" customHeight="1"' if r_idx <= max(1, freeze_rows) else ""
-        sheet_rows.append(f'<row r="{r_idx}"{height}>' + "".join(cells) + '</row>')
     cols_xml = "".join(
         f'<col min="{i}" max="{i}" width="{min(widths[i-1] if i-1 < len(widths) else 18, 34)}" customWidth="1"/>'
         for i in range(1, max_cols + 1)
     )
     legacy_drawing = '<legacyDrawing r:id="rId2"/>' if annotation_mode == "notes" else ""
-    sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheetViews><sheetView workbookViewId="0">{f'<pane ySplit="{freeze_rows}" topLeftCell="A{freeze_rows + 1}" activePane="bottomLeft" state="frozen"/>' if freeze_rows else ''}</sheetView></sheetViews>
-<cols>{cols_xml}</cols>
-<sheetData>{''.join(sheet_rows)}</sheetData>{legacy_drawing}
-</worksheet>'''
     workbook_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets><sheet name="{_xlsx_xml_escape(sheet_name)[:31]}" sheetId="1" r:id="rId1"/></sheets>
@@ -6952,21 +7036,48 @@ def _write_tabl_lsx_xlsx(
 <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>'''
 
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", content_types_xml)
-        z.writestr("_rels/.rels", rels_xml)
-        z.writestr("xl/workbook.xml", workbook_xml)
-        z.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
-        z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
-        z.writestr("xl/styles.xml", styles_xml)
-        if sheet_rels_xml:
-            z.writestr("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels_xml)
-        if annotation_mode == "notes":
-            z.writestr("xl/comments1.xml", notes_xml)
-            z.writestr("xl/drawings/vmlDrawing1.vml", vml_xml)
-        elif annotation_mode == "comments":
-            z.writestr("xl/threadedComments/threadedComment1.xml", threaded_xml)
-            z.writestr("xl/persons/person.xml", persons_xml)
+    sheet_tmp = None
+    try:
+        temp_dir = MEGA_LOCAL_TMP_DIR if os.path.isdir(MEGA_LOCAL_TMP_DIR) else None
+        fd, sheet_tmp = tempfile.mkstemp(prefix="xlsx_sheet_", suffix=".xml", dir=temp_dir)
+        os.close(fd)
+        with open(sheet_tmp, "w", encoding="utf-8", newline="") as sheet:
+            sheet.write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n')
+            sheet.write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\n')
+            pane = f'<pane ySplit="{freeze_rows}" topLeftCell="A{freeze_rows + 1}" activePane="bottomLeft" state="frozen"/>' if freeze_rows else ''
+            sheet.write(f'<sheetViews><sheetView workbookViewId="0">{pane}</sheetView></sheetViews>\n')
+            sheet.write(f'<cols>{cols_xml}</cols>\n<sheetData>')
+            for r_idx, row in enumerate(rows, start=1):
+                st_row = styles[r_idx - 1] if r_idx - 1 < len(styles) else []
+                height = ' ht="22" customHeight="1"' if r_idx <= max(1, freeze_rows) else ""
+                sheet.write(f'<row r="{r_idx}"{height}>')
+                for c_idx in range(1, max_cols + 1):
+                    value = row[c_idx - 1] if c_idx - 1 < len(row) else ""
+                    style = st_row[c_idx - 1] if c_idx - 1 < len(st_row) else 0
+                    sheet.write(_xlsx_cell_xml2(r_idx, c_idx, value, style=style))
+                sheet.write('</row>')
+            sheet.write(f'</sheetData>{legacy_drawing}\n</worksheet>')
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("[Content_Types].xml", content_types_xml)
+            z.writestr("_rels/.rels", rels_xml)
+            z.writestr("xl/workbook.xml", workbook_xml)
+            z.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+            z.write(sheet_tmp, "xl/worksheets/sheet1.xml")
+            z.writestr("xl/styles.xml", styles_xml)
+            if sheet_rels_xml:
+                z.writestr("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels_xml)
+            if annotation_mode == "notes":
+                z.writestr("xl/comments1.xml", notes_xml)
+                z.writestr("xl/drawings/vmlDrawing1.vml", vml_xml)
+            elif annotation_mode == "comments":
+                z.writestr("xl/threadedComments/threadedComment1.xml", threaded_xml)
+                z.writestr("xl/persons/person.xml", persons_xml)
+    finally:
+        try:
+            if sheet_tmp and os.path.exists(sheet_tmp):
+                os.remove(sheet_tmp)
+        except Exception:
+            pass
 
 
 def _validate_xlsx_annotation_package(path: str, annotation_mode: str | None) -> None:
@@ -8633,4 +8744,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v144_window_mutation_diagnostics
+# v145_memory_guard_streaming_forensics

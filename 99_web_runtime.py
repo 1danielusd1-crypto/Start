@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v145_memory_guard_streaming_forensics
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -588,6 +588,10 @@ def main():
         start_safety_schedulers()
     except Exception as e:
         log_error(f"safety schedulers start: {e}")
+    try:
+        start_memory_runtime_schedulers()
+    except Exception as e:
+        log_error(f"memory guard start: {e}")
 
     if boot_recovery_remaining > 0:
         runtime_set_phase("boot_recovery_background", f"осталось {boot_recovery_remaining}; webhook временно 503")
@@ -655,4 +659,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v141_operation_ledger_windows_expense_reminders_safety
+# v145_memory_guard_streaming_forensics
