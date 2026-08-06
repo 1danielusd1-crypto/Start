@@ -1,4 +1,4 @@
-# v144_window_mutation_diagnostics
+# v147_multitenant_audit_restore
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -1222,7 +1222,7 @@ def build_info_keyboard(chat_id: int):
             IB("⚙️ Процессы", callback_data="process_center"),
         )
         kb.row(
-            IB(safety_profile_label(), callback_data="safety_profile_toggle"),
+            IB(safety_profile_label(), callback_data="safety_profile_open"),
             IB("🧯 Проблемные задачи", callback_data="problem_tasks"),
         )
         kb.row(IB("🔗 Целостность финансов", callback_data="integrity_status"))
@@ -2679,4 +2679,4 @@ def build_integrity_keyboard(chat_id: int):
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
 
-# v144_window_mutation_diagnostics
+# v147_multitenant_audit_restore

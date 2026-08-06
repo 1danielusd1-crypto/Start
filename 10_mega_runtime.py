@@ -1,4 +1,4 @@
-# v145_memory_guard_streaming_forensics
+# v147_multitenant_audit_restore
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -41,7 +41,7 @@ def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = Tru
                 except subprocess.TimeoutExpired:
                     raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
         if callable(mem_ctx):
-            safe_args = [os.path.basename(str(a)) if i == 0 else str(a)[:80] for i, a in enumerate(args[:3])]
+            safe_args = (["***", "***"] if str(cmd) == "mega-login" else [_redact_secret_value(os.path.basename(str(a)) if i == 0 else str(a)[:80]) for i, a in enumerate(args[:3])])
             with mem_ctx(f"mega:{cmd}", {"args": safe_args}, heavy=cmd in {"mega-find", "mega-get", "mega-put"}, quiet=True):
                 res = _run_command()
         else:
@@ -8744,4 +8744,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v145_memory_guard_streaming_forensics
+# v147_multitenant_audit_restore

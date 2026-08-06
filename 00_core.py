@@ -1,4 +1,4 @@
-# v146_window_epoch_lazy_refresh_durable
+# v147_multitenant_audit_restore
 import os
 import io
 import json
@@ -896,7 +896,7 @@ MEGA_ENABLED = _env_bool("MEGA_ENABLED", "0")
 MEGA_AUTORESTORE = _env_bool("MEGA_AUTORESTORE", "1")
 MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
-MEGA_BACKUP_DIR = os.getenv("MEGA_BACKUP_DIR", "/TelegramBotBackups").strip() or "/TelegramBotBackups"
+MEGA_BACKUP_DIR = os.getenv("MEGA_BACKUP_DIR", "/TelegramBotBackupsStart").strip() or "/TelegramBotBackupsStart"
 try:
     MEGA_TIMEOUT = int(os.getenv("MEGA_TIMEOUT", "120"))
 except Exception:
@@ -2538,7 +2538,7 @@ def _atomic_json_dump(path: str, payload) -> None:
 
 
 def _journal_durable_remote_dir() -> str:
-    base = str(globals().get("MEGA_BACKUP_DIR") or "/TelegramBotBackups").rstrip("/")
+    base = str(globals().get("MEGA_BACKUP_DIR") or "/TelegramBotBackupsStart").rstrip("/")
     return f"{base}/runtime/journal"
 
 
@@ -7712,4 +7712,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v146_window_epoch_lazy_refresh_durable
+# v147_multitenant_audit_restore

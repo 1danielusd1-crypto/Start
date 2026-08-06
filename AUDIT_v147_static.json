@@ -1,0 +1,19 @@
+{
+  "version": "bot_v147_multitenant_audit_restore",
+  "parts": 21,
+  "syntax_errors": [],
+  "callback_literals": 210,
+  "slash_handlers": 42,
+  "callback_handlers": 4,
+  "checks": {
+    "mega_root_new": 3,
+    "mega_root_old_literal": 0,
+    "secret_redaction": true,
+    "json_full": true,
+    "restore_reply": true,
+    "tenant_registry": true,
+    "gomonk_reconcile": true,
+    "food_per_person": true,
+    "usd_table": true
+  }
+}
