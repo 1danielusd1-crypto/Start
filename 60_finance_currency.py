@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v141_operation_ledger_windows_expense_reminders_safety
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -425,7 +425,7 @@ def build_gomonk_menu_keyboard(chat_id: int, currency: str | None = None):
     currency = _gomonk_currency(chat_id, currency)
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.row(IB(gomonk_toggle_label(chat_id, currency), callback_data=f"gomonk_toggle:{currency}"))
-    template = f"@Good_server_bot ({GOMONKI_INSERT_TOKEN}|{currency.upper()})\n(Пример: Имя1 1000 : Имя2 5777)\n"
+    template = f"({GOMONKI_INSERT_TOKEN}|{currency.upper()})\nИмя1 1000 : Имя2 5777"
     kb.row(make_copy_or_inline_button("💰 Сумма", template, viewer_chat_id=chat_id))
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"gomonk_back:{currency}"))
     return kb
@@ -441,9 +441,7 @@ def handle_gomonk_insert_message(msg) -> bool:
     chat_id = int(msg.chat.id)
     token = re.search(r"\(GOMONKI\|(USD|ARS)\)", raw, flags=re.IGNORECASE)
     currency = token.group(1).lower() if token else _gomonk_currency(chat_id)
-    cleaned = re.sub(r"(?im)^\s*@Good_server_bot\s+", "", raw)
-    cleaned = re.sub(r"\(GOMONKI\|(?:USD|ARS)\)", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"(?im)^\s*\(\s*Пример\s*:[^\n]*\)\s*$", "", cleaned)
+    cleaned = re.sub(r"\(GOMONKI\|(?:USD|ARS)\)", "", raw, flags=re.IGNORECASE)
     entries = parse_gomonk_entries(cleaned)
     try:
         bot.delete_message(chat_id, msg.message_id)
@@ -2078,4 +2076,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v147_multitenant_audit_restore
+# v141_operation_ledger_windows_expense_reminders_safety

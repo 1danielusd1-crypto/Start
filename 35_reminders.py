@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v143_audit_stability_exact_wait_reminders_memory
 
 _REMINDER_THREAD_STARTED = False
 _REMINDER_THREAD_LOCK = threading.RLock()
@@ -1586,6 +1586,7 @@ def reminder_group_keyboard(target_chat_id: int, page: int, day_key: str):
 def reminder_group_set_two_hours(target_chat_id: int, day_key: str) -> None:
     with _REMINDER_CONFIG_LOCK:
         for _rid, cfg in reminder_group_members(target_chat_id, day_key, enabled_only=False):
+            cfg["interval_minutes"] = _REMINDER_GROUP_INTERVAL_MINUTES
             if cfg.get("enabled"):
                 _reminder_rearm(cfg, immediate_if_valid=True)
             _reminder_touch(cfg)
@@ -1622,6 +1623,7 @@ def reminder_group_toggle_all(target_chat_id: int, day_key: str) -> None:
                 cfg["enabled"] = True
                 cfg["completed_at"] = ""
                 cfg["completion_reason"] = ""
+                cfg["interval_minutes"] = _REMINDER_GROUP_INTERVAL_MINUTES
                 _reminder_rearm(cfg, immediate_if_valid=True)
             elif not enable:
                 cfg["enabled"] = False
@@ -1635,8 +1637,7 @@ def _reminder_group_message_text(members: list[tuple[int, dict]]) -> str:
     budget = 3850
     for idx, (_rid, cfg) in enumerate(members, 1):
         text = str(cfg.get("text") or "").strip()
-        suffix = f"\nВыполнено: /vyapl_{int(_rid)}" if reminder_completion_command_enabled(int((cfg.get("chat_ids") or [0])[0] or 0)) else ""
-        block = f"{idx}. {text}{suffix}"
+        block = f"{idx}. {text}"
         if sum(len(x) + 1 for x in lines) + len(block) > budget:
             remain = max(0, budget - sum(len(x) + 1 for x in lines) - 2)
             if remain:
@@ -1647,8 +1648,7 @@ def _reminder_group_message_text(members: list[tuple[int, dict]]) -> str:
 
 
 def _reminder_group_next_time(now_dt: datetime, members: list[tuple[int, dict]]):
-    minimum_minutes = min(max(5, int((cfg or {}).get("interval_minutes", 120) or 120)) for _rid, cfg in members)
-    candidate = now_dt + timedelta(minutes=minimum_minutes)
+    candidate = now_dt + timedelta(minutes=_REMINDER_GROUP_INTERVAL_MINUTES)
     for _ in range(16):
         if any(_reminder_date_allowed(candidate, cfg) and _reminder_time_allowed(candidate, cfg) for _rid, cfg in members):
             return candidate
@@ -1720,6 +1720,7 @@ def _reminder_group_send_job(target_chat_id: int, day_key: str, force: bool = Fa
                 continue
             cfg["last_sent_at"] = now_dt.isoformat(timespec="seconds")
             cfg["next_run_at"] = next_dt.isoformat(timespec="seconds") if next_dt else ""
+            cfg["interval_minutes"] = _REMINDER_GROUP_INTERVAL_MINUTES
             _reminder_touch(cfg)
     _reminder_save("reminder_group_sent")
     try:
@@ -1835,4 +1836,4 @@ def _reminder_tick() -> None:
     if completed_changed:
         _reminder_save("reminder_completed_tick")
 
-# v147_multitenant_audit_restore
+# v143_audit_stability_exact_wait_reminders_memory

@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v143_audit_stability_exact_wait_reminders_memory
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -2039,7 +2039,7 @@ def on_callback(call):
                 safe_edit(
                     bot, call,
                     f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + month_html,
-                    reply_markup=getattr(call.message, "reply_markup", None),
+                    reply_markup=build_fin_window_usd_month_keyboard(target_chat_id, view_day, owner_day_key),
                     parse_mode="HTML",
                 )
                 return
@@ -2570,7 +2570,7 @@ def on_callback(call):
                     pass
                 return
             month_html, _ = render_usd_month_window(chat_id, day_key)
-            safe_edit(bot, call, month_html, reply_markup=getattr(call.message, "reply_markup", None), parse_mode="HTML")
+            safe_edit(bot, call, month_html, reply_markup=build_usd_month_keyboard(day_key), parse_mode="HTML")
             register_open_window(
                 chat_id, call.message.message_id, "local_fin_view", code="usd_month", day_key=day_key,
                 params={"view_action": "usd_month", "month_day": day_key},
@@ -3138,4 +3138,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v147_multitenant_audit_restore
+# v143_audit_stability_exact_wait_reminders_memory

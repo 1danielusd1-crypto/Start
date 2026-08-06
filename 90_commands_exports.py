@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v145_memory_guard_streaming_forensics
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -650,10 +650,6 @@ def cmd_restore(msg):
         pass
 
     schedule_command_delete(msg)
-    reply = getattr(msg, "reply_to_message", None)
-    doc = getattr(reply, "document", None) if reply else None
-    if doc and str(getattr(doc, "file_name", "") or "").endswith(".sqlite3.gz") and "cmd_restore_v147" in globals():
-        return cmd_restore_v147(msg)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
     stop_dozvon_for_target(msg.chat.id)
@@ -1645,4 +1641,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v147_multitenant_audit_restore
+# v145_memory_guard_streaming_forensics
