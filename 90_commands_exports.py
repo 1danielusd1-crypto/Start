@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v148_multitenant_spaces
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -451,12 +451,15 @@ def refresh_total_message_if_any(chat_id: int):
             lines.append("")
             lines.append(f"• Этот чат ({title}): {format_chat_amount(chat_id, chat_bal, True)}")
             all_chats = data.get("chats", {})
+            allowed_chat_ids = set(tenant_chat_ids(tenant_id_for_chat(chat_id, create=False))) if "tenant_chat_ids" in globals() else {int(x) for x in all_chats.keys()}
             total_all = 0
             other_lines = []
             for cid, st in all_chats.items():
                 try:
                     cid_int = int(cid)
                 except Exception:
+                    continue
+                if cid_int not in allowed_chat_ids:
                     continue
                 bal = st.get("balance", 0)
                 total_all += bal
@@ -551,6 +554,10 @@ def send_info(chat_id: int, text: str):
 @bot.message_handler(commands=["owners", "additional_owners", "доп_владельцы"])
 def cmd_additional_owners(msg):
     schedule_command_delete(msg)
+    # v148: глобальные дополнительные владельцы заменены изолированными пространствами.
+    if "_tenant_send_dashboard" in globals():
+        _tenant_send_dashboard(msg)
+        return
     if not is_primary_owner(msg.chat.id):
         return
     bot.send_message(
@@ -602,6 +609,11 @@ def cmd_start(msg):
         pass
 
     schedule_command_delete(msg)
+    try:
+        if "tenant_handle_start_payload" in globals() and tenant_handle_start_payload(msg):
+            return
+    except Exception as e:
+        log_error(f"tenant start payload: {e}")
     chat_id = msg.chat.id
     set_total_secret_mode(chat_id, False)
     if is_finance_output_suppressed(chat_id):
@@ -650,10 +662,6 @@ def cmd_restore(msg):
         pass
 
     schedule_command_delete(msg)
-    reply = getattr(msg, "reply_to_message", None)
-    doc = getattr(reply, "document", None) if reply else None
-    if doc and str(getattr(doc, "file_name", "") or "").endswith(".sqlite3.gz") and "cmd_restore_v147" in globals():
-        return cmd_restore_v147(msg)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
     stop_dozvon_for_target(msg.chat.id)
@@ -844,8 +852,11 @@ def cmd_runtime_export(msg):
         pass
     schedule_command_delete(msg)
     chat_id = int(msg.chat.id)
-    if not is_owner_chat(chat_id):
-        send_and_auto_delete(chat_id, "Эта команда только для владельца.", 8)
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца платформы.", 8)
         return
     start_dt, end_dt = _runtime_export_parse_range(getattr(msg, "text", "") or "")
     ok, info = submit_interactive_file_job(chat_id, "runtime", "Runtime / Watcher ZIP", send_runtime_export_zip, chat_id, start_dt, end_dt)
@@ -1042,8 +1053,11 @@ def cmd_on_channel(msg):
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
-    if not is_owner_chat(chat_id):
-        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца платформы.", HELPER_DELETE_DELAY)
         return
     backup_flags["channel"] = True
     save_data(data)
@@ -1062,8 +1076,11 @@ def cmd_off_channel(msg):
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
-    if not is_owner_chat(chat_id):
-        send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id):
+        send_and_auto_delete(chat_id, "Эта команда только для владельца платформы.", HELPER_DELETE_DELAY)
         return
     backup_flags["channel"] = False
     save_data(data)
@@ -1645,4 +1662,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v147_multitenant_audit_restore
+# v148_multitenant_spaces

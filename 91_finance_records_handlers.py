@@ -1,4 +1,4 @@
-# v145_memory_guard_streaming_forensics
+# v148_multitenant_spaces
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -579,7 +579,7 @@ def force_new_day_window(chat_id: int, day_key: str):
 
 
 def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
-    """Мгновенный возврат в О1 без синхронного удаления и тяжёлого backup_window_for_owner."""
+    """Return to О1 without promoting a missing/stale Telegram message to active."""
     chat_id = int(chat_id)
     try:
         current_message_id = int(current_message_id) if current_message_id is not None else None
@@ -595,6 +595,7 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
 
     try:
         old_mid = get_active_window_id(chat_id, day_key)
+        old_mid = int(old_mid) if old_mid else None
     except Exception:
         old_mid = None
 
@@ -602,22 +603,52 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
     kb = build_main_keyboard(day_key, chat_id)
 
     if current_message_id is not None:
-        set_active_window_id(chat_id, day_key, current_message_id)
         result = fast_ui_edit_message_text(
             chat_id, current_message_id, txt,
             reply_markup=kb, parse_mode="HTML", purpose="back_main_instant",
         )
         bot_journal("back_main_fast", chat_id, f"day={day_key} result={result} old={old_mid} current={current_message_id}")
 
-        if old_mid and int(old_mid) != current_message_id:
-            def _delete_old():
+        if result == "ok":
+            # Only a proven Telegram edit may become the active main window.
+            set_active_window_id(chat_id, day_key, current_message_id)
+            if old_mid and old_mid != current_message_id:
+                def _delete_old():
+                    try:
+                        _tg_call_retry(bot.delete_message, chat_id, int(old_mid), attempts=1, purpose="back_main_delete_old")
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            unregister_open_window(chat_id, int(old_mid))
+                        except Exception:
+                            pass
+                GENERAL_TASK_POOL.submit(f"back-delete:{chat_id}:{old_mid}", _delete_old)
+            schedule_balance_panel_refresh(chat_id, 0.05)
+            return
+
+        # A delayed/stale callback can reference a message already closed by its timer.
+        # Retire that id, but preserve the valid old main window instead of deleting it.
+        if result == "not_found":
+            try:
+                unregister_open_window(chat_id, current_message_id)
+            except Exception:
+                pass
+            try:
+                if get_active_window_id(chat_id, day_key) == current_message_id:
+                    clear_active_window_id(chat_id, day_key)
+                    old_mid = None
+            except Exception:
+                pass
+
+        if old_mid and old_mid != current_message_id:
+            def _refresh_existing():
                 try:
-                    _tg_call_retry(bot.delete_message, chat_id, int(old_mid), attempts=1, purpose="back_main_delete_old")
-                except Exception:
-                    pass
-            GENERAL_TASK_POOL.submit(f"back-delete:{chat_id}:{old_mid}", _delete_old)
-        schedule_balance_panel_refresh(chat_id, 0.05)
-        return
+                    backup_window_for_owner(chat_id, day_key, message_id_override=old_mid)
+                except Exception as exc:
+                    log_error(f"back_main preserve old({chat_id},{day_key},{old_mid}): {exc}")
+            GENERAL_TASK_POOL.submit(f"back-preserve:{chat_id}:{old_mid}", _refresh_existing)
+            return
 
     def _send_fallback():
         try:
@@ -626,6 +657,7 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
             log_error(f"return_to_main fallback({chat_id},{day_key}): {e}")
     if not GENERAL_TASK_POOL.submit(f"back-send:{chat_id}", _send_fallback):
         _send_fallback()
+
 
 def reset_chat_data(chat_id: int):
     """v27: обнуление данных чата без ручного дублирования окон/бэкапов."""
@@ -1057,7 +1089,10 @@ def cmd_restore_guard(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         return
     send_and_auto_delete(chat_id, restore_guard_status_text(), 120)
 
@@ -1070,7 +1105,10 @@ def cmd_restore_guard_off(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         return
     count = disable_restore_guard_and_enable_mega_backups()
     send_and_auto_delete(
@@ -1088,7 +1126,10 @@ def cmd_restore_guard_on(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         return
     set_restore_guard_manual_override(False)
     send_and_auto_delete(chat_id, "🛡 Ручное отключение Restore guard снято. При следующей аварийной проверке guard снова сможет включиться.", 90)
@@ -1101,7 +1142,10 @@ def cmd_delta_status(msg):
     except Exception:
         pass
     schedule_command_delete(msg)
-    if not is_owner_chat(msg.chat.id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         return
     send_and_auto_delete(msg.chat.id, delta_status_text(), 120)
 
@@ -1114,7 +1158,10 @@ def cmd_mega_status(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     send_and_auto_delete(chat_id, mega_status_text(), 90)
@@ -1156,7 +1203,10 @@ def cmd_mega_restore_now(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     if not GENERAL_TASK_POOL.submit(f"manual-mega-restore:{chat_id}", run_manual_mega_restore, chat_id):
@@ -1171,7 +1221,10 @@ def cmd_mega_backup_now(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     try:
@@ -1273,14 +1326,21 @@ def cmd_off_on_backup_excel(msg):
     update_chat_info_from_message(msg)
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_can_manage" in globals():
+        actor = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
+        if not tenant_can_manage(actor, chat_id=chat_id):
+            send_and_auto_delete(chat_id, "Эта команда только для владельца пространства.", HELPER_DELETE_DELAY)
+            return
+    elif not is_owner_chat(chat_id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     enabled = toggle_backup_excel_all_enabled()
     if enabled:
-        for cid in collect_finance_chat_ids():
-            schedule_backup_flush(cid, BACKUP_MIN_DELAY_SECONDS)
-    send_and_auto_delete(chat_id, f"📊 Excel-бэкап всех чатов: {'ВКЛ' if enabled else 'ВЫКЛ'}", 20)
+        target_ids = tenant_chat_ids(tenant_id_for_chat(chat_id, create=False)) if "tenant_chat_ids" in globals() else collect_finance_chat_ids()
+        for cid in target_ids:
+            if is_finance_mode(int(cid)):
+                schedule_backup_flush(int(cid), BACKUP_MIN_DELAY_SECONDS)
+    send_and_auto_delete(chat_id, f"📊 Excel-бэкап чатов пространства: {'ВКЛ' if enabled else 'ВЫКЛ'}", 20)
 
 
 @bot.message_handler(commands=["queues", "queue_status"])
@@ -1288,7 +1348,10 @@ def cmd_queues(msg):
     update_chat_info_from_message(msg)
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     send_and_auto_delete(chat_id, build_queue_status_text(), 90)
@@ -1302,7 +1365,10 @@ def cmd_diag(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     send_and_auto_delete(chat_id, build_diag_text(), 60)
@@ -1316,7 +1382,10 @@ def cmd_errors(msg):
         pass
     schedule_command_delete(msg)
     chat_id = msg.chat.id
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     errors = get_recent_errors(30)
@@ -1370,7 +1439,10 @@ def cmd_journal(msg):
     schedule_command_delete(msg)
     chat_id = msg.chat.id
     bot_journal("command_journal", chat_id, getattr(msg, "text", ""))
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
     send_journal_file_to_owner(chat_id, 3000)
@@ -1402,7 +1474,10 @@ def cmd_sqlite_dump(msg):
     stop_dozvon_for_target(chat_id)
     if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
         return
-    if not is_owner_chat(chat_id):
+    if "tenant_require_platform_owner" in globals():
+        if not tenant_require_platform_owner(msg):
+            return
+    elif not is_owner_chat(chat_id if "chat_id" in locals() else msg.chat.id):
         send_and_auto_delete(chat_id, "Эта команда только для владельца.", HELPER_DELETE_DELAY)
         return
 
@@ -1419,4 +1494,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v145_memory_guard_streaming_forensics
+# v148_multitenant_spaces

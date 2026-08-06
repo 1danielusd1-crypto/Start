@@ -1,4 +1,4 @@
-# v147_1_startup_hotfix
+# v148_multitenant_spaces
 import os
 import io
 import json
@@ -843,7 +843,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v147_1_startup_hotfix"
+VERSION = "bot_v148_multitenant_spaces"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -884,7 +884,7 @@ CSV_META_FILE = "csv_meta.json"
 
 # Стабильный логический формат полного бэкапа между версиями бота.
 UNIVERSAL_BACKUP_KIND = "telegram_finance_bot_universal"
-UNIVERSAL_BACKUP_SCHEMA_VERSION = 10
+UNIVERSAL_BACKUP_SCHEMA_VERSION = 11
 
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz / MEGAcmd backup + autorestore
@@ -896,7 +896,7 @@ MEGA_ENABLED = _env_bool("MEGA_ENABLED", "0")
 MEGA_AUTORESTORE = _env_bool("MEGA_AUTORESTORE", "1")
 MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
-MEGA_BACKUP_DIR = os.getenv("MEGA_BACKUP_DIR", "/TelegramBotBackupsStart").strip() or "/TelegramBotBackupsStart"
+MEGA_BACKUP_DIR = os.getenv("MEGA_BACKUP_DIR", "/TelegramBotBackups").strip() or "/TelegramBotBackups"
 try:
     MEGA_TIMEOUT = int(os.getenv("MEGA_TIMEOUT", "120"))
 except Exception:
@@ -1934,6 +1934,7 @@ def _modern_behavior_profile(title: str, description: str) -> dict:
     return cfg
 
 _MODERN_BEHAVIOR_PROFILES = {
+    "v148_current": _modern_behavior_profile("v148 Пространства / изоляция", "Многоконтурная изоляция чатов, пользователей, настроек, напоминаний, финансов и пересылок с владельцем платформы и владельцами пространств."),
     "v131_current": _modern_behavior_profile("v131 Modular stability / instant 💰Перес", "Модульный контроль версий, мгновенный слеш 💰Перес для новых текстовых фин-копий, safe supergroup migration witness и защита длинных окон статей."),
     "v130_current": _modern_behavior_profile("v130 Modular split / v129 behavior", "Физически разделён на модули без изменения бизнес-логики v129; Google existing Sheet / Notes / stability сохранены."),
     "v129_current": _modern_behavior_profile("v129 Google existing Sheet / Notes / stability", "Google Sheets экспорт пишет в заранее расшаренную таблицу владельца, создавая отдельную вкладку с native Notes; Ф40 защищён от слишком длинных сообщений."),
@@ -1971,7 +1972,7 @@ _MODERN_BEHAVIOR_PROFILES = {
 }
 # Новые версии показываем первыми, затем исторические v97..v81.
 BOT_BEHAVIOR_PROFILES = {**_MODERN_BEHAVIOR_PROFILES, **BOT_BEHAVIOR_PROFILES}
-DEFAULT_BOT_BEHAVIOR_PROFILE = "v131_current"
+DEFAULT_BOT_BEHAVIOR_PROFILE = "v148_current"
 
 
 def active_bot_behavior_profile() -> str:
@@ -2538,7 +2539,7 @@ def _atomic_json_dump(path: str, payload) -> None:
 
 
 def _journal_durable_remote_dir() -> str:
-    base = str(globals().get("MEGA_BACKUP_DIR") or "/TelegramBotBackupsStart").rstrip("/")
+    base = str(globals().get("MEGA_BACKUP_DIR") or "/TelegramBotBackups").rstrip("/")
     return f"{base}/runtime/journal"
 
 
@@ -7712,4 +7713,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v147_1_startup_hotfix
+# v148_multitenant_spaces

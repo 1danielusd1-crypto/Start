@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v147_diagnostic_hardening
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -135,10 +135,14 @@ def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_ma
             payload = diag_prepare(payload) or payload
     except Exception:
         pass
+    force_immediate = str(purpose or "") == "back_main_instant"
+    if force_immediate:
+        # Back-navigation must return a real result before the active-window id is changed.
+        cancel_fast_ui_edit(chat_id, message_id)
     now_ts = time.time()
     with _ui_edit_lock:
         last_ts = float(_ui_edit_last_ts.get(key, 0) or 0)
-        wait = max(0.0, effective_ui_edit_interval() - (now_ts - last_ts))
+        wait = 0.0 if force_immediate else max(0.0, effective_ui_edit_interval() - (now_ts - last_ts))
         if wait > 0:
             replaced_payload = _ui_edit_pending.get(key)
             _ui_edit_pending[key] = payload
@@ -1222,7 +1226,7 @@ def build_info_keyboard(chat_id: int):
             IB("⚙️ Процессы", callback_data="process_center"),
         )
         kb.row(
-            IB(safety_profile_label(), callback_data="safety_profile_open"),
+            IB(safety_profile_label(), callback_data="safety_profile_toggle"),
             IB("🧯 Проблемные задачи", callback_data="problem_tasks"),
         )
         kb.row(IB("🔗 Целостность финансов", callback_data="integrity_status"))
@@ -2679,4 +2683,4 @@ def build_integrity_keyboard(chat_id: int):
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
 
-# v147_multitenant_audit_restore
+# v147_diagnostic_hardening

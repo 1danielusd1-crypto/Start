@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v148_multitenant_spaces
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -18,6 +18,30 @@ def _mega_required_commands():
 
 def mega_missing_commands():
     return [cmd for cmd in _mega_required_commands() if shutil.which(cmd) is None]
+
+
+def _mega_memory_safe_args(cmd: str, args) -> list[str]:
+    """Return diagnostic-only MEGAcmd arguments with credentials removed."""
+    values = list(args or [])[:3]
+    if str(cmd or "").lower() == "mega-login":
+        return ["<redacted-email>", "<redacted-secret>"][:len(values)]
+    protected = {
+        str(globals().get("MEGA_EMAIL") or ""),
+        str(globals().get("MEGA_PASSWORD") or ""),
+        str(os.getenv("BOT_TOKEN") or ""),
+        str(os.getenv("TELEGRAM_BOT_TOKEN") or ""),
+    }
+    protected.discard("")
+    out = []
+    for index, value in enumerate(values):
+        text = str(value)
+        if text in protected:
+            out.append("<redacted>")
+        elif index == 0:
+            out.append(os.path.basename(text)[:120])
+        else:
+            out.append(text[:80])
+    return out
 
 
 def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = True):
@@ -41,7 +65,7 @@ def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = Tru
                 except subprocess.TimeoutExpired:
                     raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
         if callable(mem_ctx):
-            safe_args = (["***", "***"] if str(cmd) == "mega-login" else [_redact_secret_value(os.path.basename(str(a)) if i == 0 else str(a)[:80]) for i, a in enumerate(args[:3])])
+            safe_args = _mega_memory_safe_args(cmd, args)
             with mem_ctx(f"mega:{cmd}", {"args": safe_args}, heavy=cmd in {"mega-find", "mega-get", "mega-put"}, quiet=True):
                 res = _run_command()
         else:
@@ -560,6 +584,20 @@ def _durable_sanitize_inserted_text_no_network(text: str) -> str:
     return re.sub(r"[ \t]+", " ", value).strip()
 
 
+def _durable_direct_insert_value(clean: str, token_match) -> str:
+    """Remove an inline bot prefix before deleting a service token.
+
+    Telegram can send ``@botname (EDITREM|...) text``.  The live handler knows the
+    username, while the receipt-time verifier must not call Telegram.  Stripping a prefix
+    only when it is the entire segment before the token keeps ordinary @mentions intact.
+    """
+    prefix = str(clean or "")[:token_match.start()]
+    suffix = str(clean or "")[token_match.end():]
+    if re.fullmatch(r"\s*@[A-Za-z0-9_]{3,}\s*", prefix or ""):
+        prefix = ""
+    return _durable_sanitize_inserted_text_no_network((prefix + " " + suffix).strip())
+
+
 def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, source_msg_id: int, text: str) -> dict:
     """Recognize deterministic edit/input routes before ordinary finance classification.
 
@@ -594,7 +632,7 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
             if m:
                 parts = m.group(1).split("|", 4)
                 target_chat_id = int(parts[1]); rid = int(parts[2])
-                value_text = _durable_sanitize_inserted_text_no_network((clean[:m.start()] + " " + clean[m.end():]).strip())
+                value_text = _durable_direct_insert_value(clean, m)
             else:
                 tail = clean[clean.find(token_kind + "|"):]
                 parts = tail.split("|", 4)
@@ -629,7 +667,7 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
             if m:
                 parts = m.group(1).split("|", 3)
                 target_chat_id = int(parts[1]); record_id = int(parts[2])
-                new_text = _durable_sanitize_inserted_text_no_network((clean[:m.start()] + " " + clean[m.end():]).strip())
+                new_text = _durable_direct_insert_value(clean, m)
                 if new_text:
                     result["secret_edits"].append(_durable_secret_edit_witness(target_chat_id, record_id, new_text))
             return result
@@ -647,7 +685,7 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
             if not m:
                 return result
             reminder_id = int(m.group(2))
-            value_text = _durable_sanitize_inserted_text_no_network((clean[:m.start()] + " " + clean[m.end():]).strip())
+            value_text = _durable_direct_insert_value(clean, m)
             if reminder_kind == "EDITREMINT":
                 try:
                     minutes = _reminder_parse_custom_interval(value_text) if "_reminder_parse_custom_interval" in globals() else None
@@ -980,11 +1018,21 @@ def _durable_normalize_expected_for_route(payload: dict, expected: dict | None) 
                 adjusted["source_secret"] = False
                 adjusted["forward_targets"] = []
                 adjusted["source_consumed_by_edit_route"] = True
-            for field in ("record_edits", "secret_edits", "secret_copy_edits", "reminder_edits"):
+            witness_keys = {
+                "record_edits": ("chat_id", "rid", "kind"),
+                "secret_edits": ("chat_id", "record_id"),
+                "secret_copy_edits": ("chat_id", "copied_message_id", "source_chat_id", "source_msg_id"),
+                "reminder_edits": ("reminder_id", "kind"),
+            }
+            for field, key_fields in witness_keys.items():
                 rows = list(adjusted.get(field, []) or [])
                 for row in edit_meta.get(field, []) or []:
-                    if row not in rows:
-                        rows.append(_delta_json_clone(row))
+                    row_key = tuple(str((row or {}).get(key)) for key in key_fields)
+                    rows = [
+                        old_row for old_row in rows
+                        if tuple(str((old_row or {}).get(key)) for key in key_fields) != row_key
+                    ]
+                    rows.append(_delta_json_clone(row))
                 adjusted[field] = rows
     except Exception:
         pass
@@ -1246,6 +1294,8 @@ def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
                 ok = str(cfg.get("text") or "").strip() == str(witness.get("text") or "").strip()
             elif ok and str(witness.get("kind") or "") == "interval":
                 ok = int(cfg.get("interval_minutes") or 0) == int(witness.get("interval_minutes") or 0)
+            if not ok:
+                ok = _durable_reminder_receipt_exists(payload, witness)
             if not ok:
                 report["complete"] = False
                 report["missing"].append(f"reminder_edit:{reminder_id}:{witness.get('kind','value')}")
@@ -1698,6 +1748,33 @@ def _durable_note_secret_edit_witness(witness: dict):
         pass
 
 
+def _durable_reminder_witness_hash(witness: dict) -> str:
+    payload = {
+        "reminder_id": int((witness or {}).get("reminder_id") or 0),
+        "kind": str((witness or {}).get("kind") or ""),
+        "text": str((witness or {}).get("text") or "").strip(),
+        "interval_minutes": int((witness or {}).get("interval_minutes") or 0),
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+
+
+def _durable_reminder_receipt_exists(payload: dict, witness: dict) -> bool:
+    try:
+        update_id = str((payload or {}).get("update_id"))
+        reminder_id = int((witness or {}).get("reminder_id"))
+        kind = str((witness or {}).get("kind") or "")
+        witness_hash = _durable_reminder_witness_hash(witness)
+        for row in list((data or {}).get("_durable_reminder_edit_receipts", []) or []):
+            if (str((row or {}).get("update_id")) == update_id
+                    and int((row or {}).get("reminder_id") or 0) == reminder_id
+                    and str((row or {}).get("kind") or "") == kind
+                    and str((row or {}).get("witness_hash") or "") == witness_hash):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _durable_note_reminder_edit_witness(witness: dict):
     try:
         ctx = getattr(_TELEGRAM_UPDATE_CONTEXT, "value", None)
@@ -1706,7 +1783,28 @@ def _durable_note_reminder_edit_witness(witness: dict):
         rows = ctx.setdefault("reminder_edits", [])
         key = (int(witness.get("reminder_id")), str(witness.get("kind") or ""))
         rows[:] = [r for r in rows if (int(r.get("reminder_id")), str(r.get("kind") or "")) != key]
-        rows.append(_delta_json_clone(witness))
+        exact = _delta_json_clone(witness)
+        rows.append(exact)
+
+        update_id = ctx.get("update_id")
+        if update_id is not None:
+            receipts = data.setdefault("_durable_reminder_edit_receipts", [])
+            receipt = {
+                "update_id": str(update_id),
+                "reminder_id": int(witness.get("reminder_id")),
+                "kind": str(witness.get("kind") or ""),
+                "witness_hash": _durable_reminder_witness_hash(witness),
+                "at": now_local().isoformat(timespec="seconds"),
+            }
+            receipts[:] = [
+                row for row in receipts
+                if not (str((row or {}).get("update_id")) == receipt["update_id"]
+                        and int((row or {}).get("reminder_id") or 0) == receipt["reminder_id"]
+                        and str((row or {}).get("kind") or "") == receipt["kind"])
+            ]
+            receipts.append(receipt)
+            if len(receipts) > 300:
+                del receipts[:-300]
     except Exception:
         pass
 
@@ -7592,13 +7690,13 @@ def save_chat_json(chat_id: int):
                 for r in sorted(daily.get(dk, []) or [], key=record_sort_key):
                     rows.append((fmt_date_table(dk), fmt_csv_amount(r.get("amount")), r.get("note", "")))
             write_csv_rows_with_day_gaps(w, rows, 3)
-        if backup_excel_all_enabled():
+        if backup_excel_all_enabled(chat_id):
             save_chat_xlsx(chat_id, chat_path_xlsx, store)
         meta = {
             "last_saved": now_local().isoformat(timespec="seconds"),
             "date_format": "DD.MM.YY",
             "record_count": sum(len(v) for v in store.get("daily_records", {}).values()),
-            "excel_enabled": backup_excel_all_enabled(),
+            "excel_enabled": backup_excel_all_enabled(chat_id),
         }
         _save_json(chat_path_meta, meta)
         log_info(f"Per-chat files saved for chat {get_chat_display_name(chat_id)}")
@@ -8744,4 +8842,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v147_multitenant_audit_restore
+# v148_multitenant_spaces

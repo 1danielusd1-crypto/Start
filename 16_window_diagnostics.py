@@ -1,4 +1,4 @@
-# v145_memory_guard_streaming_forensics
+# v147_diagnostic_hardening
 # ─────────────────────────────────────────────────────────────
 # v144: полная трассировка жизненного цикла Telegram-окон.
 # Записывает только метаданные, хеши и короткий заголовок — полный текст окна,
@@ -364,6 +364,13 @@ def _window_diag_edit_wrapper(method_name: str, original):
                     _window_diag_state_set(chat_id, message_id, requested, method_name, purpose)
                 elif "message to edit not found" in low or "message can't be edited" in low:
                     action, level = "window_edit_target_missing", "WARN"
+                    _window_diag_state_set(chat_id, message_id, before or requested, method_name, purpose, deleted=True)
+                    try:
+                        unregister = globals().get("unregister_open_window")
+                        if callable(unregister):
+                            unregister(int(chat_id), int(message_id))
+                    except Exception:
+                        pass
                 else:
                     action, level = "window_edit_failed", "ERROR"
                 _window_diag_emit(action, chat_id, message_id, {
@@ -447,15 +454,39 @@ def _window_diag_delete_wrapper(original):
             result = original(*args, **kwargs)
         except Exception as exc:
             if candidate:
-                _window_diag_emit("window_delete_failed", chat_id, message_id, {
-                    "marker": before.get("marker"), "error": str(exc)[:360],
-                }, "WARN")
+                low = str(exc or "").lower()
+                already_gone = any(token in low for token in ("message to delete not found", "message_id_invalid", "message not found"))
+                unavailable = "can't be deleted for everyone" in low or "message can't be deleted" in low
+                if already_gone or unavailable:
+                    deleted = _window_diag_state_set(chat_id, message_id, before, "delete_message", "", deleted=True)
+                    _window_diag_emit(
+                        "window_delete_already_gone" if already_gone else "window_delete_unavailable",
+                        chat_id, message_id,
+                        {"marker": before.get("marker"), "error": str(exc)[:360], "to_seq": deleted.get("seq")},
+                        "INFO",
+                    )
+                    try:
+                        unregister = globals().get("unregister_open_window")
+                        if callable(unregister):
+                            unregister(int(chat_id), int(message_id))
+                    except Exception:
+                        pass
+                else:
+                    _window_diag_emit("window_delete_failed", chat_id, message_id, {
+                        "marker": before.get("marker"), "error": str(exc)[:360],
+                    }, "WARN")
             raise
         if candidate:
             deleted = _window_diag_state_set(chat_id, message_id, before, "delete_message", "", deleted=True)
             _window_diag_emit("window_deleted", chat_id, message_id, {
                 "marker": before.get("marker"), "hash": before.get("text_hash"), "to_seq": deleted.get("seq"),
             }, "INFO")
+            try:
+                unregister = globals().get("unregister_open_window")
+                if callable(unregister):
+                    unregister(int(chat_id), int(message_id))
+            except Exception:
+                pass
         return result
     return _wrapped
 
@@ -625,4 +656,4 @@ def window_diagnostic_stats() -> dict:
 
 
 _install_window_transport_diagnostics()
-# v145_memory_guard_streaming_forensics
+# v147_diagnostic_hardening

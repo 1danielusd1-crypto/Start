@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v148_multitenant_spaces
 
 
 @bot.message_handler(
@@ -946,7 +946,7 @@ def send_backup_to_channel(chat_id: int, ensure_files: bool = True):
         xlsx_path = chat_xlsx_file(chat_id)
         # В backup-канал отправляем только JSON и Excel. CSV убран по требованию.
         send_backup_to_channel_for_file(json_path, f"json_{chat_id}", chat_title)
-        if backup_excel_all_enabled() and os.path.exists(xlsx_path):
+        if backup_excel_all_enabled(chat_id) and os.path.exists(xlsx_path):
             send_backup_to_channel_for_file(xlsx_path, f"xlsx_{chat_id}", chat_title)
     except Exception as e:
         log_error(f"send_backup_to_channel({chat_id}): {e}")
@@ -958,4 +958,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v141_operation_ledger_windows_expense_reminders_safety
+# v148_multitenant_spaces

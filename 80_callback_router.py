@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v148_multitenant_spaces
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -113,6 +113,21 @@ def on_callback(call):
                 except Exception:
                     pass
                 return
+
+        try:
+            update_chat_info_from_message(call.message)
+        except Exception:
+            pass
+        try:
+            if "tenant_handle_callback" in globals() and tenant_handle_callback(call, data_str):
+                return
+        except Exception as tenant_exc:
+            log_error(f"tenant callback {data_str}: {tenant_exc}")
+            try:
+                bot.answer_callback_query(call.id, "Не удалось открыть пространство.", show_alert=True)
+            except Exception:
+                pass
+            return
 
         try:
             # Любая кнопка в любом окне секретного режима означает, что пользователь
@@ -2039,7 +2054,7 @@ def on_callback(call):
                 safe_edit(
                     bot, call,
                     f"👁 {html.escape(get_chat_display_name(target_chat_id))}\n" + month_html,
-                    reply_markup=getattr(call.message, "reply_markup", None),
+                    reply_markup=build_fin_window_usd_month_keyboard(target_chat_id, view_day, owner_day_key),
                     parse_mode="HTML",
                 )
                 return
@@ -2570,7 +2585,7 @@ def on_callback(call):
                     pass
                 return
             month_html, _ = render_usd_month_window(chat_id, day_key)
-            safe_edit(bot, call, month_html, reply_markup=getattr(call.message, "reply_markup", None), parse_mode="HTML")
+            safe_edit(bot, call, month_html, reply_markup=build_usd_month_keyboard(day_key), parse_mode="HTML")
             register_open_window(
                 chat_id, call.message.message_id, "local_fin_view", code="usd_month", day_key=day_key,
                 params={"view_action": "usd_month", "month_day": day_key},
@@ -2643,12 +2658,15 @@ def on_callback(call):
                 lines.append(f"• Этот чат ({title}): {format_chat_amount(chat_id, chat_bal, True)}")
 
             all_chats = data.get("chats", {})
+            allowed_chat_ids = set(tenant_chat_ids(tenant_id_for_chat(chat_id, create=False))) if "tenant_chat_ids" in globals() else {int(x) for x in all_chats.keys()}
             total_all = 0
             other_lines = []
             for cid, st in all_chats.items():
                 try:
                     cid_int = int(cid)
                 except Exception:
+                    continue
+                if cid_int not in allowed_chat_ids:
                     continue
                 bal = usd_balance_for_chat(cid_int) if view_usd else st.get("balance", 0)
                 total_all += bal
@@ -3138,4 +3156,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v147_multitenant_audit_restore
+# v148_multitenant_spaces

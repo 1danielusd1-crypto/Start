@@ -1,4 +1,4 @@
-# v145_memory_guard_streaming_forensics
+# v148_multitenant_spaces
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -498,6 +498,13 @@ def main():
     except Exception as e:
         log_error(f"v88 defaults migration: {e}")
     try:
+        if "tenant_v148_bootstrap" in globals():
+            tenant_report = tenant_v148_bootstrap()
+            runtime_event("tenant_v148_bootstrap", json.dumps(tenant_report, ensure_ascii=False))
+    except Exception as e:
+        log_error(f"tenant_v148_bootstrap: {e}")
+        runtime_event("tenant_v148_bootstrap_error", str(e), "ERROR")
+    try:
         marker_report = audit_window_marker_registry()
         log_info(f"Маркеры окон проверены: {marker_report}")
     except Exception as e:
@@ -533,6 +540,13 @@ def main():
     if not RESTORE_GUARD_ACTIVE:
         save_data(data)
         data["forward_rules"] = load_forward_rules()
+        try:
+            if "tenant_v148_enforce_forward_isolation" in globals():
+                removed = tenant_v148_enforce_forward_isolation()
+                if removed:
+                    runtime_event("tenant_cross_links_removed_after_load", f"count={removed}", "WARN")
+        except Exception as e:
+            log_error(f"tenant forward isolation after load: {e}")
     else:
         # Аварийный режим: не создаём/не сохраняем новую пустую SQLite и не запускаем startup-backup.
         data.setdefault("forward_rules", {})
@@ -659,4 +673,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v145_memory_guard_streaming_forensics
+# v148_multitenant_spaces

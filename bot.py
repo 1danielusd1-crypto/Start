@@ -1,11 +1,11 @@
-# v147_1_startup_hotfix
+# v148_multitenant_spaces
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v147_1_startup_hotfix"
-MODULE_FILE_VERSION = "v147_1_startup_hotfix"
+MODULAR_VERSION = "bot_v148_multitenant_spaces"
+MODULE_FILE_VERSION = "v148_multitenant_spaces"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -25,8 +25,8 @@ MODULAR_SOURCE_PARTS = [
     '80_callback_router.py',
     '90_commands_exports.py',
     '91_finance_records_handlers.py',
-    '92_v146_stability.py',
-    '93_v147_extensions.py',
+    '92_v147_diagnostic_hardening.py',
+    '93_v148_multitenant_spaces.py',
     '99_web_runtime.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
@@ -127,4 +127,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v147_1_startup_hotfix
+# v148_multitenant_spaces
