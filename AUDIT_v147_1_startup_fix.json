@@ -1,0 +1,16 @@
+{
+  "version": "bot_v147_1_startup_hotfix",
+  "checks": {
+    "py_compile": "passed",
+    "undefined_global_refs_93": [
+      "__file__"
+    ],
+    "eager_ensure_default_tenant_call": false,
+    "runtime_version": "bot_v147_1_startup_hotfix",
+    "manifest_hashes_match": true,
+    "tenant_startup_unit": "passed",
+    "zip_integrity": "passed"
+  },
+  "root_cause": "93_v147_extensions.py called undefined list_chat_ids() during eager tenant initialization",
+  "fix": "compatibility wrapper + post-restore initialization in runtime_mark_ready"
+}

@@ -1,4 +1,4 @@
-# v147_multitenant_audit_restore
+# v147_1_startup_hotfix
 # v147 consolidated multi-tenant, permissions, audit, export/restore and UI extensions.
 import gzip
 import io
@@ -31,6 +31,34 @@ def platform_owner_id():
         return int(OWNER_ID or 0)
     except Exception:
         return 0
+
+
+def list_chat_ids():
+    """Совместимый список известных чатов для v147.1.
+
+    В v146 публичная функция называется collect_all_known_chat_ids();
+    прежнего list_chat_ids() в ядре нет. Обёртка нужна для контурного
+    реестра и меню прав чатов.
+    """
+    try:
+        return list(collect_all_known_chat_ids(include_owner=True) or [])
+    except TypeError:
+        return list(collect_all_known_chat_ids() or [])
+    except Exception as exc:
+        try:
+            log_error(f"v147 list_chat_ids: {exc}")
+        except Exception:
+            pass
+        ids = set()
+        try:
+            for raw in (data.get("chats", {}) or {}).keys():
+                ids.add(int(raw))
+        except Exception:
+            pass
+        owner = platform_owner_id()
+        if owner:
+            ids.add(owner)
+        return sorted(ids)
 
 
 def ensure_default_tenant():
@@ -527,7 +555,24 @@ def _xlsx_simple_rows_with_balances(rows, opening_balance):
     return out
 
 
-ensure_default_tenant()
+
+# Initialize/migrate the default tenant only after SQLite + MEGA restore.
+_V147_ORIG_RUNTIME_MARK_READY = globals().get("runtime_mark_ready")
+def runtime_mark_ready(detail: str = ""):
+    result = _V147_ORIG_RUNTIME_MARK_READY(detail) if callable(_V147_ORIG_RUNTIME_MARK_READY) else None
+    try:
+        ensure_default_tenant()
+        save_data(data, root_only=True)
+        try:
+            schedule_delta_backup(platform_owner_id(), delay=0.2, reason="v147_tenant_registry_ready")
+        except Exception:
+            pass
+    except Exception as exc:
+        try:
+            log_error(f"v147 default tenant init after restore: {exc}")
+        except Exception:
+            pass
+    return result
 
 
 # f206: keep the mode toggle inside the menu and add chat rights.
@@ -671,4 +716,4 @@ def build_exact_category_stats_xlsx_rows(target_chat_id, start_key, start_rid, e
             log_error(f"USD table append {target_chat_id}: {exc}")
     return rows
 
-# v147_multitenant_audit_restore
+# v147_1_startup_hotfix

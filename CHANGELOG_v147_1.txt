@@ -1,0 +1,11 @@
+# bot_v147_1_startup_hotfix
+
+Исправления запуска после ошибки Render 2026-08-06:
+
+1. Добавлена совместимая функция `list_chat_ids()`, использующая существующую `collect_all_known_chat_ids()`.
+2. Удалён преждевременный вызов `ensure_default_tenant()` во время импорта модулей.
+3. Инициализация и миграция основного tenant перенесены в `runtime_mark_ready()`, то есть после восстановления SQLite + MEGA.
+4. Реальная runtime-константа `VERSION` обновлена с v146 на `bot_v147_1_startup_hotfix`.
+5. Пересобраны modular manifest, FULL-файл и SHA-256.
+
+Причина падения: расширение v147 ссылалось на несуществующую функцию `list_chat_ids`; в v146 фактическая функция называется `collect_all_known_chat_ids`.

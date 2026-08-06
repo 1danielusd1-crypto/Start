@@ -1,4 +1,4 @@
-# v145_memory_guard_streaming_forensics
+# v147_multitenant_audit_restore
 # ─────────────────────────────────────────────────────────────
 # v145: adaptive RAM protection and memory forensics for Render 512 MB.
 # Business state is never discarded. Only caches, diagnostics and allocator
@@ -67,6 +67,24 @@ def _memory_read_number(path: str):
         return value
     except Exception:
         return None
+
+
+# v147 centralized secret redaction
+_SENSITIVE_KEY_RE = re.compile(r"(?i)(pass(word)?|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|private[_-]?key|credential|refresh[_-]?token|access[_-]?token)")
+def _secret_env_values():
+    vals=[]
+    for k,v in os.environ.items():
+        if v and (_SENSITIVE_KEY_RE.search(str(k)) or str(k).upper() in {"MEGA_EMAIL","MEGA_PASSWORD","BOT_TOKEN","GOOGLE_SERVICE_ACCOUNT_JSON","WEBHOOK_SECRET"}) and len(str(v))>=4: vals.append(str(v))
+    return sorted(set(vals),key=len,reverse=True)
+def _redact_secret_value(value):
+    if isinstance(value,dict): return {str(k):("***" if _SENSITIVE_KEY_RE.search(str(k)) else _redact_secret_value(v)) for k,v in value.items()}
+    if isinstance(value,(list,tuple,set)): return [_redact_secret_value(v) for v in value]
+    if value is None or isinstance(value,(int,float,bool)): return value
+    text=str(value)
+    for secret in _secret_env_values(): text=text.replace(secret,"***")
+    text=re.sub(r"(?i)(authorization\s*[:=]\s*)([^\s,;]+)",r"\1***",text)
+    text=re.sub(r"(?i)(password|passwd|pwd|token|secret|api[_-]?key)(\s*[:=]\s*)([^\s,;]+)",r"\1\2***",text)
+    return text
 
 
 def _memory_bytes_mb(value):
@@ -361,7 +379,7 @@ def memory_operation(kind: str, meta: dict | None = None, heavy: bool = False, q
     with _MEMORY_LOCK:
         _MEMORY_SEQ += 1
         token = f"mem-{_MEMORY_SEQ}"
-        _MEMORY_ACTIVE[token] = {"kind": kind, "started": started, "thread": threading.current_thread().name, "meta": dict(meta or {})}
+        _MEMORY_ACTIVE[token] = {"kind": kind, "started": started, "thread": threading.current_thread().name, "meta": _redact_secret_value(dict(meta or {}))}
     try:
         yield token
     finally:
@@ -389,7 +407,7 @@ def memory_operation(kind: str, meta: dict | None = None, heavy: bool = False, q
             "before": before,
             "after_before_trim": after_before_trim,
             "after": after,
-            "meta": dict(meta or {}),
+            "meta": _redact_secret_value(dict(meta or {})),
         }
         should_emit = heavy or elapsed >= 3.0 or (delta is not None and abs(delta) >= 10.0) or level != "normal"
         if quiet:
@@ -648,4 +666,4 @@ def start_memory_runtime_schedulers():
     DELAYED_SCHEDULER.schedule("memory-guard", 5.0, memory_guard_tick)
     return True
 
-# v145_memory_guard_streaming_forensics
+# v147_multitenant_audit_restore
