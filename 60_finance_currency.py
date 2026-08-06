@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v149_tenant_google_merged_reminders
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -1452,8 +1452,11 @@ def _period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, fil
         kb.row(IB("📥 Скачать в чат", callback_data=export_callback(
             f"exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:chat:{day_key}:{owner_day_key}"
         )))
-        kb.row(IB("☁️ Залить на Google Excel", callback_data=export_callback(
+        kb.row(IB("☁️ Залить в Google Sheets", callback_data=export_callback(
             f"exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:google:{day_key}:{owner_day_key}"
+        )))
+        kb.row(IB("📁 Залить файл в Google Drive", callback_data=export_callback(
+            f"exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:drive:{day_key}:{owner_day_key}"
         )))
     else:
         kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1466,6 +1469,9 @@ def _period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, fil
             kb.row(IB(label, callback_data=export_callback(
                 f"exp_send_period_style:{scope}:{int(target_chat_id)}:{mode}:{file_type}:{style}:{day_key}:{owner_day_key}"
             )))
+        kb.row(IB("📁 Залить Excel в Google Drive", callback_data=export_callback(
+            f"exp_new_period_send:{scope}:{int(target_chat_id)}:{mode}:{file_type}:drive:{day_key}:{owner_day_key}"
+        )))
     if scope == "fv":
         back_cb = f"fv:{int(target_chat_id)}:{day_key}:csv_menu:{owner_day_key}"
     else:
@@ -1492,8 +1498,11 @@ def _exact_excel_style_keyboard(start_key: str, start_rid: int, end_key: str, en
         kb.row(IB("📥 Скачать в чат", callback_data=export_callback(
             f"exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:chat:{return_day_key}"
         )))
-        kb.row(IB("☁️ Залить на Google Excel", callback_data=export_callback(
+        kb.row(IB("☁️ Залить в Google Sheets", callback_data=export_callback(
             f"exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:google:{return_day_key}"
+        )))
+        kb.row(IB("📁 Залить файл в Google Drive", callback_data=export_callback(
+            f"exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:drive:{return_day_key}"
         )))
     else:
         kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1506,6 +1515,9 @@ def _exact_excel_style_keyboard(start_key: str, start_rid: int, end_key: str, en
             kb.row(IB(label, callback_data=export_callback(
                 f"exp_send_exact_style:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:{style}:{return_day_key}"
             )))
+        kb.row(IB("📁 Залить Excel в Google Drive", callback_data=export_callback(
+            f"exp_new_exact_send:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{file_type}:drive:{return_day_key}"
+        )))
     kb.row(IB("🔙 Назад к форматам", callback_data=export_callback(
         f"exp_pick_end_record:{start_key}:{int(start_rid)}:{end_key}:{int(end_rid)}:{return_day_key}"
     )))
@@ -1677,6 +1689,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                     title, xlsx_rows, layout=("category" if category_layout is True else "category_compact"),
                     annotations_override=(annotations_override if annotations_enabled else {}),
                     include_annotations=annotations_enabled,
+                    target_chat_id=target_chat_id,
                 )
                 bot.send_message(recipient_chat_id, f"📊 Google Таблица — статьи, точный период\n\n{sheet_url}", disable_web_page_preview=True)
                 return True
@@ -1700,6 +1713,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                     title, xlsx_rows, layout=layout_name,
                     annotations_override=(annotations_override if annotations_enabled else {}),
                     include_annotations=annotations_enabled,
+                    target_chat_id=target_chat_id,
                 )
                 bot.send_message(recipient_chat_id, f"📊 Google Таблица — точный период\n\n{sheet_url}", disable_web_page_preview=True)
                 return True
@@ -1744,6 +1758,16 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
             f"▶️ {exact_boundary_text(store, start_key, start_rid, True)}\n"
             f"⏹ {exact_boundary_text(store, end_key, end_rid, False)}"
         )
+        if delivery == "drive":
+            _file_job_progress("загружаю файл в Google Drive", force=True)
+            drive_url = tenant_google_upload_export(tmp_name, display_name, target_chat_id)
+            bot.send_message(
+                recipient_chat_id,
+                f"☁️ Google Drive — точный период\n\n{drive_url}",
+                disable_web_page_preview=True,
+            )
+            return True
+
         fobj = file_bytesio_named(tmp_name, display_name)
         if fobj:
             _file_job_progress("отправляю файл в Telegram", force=True)
@@ -2076,4 +2100,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v141_operation_ledger_windows_expense_reminders_safety
+# v149_tenant_google_merged_reminders

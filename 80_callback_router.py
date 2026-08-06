@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v149_tenant_google_merged_reminders
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -85,6 +85,13 @@ def on_callback(call):
             except Exception:
                 pass
             return
+        # v149 extensions are loaded after this router, but resolved dynamically at click time.
+        try:
+            _v149_callback = globals().get("v149_extension_callback")
+            if callable(_v149_callback) and _v149_callback(call, data_str):
+                return
+        except Exception as e:
+            log_error(f"v149 extension callback: {e}")
         try:
             if raw_data_str != data_str:
                 bot_journal("button_pressed", chat_id, f"{raw_data_str} -> {str(data_str)[:500]}")
@@ -3156,4 +3163,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v148_multitenant_spaces
+# v149_tenant_google_merged_reminders

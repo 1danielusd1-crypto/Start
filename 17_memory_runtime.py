@@ -1,4 +1,4 @@
-# v147_diagnostic_hardening
+# v149_tenant_google_merged_reminders
 # ─────────────────────────────────────────────────────────────
 # v145: adaptive RAM protection and memory forensics for Render 512 MB.
 # Business state is never discarded. Only caches, diagnostics and allocator
@@ -370,6 +370,8 @@ def _memory_redact_meta(kind: str, value, key: str = ""):
         str(os.getenv("BOT_TOKEN") or ""),
         str(os.getenv("TELEGRAM_BOT_TOKEN") or ""),
         str(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""),
+        str(os.getenv("TENANT_GOOGLE_MASTER_KEY") or ""),
+        str(os.getenv("GOOGLE_TENANT_MASTER_KEY") or ""),
     }
     protected.discard("")
     low_kind = str(kind or "").lower()
@@ -677,4 +679,4 @@ def start_memory_runtime_schedulers():
     DELAYED_SCHEDULER.schedule("memory-guard", 5.0, memory_guard_tick)
     return True
 
-# v147_diagnostic_hardening
+# v149_tenant_google_merged_reminders

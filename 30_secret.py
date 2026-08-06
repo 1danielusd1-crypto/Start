@@ -1,4 +1,4 @@
-# v145_memory_guard_streaming_forensics
+# v149_tenant_google_merged_reminders
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
@@ -2177,6 +2177,7 @@ def cmd_toggle_remaining_ost_label(msg):
     and is_total_secret_mode(m.chat.id)
     and m.text.split()[0].split("@")[0].casefold() not in {"/ok", "/start", "/старт", "/secret_bot", "/кнопки", "/buttons", "/knopki", "/маска", "/mask", "/maska", "/windows", "/okna", "/owners", "/additional_owners", "/доп_владельцы", "/tabl_lsx", "/day5", "/fin_day5", "/sutki", "/ost", "/остаток", "/off_on_backup_excel", "/queues", "/queue_status"}
     and not m.text.split()[0].split("@")[0].casefold().startswith("/izm_r")
+    and not m.text.split()[0].split("@")[0].casefold().startswith(("/vyapl", "/google"))
 ))
 def cmd_total_secret_capture(msg):
     forward_secret_message_now(msg)
@@ -2203,4 +2204,4 @@ def cmd_forward_copy_edit(msg):
         delete_message_later(msg.chat.id, msg.message_id, 1)
     except Exception as e:
         log_error(f"cmd_forward_copy_edit: {e}")
-# v145_memory_guard_streaming_forensics
+# v149_tenant_google_merged_reminders

@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v149_tenant_google_merged_reminders
 
 
 @bot.message_handler(
@@ -27,6 +27,14 @@ def on_any_message(msg):
         bot_journal("message_received", chat_id, describe_msg_for_log(msg))
     except Exception:
         pass
+
+    # v149: one-time Google setup inputs must be consumed before finance/forwarding.
+    try:
+        _tenant_google_input = globals().get("tenant_google_handle_message")
+        if callable(_tenant_google_input) and _tenant_google_input(msg):
+            return
+    except Exception as e:
+        log_error(f"tenant google input handler error: {e}")
 
     if handle_secret_full_edit_reply(msg):
         return
@@ -958,4 +966,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v148_multitenant_spaces
+# v149_tenant_google_merged_reminders

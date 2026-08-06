@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v149_tenant_google_merged_reminders
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -353,7 +353,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
         if mode == "all_real":
             mode = "all"
 
-        if mode == "all" and file_type in {"csv", "xlsx"} and not financial_view_is_usd(get_chat_store(target_chat_id)) and (file_type == "csv" or (excel_style_override == "old" and not custom_options and not force_google)):
+        if delivery == "chat" and mode == "all" and file_type in {"csv", "xlsx"} and not financial_view_is_usd(get_chat_store(target_chat_id)) and (file_type == "csv" or (excel_style_override == "old" and not custom_options and not force_google)):
             save_chat_json(target_chat_id)
             path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
             label = "за всё время"
@@ -398,6 +398,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                     title, xlsx_rows, layout=("category" if category_layout is True else "category_compact"),
                     annotations_override=(annotations_override if annotations_enabled else {}),
                     include_annotations=annotations_enabled,
+                    target_chat_id=target_chat_id,
                 )
                 bot.send_message(
                     recipient_chat_id,
@@ -428,6 +429,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                     title, xlsx_rows, layout=layout_name,
                     annotations_override=(annotations_override if annotations_enabled else {}),
                     include_annotations=annotations_enabled,
+                    target_chat_id=target_chat_id,
                 )
                 bot.send_message(
                     recipient_chat_id,
@@ -468,6 +470,16 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 w = csv.writer(f)
                 w.writerow(["date", "amount", "note"])
                 write_csv_rows_with_day_gaps(w, rows, 3)
+
+        if delivery == "drive":
+            _file_job_progress("загружаю файл в Google Drive", force=True)
+            drive_url = tenant_google_upload_export(tmp_name, display_name, target_chat_id)
+            bot.send_message(
+                recipient_chat_id,
+                f"☁️ Google Drive {label}: {get_chat_display_name(target_chat_id)}\n\n{drive_url}",
+                disable_web_page_preview=True,
+            )
+            return True
 
         _file_job_progress("отправляю файл в Telegram", force=True)
         fobj = file_bytesio_named(tmp_name, display_name)
@@ -820,4 +832,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v141_operation_ledger_windows_expense_reminders_safety
+# v149_tenant_google_merged_reminders
