@@ -1,0 +1,19 @@
+bot_v156_process_status_usd_excel — тесты
+
+Проверено:
+- py_compile всех numbered модулей, bot.py и единого FULL-файла;
+- first/last version marker каждого numbered исходника;
+- modules_manifest SHA-256;
+- strict USD test: загрязнённая копия ARS в usd_records исключается;
+- независимые USD записи остаются;
+- explicit usd_amount смешанной записи остаётся;
+- USD description не использует ARS note fallback;
+- пример «2000 еда 50 USD такси» даёт USD description «такси»;
+- итог тестового USD-набора считается только из USD значений;
+- INFO switch функции визуального процесса присутствует в модуле;
+- v156 restore validator принимает bot_v156 snapshot.
+
+Не выполнялось:
+- реальный Telegram callback;
+- реальный Render deploy;
+- реальные Google/MEGA запросы.
