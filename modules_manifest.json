@@ -1,6 +1,6 @@
 {
-  "version": "bot_v154_excel_usd_isolation_date_marks",
-  "file_marker": "v154_excel_usd_isolation_date_marks",
+  "version": "bot_v156_process_status_usd_excel",
+  "file_marker": "v156_process_status_usd_excel",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -28,7 +28,9 @@
     "101_v151_redo_fixes_5_6_7.py",
     "102_v152_human_journals_chat_rights.py",
     "103_v153_remaining_fixes_11_16.py",
-    "104_v154_excel_usd_isolation_date_marks.py"
+    "104_v154_excel_usd_isolation_date_marks.py",
+    "105_v155_button_navigation_audit.py",
+    "106_v156_process_status_usd_excel.py"
   ],
   "files": {
     "00_core.py": "61b35290e79f471c124ffcf9fa848ff98c64b6fc520832f8ccc8fe073ab3713c",
@@ -57,7 +59,9 @@
     "101_v151_redo_fixes_5_6_7.py": "1a3d5913c182bded426a60f7298fe0b837bdea15ad324572436688772b354131",
     "102_v152_human_journals_chat_rights.py": "c93fbd1cb92b40002919c4c1ff35832a19fdc4c89236b81a65295fb84b5cd9c0",
     "103_v153_remaining_fixes_11_16.py": "a3c93b0f2b721316f3629989401388efd86fad511550b2256f775ca2244b2b1a",
-    "104_v154_excel_usd_isolation_date_marks.py": "2905ae12dcee71677c50de98b3d75a3f5b58116a6846a7b37820cb8e5441e78e"
+    "104_v154_excel_usd_isolation_date_marks.py": "2905ae12dcee71677c50de98b3d75a3f5b58116a6846a7b37820cb8e5441e78e",
+    "105_v155_button_navigation_audit.py": "f9a2e5f1a348bfa85bedc751aff0d5f5780446a0b68657d6b3b7e235e826aa1f",
+    "106_v156_process_status_usd_excel.py": "ca98d76b748e57108c986a564f0e0bcdae0d2ec7ff8d196e26191db7197dee3b"
   },
   "file_markers": {
     "00_core.py": "v153_remaining_fixes_11_16",
@@ -86,6 +90,8 @@
     "101_v151_redo_fixes_5_6_7.py": "v151_redo_fixes_5_6_7",
     "102_v152_human_journals_chat_rights.py": "v152_human_journals_chat_rights",
     "103_v153_remaining_fixes_11_16.py": "v153_remaining_fixes_11_16",
-    "104_v154_excel_usd_isolation_date_marks.py": "v154_excel_usd_isolation_date_marks"
+    "104_v154_excel_usd_isolation_date_marks.py": "v154_excel_usd_isolation_date_marks",
+    "105_v155_button_navigation_audit.py": "v155_button_navigation_audit",
+    "106_v156_process_status_usd_excel.py": "v156_process_status_usd_excel"
   }
 }
