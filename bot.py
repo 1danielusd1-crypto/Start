@@ -1,11 +1,11 @@
-# v153_remaining_fixes_11_16
+# v154_excel_usd_isolation_date_marks
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v153_remaining_fixes_11_16"
-MODULE_FILE_VERSION = "v153_remaining_fixes_11_16"
+MODULAR_VERSION = "bot_v154_excel_usd_isolation_date_marks"
+MODULE_FILE_VERSION = "v154_excel_usd_isolation_date_marks"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -33,6 +33,7 @@ MODULAR_SOURCE_PARTS = [
     '101_v151_redo_fixes_5_6_7.py',
     '102_v152_human_journals_chat_rights.py',
     '103_v153_remaining_fixes_11_16.py',
+    '104_v154_excel_usd_isolation_date_marks.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -132,4 +133,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v153_remaining_fixes_11_16
+# v154_excel_usd_isolation_date_marks

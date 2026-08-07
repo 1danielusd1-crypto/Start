@@ -1,0 +1,16 @@
+v154 test report
+
+PASS: py_compile всех модулей.
+PASS: py_compile единого FULL-файла.
+PASS: manifest SHA-256 всех модулей.
+PASS: version marker first/last line.
+PASS: ARS record with embedded usd_amount is ignored by USD Excel source.
+PASS: independent usd_records remain in USD Excel.
+PASS: USD totals use only USD ledger values.
+PASS: exactly 2 blank rows between ARS and USD.
+PASS: F179 toggle removes/restores USD section.
+PASS: F111 marks an expense date and leaves empty date unmarked.
+PASS: USD table header is Date / Description / Income / Expense.
+PASS: ZIP integrity tests.
+
+Live Telegram/Google/MEGA/Render calls were not executed.

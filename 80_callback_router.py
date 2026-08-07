@@ -1,4 +1,4 @@
-# v149_tenant_google_merged_reminders
+# v154_excel_usd_isolation_date_marks
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -2275,6 +2275,25 @@ def on_callback(call):
                 log_error(f"exp_new_period_toggle: {e}")
             return
 
+        if data_str.startswith("exp_excel_dollar_toggle:"):
+            try:
+                _, scope, target_s, mode, file_type, day_key_s, owner_day_key = data_str.split(":")
+                target_chat_id = chat_id if scope == "d" or int(target_s or 0) == 0 else int(target_s)
+                enabled = toggle_excel_usd_table_enabled(target_chat_id)
+                kind_label = "Excel статьи" if file_type == "xlsxstat" else "Excel"
+                safe_edit(
+                    bot, call,
+                    f"📊 {kind_label}\nПериод: {mode}\n\n" + ("Настройки включаются галочками:" if excel_interface_mode(target_chat_id) == "new" else "Выберите способ получения:"),
+                    reply_markup=_period_excel_style_keyboard(scope, target_chat_id, mode, file_type, day_key_s, owner_day_key),
+                )
+                try:
+                    bot.answer_callback_query(call.id, f"USD в таблице: {'ВКЛ' if enabled else 'ВЫКЛ'}", show_alert=False)
+                except Exception:
+                    pass
+            except Exception as e:
+                log_error(f"exp_excel_dollar_toggle: {e}")
+            return
+
         if data_str.startswith("exp_new_period_send:"):
             try:
                 _, scope, target_s, mode, file_type, delivery, day_key_s, owner_day_key = data_str.split(":")
@@ -2373,7 +2392,7 @@ def on_callback(call):
                     bot,
                     call,
                     f"🎯 Точный CSV / Excel\nВыберите начальную дату: {russian_month_name(m)} {y}",
-                    reply_markup=_export_calendar_start_keyboard(y, m, return_day_key),
+                    reply_markup=_export_calendar_start_keyboard(y, m, return_day_key, chat_id),
                 )
             except Exception as e:
                 log_error(f"exp_pick_start: {e}")
@@ -2413,6 +2432,7 @@ def on_callback(call):
                         start_dt.year,
                         start_dt.month,
                         return_day_key,
+                        chat_id,
                     ),
                 )
             except Exception as e:
@@ -2435,6 +2455,7 @@ def on_callback(call):
                         int(y),
                         int(m),
                         return_day_key,
+                        chat_id,
                     ),
                 )
             except Exception as e:
@@ -3163,4 +3184,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v149_tenant_google_merged_reminders
+# v154_excel_usd_isolation_date_marks

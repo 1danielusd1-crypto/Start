@@ -1,6 +1,6 @@
 {
-  "version": "bot_v153_remaining_fixes_11_16",
-  "file_marker": "v153_remaining_fixes_11_16",
+  "version": "bot_v154_excel_usd_isolation_date_marks",
+  "file_marker": "v154_excel_usd_isolation_date_marks",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -27,7 +27,8 @@
     "100_v150_excel_reserve_chat_lifecycle.py",
     "101_v151_redo_fixes_5_6_7.py",
     "102_v152_human_journals_chat_rights.py",
-    "103_v153_remaining_fixes_11_16.py"
+    "103_v153_remaining_fixes_11_16.py",
+    "104_v154_excel_usd_isolation_date_marks.py"
   ],
   "files": {
     "00_core.py": "61b35290e79f471c124ffcf9fa848ff98c64b6fc520832f8ccc8fe073ab3713c",
@@ -45,7 +46,7 @@
     "62_finance_ui.py": "ab2f3169d6401ee0b995cb47a41a3ea939cead1a8d2cf10b45cee3afc90c8086",
     "63_google_sheets.py": "6d8674876a0a954cf900e7c2fb82e234b159d3fe3d667fe2d94c96cf274df562",
     "70_fast_ui.py": "5765ad7fd07044bfcce4c227edf93421da4f1c03d876c8193859f9b02d96c8e7",
-    "80_callback_router.py": "19ff2a081d0b620e660dba2ca2fce3de77abdb37bcebd64f24598a4c766f250d",
+    "80_callback_router.py": "c5315de88dd9af24469d38bafcc517a9c292cf963b9636e6890b4874f294ffb5",
     "90_commands_exports.py": "2871db58dd41f4e546a4c77b0b6e66fee0edcf1bcd4ad631bab3ce2e74e4a55f",
     "91_finance_records_handlers.py": "12fb73de402445d038faef7720a2533a5c5e68b676342898371e563aa2c92804",
     "92_v147_diagnostic_hardening.py": "66c731b408ba646d8bf8d413ba2410ed61e226395f2a9882dfb8994a3fa8d7aa",
@@ -55,7 +56,8 @@
     "100_v150_excel_reserve_chat_lifecycle.py": "2f6942be3cbfef667d7a08f33fa717f6526d205c6ff667f1fa3bc0bde13b30a9",
     "101_v151_redo_fixes_5_6_7.py": "1a3d5913c182bded426a60f7298fe0b837bdea15ad324572436688772b354131",
     "102_v152_human_journals_chat_rights.py": "c93fbd1cb92b40002919c4c1ff35832a19fdc4c89236b81a65295fb84b5cd9c0",
-    "103_v153_remaining_fixes_11_16.py": "a3c93b0f2b721316f3629989401388efd86fad511550b2256f775ca2244b2b1a"
+    "103_v153_remaining_fixes_11_16.py": "a3c93b0f2b721316f3629989401388efd86fad511550b2256f775ca2244b2b1a",
+    "104_v154_excel_usd_isolation_date_marks.py": "2905ae12dcee71677c50de98b3d75a3f5b58116a6846a7b37820cb8e5441e78e"
   },
   "file_markers": {
     "00_core.py": "v153_remaining_fixes_11_16",
@@ -73,7 +75,7 @@
     "62_finance_ui.py": "v141_operation_ledger_windows_expense_reminders_safety",
     "63_google_sheets.py": "v150_excel_reserve_chat_lifecycle",
     "70_fast_ui.py": "v147_diagnostic_hardening",
-    "80_callback_router.py": "v149_tenant_google_merged_reminders",
+    "80_callback_router.py": "v154_excel_usd_isolation_date_marks",
     "90_commands_exports.py": "v150_excel_reserve_chat_lifecycle",
     "91_finance_records_handlers.py": "v148_multitenant_spaces",
     "92_v147_diagnostic_hardening.py": "v147_diagnostic_hardening",
@@ -83,6 +85,7 @@
     "100_v150_excel_reserve_chat_lifecycle.py": "v150_excel_reserve_chat_lifecycle",
     "101_v151_redo_fixes_5_6_7.py": "v151_redo_fixes_5_6_7",
     "102_v152_human_journals_chat_rights.py": "v152_human_journals_chat_rights",
-    "103_v153_remaining_fixes_11_16.py": "v153_remaining_fixes_11_16"
+    "103_v153_remaining_fixes_11_16.py": "v153_remaining_fixes_11_16",
+    "104_v154_excel_usd_isolation_date_marks.py": "v154_excel_usd_isolation_date_marks"
   }
 }
