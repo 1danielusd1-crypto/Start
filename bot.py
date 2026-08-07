@@ -1,11 +1,11 @@
-# v149_tenant_google_merged_reminders
+# v151_redo_fixes_5_6_7
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v149_tenant_google_merged_reminders"
-MODULE_FILE_VERSION = "v149_tenant_google_merged_reminders"
+MODULAR_VERSION = "bot_v151_redo_fixes_5_6_7"
+MODULE_FILE_VERSION = "v151_redo_fixes_5_6_7"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -29,6 +29,8 @@ MODULAR_SOURCE_PARTS = [
     '93_v148_multitenant_spaces.py',
     '94_v149_tenant_google_merged_reminders.py',
     '99_web_runtime.py',
+    '100_v150_excel_reserve_chat_lifecycle.py',
+    '101_v151_redo_fixes_5_6_7.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -128,4 +130,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v149_tenant_google_merged_reminders
+# v151_redo_fixes_5_6_7

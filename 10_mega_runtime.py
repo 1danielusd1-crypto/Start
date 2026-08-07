@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v150_excel_reserve_chat_lifecycle
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -3071,7 +3071,15 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
     rows.append(["", "Приход за период", {"formula": f"SUM(C{data_start_row}:C{data_end_row})", "value": payload.get("total_income")}, ""])
     expense_row = len(rows) + 1
     rows.append(["", "Расход за период", "", {"formula": f"SUM(D{data_start_row}:D{data_end_row})", "value": payload.get("total_expense")}])
-    rows.append(["", "Остаток на руках", {"formula": f"C3+C{income_row}-D{expense_row}", "value": payload.get("closing_balance")}, ""])
+    _v150_month_closing = float(payload.get("closing_balance") or 0.0)
+    rows.append(["", "Остаток на руках", {"formula": f"C3+C{income_row}-D{expense_row}", "value": _v150_month_closing}, ""])
+    _v150_month_reserve = float(_v150_export_reserve(chat_id)) if "_v150_export_reserve" in globals() else 0.0
+    rows.append(["", "Гомонковые", _v150_month_reserve, ""])
+    rows.append(["", "Остаток в обороте", _v150_month_closing - _v150_month_reserve, ""])
+    rows.append([])
+    _v150_month_products = _v150_product_total_from_records(chat_id, payload.get("records") or []) if "_v150_product_total_from_records" in globals() else 0.0
+    _v150_month_food = _v150_food_per_person(_v150_month_products) if "_v150_food_per_person" in globals() else 0.0
+    rows.append(["", "Расход еды на человека в сутки", _v150_month_food, ""])
     _write_excel_by_selected_style(xlsx_path, rows, chat_id, sheet_name="Месяц", category_layout=False)
 
     return {"json": json_path, "csv": csv_path, "xlsx": xlsx_path}
@@ -6816,7 +6824,7 @@ def _opening_balance_before_exact(store: dict, start_day: str, start_rid: int | 
         total += financial_view_amount(store, rec)
     return float(total)
 
-def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float) -> list[list]:
+def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None = None) -> list[list]:
     """Add opening balance, period totals and real closing cash balance to 4-column XLSX."""
     src = [list(r or []) for r in (rows or [])]
     if not src:
@@ -6853,7 +6861,7 @@ def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float) ->
     return out
 
 
-def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float) -> tuple[list[list], dict[tuple[int, int], str]]:
+def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
     """3-column Excel: Date / Income / Expense; description lives only in Comment/Note."""
     opening = float(opening_balance or 0.0)
     rows = [["Дата", "Приход", "Расход"], ["Остаток с прошлого раза", opening, ""], []]
@@ -7556,7 +7564,16 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
         total_row = ["Итог:", int(round(income_total)), ""] + [int(round(cat_totals.get(cat, 0))) if cat_totals.get(cat, 0) else "" for cat in TABL_LSX_CATEGORIES]
         rows.append(total_row); styles.append([5] * len(cols))
         rows.append(["расход:", int(round(expense_total))] + [""] * (len(cols) - 2)); styles.append([5] * len(cols))
-        rows.append(["Остаток на руках", int(round(opening + income_total - expense_total))] + [""] * (len(cols) - 2)); styles.append([6] * len(cols))
+        _v150_week_closing = float(opening + income_total - expense_total)
+        rows.append(["Остаток на руках", int(round(_v150_week_closing))] + [""] * (len(cols) - 2)); styles.append([6] * len(cols))
+        _v150_week_reserve = float(_v150_export_reserve(chat_id)) if "_v150_export_reserve" in globals() else 0.0
+        rows.append(["Гомонковые", int(round(_v150_week_reserve)) if float(_v150_week_reserve).is_integer() else _v150_week_reserve] + [""] * (len(cols) - 2)); styles.append([6] * len(cols))
+        _v150_week_turnover = _v150_week_closing - _v150_week_reserve
+        rows.append(["Остаток в обороте", int(round(_v150_week_turnover)) if float(_v150_week_turnover).is_integer() else _v150_week_turnover] + [""] * (len(cols) - 2)); styles.append([6] * len(cols))
+        rows.append([]); styles.append([])
+        _v150_products_total = float(cat_totals.get("Продукты", 0.0) or 0.0)
+        _v150_food_metric = _v150_food_per_person(_v150_products_total) if "_v150_food_per_person" in globals() else 0.0
+        rows.append(["Расход еды на человека в сутки", _v150_food_metric] + [""] * (len(cols) - 2)); styles.append([5] * len(cols))
         rows.append([]); styles.append([])
     os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
     start_all, end_all = weeks[0][0], weeks[-1][1]
@@ -7613,7 +7630,7 @@ def save_chat_xlsx(chat_id: int, path: str | None = None, store: dict | None = N
         rows = insert_blank_rows_between_days(rows, header_rows=1)
         first_key = sorted(daily.keys())[0] if daily else today_key()
         opening = _opening_balance_before_exact(store, first_key, 0)
-        rows = _xlsx_simple_rows_with_balances(rows, opening)
+        rows = _xlsx_simple_rows_with_balances(rows, opening, chat_id)
         _write_excel_by_selected_style(path, rows, chat_id, sheet_name="Данные", category_layout=False)
         return path
     except Exception as e:
@@ -8842,4 +8859,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v148_multitenant_spaces
+# v150_excel_reserve_chat_lifecycle

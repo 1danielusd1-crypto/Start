@@ -1,4 +1,4 @@
-# v149_tenant_google_merged_reminders
+# v150_excel_reserve_chat_lifecycle
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -250,8 +250,10 @@ def _google_sheets_create_category_report(title: str, rows: list[list], layout: 
                 cell["userEnteredFormat"] = {"textFormat": {"bold": True}, "backgroundColor": {"red": 1.0, "green": 0.55, "blue": 0.55}}
             elif first_label in {"приход"} or second_label in {"приход"}:
                 cell["userEnteredFormat"] = {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.55, "green": 0.78, "blue": 1.0}}
-            elif first_label in {"остаток на руках", "на руках:"} or second_label in {"остаток на руках", "на руках:"}:
+            elif first_label in {"остаток на руках", "на руках:", "гомонковые", "остаток в обороте"} or second_label in {"остаток на руках", "на руках:", "гомонковые", "остаток в обороте"}:
                 cell["userEnteredFormat"] = {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.55, "green": 0.85, "blue": 0.55}}
+            elif first_label == "расход еды на человека в сутки" or second_label == "расход еды на человека в сутки":
+                cell["userEnteredFormat"] = {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.74, "green": 0.82, "blue": 1.0}}
             elif layout == "compact" and c_idx in {2, 3} and value not in ("", None):
                 cell["userEnteredFormat"] = {"backgroundColor": _google_category_fill(3 if c_idx == 3 else 2)}
             elif layout == "category_compact" and c_idx >= 3 and value not in ("", None):
@@ -445,10 +447,10 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                         except Exception: parsed_amount = 0.0
                         xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
                     xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
-                    xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+                    xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening, target_chat_id)
                     _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Экспорт", category_layout=False, mode_override=excel_style_override)
                 else:
-                    xlsx_rows, compact_annotations = _compact_simple_excel_rows_and_annotations(rows, opening)
+                    xlsx_rows, compact_annotations = _compact_simple_excel_rows_and_annotations(rows, opening, target_chat_id)
                     _write_excel_by_selected_style(
                         tmp_name, xlsx_rows, target_chat_id, sheet_name="Экспорт", category_layout=False,
                         mode_override=excel_style_override, compact_annotations=(compact_annotations if annotations_enabled else {}),
@@ -463,7 +465,7 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                         parsed_amount = 0.0
                     xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
                 xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
-                xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+                xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening, target_chat_id)
                 _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Экспорт", category_layout=False, mode_override="old")
         else:
             with open(tmp_name, "w", newline="", encoding="utf-8") as f:
@@ -832,4 +834,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v149_tenant_google_merged_reminders
+# v150_excel_reserve_chat_lifecycle

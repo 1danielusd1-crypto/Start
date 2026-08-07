@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v150_excel_reserve_chat_lifecycle
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -668,6 +668,8 @@ def cmd_restore(msg):
 
     global restore_mode
     restore_mode = msg.chat.id  # включаем только для текущего чата
+    data["_restore_mode_chat_v150"] = int(msg.chat.id)
+    save_data(data, chat_ids=[int(msg.chat.id)])
     cleanup_forward_links(msg.chat.id)
     send_and_auto_delete(
         msg.chat.id,
@@ -689,6 +691,8 @@ def cmd_restore_off(msg):
 
     global restore_mode
     restore_mode = None  # выключаем
+    data.pop("_restore_mode_chat_v150", None)
+    save_data(data, chat_ids=[int(msg.chat.id)])
     cleanup_forward_links(msg.chat.id)
     send_and_auto_delete(msg.chat.id, "🔒 Режим восстановления выключен.")
 @bot.message_handler(commands=["ping"])
@@ -1662,4 +1666,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v148_multitenant_spaces
+# v150_excel_reserve_chat_lifecycle

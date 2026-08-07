@@ -1,4 +1,4 @@
-# v149_tenant_google_merged_reminders
+# v150_excel_reserve_chat_lifecycle
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -1632,12 +1632,14 @@ def _category_rows_without_description(rows: list[list]) -> tuple[list[list], di
         is_header = str(row[0] if row else "").strip().casefold() in {"дата", "date"} and desc.casefold() in {"описание", "description"}
         if len(row) > 1:
             if not is_header and desc and not str(row[0] if row else "").strip() and desc.casefold() in {
-                "остаток с прошлого раза", "сумма по статьям", "расход", "приход", "остаток на руках", "на руках:"
+                "остаток с прошлого раза", "сумма по статьям", "расход", "приход", "остаток на руках", "на руках:",
+                "гомонковые", "остаток в обороте", "расход еды на человека в сутки"
             }:
                 row[0] = desc
             row.pop(1)
         if desc and not is_header and desc.casefold() not in {
-            "остаток с прошлого раза", "сумма по статьям", "расход", "приход", "остаток на руках", "на руках:"
+            "остаток с прошлого раза", "сумма по статьям", "расход", "приход", "остаток на руках", "на руках:",
+            "гомонковые", "остаток в обороте", "расход еды на человека в сутки"
         }:
             # Original expense columns start at D (0-based 3); after removing B they start at C.
             for original_c in range(3, len(raw or [])):
@@ -1725,10 +1727,10 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                         except Exception: parsed_amount = 0.0
                         xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
                     xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
-                    xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+                    xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening, target_chat_id)
                     _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False, mode_override=excel_style_override)
                 else:
-                    xlsx_rows, compact_annotations = _compact_simple_excel_rows_and_annotations(rows, opening)
+                    xlsx_rows, compact_annotations = _compact_simple_excel_rows_and_annotations(rows, opening, target_chat_id)
                     _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False, mode_override=excel_style_override, compact_annotations=(compact_annotations if annotations_enabled else {}))
             else:
                 xlsx_rows = [["Дата", "Описание", "Приход", "Расход"]]
@@ -1737,7 +1739,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                     except Exception: parsed_amount = 0.0
                     xlsx_rows.append(_xlsx_record_row(date_v, parsed_amount, note_v))
                 xlsx_rows = insert_blank_rows_between_days(xlsx_rows, header_rows=1)
-                xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening)
+                xlsx_rows = _xlsx_simple_rows_with_balances(xlsx_rows, opening, target_chat_id)
                 _write_excel_by_selected_style(tmp_name, xlsx_rows, target_chat_id, sheet_name="Точный период", category_layout=False, mode_override="old")
         else:
             with open(tmp_name, "w", newline="", encoding="utf-8") as fh:
@@ -2100,4 +2102,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v149_tenant_google_merged_reminders
+# v150_excel_reserve_chat_lifecycle
