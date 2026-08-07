@@ -1,0 +1,16 @@
+TEST REPORT — bot_v158_no_process_messages_income_notes
+
+PASS: 31 modular source files parsed by AST.
+PASS: bot.py and full standalone source compile/parse.
+PASS: manifest version and SHA-256 hashes match every module.
+PASS: first/last version markers match manifest.
+PASS: v158 is the last runtime override for process UI, INFO, and Excel annotation functions.
+PASS: isolated process test: process_visual_status_enabled() is always False.
+PASS: isolated INFO test: process status line and process-menu button are removed.
+PASS: isolated simple Excel test: income cell receives operation description annotation.
+PASS: isolated category Excel test: income cell receives operation description annotation.
+PASS: isolated compact category test: income annotation follows Description-column removal.
+PASS: isolated compact+USD test: USD income cell receives its USD description annotation.
+PASS: existing expense annotation mappings remain preserved by wrapper logic.
+
+No live Telegram/Google/MEGA/Render calls were performed.

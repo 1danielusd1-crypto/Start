@@ -1,11 +1,11 @@
-# v154_excel_usd_isolation_date_marks
+# v158_no_process_messages_income_notes
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v154_excel_usd_isolation_date_marks"
-MODULE_FILE_VERSION = "v154_excel_usd_isolation_date_marks"
+MODULAR_VERSION = "bot_v158_no_process_messages_income_notes"
+MODULE_FILE_VERSION = "v158_no_process_messages_income_notes"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -34,6 +34,10 @@ MODULAR_SOURCE_PARTS = [
     '102_v152_human_journals_chat_rights.py',
     '103_v153_remaining_fixes_11_16.py',
     '104_v154_excel_usd_isolation_date_marks.py',
+    '105_v155_button_navigation_audit.py',
+    '106_v156_process_status_usd_excel.py',
+    '107_v157_process_menu_navigation_repair.py',
+    '108_v158_no_process_messages_income_notes.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -133,4 +137,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v154_excel_usd_isolation_date_marks
+# v158_no_process_messages_income_notes
