@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v153_remaining_fixes_11_16
 import os
 import io
 import json
@@ -896,7 +896,9 @@ MEGA_ENABLED = _env_bool("MEGA_ENABLED", "0")
 MEGA_AUTORESTORE = _env_bool("MEGA_AUTORESTORE", "1")
 MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
-MEGA_BACKUP_DIR = os.getenv("MEGA_BACKUP_DIR", "/TelegramBotBackups").strip() or "/TelegramBotBackups"
+MEGA_LEGACY_BACKUP_DIR = "/TelegramBotBackups"
+MEGA_TARGET_BACKUP_DIR = "/TelegramBotBackupsStart"
+MEGA_BACKUP_DIR = os.getenv("MEGA_BACKUP_DIR", MEGA_LEGACY_BACKUP_DIR).strip() or MEGA_LEGACY_BACKUP_DIR
 try:
     MEGA_TIMEOUT = int(os.getenv("MEGA_TIMEOUT", "120"))
 except Exception:
@@ -2539,7 +2541,7 @@ def _atomic_json_dump(path: str, payload) -> None:
 
 
 def _journal_durable_remote_dir() -> str:
-    base = str(globals().get("MEGA_BACKUP_DIR") or "/TelegramBotBackups").rstrip("/")
+    base = str(globals().get("MEGA_BACKUP_DIR") or MEGA_LEGACY_BACKUP_DIR).rstrip("/")
     return f"{base}/runtime/journal"
 
 
@@ -3291,7 +3293,7 @@ def send_journal_file_to_owner(chat_id: int, limit: int = 3000):
     return True
 
 
-BOT_SOURCE_ARCHIVE_DIR = os.getenv("MEGA_BOT_SOURCE_ARCHIVE_DIR", "/TelegramBotBackups/runtime/bot_versions").strip() or "/TelegramBotBackups/runtime/bot_versions"
+BOT_SOURCE_ARCHIVE_DIR = os.getenv("MEGA_BOT_SOURCE_ARCHIVE_DIR", f"{MEGA_BACKUP_DIR.rstrip('/')}/runtime/bot_versions").strip() or f"{MEGA_BACKUP_DIR.rstrip('/')}/runtime/bot_versions"
 
 
 def _current_version_journal_since_ts() -> str:
@@ -7713,4 +7715,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v148_multitenant_spaces
+# v153_remaining_fixes_11_16

@@ -1,0 +1,24 @@
+УСТАНОВКА bot_v153_remaining_fixes_11_16
+
+Вариант 1 — полный пакет
+1. Удалите из корня Render старые numbered .py, bot.py и modules_manifest.json.
+2. Загрузите всё содержимое bot_v153_FULL_PACKAGE_FLAT.zip в корень.
+3. Deploy.
+
+Вариант 2 — changed-only поверх ПОЛНОГО v152
+1. Замените 00_core.py и bot.py.
+2. Добавьте 103_v153_remaining_fixes_11_16.py.
+3. Замените modules_manifest.json.
+4. Не удаляйте 100/101/102 модули.
+
+После запуска
+- Бот начнёт безопасную миграцию MEGA пакетами. Старую папку не удалять.
+- Проверить /mega_migration_status до статуса complete.
+- После complete активной станет /TelegramBotBackupsStart.
+- Проверить /full_audit.
+- Открыть INFO → Runtime/Watcher → 🗄 /json_full.
+- Сделать тестовый экспорт пространства и тестовое восстановление в отдельном тестовом пространстве.
+
+Важно
+- Если MEGA_BACKUP_DIR явно задан в Render, он имеет приоритет. Для автоматической миграции удалите этот override или задайте /TelegramBotBackupsStart только после complete.
+- Старый /restore JSON/CSV заменён безопасным восстановлением .sqlite3.gz. /restore_off оставлен для отключения старого режима.

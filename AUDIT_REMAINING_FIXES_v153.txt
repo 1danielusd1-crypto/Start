@@ -1,0 +1,42 @@
+ГЛУБОКИЙ АУДИТ ПРАВОК 11–14 · v153
+
+ИСТОЧНИКИ
+- исходники полного v152;
+- diagnostic journal v146;
+- runtime_export_20260806_032302;
+- пользовательский список правок 1–16.
+
+ПОДТВЕРЖДЁННЫЕ ПРОБЛЕМЫ v146
+1. Runtime diagnostics: failed=3 при наличии более длинного failed_details. Причина — разные моменты обновления счётчика и кэша деталей.
+2. Несколько финансовых задач имели missing reminder_edit, хотя сообщение не было операцией редактирования напоминалки.
+3. Runtime export включал большое количество candidate_runtime_latest_* и файлы разных эпох без ясной границы.
+4. Window diagnostics: message is not modified, duplicate marker candidates, edit target missing, keyboard edit failed и delete failed.
+5. Очереди имели большие исторические max_wait: recovery около 20 с, delayed около 34 с, backup более 60 с.
+6. В снимках присутствовали одновременно разные Render instance; предыдущая причина завершения определялась слишком грубо.
+7. В раннем журнале аргументы mega-login содержали реальные credentials.
+8. История жизненного цикла чатов не входила в runtime ZIP.
+
+АУДИТ SLASH-КОМАНД
+- Найдено 95 имён команд/алиасов.
+- Статически /restore объявлен в legacy-модуле и заменяется v153 во время загрузки; активный handler остаётся один.
+- /json_full, /full_audit, /mega_migration_status зарегистрированы отдельными handlers.
+- Изменяющий /restore включён в durable-классификацию v150.
+- Dispatcher сохраняет dedupe update_id; повтор того же Telegram update не выполняется повторно.
+
+АУДИТ CALLBACK-КНОПОК
+- Найдено 106 literal callback producers и 232 exact/prefix routes.
+- Все пять статических «не найденных» callback подтверждены динамическими prefix handlers: v152:r:*, rem:completed:*, sp:list:* и sp:dashboard.
+- runtime_watcher намеренно перехватывается ранним v153 extension, чтобы добавить /json_full; старый branch не исполняется.
+- cat_months и info_close встречаются в нескольких защитных слоях, но ранние handlers возвращают управление и не дают двойного действия.
+- Добавлена центральная защита идентичного callback в течение 1,2 с.
+
+ИСПРАВЛЕНИЯ
+- Exact failed stats, удаление ложных reminder witnesses.
+- Runtime export stable slots/events + newest candidate only; remote pruning.
+- Idempotent UI edit/delete и периодическая очистка window registry.
+- Chat lifecycle history в runtime ZIP; статусы active/unreachable/bot_removed/migrated/archived остаются из v150.
+- Export single-flight с понятным ожиданием и одной кнопкой повторной загрузки.
+- Cloud instance lease для новых релизов; старый v153 instance переходит в superseded.
+
+ОГРАНИЧЕНИЕ
+Статический аудит не может доказать доступность Telegram/MEGA/Google. Живой интеграционный тест требуется после deploy. Старый экземпляр с кодом ниже v153 не умеет читать lease; защита полностью действует между v153 и последующими версиями.

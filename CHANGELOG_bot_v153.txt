@@ -1,0 +1,48 @@
+БОТ bot_v153_remaining_fixes_11_16
+
+ПРАВКИ 11–16
+
+11. Глубокий аудит
+- Проверены slash-команды, literal callback-кнопки, динамические callback-префиксы, маршрутизация «Назад» и повторные нажатия.
+- Добавлена защита одинакового callback в течение 1,2 секунды.
+- Идентичные edit_message_text/edit_message_reply_markup не отправляются повторно.
+- Удаление уже отсутствующего сообщения считается успешным и очищает реестр окон.
+- Реестр открытых окон очищается после запуска и далее каждые 10 минут.
+- Команда владельца платформы: /full_audit.
+
+12. Очередь скачивания журналов
+- При занятой export-очереди создаётся одно INFO-сообщение, объясняющее, какой файл уже формируется.
+- После завершения это же сообщение меняется на «Теперь можно скачать» и получает кнопку «📥 Скачать сейчас».
+- После ошибки показывается отдельный статус повторной попытки.
+- Повторные нажатия в одном чате обновляют существующее сообщение, а не создают дубли.
+
+13. Очистка секретов
+- Общий redaction применяется к журналам, runtime snapshots, failed-задачам, JSON/TXT/CSV/log/diagnostic ZIP и документам перед Telegram/MEGA.
+- Скрываются MEGA login/password, Telegram token, Google OAuth/access/refresh token, private key, webhook secret, API key, Authorization и Cookie.
+- Операционные callback/invite tokens не уничтожаются.
+- mega-login остаётся работоспособным, но исключения и diagnostics не содержат реквизитов.
+
+14. Runtime export и recovery
+- Runtime ZIP загружает стабильные slots/events и максимум один реально более свежий candidate/staged.
+- Старые candidate_runtime_latest_* и runtime_latest__* очищаются до двух экземпляров.
+- failed и failed_details считаются по одному актуальному реестру.
+- Финансовые durable-задачи больше не требуют reminder_edit без явного EDITREM/EDITREMINT.
+- В runtime ZIP добавляется chat_lifecycle_history.json.
+- Добавлена lease-защита от двух одновременно активных экземпляров v153 Render.
+- Уточнена классификация overlapping/superseded экземпляров.
+
+15. /json_full и /restore
+- /json_full создаёт latest_bot_state.sqlite3.gz с SQLite state, финансами ARS/USD, гомонковыми, настройками, чатами, ролями, правами, reminders, forwarding, durable/recovery и failed-задачами.
+- Основной владелец выбирает «Весь бот» либо конкретное пространство.
+- Владелец пространства может выгрузить только своё пространство.
+- Кнопка /json_full добавлена в INFO → Runtime/Watcher.
+- /restore работает ответом на latest_bot_state.sqlite3.gz. Проверяются gzip, SQLite integrity, schema, версия и логическая checksum.
+- До применения создаётся pre_restore backup в текущей MEGA-папке.
+- Для пространства доступны «Заменить» и «Объединить»; чужие chat IDs не перехватываются.
+- Failed-задачи из экспорта возвращаются в MEGA/failed.
+
+16. MEGA /TelegramBotBackupsStart
+- Миграция идёт пакетами: создать → скопировать → скачать обратно → сравнить SHA-256 → записать marker.
+- Старая /TelegramBotBackups не удаляется.
+- После marker migration_v153_complete.json свежий Render сначала проверяет новую папку и не восстанавливается из старой.
+- Команда статуса: /mega_migration_status.

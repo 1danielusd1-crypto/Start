@@ -1,0 +1,31 @@
+АУДИТ КНОПОК И SLASH-КОМАНД · v153
+
+Статическая база:
+- 26 модулей;
+- 95 имён slash-команд и алиасов;
+- 106 literal callback-кнопок;
+- 232 exact/prefix callback-маршрута.
+
+Slash-команды:
+- Все зарегистрированные команды имеют callable handler.
+- Статически /restore присутствует в legacy-модуле, но при загрузке v153 его handler заменяется, а второй не регистрируется.
+- /json_full, /full_audit, /audit_full, /mega_migration_status зарегистрированы.
+- /restore входит в durable mutation receipts и защищён от повторного Telegram update.
+- Кириллические alias-команды остаются handlers, но не добавляются в Telegram command menu из-за требований Bot API.
+
+Callback:
+- v152:r:* обрабатывается центральным rights prefix-handler.
+- rem:completed:* обрабатывается reminder prefix-handler.
+- sp:* обрабатывается tenant_handle_callback.
+- runtime_watcher намеренно перехватывается v153 раньше legacy branch, чтобы добавить /json_full.
+- Повтор одинаковой кнопки от того же пользователя/сообщения в течение 1,2 секунды подавляется.
+- Идентичный edit в течение 120 секунд возвращает сохранённый успешный результат без второго Telegram API вызова.
+
+Назад/окна:
+- Registry cleanup выполняется после запуска и раз в 10 минут.
+- Уже удалённое Telegram-сообщение считается удалённым, registry очищается.
+- Старые callback с истёкшим token по-прежнему получают «Кнопка устарела».
+
+Права:
+- Проверки v152 сохраняются до slash-command/callback и внутри финансового ввода, пересылки, Google, reminders и exports.
+- /json_full и /restore дополнительно проверяют platform/tenant ownership и chat-to-tenant isolation.

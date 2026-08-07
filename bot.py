@@ -1,11 +1,11 @@
-# v152_human_journals_chat_rights
+# v153_remaining_fixes_11_16
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v152_human_journals_chat_rights"
-MODULE_FILE_VERSION = "v152_human_journals_chat_rights"
+MODULAR_VERSION = "bot_v153_remaining_fixes_11_16"
+MODULE_FILE_VERSION = "v153_remaining_fixes_11_16"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -32,6 +32,7 @@ MODULAR_SOURCE_PARTS = [
     '100_v150_excel_reserve_chat_lifecycle.py',
     '101_v151_redo_fixes_5_6_7.py',
     '102_v152_human_journals_chat_rights.py',
+    '103_v153_remaining_fixes_11_16.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -131,4 +132,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v152_human_journals_chat_rights
+# v153_remaining_fixes_11_16

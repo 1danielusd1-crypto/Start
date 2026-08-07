@@ -1,6 +1,6 @@
 {
-  "version": "bot_v152_human_journals_chat_rights",
-  "file_marker": "v152_human_journals_chat_rights",
+  "version": "bot_v153_remaining_fixes_11_16",
+  "file_marker": "v153_remaining_fixes_11_16",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -26,10 +26,11 @@
     "99_web_runtime.py",
     "100_v150_excel_reserve_chat_lifecycle.py",
     "101_v151_redo_fixes_5_6_7.py",
-    "102_v152_human_journals_chat_rights.py"
+    "102_v152_human_journals_chat_rights.py",
+    "103_v153_remaining_fixes_11_16.py"
   ],
   "files": {
-    "00_core.py": "5820c5b2f124a6baab6b378c1f45757310389f5fe44ffaeaa69221e248da7d42",
+    "00_core.py": "61b35290e79f471c124ffcf9fa848ff98c64b6fc520832f8ccc8fe073ab3713c",
     "10_mega_runtime.py": "2ab646f6a85f051da247159789e7a5bc0b5ed2f0fc073812d41a27057c8d0734",
     "15_operation_safety.py": "b8a868fc87024d947287c858195ab6db57e8a540d29e01285e46f10cbf96990e",
     "16_window_diagnostics.py": "14b56675dc6d37d256520eb374ba628f26a81f16438457652c618c8b508fb410",
@@ -53,10 +54,11 @@
     "99_web_runtime.py": "6d52e90a4f809e7d9bee946fac6716add1901305b8351f96b60fbbcfb954746f",
     "100_v150_excel_reserve_chat_lifecycle.py": "2f6942be3cbfef667d7a08f33fa717f6526d205c6ff667f1fa3bc0bde13b30a9",
     "101_v151_redo_fixes_5_6_7.py": "1a3d5913c182bded426a60f7298fe0b837bdea15ad324572436688772b354131",
-    "102_v152_human_journals_chat_rights.py": "c93fbd1cb92b40002919c4c1ff35832a19fdc4c89236b81a65295fb84b5cd9c0"
+    "102_v152_human_journals_chat_rights.py": "c93fbd1cb92b40002919c4c1ff35832a19fdc4c89236b81a65295fb84b5cd9c0",
+    "103_v153_remaining_fixes_11_16.py": "a3c93b0f2b721316f3629989401388efd86fad511550b2256f775ca2244b2b1a"
   },
   "file_markers": {
-    "00_core.py": "v148_multitenant_spaces",
+    "00_core.py": "v153_remaining_fixes_11_16",
     "10_mega_runtime.py": "v150_excel_reserve_chat_lifecycle",
     "15_operation_safety.py": "v143_audit_stability_exact_wait_reminders_memory",
     "16_window_diagnostics.py": "v147_diagnostic_hardening",
@@ -80,6 +82,7 @@
     "99_web_runtime.py": "v148_multitenant_spaces",
     "100_v150_excel_reserve_chat_lifecycle.py": "v150_excel_reserve_chat_lifecycle",
     "101_v151_redo_fixes_5_6_7.py": "v151_redo_fixes_5_6_7",
-    "102_v152_human_journals_chat_rights.py": "v152_human_journals_chat_rights"
+    "102_v152_human_journals_chat_rights.py": "v152_human_journals_chat_rights",
+    "103_v153_remaining_fixes_11_16.py": "v153_remaining_fixes_11_16"
   }
 }

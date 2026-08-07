@@ -1,0 +1,38 @@
+ОТЧЁТ О ПРОВЕРКАХ · bot_v153_remaining_fixes_11_16
+
+Автоматические проверки: 100/100 PASS.
+
+Проверено:
+- Python AST/py_compile всех 26 модулей, bot.py и единого FULL-файла;
+- SHA-256 каждого модуля против modules_manifest.json;
+- первая и последняя строка каждого исходника;
+- состав и версия modular manifest;
+- secret redaction: Render secret, Authorization Bearer, Cookie, private_key, access_token;
+- business secret_messages и рабочий callback token не повреждаются;
+- логическая checksum SQLite не зависит от записанного manifest;
+- /restore handler replacement и durable marker;
+- /json_full global/tenant menu;
+- restore schema/version/integrity/checksum gates;
+- pre-restore backup и failed-task restore присутствуют;
+- MEGA migration marker, сохранение старого root, пакетное продолжение и запрет переключения при пустом mega-find;
+- Render instance lease/superseded;
+- runtime candidate pruning и chat_lifecycle_history.json;
+- ложный reminder_edit witness удаляется;
+- export busy INFO + «Скачать сейчас»;
+- callback dedupe и idempotent edit/delete;
+- отсутствие важных неопределённых global names в новом модуле;
+- tenant filter: пространство A не получает tenant B, чужие reminders, operation ledger, durable receipts или gomonk receipts;
+- tenant export исключает unscoped global scalars и platform-wide permissions.
+
+ZIP-проверки:
+- unzip -t для полного и changed-only пакетов;
+- плоская структура без вложенных папок;
+- changed-only содержит только реально изменённые исходники v152→v153 и документы установки.
+
+Не выполнялось:
+- живое обращение к Telegram API;
+- реальное копирование файлов между папками MEGA;
+- живой Google Sheets/Drive;
+- deploy на Render.
+
+После deploy обязательны проверки /mega_migration_status, /full_audit и тестовый /json_full в отдельном пространстве.
