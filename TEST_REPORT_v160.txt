@@ -1,0 +1,60 @@
+TEST REPORT — bot_v160_stability_parallel_windows_annotations
+
+Build/static checks
+-------------------
+PASS py_compile + AST: 00_core.py
+PASS py_compile + AST: 10_mega_runtime.py
+PASS py_compile + AST: 15_operation_safety.py
+PASS py_compile + AST: 16_window_diagnostics.py
+PASS py_compile + AST: 17_memory_runtime.py
+PASS py_compile + AST: 20_callback_tokens.py
+PASS py_compile + AST: 30_secret.py
+PASS py_compile + AST: 35_reminders.py
+PASS py_compile + AST: 40_message_router.py
+PASS py_compile + AST: 50_forwarding.py
+PASS py_compile + AST: 60_finance_currency.py
+PASS py_compile + AST: 61_forwarding_ui.py
+PASS py_compile + AST: 62_finance_ui.py
+PASS py_compile + AST: 63_google_sheets.py
+PASS py_compile + AST: 70_fast_ui.py
+PASS py_compile + AST: 80_callback_router.py
+PASS py_compile + AST: 90_commands_exports.py
+PASS py_compile + AST: 91_finance_records_handlers.py
+PASS py_compile + AST: 92_v147_diagnostic_hardening.py
+PASS py_compile + AST: 93_v148_multitenant_spaces.py
+PASS py_compile + AST: 94_v149_tenant_google_merged_reminders.py
+PASS py_compile + AST: 99_web_runtime.py
+PASS py_compile + AST: 100_v150_excel_reserve_chat_lifecycle.py
+PASS py_compile + AST: 101_v151_redo_fixes_5_6_7.py
+PASS py_compile + AST: 102_v152_human_journals_chat_rights.py
+PASS py_compile + AST: 103_v153_remaining_fixes_11_16.py
+PASS py_compile + AST: 104_v154_excel_usd_isolation_date_marks.py
+PASS py_compile + AST: 105_v155_button_navigation_audit.py
+PASS py_compile + AST: 106_v156_process_status_usd_excel.py
+PASS py_compile + AST: 107_v157_process_menu_navigation_repair.py
+PASS py_compile + AST: 108_v158_no_process_messages_income_notes.py
+PASS py_compile + AST: 109_v159_internal_timers_helper_windows.py
+PASS py_compile + AST: 110_v160_stability_parallel_windows_annotations.py
+PASS py_compile + AST: bot.py
+PASS py_compile + AST: FULL_bot_v160_stability_parallel_windows_annotations.py
+PASS source assertion: generic F232 process visual is disabled
+PASS source assertion: F233/F234 dedicated timer layer present
+PASS source assertion: exact callback-query ID dedupe present
+PASS source assertion: parallel-main preservation present
+PASS source assertion: /iz-mr + /tz + Journal exports present
+PASS manifest hashes and per-file first/last markers
+PASS v160 first/last marker on bot.py and standalone full file
+PASS standalone full file resolves critical overridden functions to v160 definitions
+
+Isolated behavior tests completed during this build
+---------------------------------------------------
+PASS: F89 markup contains /iz-mr, /tz, “Download window markings”, “Download window TZ”.
+PASS: parallel registry cleanup keeps two distinct main-window message IDs.
+PASS: back-main promotes the clicked window and does not delete the previous valid main window.
+PASS: F234 helper uses a direct timer and can auto-delete without the shared delayed scheduler.
+PASS: marker naming and TZ persistence/export logic works in an isolated fake-bot harness.
+PASS: exact callback-query ID is deduplicated while a new callback-query ID is allowed.
+
+Environment limitation
+----------------------
+A live Telegram/MEGA/Render end-to-end run was not possible in this build container. Importing the entire package here is also not a valid live test because pyTelegramBotAPI (telebot) is not installed in the container. The source, AST, package integrity and isolated behavior paths were validated; final acceptance must be done by deploying v160 and exercising real Telegram callbacks/MEGA exports.

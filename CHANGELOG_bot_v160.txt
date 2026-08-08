@@ -1,0 +1,63 @@
+BOT v160 — STABILITY / PARALLEL WINDOWS / WINDOW ANNOTATIONS
+Version: bot_v160_stability_parallel_windows_annotations
+
+Purpose
+-------
+This release is a stabilization baseline after v159. It deliberately avoids adding unrelated finance/MEGA features.
+
+1. Removed generic operation popup F232
+---------------------------------------
+- Ordinary telegram_update/background work no longer creates the generic “Operation running” popup.
+- File download/upload/export progress stays visible as F233.
+- Any F232 generic popup left from a previous version is retired quietly.
+
+2. File/helper auto-close no longer depends on overloaded shared delayed queue
+-----------------------------------------------------------------------------
+- F233 file progress refresh and final deletion use dedicated daemon timers.
+- F234 small helper messages use dedicated daemon timers.
+- Busy/duplicate-download helper no longer reuses command_window_id/F91.
+- Interrupted transient helper/file window IDs are cleaned after boot.
+
+3. Button reliability and response speed
+----------------------------------------
+- A real button-triggered UI edit is applied immediately instead of being parked in the shared delayed scheduler.
+- Same callback_data can be pressed again normally; only the exact same Telegram callback-query ID is deduplicated.
+- Old 1.2-second same-button suppression is bypassed for a new callback-query ID.
+- Stale pending delayed edit for the same Telegram message is cancelled before applying the click.
+- A single short local retry is used for Telegram rate limiting.
+- Automatic finance-window Telegram deletions are moved off the visible callback path where safe.
+
+4. Parallel windows
+-------------------
+- Several Telegram messages may represent the same logical marker/page.
+- Window registry keeps distinct message IDs instead of deleting an entry merely because another instance is active.
+- Returning one old/current window to main promotes that clicked message without deleting a different valid main window.
+- Duplicate marker is no longer treated as an error by itself.
+
+5. Marker fixes
+---------------
+- v149 reminder merge/history/command/done callbacks are mapped back to F191 instead of F9998/missing-marker diagnostics.
+
+6. /iz-mr and /tz exact-window context
+--------------------------------------
+- Every marked new/edited window receives inline controls labelled /iz-mr and /tz.
+- /iz-mr captures exact chat/message/marker/callback/purpose context and asks the owner for a stable human window name.
+- /tz captures the exact same source context and asks for the task specification tied to that window.
+- Names are stored by stable marker; renaming keeps name history and does not change the marker code.
+- Annotation/TZ state is persisted in root state and queued for durable backup.
+- Manual text forms are also accepted: /iz-mr F191 Name (or /iz_mr) and /tz F191 text.
+
+Telegram UI limitation
+----------------------
+A Telegram bot cannot reliably pre-fill arbitrary text into the normal chat compose box from an inline callback. v160 therefore uses ForceReply tied to the exact source message. This preserves the exact window context without relying on user copy/paste.
+
+7. Journal exports
+------------------
+The Journal menu gets:
+- “Download window markings” — exports all declared marker constants/actions plus user names and captured source metadata.
+- “Download window TZ” — exports saved task specifications with exact source window metadata.
+Both exports use the normal F233 file-progress window and auto-close.
+
+Not included in this release
+----------------------------
+Historical malformed MEGA JSON chunks, old durable failed tasks and unrelated reminder cross-chat warnings are not rewritten in v160. They should be handled only after this UI stabilization baseline is proven stable.

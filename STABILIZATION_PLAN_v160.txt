@@ -1,0 +1,24 @@
+STABILIZATION PLAN v160
+
+Why this is the right next step
+-------------------------------
+The bot has accumulated many feature patches. The next reliability gain should come from freezing features temporarily and validating one stable baseline, not from adding another broad feature bundle.
+
+Recommended acceptance window
+-----------------------------
+Run v160 for 24–48 hours with ordinary real use. During this period accept only reproducible bug fixes; do not add new product features.
+
+Acceptance criteria
+-------------------
+- No generic F232 operation popups for ordinary updates.
+- F233 file windows close after the configured interval.
+- New callback-query IDs are not suppressed merely because callback_data repeats.
+- Navigation edits are not delegated to the overloaded shared delayed scheduler.
+- Old/current duplicate logical windows can be used in parallel without the bot deleting the other valid instance.
+- No new window_marker_missing for v149 reminder merge/history callbacks.
+- /iz-mr names and /tz records survive restart/recovery.
+- Journal exports for markings/TZ are downloadable and F233 closes afterward.
+
+Freeze point
+------------
+After this acceptance window, treat the exported marker-name catalog as the window dictionary/contract. New windows must receive a declared stable marker before release, and existing marker semantics should not be silently repurposed.

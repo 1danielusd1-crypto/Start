@@ -1,0 +1,33 @@
+PATCH INSTALLATION — bot_v160_stability_parallel_windows_annotations
+
+Recommended path
+----------------
+Use the FULL package for the cleanest deployment. Replace the project files with the flat contents of bot_v160_FULL_PACKAGE_FLAT.zip.
+
+Changed-only path
+-----------------
+If the deployed source is exactly v159, upload/replace:
+- 110_v160_stability_parallel_windows_annotations.py
+- bot.py
+- modules_manifest.json
+No older numbered module is modified; v160 intentionally overrides the affected runtime behavior at the end of the module chain.
+
+Important
+---------
+Do not mix bot.py or modules_manifest.json from another version.
+Do not delete older numbered modules 00..109; v160 depends on the complete chain.
+The package is flat: all numbered modules stay in the same directory as bot.py.
+
+After deploy
+------------
+1. Confirm the startup journal contains v160_stability_parallel_windows_annotations_installed.
+2. Confirm ordinary telegram_update actions do not create F232.
+3. Download a journal: F233 should update during the file job and disappear after its configured close interval.
+4. Press the same normal navigation button repeatedly in a legitimate workflow; each new callback should be processed.
+5. Open two copies of the same logical window and verify both remain usable independently.
+6. Tap /iz-mr and /tz under a marked window and reply to the exact prompt.
+7. In Journal, download both the markings registry and TZ registry.
+
+Rollback
+--------
+Restore the complete v159 package. Do not mix only bot.py between v159/v160.
