@@ -1,4 +1,4 @@
-# v163_consolidated_tz_fixes
+# v150_excel_reserve_chat_lifecycle
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -361,18 +361,15 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
             label = "за всё время"
             if os.path.exists(path):
                 fobj = file_bytesio_named(path, export_display_filename(target_chat_id, mode, day_key, "xlsx" if file_type == "xlsx" else "csv"))
-                if not fobj:
-                    raise RuntimeError(f"Не удалось подготовить файл для Telegram: {path}")
-                sent = _tg_call_retry(
-                    bot.send_document,
-                    recipient_chat_id,
-                    fobj,
-                    caption=f"📂 {'Excel ' + _export_style_caption(excel_style_override) if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
-                    timeout=120,
-                    purpose="export_send_document"
-                )
-                if not getattr(sent, "document", None):
-                    raise RuntimeError("Telegram не подтвердил отправку файла")
+                if fobj:
+                    _tg_call_retry(
+                        bot.send_document,
+                        recipient_chat_id,
+                        fobj,
+                        caption=f"📂 {'Excel ' + _export_style_caption(excel_style_override) if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                        timeout=120,
+                        purpose="export_send_document"
+                    )
                 return True
 
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
@@ -488,18 +485,15 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
 
         _file_job_progress("отправляю файл в Telegram", force=True)
         fobj = file_bytesio_named(tmp_name, display_name)
-        if not fobj:
-            raise RuntimeError(f"Не удалось подготовить файл для Telegram: {tmp_name}")
-        sent = _tg_call_retry(
-            bot.send_document,
-            recipient_chat_id,
-            fobj,
-            caption=f"📂 {('Excel статьи ' + _export_style_caption(excel_style_override)) if file_type == 'xlsxstat' else (('Excel ' + _export_style_caption(excel_style_override)) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
-            timeout=120,
-            purpose="export_send_document"
-        )
-        if not getattr(sent, "document", None):
-            raise RuntimeError("Telegram не подтвердил отправку файла")
+        if fobj:
+            _tg_call_retry(
+                bot.send_document,
+                recipient_chat_id,
+                fobj,
+                caption=f"📂 {('Excel статьи ' + _export_style_caption(excel_style_override)) if file_type == 'xlsxstat' else (('Excel ' + _export_style_caption(excel_style_override)) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
+                timeout=120,
+                purpose="export_send_document"
+            )
         return True
     except Exception as e:
         log_error(f"send_export_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
@@ -840,4 +834,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v163_consolidated_tz_fixes
+# v150_excel_reserve_chat_lifecycle

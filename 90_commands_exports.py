@@ -1,4 +1,4 @@
-# v163_consolidated_tz_fixes
+# v150_excel_reserve_chat_lifecycle
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -301,20 +301,6 @@ def close_previous_main_window_before_back(chat_id: int, day_key: str, current_m
     except Exception as e:
         log_error(f"close_previous_main_window_before_back({chat_id},{day_key}): {e}")
 def update_or_send_day_window(chat_id: int, day_key: str):
-    # v163: background refresh must never repaint an auxiliary window into F91.
-    chat_id = int(chat_id); day_key = str(day_key)[:10]
-    try: mid = int(get_active_window_id(chat_id, day_key) or 0)
-    except Exception: mid = 0
-    if mid:
-        try:
-            explicit = bool(globals().get("_v161_explicit_main_action") and _v161_explicit_main_action())
-            auxiliary = bool(globals().get("_v161_window_is_auxiliary") and _v161_window_is_auxiliary(chat_id, mid))
-        except Exception:
-            explicit = False; auxiliary = False
-        if not explicit and auxiliary:
-            try: bot_journal("day_window_refresh_deferred_aux_window", chat_id, f"msg={mid}; day={day_key}")
-            except Exception: pass
-            return False
     # v108: hidden accounting is independent from explicitly selected visible window modes/manual opening.
     if is_owner_chat(chat_id):
         backup_window_for_owner(chat_id, day_key)
@@ -617,11 +603,6 @@ def cmd_ok(msg):
     send_and_auto_delete(chat_id, "✅ Финансовый режим включён", HELPER_DELETE_DELAY)
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
-    # v163: keep exactly one registered /start handler. The hardened implementation
-    # is loaded later and resolved at message time, eliminating duplicate handlers.
-    hardened = globals().get("_v161_cmd_start")
-    if callable(hardened):
-        return hardened(msg)
     try:
         update_chat_info_from_message(msg)
     except Exception:
@@ -1685,4 +1666,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v163_consolidated_tz_fixes
+# v150_excel_reserve_chat_lifecycle

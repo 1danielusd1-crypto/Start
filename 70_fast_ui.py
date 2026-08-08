@@ -1,4 +1,4 @@
-# v163_consolidated_tz_fixes
+# v147_diagnostic_hardening
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -364,102 +364,124 @@ def _ensure_window_marker_for_render(text: str, reply_markup, chat_id: int, mess
         journal_missing_window_marker(key, chat_id, message_id, body, reply_markup, purpose)
     return window_mark(body, code)
 
-def _v161_edit_retry(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "ui") -> str:
-    last = "failed"
-    for attempt in range(3):
-        try:
-            result = fast_ui_edit_message_text(int(chat_id), int(message_id), text, reply_markup=reply_markup, parse_mode=parse_mode, purpose=purpose)
-        except Exception:
-            result = "failed"
-        last = str(result or "failed")
-        if last == "ok": return "ok"
-        if last == "not_found": return "not_found"
-        if attempt < 2:
-            time.sleep(0.15 if last != "rate_limited" else (0.35 if attempt == 0 else 0.65))
-    return last
-
-def _v161_register_from_render(chat_id: int, message_id: int, text: str, day_key: str | None = None, code_hint: str = "") -> None:
-    try: marker = _v160_marker_from_text(str(text or ""))
-    except Exception: marker = ""
-    try:
-        day = str(day_key or get_chat_store(int(chat_id)).get("current_view_day") or today_key())
-        if marker == "Ф91":
-            register_open_window(int(chat_id), int(message_id), "main_day", code="О1", day_key=day, params={"parallel_allowed": True})
-            try: set_active_window_id(int(chat_id), day, int(message_id))
-            except Exception: pass
-        else:
-            register_open_window(int(chat_id), int(message_id), "local_fin_view", code=str(code_hint or marker or "view"), day_key=day, params={"parallel_allowed": True})
-    except Exception:
-        pass
-
-def safe_edit(bot_obj, call, text, reply_markup=None, parse_mode=None):
-    chat_id = int(call.message.chat.id); msg_id = int(call.message.message_id)
+def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
+    """Быстрое обновление окна с маркером, историей и безопасным fallback."""
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
     raw_action = str(getattr(call, "data", "") or "")
-    if raw_action != "nav_prev" and not _v161_state_preserving_callback(raw_action):
-        try: remember_previous_window(call)
-        except Exception: pass
+    if raw_action != "nav_prev":
+        remember_previous_window(call)
     try:
         code = window_code_for_callback(raw_action, owner_chat=is_owner_chat(chat_id))
         if str(code).endswith("9998"):
-            journal_missing_window_marker(raw_action, chat_id, msg_id, text, reply_markup, "safe_edit_v161")
+            journal_missing_window_marker(raw_action, chat_id, msg_id, text, reply_markup, "safe_edit")
         text = window_mark(text, code, html_mode=(str(parse_mode or "").upper() == "HTML"))
     except Exception:
         pass
     if reply_markup is None:
-        try: reply_markup = default_window_nav_keyboard(chat_id)
-        except Exception: pass
-    try:
-        reply_markup = ensure_previous_back_nav_keyboard(reply_markup, chat_id, msg_id)
-        reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
-    except Exception:
-        pass
-    result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_v161")
-    if result == "ok":
-        try: _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
-        except Exception: pass
-        return "ok"
-    try:
-        # Never leave a click with no visible outcome. A missing/uneditable old window gets a new parallel copy.
-        sent = bot_obj.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
-        try: _touch_v98_auto_close_for_callback(chat_id, int(sent.message_id), raw_action)
-        except Exception: pass
-        try: _v161_register_from_render(chat_id, int(sent.message_id), text)
-        except Exception: pass
-        return "created"
-    except Exception as exc:
         try:
-            bot_obj.answer_callback_query(call.id, "Telegram не подтвердил обновление. Нажмите ещё раз.", show_alert=False)
+            reply_markup = default_window_nav_keyboard(chat_id)
         except Exception:
             pass
-        try: log_error(f"safe_edit_v161 fallback {chat_id}/{msg_id}: {exc}")
-        except Exception: pass
-        return result
-
-
-def safe_edit_current_only(bot_obj, call, text, reply_markup=None, parse_mode=None):
-    chat_id = int(call.message.chat.id); msg_id = int(call.message.message_id)
-    raw_action = str(getattr(call, "data", "") or "")
-    if raw_action != "nav_prev" and not _v161_state_preserving_callback(raw_action):
-        try: remember_previous_window(call)
-        except Exception: pass
-    try:
-        code = window_code_for_callback(raw_action, owner_chat=is_owner_chat(chat_id))
-        text = window_mark(text, code, html_mode=(str(parse_mode or "").upper() == "HTML"))
-    except Exception:
-        pass
-    if reply_markup is None:
-        try: reply_markup = default_window_nav_keyboard(chat_id)
-        except Exception: pass
     try:
         reply_markup = ensure_previous_back_nav_keyboard(reply_markup, chat_id, msg_id)
         reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
     except Exception:
         pass
-    result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_current_v161")
-    if result != "ok":
-        try: bot_obj.answer_callback_query(call.id, "Это окно устарело. Откройте его заново.", show_alert=False)
-        except Exception: pass
-    return result
+    result = fast_ui_edit_message_text(
+        chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_fast"
+    )
+    if result in {"ok", "scheduled", "rate_limited"}:
+        if result == "rate_limited":
+            try:
+                bot.answer_callback_query(call.id, "Обновление отложено: Telegram ограничил частые клики.", show_alert=False)
+            except Exception:
+                pass
+        try:
+            _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
+        except Exception:
+            pass
+        return
+    try:
+        if chat_buttons_current_window_enabled(chat_id):
+            try:
+                bot.answer_callback_query(call.id, "Текущее окно недоступно, новое не создаю.", show_alert=False)
+            except Exception:
+                pass
+            return
+    except Exception:
+        pass
+    try:
+        try:
+            diag_note = globals().get("window_diag_note_recreate")
+            if callable(diag_note):
+                diag_note(chat_id, msg_id, result, "safe_edit_send_fallback")
+        except Exception:
+            pass
+        diag_context = globals().get("window_diag_context")
+        if callable(diag_context):
+            with diag_context(
+                purpose="safe_edit_send_fallback",
+                recreate_from=msg_id,
+                recreate_reason=result,
+                window_force=True,
+            ):
+                sent = _tg_call_retry(
+                    bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode,
+                    attempts=1, purpose="safe_edit_send_fallback",
+                )
+        else:
+            sent = _tg_call_retry(
+                bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode,
+                attempts=1, purpose="safe_edit_send_fallback",
+            )
+        try:
+            _touch_v98_auto_close_for_callback(chat_id, sent.message_id, raw_action)
+        except Exception:
+            pass
+    except Exception as e:
+        if not is_telegram_429(e):
+            log_error(f"safe_edit fallback send {chat_id}: {e}")
+
+
+def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
+    """Редактирует только текущее окно, без создания нового."""
+    chat_id = call.message.chat.id
+    msg_id = call.message.message_id
+    raw_action = str(getattr(call, "data", "") or "")
+    if raw_action != "nav_prev":
+        remember_previous_window(call)
+    try:
+        code = window_code_for_callback(raw_action, owner_chat=is_owner_chat(chat_id))
+        if str(code).endswith("9998"):
+            journal_missing_window_marker(raw_action, chat_id, msg_id, text, reply_markup, "safe_edit_current_only")
+        text = window_mark(text, code, html_mode=(str(parse_mode or "").upper() == "HTML"))
+    except Exception:
+        pass
+    if reply_markup is None:
+        try:
+            reply_markup = default_window_nav_keyboard(chat_id)
+        except Exception:
+            pass
+    try:
+        reply_markup = ensure_previous_back_nav_keyboard(reply_markup, chat_id, msg_id)
+        reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
+    except Exception:
+        pass
+    result = fast_ui_edit_message_text(
+        chat_id, msg_id, text, reply_markup=reply_markup,
+        parse_mode=parse_mode, purpose="safe_edit_current_only_fast",
+    )
+    if result == "rate_limited":
+        try:
+            bot.answer_callback_query(call.id, "Обновление отложено: слишком много кликов.", show_alert=False)
+        except Exception:
+            pass
+    try:
+        _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
+    except Exception:
+        pass
+    return result in {"ok", "scheduled", "rate_limited"}
 
 
 CATEGORY_PAGE_SAFE_CHARS = 3300
@@ -2661,4 +2683,4 @@ def build_integrity_keyboard(chat_id: int):
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
 
-# v163_consolidated_tz_fixes
+# v147_diagnostic_hardening

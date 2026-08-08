@@ -1,5 +1,5 @@
-# v163_consolidated_tz_fixes
-"""v163: residual stability utilities after consolidating the canonical UI/window handlers."""
+# v161_button_window_stability
+"""v161: deterministic buttons/navigation, parallel-window stability, file-only progress UI, exact window tokens."""
 
 import gzip as _v161_gzip
 import json as _v161_json
@@ -12,7 +12,7 @@ import tempfile as _v161_tempfile
 import threading as _v161_threading
 import time as _v161_time
 
-VERSION = "bot_v163_consolidated_tz_fixes"
+VERSION = "bot_v161_button_window_stability"
 
 # 1. Ф232 is forbidden for ordinary telegram_update/background work. Ф233 stays for real file jobs.
 try:
@@ -145,6 +145,8 @@ def _v160_schedule_delete(chat_id: int, message_id: int, delay: float, prefix: s
 
 # 3. Background finance refresh must not repaint an opened INFO/reminders/menu back to Ф91.
 _V161_FORCE_MAIN = _v161_threading.local()
+_V161_PREV_BACKUP_WINDOW = globals().get("backup_window_for_owner")
+_V161_PREV_UPDATE_OR_SEND = globals().get("update_or_send_day_window")
 
 
 def _v161_callback_data() -> str:
@@ -188,15 +190,225 @@ def _v161_window_is_auxiliary(chat_id: int, message_id: int) -> bool:
     return str(row.get("window_type") or "") != "main_day"
 
 
+def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
+    chat_id = int(chat_id); day_key = str(day_key)[:10]
+    try: mid = int(message_id_override or get_active_window_id(chat_id, day_key) or 0)
+    except Exception: mid = 0
+    if mid and not _v161_explicit_main_action() and _v161_window_is_auxiliary(chat_id, mid):
+        try: bot_journal("main_refresh_deferred_aux_window", chat_id, f"msg={mid}; day={day_key}")
+        except Exception: pass
+        return False
+    if callable(_V161_PREV_BACKUP_WINDOW):
+        return _V161_PREV_BACKUP_WINDOW(chat_id, day_key, message_id_override=message_id_override)
+    return False
 
 
+def update_or_send_day_window(chat_id: int, day_key: str):
+    chat_id = int(chat_id); day_key = str(day_key)[:10]
+    try: mid = int(get_active_window_id(chat_id, day_key) or 0)
+    except Exception: mid = 0
+    if mid and not _v161_explicit_main_action() and _v161_window_is_auxiliary(chat_id, mid):
+        try: bot_journal("day_window_refresh_deferred_aux_window", chat_id, f"msg={mid}; day={day_key}")
+        except Exception: pass
+        return False
+    if callable(_V161_PREV_UPDATE_OR_SEND):
+        return _V161_PREV_UPDATE_OR_SEND(chat_id, day_key)
+    return False
 
 
-# 4-5. Canonical safe-edit/back-history implementations now live in 70_fast_ui.py
-# and 107_v157_process_menu_navigation_repair.py. This module only supplies the
-# shared v163 helpers they resolve dynamically at runtime.
+# 4. General safe edit: a button is successful only after real edit=ok; no silent scheduled/rate-limit success.
+def _v161_edit_retry(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "ui") -> str:
+    last = "failed"
+    for attempt in range(3):
+        try:
+            result = fast_ui_edit_message_text(int(chat_id), int(message_id), text, reply_markup=reply_markup, parse_mode=parse_mode, purpose=purpose)
+        except Exception:
+            result = "failed"
+        last = str(result or "failed")
+        if last == "ok": return "ok"
+        if last == "not_found": return "not_found"
+        if attempt < 2:
+            _v161_time.sleep(0.15 if last != "rate_limited" else (0.35 if attempt == 0 else 0.65))
+    return last
 
-# 6. /start implementation: the single registered handler lives in 90_commands_exports.py.
+
+def safe_edit(bot_obj, call, text, reply_markup=None, parse_mode=None):
+    chat_id = int(call.message.chat.id); msg_id = int(call.message.message_id)
+    raw_action = str(getattr(call, "data", "") or "")
+    if raw_action != "nav_prev" and not _v161_state_preserving_callback(raw_action):
+        try: remember_previous_window(call)
+        except Exception: pass
+    try:
+        code = window_code_for_callback(raw_action, owner_chat=is_owner_chat(chat_id))
+        if str(code).endswith("9998"):
+            journal_missing_window_marker(raw_action, chat_id, msg_id, text, reply_markup, "safe_edit_v161")
+        text = window_mark(text, code, html_mode=(str(parse_mode or "").upper() == "HTML"))
+    except Exception:
+        pass
+    if reply_markup is None:
+        try: reply_markup = default_window_nav_keyboard(chat_id)
+        except Exception: pass
+    try:
+        reply_markup = ensure_previous_back_nav_keyboard(reply_markup, chat_id, msg_id)
+        reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
+    except Exception:
+        pass
+    result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_v161")
+    if result == "ok":
+        try: _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
+        except Exception: pass
+        return "ok"
+    try:
+        # Never leave a click with no visible outcome. A missing/uneditable old window gets a new parallel copy.
+        sent = bot_obj.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+        try: _touch_v98_auto_close_for_callback(chat_id, int(sent.message_id), raw_action)
+        except Exception: pass
+        try: _v161_register_from_render(chat_id, int(sent.message_id), text)
+        except Exception: pass
+        return "created"
+    except Exception as exc:
+        try:
+            bot_obj.answer_callback_query(call.id, "Telegram не подтвердил обновление. Нажмите ещё раз.", show_alert=False)
+        except Exception:
+            pass
+        try: log_error(f"safe_edit_v161 fallback {chat_id}/{msg_id}: {exc}")
+        except Exception: pass
+        return result
+
+
+def safe_edit_current_only(bot_obj, call, text, reply_markup=None, parse_mode=None):
+    chat_id = int(call.message.chat.id); msg_id = int(call.message.message_id)
+    raw_action = str(getattr(call, "data", "") or "")
+    if raw_action != "nav_prev" and not _v161_state_preserving_callback(raw_action):
+        try: remember_previous_window(call)
+        except Exception: pass
+    try:
+        code = window_code_for_callback(raw_action, owner_chat=is_owner_chat(chat_id))
+        text = window_mark(text, code, html_mode=(str(parse_mode or "").upper() == "HTML"))
+    except Exception:
+        pass
+    if reply_markup is None:
+        try: reply_markup = default_window_nav_keyboard(chat_id)
+        except Exception: pass
+    try:
+        reply_markup = ensure_previous_back_nav_keyboard(reply_markup, chat_id, msg_id)
+        reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
+    except Exception:
+        pass
+    result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_current_v161")
+    if result != "ok":
+        try: bot_obj.answer_callback_query(call.id, "Это окно устарело. Откройте его заново.", show_alert=False)
+        except Exception: pass
+    return result
+
+
+# 5. Back history commits only after actual Telegram edit succeeds.
+def _v161_register_from_render(chat_id: int, message_id: int, text: str, day_key: str | None = None, code_hint: str = "") -> None:
+    try: marker = _v160_marker_from_text(str(text or ""))
+    except Exception: marker = ""
+    try:
+        day = str(day_key or get_chat_store(int(chat_id)).get("current_view_day") or today_key())
+        if marker == "Ф91":
+            register_open_window(int(chat_id), int(message_id), "main_day", code="О1", day_key=day, params={"parallel_allowed": True})
+            try: set_active_window_id(int(chat_id), day, int(message_id))
+            except Exception: pass
+        else:
+            register_open_window(int(chat_id), int(message_id), "local_fin_view", code=str(code_hint or marker or "view"), day_key=day, params={"parallel_allowed": True})
+    except Exception:
+        pass
+
+
+def restore_previous_window(call) -> bool:
+    try: chat_id = int(call.message.chat.id); message_id = int(call.message.message_id)
+    except Exception: return False
+    key = _window_nav_key(chat_id, message_id)
+    with _WINDOW_NAV_HISTORY_LOCK:
+        stack = list(_WINDOW_NAV_HISTORY.get(key) or [])
+        snap = dict(stack[-1]) if stack else None
+    if not snap:
+        return False
+    markup = _deserialize_inline_keyboard(snap.get("markup"))
+    try:
+        markup = ensure_previous_back_nav_keyboard(markup, chat_id, message_id)
+        markup = ensure_main_back_nav_keyboard(markup, chat_id)
+    except Exception: pass
+    result = _v161_edit_retry(chat_id, message_id, str(snap.get("text") or ""), reply_markup=markup, parse_mode=snap.get("parse_mode"), purpose="nav_prev_restore")
+    if result != "ok":
+        try: bot_journal("nav_prev_not_committed", chat_id, f"msg={message_id}; result={result}; history_kept=1", "WARN")
+        except Exception: pass
+        return False
+    with _WINDOW_NAV_HISTORY_LOCK:
+        live = _WINDOW_NAV_HISTORY.get(key) or []
+        if live: live.pop()
+        if not live: _WINDOW_NAV_HISTORY.pop(key, None)
+    _v161_register_from_render(chat_id, message_id, str(snap.get("text") or ""))
+    try: bot_journal("nav_prev_committed", chat_id, f"msg={message_id}; edit=ok")
+    except Exception: pass
+    return True
+
+
+def _v161_send_main(chat_id: int, day_key: str) -> int:
+    txt, _ = render_day_window(int(chat_id), str(day_key))
+    kb = build_main_keyboard(str(day_key), int(chat_id))
+    sent = bot.send_message(int(chat_id), txt, reply_markup=kb, parse_mode="HTML")
+    mid = int(getattr(sent, "message_id", 0) or 0)
+    if mid:
+        set_active_window_id(int(chat_id), str(day_key), mid)
+        try: register_open_window(int(chat_id), mid, "main_day", code="О1", day_key=str(day_key), params={"parallel_allowed": True})
+        except Exception: pass
+    try: schedule_balance_panel_refresh(int(chat_id), 0.05)
+    except Exception: pass
+    return mid
+
+
+def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
+    chat_id = int(chat_id); day_key = str(day_key)[:10]
+    try: current_mid = int(current_message_id or 0)
+    except Exception: current_mid = 0
+    try: old_mid = int(get_active_window_id(chat_id, day_key) or 0)
+    except Exception: old_mid = 0
+    txt, _ = render_day_window(chat_id, day_key); kb = build_main_keyboard(day_key, chat_id)
+    if current_mid:
+        try:
+            cancel_auto_delete_for_message(chat_id, current_mid)
+            cancel_fast_ui_edit(chat_id, current_mid)
+        except Exception: pass
+        result = _v161_edit_retry(chat_id, current_mid, txt, reply_markup=kb, parse_mode="HTML", purpose="back_main_instant")
+        try: bot_journal("back_main_v161", chat_id, f"msg={current_mid}; old={old_mid or None}; result={result}; preserve_parallel=1")
+        except Exception: pass
+        if result == "ok":
+            set_active_window_id(chat_id, day_key, current_mid)
+            try: register_open_window(chat_id, current_mid, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": True})
+            except Exception: pass
+            try: schedule_balance_panel_refresh(chat_id, 0.05)
+            except Exception: pass
+            return True
+        if result == "not_found":
+            try: unregister_open_window(chat_id, current_mid)
+            except Exception: pass
+    if old_mid and old_mid != current_mid:
+        try:
+            row = get_registered_open_window(chat_id, old_mid) or {}
+            if str(row.get("window_type") or "") == "main_day":
+                _V161_FORCE_MAIN.value = True
+                try:
+                    if callable(_V161_PREV_BACKUP_WINDOW): _V161_PREV_BACKUP_WINDOW(chat_id, day_key, message_id_override=old_mid)
+                finally:
+                    _V161_FORCE_MAIN.value = False
+                set_active_window_id(chat_id, day_key, old_mid)
+                return True
+        except Exception:
+            try: _V161_FORCE_MAIN.value = False
+            except Exception: pass
+    try:
+        _V161_FORCE_MAIN.value = True
+        _v161_send_main(chat_id, day_key)
+        return True
+    finally:
+        _V161_FORCE_MAIN.value = False
+
+
+# 6. /start gets a priority handler and never trusts one stale active message id.
 def _v161_known_main_candidates(chat_id: int, day_key: str) -> list[int]:
     rows = []
     try:
@@ -274,6 +486,15 @@ def _v161_cmd_start(msg):
         except Exception: pass
 
 
+def _v161_install_start_handler() -> int:
+    try:
+        bot.message_handler(commands=["start"])(_v161_cmd_start)
+        handlers = getattr(bot, "message_handlers", None)
+        if isinstance(handlers, list) and handlers:
+            row = handlers.pop(); handlers.insert(0, row)
+        return 1
+    except Exception:
+        return 0
 
 
 # 7. Critical navigation callbacks are handled before legacy routing and always target the clicked message.
@@ -354,6 +575,35 @@ def _v161_extract_token(text: str) -> str:
     return str(m.group(1)).upper() if m else ""
 
 
+def _v161_install_callback_intercept() -> int:
+    count = 0
+    for handler in list(getattr(bot, "callback_query_handlers", []) or []):
+        if not isinstance(handler, dict): continue
+        original = handler.get("function")
+        if not callable(original) or getattr(original, "_v161_stability", False): continue
+        def _wrapped(call, _original=original):
+            raw = str(getattr(call, "data", "") or ""); resolved = raw
+            try:
+                resolver = globals().get("resolve_short_callback")
+                if callable(resolver): resolved = str(resolver(raw) or raw)
+            except Exception: pass
+            try:
+                msg_text = str(getattr(call.message, "text", None) or getattr(call.message, "caption", None) or "")
+                _V161_SOURCE_CONTEXT.token = _v161_extract_token(msg_text)
+                _V161_SOURCE_CONTEXT.callback = resolved
+                _V161_SOURCE_CONTEXT.chat_id = int(call.message.chat.id)
+                _V161_SOURCE_CONTEXT.message_id = int(call.message.message_id)
+            except Exception: pass
+            if _v161_critical_callback(call, resolved): return None
+            try:
+                clear = globals().get("_v160_clear_legacy_same_button_suppression")
+                if callable(clear): clear(call)
+            except Exception: pass
+            return _original(call)
+        _wrapped._v161_stability = True
+        _wrapped.__name__ = getattr(original, "__name__", "callback_handler")
+        handler["function"] = _wrapped; count += 1
+    return count
 
 
 # 8. Unique token per logical state; switches preserve it, normal transitions rotate it.
@@ -550,7 +800,7 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
         if str(manifest.get("kind")) != "telegram_bot_full_state_v153": raise RuntimeError("unknown export kind")
         if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA): raise RuntimeError("unsupported export schema")
         export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_", "bot_v158_", "bot_v159_", "bot_v160_", "bot_v161_", "bot_v162_", "bot_v163_")):
+        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_", "bot_v158_", "bot_v159_", "bot_v160_", "bot_v161_")):
             raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
         if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
         return manifest, raw
@@ -558,18 +808,14 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
         _v161_shutil.rmtree(folder, ignore_errors=True); raise
 
 
-# v163 consolidation: /start is registered once in 90_commands_exports.py and
-# critical callbacks are dispatched once inside 80_callback_router.py. Keep the
-# hardened functions here as implementation helpers, but do not wrap/register a
-# second copy of the Telegram handlers.
-_V161_START_HANDLER = 0
-_V161_CALLBACK_HANDLERS = 0
+_V161_START_HANDLER = _v161_install_start_handler()
+_V161_CALLBACK_HANDLERS = _v161_install_callback_intercept()
 _V161_CAPTURE_HANDLER = _v161_install_capture()
 try: globals()["_V160_FAST_EDIT_MIN_GAP"] = 0.02
 except Exception: pass
 try:
-    bot_journal("v163_consolidated_tz_fixes_installed", int(OWNER_ID or 0),
-                f"start={_V161_START_HANDLER}; callbacks={_V161_CALLBACK_HANDLERS}; capture={_V161_CAPTURE_HANDLER}; F232=off; F233=file-only; delete_retries=3; nav_commit_after_edit=1; parallel=1; token=wXXXXXXXX; webhook_secret_path=1; nav_window_lanes=1; start_priority_lane=1; canonical_callback_router=1; single_start_handler=1")
+    bot_journal("v161_button_window_stability_installed", int(OWNER_ID or 0),
+                f"start={_V161_START_HANDLER}; callbacks={_V161_CALLBACK_HANDLERS}; capture={_V161_CAPTURE_HANDLER}; F232=off; F233=file-only; delete_retries=3; nav_commit_after_edit=1; parallel=1; token=wXXXXXXXX")
 except Exception: pass
 
-# v163_consolidated_tz_fixes
+# v161_button_window_stability

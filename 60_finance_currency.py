@@ -1,4 +1,4 @@
-# v163_consolidated_tz_fixes
+# v150_excel_reserve_chat_lifecycle
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -1771,19 +1771,16 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
             return True
 
         fobj = file_bytesio_named(tmp_name, display_name)
-        if not fobj:
-            raise RuntimeError(f"Не удалось подготовить точный экспорт для Telegram: {tmp_name}")
-        _file_job_progress("отправляю файл в Telegram", force=True)
-        sent = _tg_call_retry(
-            bot.send_document,
-            recipient_chat_id,
-            fobj,
-            caption=caption,
-            timeout=120,
-            purpose="exact_export_send_document",
-        )
-        if not getattr(sent, "document", None):
-            raise RuntimeError("Telegram не подтвердил отправку точного экспорта")
+        if fobj:
+            _file_job_progress("отправляю файл в Telegram", force=True)
+            _tg_call_retry(
+                bot.send_document,
+                recipient_chat_id,
+                fobj,
+                caption=caption,
+                timeout=120,
+                purpose="exact_export_send_document",
+            )
         return True
     except Exception as exc:
         log_error(f"send_exact_range_export({target_chat_id}): {exc}")
@@ -2105,4 +2102,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v163_consolidated_tz_fixes
+# v150_excel_reserve_chat_lifecycle
