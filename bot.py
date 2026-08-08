@@ -1,11 +1,11 @@
-# v158_no_process_messages_income_notes
+# v159_internal_timers_helper_windows
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v158_no_process_messages_income_notes"
-MODULE_FILE_VERSION = "v158_no_process_messages_income_notes"
+MODULAR_VERSION = "bot_v159_internal_timers_helper_windows"
+MODULE_FILE_VERSION = "v159_internal_timers_helper_windows"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -38,6 +38,7 @@ MODULAR_SOURCE_PARTS = [
     '106_v156_process_status_usd_excel.py',
     '107_v157_process_menu_navigation_repair.py',
     '108_v158_no_process_messages_income_notes.py',
+    '109_v159_internal_timers_helper_windows.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -137,4 +138,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v158_no_process_messages_income_notes
+# v159_internal_timers_helper_windows
