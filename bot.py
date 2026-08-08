@@ -1,11 +1,11 @@
-# v163_audit_hardening
+# v164_circle_hierarchy_spaces
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v163_audit_hardening"
-MODULE_FILE_VERSION = "v163_audit_hardening"
+MODULAR_VERSION = "bot_v164_circle_hierarchy_spaces"
+MODULE_FILE_VERSION = "v164_circle_hierarchy_spaces"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -43,6 +43,7 @@ MODULAR_SOURCE_PARTS = [
     '111_v161_button_window_stability.py',
     '112_v162_start_hard_fix.py',
     '113_v163_audit_hardening.py',
+    '114_v164_circle_hierarchy_spaces.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -142,4 +143,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v163_audit_hardening
+# v164_circle_hierarchy_spaces

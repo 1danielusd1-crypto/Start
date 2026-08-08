@@ -1,6 +1,6 @@
 {
-  "version": "bot_v163_audit_hardening",
-  "file_marker": "v163_audit_hardening",
+  "version": "bot_v164_circle_hierarchy_spaces",
+  "file_marker": "v164_circle_hierarchy_spaces",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -37,7 +37,8 @@
     "110_v160_stability_parallel_windows_annotations.py",
     "111_v161_button_window_stability.py",
     "112_v162_start_hard_fix.py",
-    "113_v163_audit_hardening.py"
+    "113_v163_audit_hardening.py",
+    "114_v164_circle_hierarchy_spaces.py"
   ],
   "files": {
     "00_core.py": "61b35290e79f471c124ffcf9fa848ff98c64b6fc520832f8ccc8fe073ab3713c",
@@ -75,7 +76,8 @@
     "110_v160_stability_parallel_windows_annotations.py": "8e614880df5f8478c30a1f536a835d040d2913df353662f3befc2f3488c6ae55",
     "111_v161_button_window_stability.py": "89dca341ccea71de1ebe5aeb35c68e12d59a0d87e92232af0de558368d1cdb6c",
     "112_v162_start_hard_fix.py": "879fb2600ae7cfd67c0f96d80620b95d582544f5cf961b1472da6cad1a5b27b6",
-    "113_v163_audit_hardening.py": "3ccba854846ec401e4b674dd12e94b87ac15e8e3562307e92b085290c4794997"
+    "113_v163_audit_hardening.py": "3ccba854846ec401e4b674dd12e94b87ac15e8e3562307e92b085290c4794997",
+    "114_v164_circle_hierarchy_spaces.py": "2b5f50ba5eeac362583cdc805e60326ba120a274edea770adbe1a19e5993216d"
   },
   "file_markers": {
     "00_core.py": "v153_remaining_fixes_11_16",
@@ -113,6 +115,7 @@
     "110_v160_stability_parallel_windows_annotations.py": "v160_stability_parallel_windows_annotations",
     "111_v161_button_window_stability.py": "v161_button_window_stability",
     "112_v162_start_hard_fix.py": "v162_start_hard_fix",
-    "113_v163_audit_hardening.py": "v163_audit_hardening"
+    "113_v163_audit_hardening.py": "v163_audit_hardening",
+    "114_v164_circle_hierarchy_spaces.py": "v164_circle_hierarchy_spaces"
   }
 }

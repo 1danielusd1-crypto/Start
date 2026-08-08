@@ -1,0 +1,38 @@
+bot_v164_circle_hierarchy_spaces
+
+СТАТИЧЕСКИЕ ПРОВЕРКИ
+- py_compile всех разделённых модулей: PASS
+- py_compile bot.py: PASS
+- py_compile FULL_bot_v164_circle_hierarchy_spaces.py: PASS
+- manifest SHA-256: PASS
+- first/last source version markers: PASS
+- ZIP integrity: PASS
+
+ФУНКЦИОНАЛЬНЫЙ ИЗОЛИРОВАННЫЙ ТЕСТ ИЕРАРХИИ
+Синтетическая старая база:
+- platform tenant: OWNER_ID + ошибочно присоединённый чат;
+- tenant первого круга: root chat + второй chat_id.
+
+Проверено:
+- OWNER_ID остался единственным platform chat: PASS
+- ошибочный platform chat отделён в собственный 1-й круг: PASS
+- root chat отделён/сохранён как собственный 1-й круг: PASS
+- дополнительный chat_id отделён в собственный tenant 2-го круга: PASS
+- parent_first_chat_id сохранён: PASS
+- direct chat, созданный при actor=platform owner, всё равно становится 1-м кругом: PASS
+- ссылка из 1-го круга создаёт отдельный tenant 2-го круга: PASS
+- parent и child tenant различаются: PASS
+
+ИНВАРИАНТЫ ИСХОДНИКА
+- один chat_id = один tenant: PASS
+- 1-й/2-й круг не добавляются в platform tenant: PASS
+- в owner forward menu есть переключатель кругов: PASS
+- в owner finance mode menu есть переключатель кругов: PASS
+- restore разрешает bot_v164_*: PASS
+
+НЕ ВЫПОЛНЯЛОСЬ
+- live Telegram Bot API;
+- реальный startgroup deep-link;
+- Render deploy;
+- MEGA restore/upload;
+- Google Sheets/Drive.
