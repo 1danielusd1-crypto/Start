@@ -1,6 +1,6 @@
 {
-  "version": "bot_v162_audit_hardening",
-  "file_marker": "v162_audit_hardening",
+  "version": "bot_v163_audit_hardening",
+  "file_marker": "v163_audit_hardening",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -35,7 +35,9 @@
     "108_v158_no_process_messages_income_notes.py",
     "109_v159_internal_timers_helper_windows.py",
     "110_v160_stability_parallel_windows_annotations.py",
-    "111_v161_button_window_stability.py"
+    "111_v161_button_window_stability.py",
+    "112_v162_start_hard_fix.py",
+    "113_v163_audit_hardening.py"
   ],
   "files": {
     "00_core.py": "61b35290e79f471c124ffcf9fa848ff98c64b6fc520832f8ccc8fe073ab3713c",
@@ -59,7 +61,7 @@
     "92_v147_diagnostic_hardening.py": "66c731b408ba646d8bf8d413ba2410ed61e226395f2a9882dfb8994a3fa8d7aa",
     "93_v148_multitenant_spaces.py": "c70b0983f7215ef9f5926c66464c554ae939106c18591f473a95b9b5c5c7a721",
     "94_v149_tenant_google_merged_reminders.py": "fc517e80270db8f6e92a8b08b8cdb9c3390d3619c180bc62a10dfb5354e09dfb",
-    "99_web_runtime.py": "4c43645374d34575309fa2c690e760e634bd766ce85308aea830be7dfbb2e85b",
+    "99_web_runtime.py": "74640f59783d2e300758b61ed972ffa55b390637eaa7df2a58582647ef593fae",
     "100_v150_excel_reserve_chat_lifecycle.py": "2f6942be3cbfef667d7a08f33fa717f6526d205c6ff667f1fa3bc0bde13b30a9",
     "101_v151_redo_fixes_5_6_7.py": "1a3d5913c182bded426a60f7298fe0b837bdea15ad324572436688772b354131",
     "102_v152_human_journals_chat_rights.py": "c93fbd1cb92b40002919c4c1ff35832a19fdc4c89236b81a65295fb84b5cd9c0",
@@ -71,7 +73,9 @@
     "108_v158_no_process_messages_income_notes.py": "9a04d15e793b0449bdf9de911c50c44cad85e2dd479476e9802e3c388dd605c0",
     "109_v159_internal_timers_helper_windows.py": "ebab4a081699af25d790f90e47908ba711963747a77bc5a403f02207572cc87b",
     "110_v160_stability_parallel_windows_annotations.py": "8e614880df5f8478c30a1f536a835d040d2913df353662f3befc2f3488c6ae55",
-    "111_v161_button_window_stability.py": "a3a06a441ec770b6a97bcb22f65c6aa8d2c35d2638a5fc5e29fcd667a0f61bb2"
+    "111_v161_button_window_stability.py": "89dca341ccea71de1ebe5aeb35c68e12d59a0d87e92232af0de558368d1cdb6c",
+    "112_v162_start_hard_fix.py": "879fb2600ae7cfd67c0f96d80620b95d582544f5cf961b1472da6cad1a5b27b6",
+    "113_v163_audit_hardening.py": "3ccba854846ec401e4b674dd12e94b87ac15e8e3562307e92b085290c4794997"
   },
   "file_markers": {
     "00_core.py": "v153_remaining_fixes_11_16",
@@ -95,7 +99,7 @@
     "92_v147_diagnostic_hardening.py": "v147_diagnostic_hardening",
     "93_v148_multitenant_spaces.py": "v148_multitenant_spaces",
     "94_v149_tenant_google_merged_reminders.py": "v149_tenant_google_merged_reminders",
-    "99_web_runtime.py": "v162_audit_hardening",
+    "99_web_runtime.py": "v163_audit_hardening",
     "100_v150_excel_reserve_chat_lifecycle.py": "v150_excel_reserve_chat_lifecycle",
     "101_v151_redo_fixes_5_6_7.py": "v151_redo_fixes_5_6_7",
     "102_v152_human_journals_chat_rights.py": "v152_human_journals_chat_rights",
@@ -107,6 +111,8 @@
     "108_v158_no_process_messages_income_notes.py": "v158_no_process_messages_income_notes",
     "109_v159_internal_timers_helper_windows.py": "v159_internal_timers_helper_windows",
     "110_v160_stability_parallel_windows_annotations.py": "v160_stability_parallel_windows_annotations",
-    "111_v161_button_window_stability.py": "v162_audit_hardening"
+    "111_v161_button_window_stability.py": "v161_button_window_stability",
+    "112_v162_start_hard_fix.py": "v162_start_hard_fix",
+    "113_v163_audit_hardening.py": "v163_audit_hardening"
   }
 }

@@ -1,0 +1,27 @@
+bot_v163_audit_hardening — статический тест
+
+PASS:
+- py_compile всех 36 модулей.
+- py_compile bot.py.
+- py_compile единого FULL файла.
+- manifest содержит 36 модулей и актуальные SHA-256.
+- первая/последняя строка изменённых исходников содержит только v163 marker.
+- старого Flask route /{BOT_TOKEN} в 99_web_runtime.py нет.
+- webhook URL строится через /tg/<secret>.
+- remove_webhook вызывается только внутри WEBHOOK_FORCE_RESET=1 ветки.
+- callback receipt ACK задан 0.15 сек.
+- /start получает отдельный START_UI_TASK_POOL.
+- безопасная навигация получает WINDOW_UI_TASK_POOL с ключом chat_id/message_id.
+- остальные callback остаются на UI_TASK_POOL по chat_id.
+- исполнение безопасной навигации использует per-window lock; business callback — chat lock.
+- Ф111/конечный календарь: текущий день имеет 📅-метку.
+- добавлен one-tap callback «До конца текущего дня».
+- Ф52/Ф53 используют объединённый tenant-scoped chat inventory.
+- Ф233 проверяет факт успешного bot.send_document.
+- restore allowlist содержит bot_v163_*.
+
+НЕ ВЫПОЛНЯЛОСЬ:
+- live Telegram webhook;
+- live Render deploy;
+- live MEGA/Google;
+- реальная отправка файла Telegram.
