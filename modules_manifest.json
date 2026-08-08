@@ -1,6 +1,6 @@
 {
-  "version": "bot_v161_annotation_tenant_chat_sync",
-  "file_marker": "v161_annotation_tenant_chat_sync",
+  "version": "bot_v161_button_window_stability",
+  "file_marker": "v161_button_window_stability",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -34,8 +34,8 @@
     "107_v157_process_menu_navigation_repair.py",
     "108_v158_no_process_messages_income_notes.py",
     "109_v159_internal_timers_helper_windows.py",
-    "110_v160_window_button_annotations.py",
-    "111_v161_annotation_tenant_chat_sync.py"
+    "110_v160_stability_parallel_windows_annotations.py",
+    "111_v161_button_window_stability.py"
   ],
   "files": {
     "00_core.py": "61b35290e79f471c124ffcf9fa848ff98c64b6fc520832f8ccc8fe073ab3713c",
@@ -70,8 +70,8 @@
     "107_v157_process_menu_navigation_repair.py": "10b7d35b456a6ba977e6fd4a7d3578dc32eb23780f513542cbaf4d6d04729d42",
     "108_v158_no_process_messages_income_notes.py": "9a04d15e793b0449bdf9de911c50c44cad85e2dd479476e9802e3c388dd605c0",
     "109_v159_internal_timers_helper_windows.py": "ebab4a081699af25d790f90e47908ba711963747a77bc5a403f02207572cc87b",
-    "110_v160_window_button_annotations.py": "c04ba3e5cc91d99b1cfc87906f8ad6de0aaa9afe4b48dd430d55f7c4c870f48d",
-    "111_v161_annotation_tenant_chat_sync.py": "d6db134c5b5e12104ea010b25eea2806cc4a3010568cc6fa4baef2bad6e82ed9"
+    "110_v160_stability_parallel_windows_annotations.py": "8e614880df5f8478c30a1f536a835d040d2913df353662f3befc2f3488c6ae55",
+    "111_v161_button_window_stability.py": "89dca341ccea71de1ebe5aeb35c68e12d59a0d87e92232af0de558368d1cdb6c"
   },
   "file_markers": {
     "00_core.py": "v153_remaining_fixes_11_16",
@@ -106,7 +106,7 @@
     "107_v157_process_menu_navigation_repair.py": "v157_process_menu_navigation_repair",
     "108_v158_no_process_messages_income_notes.py": "v158_no_process_messages_income_notes",
     "109_v159_internal_timers_helper_windows.py": "v159_internal_timers_helper_windows",
-    "110_v160_window_button_annotations.py": "v160_window_button_annotations",
-    "111_v161_annotation_tenant_chat_sync.py": "v161_annotation_tenant_chat_sync"
+    "110_v160_stability_parallel_windows_annotations.py": "v160_stability_parallel_windows_annotations",
+    "111_v161_button_window_stability.py": "v161_button_window_stability"
   }
 }

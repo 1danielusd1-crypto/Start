@@ -1,34 +1,24 @@
-bot_v161_annotation_tenant_chat_sync — TEST REPORT
+TEST REPORT v161
 
-1. Python compile:
-   - bot.py: PASS
-   - 34 numbered source modules: PASS
-   - FULL_bot_v161_annotation_tenant_chat_sync.py: PASS
+Статические проверки:
+- новый модуль py_compile: OK
+- все модульные Python-файлы py_compile: выполняется перед упаковкой
+- единый полный файл py_compile: выполняется перед упаковкой
+- manifest SHA-256: выполняется перед упаковкой
+- first/last version markers: выполняется перед упаковкой
+- unzip -t обоих архивов: выполняется после упаковки
 
-2. Modular package integrity:
-   - modules_manifest.json version: PASS
-   - SHA-256 for every numbered module: PASS
-   - first/last source version markers: PASS
-   - module count: 34
+Сценарии нового модуля:
+- nav history остаётся на месте при failed edit: OK
+- nav history удаляется только после edit=ok: OK
+- обычный переход создаёт новый w-token: OK
+- callback-переключатель сохраняет w-token: OK
+- /start priority handler и annotation handler регистрируются: OK
 
-3. Annotation routing mock integration:
-   - @good_server_bot /tz Ф217 w1234567890 hello -> parsed as tz/Ф217/token/body: PASS
-   - @good_server_bot /iz-mr ф217 w1234567890 New name -> parsed: PASS
-   - priority handler moved before old catch-all finance text handler: PASS
-   - /iz-mr writes user_name: PASS
-   - /tz appends TZ record: PASS
+По журналу v159, послужившему основанием для стабилизации:
+- /start встречал удалённые message_id (window_edit_target_missing);
+- некоторые button_outcome завершались handled без window_edit_applied;
+- обычное закрытие могло занимать много секунд при общей нагрузке очередей;
+- встречались marker holes у reminder callbacks.
 
-4. First-circle UI mock integration:
-   - root chat present in finance menu: PASS
-   - normal first-circle chat present: PASS
-   - bot_removed-style chat remains visible (➖): PASS
-   - forwarding picker contains same first-circle chat IDs: PASS
-
-5. Restore compatibility:
-   - validator includes bot_v161_* snapshots: PASS (static/compile validation)
-
-Not executed locally:
-   - live Telegram API edit/send
-   - live Render deploy
-   - live MEGA persistence
-These require production credentials/network and are intentionally not emulated.
+Live deploy/Telegram/Render/MEGA в этой среде не выполнялся.
