@@ -1,11 +1,11 @@
-# v160_window_button_annotations
+# v161_button_window_stability
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v160_window_button_annotations"
-MODULE_FILE_VERSION = "v160_window_button_annotations"
+MODULAR_VERSION = "bot_v161_button_window_stability"
+MODULE_FILE_VERSION = "v161_button_window_stability"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -39,7 +39,8 @@ MODULAR_SOURCE_PARTS = [
     '107_v157_process_menu_navigation_repair.py',
     '108_v158_no_process_messages_income_notes.py',
     '109_v159_internal_timers_helper_windows.py',
-    '110_v160_window_button_annotations.py',
+    '110_v160_stability_parallel_windows_annotations.py',
+    '111_v161_button_window_stability.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -139,4 +140,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v160_window_button_annotations
+# v161_button_window_stability

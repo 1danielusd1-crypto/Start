@@ -1,0 +1,24 @@
+TEST REPORT v161
+
+Статические проверки:
+- новый модуль py_compile: OK
+- все модульные Python-файлы py_compile: выполняется перед упаковкой
+- единый полный файл py_compile: выполняется перед упаковкой
+- manifest SHA-256: выполняется перед упаковкой
+- first/last version markers: выполняется перед упаковкой
+- unzip -t обоих архивов: выполняется после упаковки
+
+Сценарии нового модуля:
+- nav history остаётся на месте при failed edit: OK
+- nav history удаляется только после edit=ok: OK
+- обычный переход создаёт новый w-token: OK
+- callback-переключатель сохраняет w-token: OK
+- /start priority handler и annotation handler регистрируются: OK
+
+По журналу v159, послужившему основанием для стабилизации:
+- /start встречал удалённые message_id (window_edit_target_missing);
+- некоторые button_outcome завершались handled без window_edit_applied;
+- обычное закрытие могло занимать много секунд при общей нагрузке очередей;
+- встречались marker holes у reminder callbacks.
+
+Live deploy/Telegram/Render/MEGA в этой среде не выполнялся.
