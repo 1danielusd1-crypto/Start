@@ -1,0 +1,30 @@
+bot_v166_fast_parallel_forward_pairs — TEST REPORT
+
+Статические проверки:
+PASS — py_compile всех 39 разделённых модулей.
+PASS — py_compile bot.py.
+PASS — py_compile FULL_bot_v166_fast_parallel_forward_pairs.py.
+PASS — AST parse всех 39 модулей, bot.py и полного файла.
+PASS — SHA-256 каждого runtime-модуля совпадает с modules_manifest.json.
+PASS — первая/последняя строка каждого runtime-модуля совпадает с историческим marker из manifest.
+PASS — bot.py и полный файл имеют marker v166_fast_parallel_forward_pairs.
+
+Изолированные поведенческие тесты нового модуля:
+PASS — реальная пара из forward_rules показывается, даже если её endpoints находятся в разных изолированных tenant/space контурах.
+PASS — legacy pair, у которой отображаемый чат находится справа, корректно переориентируется только для UI.
+PASS — fw_new_fin одной пары маршрутизируется в отдельную pair-lane.
+PASS — INFO маршрутизируется в per-window lane по chat_id + message_id.
+PASS — финансовое delete/edit действие остаётся в последовательной per-chat UI lane.
+PASS — set_forward_finance меняет memory state без синхронного save_data/MEGA на пути callback; persistence ставится отдельно.
+PASS — два параллельных main_day окна получают разные finance-ui message keys.
+PASS — owner fin_view получает отдельный finance-ui message key.
+PASS — после business commit нет второго глобального DELAYED debounce для finance repaint.
+
+Проверка ZIP:
+PASS — полный ZIP и changed-only ZIP проходят zip integrity test (после сборки).
+
+Не выполнялось:
+- live Telegram API test;
+- live Render deploy;
+- live MEGA upload/restore;
+- live Google Sheets/Drive.
