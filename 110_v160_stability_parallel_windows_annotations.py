@@ -1,4 +1,4 @@
-# v160_stability_parallel_windows_annotations
+# v163_consolidated_tz_fixes
 """v160: UI stabilization, parallel-window support, reliable helper timers and exact window/TZ annotations."""
 
 import copy as _v160_copy
@@ -13,7 +13,7 @@ import threading as _v160_threading
 import time as _v160_time
 from datetime import timedelta as _v160_timedelta
 
-VERSION = "bot_v160_stability_parallel_windows_annotations"
+VERSION = "bot_v163_consolidated_tz_fixes"
 
 # ---------------------------------------------------------------------------
 # 1) Generic telegram_update/process pop-up is removed again.
@@ -282,7 +282,9 @@ def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args
             except Exception:
                 pass
             return False, reason or "сервер временно разгружает память"
-    key = _INTERACTIVE_FILE_JOB_KEY
+    # One file operation per recipient chat, instead of one global lock for the whole bot.
+    # This keeps duplicate protection in a chat while allowing independent chats to export in parallel.
+    key = f"interactive-file:{chat_id}"
     with _FILE_JOB_LOCK:
         existing = _FILE_JOB_STATE.get(key)
         if isinstance(existing, dict):
@@ -623,66 +625,64 @@ def cleanup_open_window_registry(reason: str = "manual") -> dict:
 _V160_PREV_RETURN_TO_MAIN = globals().get("return_to_main_window_closing_previous")
 
 
+def _v161_send_main(chat_id: int, day_key: str) -> int:
+    txt, _ = render_day_window(int(chat_id), str(day_key))
+    kb = build_main_keyboard(str(day_key), int(chat_id))
+    sent = bot.send_message(int(chat_id), txt, reply_markup=kb, parse_mode="HTML")
+    mid = int(getattr(sent, "message_id", 0) or 0)
+    if mid:
+        set_active_window_id(int(chat_id), str(day_key), mid)
+        try: register_open_window(int(chat_id), mid, "main_day", code="О1", day_key=str(day_key), params={"parallel_allowed": True})
+        except Exception: pass
+    try: schedule_balance_panel_refresh(int(chat_id), 0.05)
+    except Exception: pass
+    return mid
+
 def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
     chat_id = int(chat_id); day_key = str(day_key)[:10]
-    try:
-        current_mid = int(current_message_id or 0)
-    except Exception:
-        current_mid = 0
-    try:
-        old_mid = int(get_active_window_id(chat_id, day_key) or 0)
-    except Exception:
-        old_mid = 0
+    try: current_mid = int(current_message_id or 0)
+    except Exception: current_mid = 0
+    try: old_mid = int(get_active_window_id(chat_id, day_key) or 0)
+    except Exception: old_mid = 0
+    txt, _ = render_day_window(chat_id, day_key); kb = build_main_keyboard(day_key, chat_id)
     if current_mid:
         try:
             cancel_auto_delete_for_message(chat_id, current_mid)
-        except Exception:
-            pass
-        try:
             cancel_fast_ui_edit(chat_id, current_mid)
-        except Exception:
-            pass
-        txt, _ = render_day_window(chat_id, day_key)
-        kb = build_main_keyboard(day_key, chat_id)
-        result = fast_ui_edit_message_text(
-            chat_id, current_mid, txt,
-            reply_markup=kb, parse_mode="HTML", purpose="back_main_instant",
-        )
-        try:
-            bot_journal("back_main_fast", chat_id, f"day={day_key} result={result} old={old_mid or None} current={current_mid}; parallel=1")
-        except Exception:
-            pass
+        except Exception: pass
+        result = _v161_edit_retry(chat_id, current_mid, txt, reply_markup=kb, parse_mode="HTML", purpose="back_main_instant")
+        try: bot_journal("back_main_v161", chat_id, f"msg={current_mid}; old={old_mid or None}; result={result}; preserve_parallel=1")
+        except Exception: pass
         if result == "ok":
             set_active_window_id(chat_id, day_key, current_mid)
-            try:
-                register_open_window(chat_id, current_mid, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": True})
-            except Exception:
-                pass
-            if old_mid and old_mid != current_mid:
-                try:
-                    row = get_registered_open_window(chat_id, old_mid) or {}
-                    if row:
-                        row["parallel_allowed"] = True
-                    bot_journal("parallel_main_preserved", chat_id, f"day={day_key}; primary={current_mid}; preserved={old_mid}")
-                except Exception:
-                    pass
-            schedule_balance_panel_refresh(chat_id, 0.05)
-            return
+            try: register_open_window(chat_id, current_mid, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": True})
+            except Exception: pass
+            try: schedule_balance_panel_refresh(chat_id, 0.05)
+            except Exception: pass
+            return True
         if result == "not_found":
-            try:
-                unregister_open_window(chat_id, current_mid)
-            except Exception:
-                pass
-            if old_mid and old_mid != current_mid:
+            try: unregister_open_window(chat_id, current_mid)
+            except Exception: pass
+    if old_mid and old_mid != current_mid:
+        try:
+            row = get_registered_open_window(chat_id, old_mid) or {}
+            if str(row.get("window_type") or "") == "main_day":
+                _V161_FORCE_MAIN.value = True
                 try:
                     backup_window_for_owner(chat_id, day_key, message_id_override=old_mid)
-                    return
-                except Exception:
-                    pass
-    # With no usable clicked message, retain the established fallback behavior.
-    if callable(_V160_PREV_RETURN_TO_MAIN):
-        return _V160_PREV_RETURN_TO_MAIN(chat_id, day_key, current_message_id=None)
-    return None
+                finally:
+                    _V161_FORCE_MAIN.value = False
+                set_active_window_id(chat_id, day_key, old_mid)
+                return True
+        except Exception:
+            try: _V161_FORCE_MAIN.value = False
+            except Exception: pass
+    try:
+        _V161_FORCE_MAIN.value = True
+        _v161_send_main(chat_id, day_key)
+        return True
+    finally:
+        _V161_FORCE_MAIN.value = False
 
 
 # ---------------------------------------------------------------------------
@@ -1161,7 +1161,13 @@ def _v160_send_annotation_export(chat_id: int, kind: str):
             fh.write(content)
         _file_job_progress("отправляю файл в Telegram", force=True)
         with open(path, "rb") as fh:
-            bot.send_document(int(chat_id), fh, caption=f"{'🏷 Маркировки окон' if kind == 'markers' else '📝 ТЗ по окнам'} · {VERSION}")
+            sent = _tg_call_retry(
+                bot.send_document, int(chat_id), fh,
+                caption=f"{'🏷 Маркировки окон' if kind == 'markers' else '📝 ТЗ по окнам'} · {VERSION}",
+                timeout=120, purpose="window_annotation_export",
+            )
+        if not getattr(sent, "document", None):
+            raise RuntimeError("Telegram did not confirm document delivery")
         return True
     finally:
         _v160_shutil.rmtree(folder, ignore_errors=True)
@@ -1435,4 +1441,4 @@ try:
 except Exception:
     pass
 
-# v160_stability_parallel_windows_annotations
+# v163_consolidated_tz_fixes

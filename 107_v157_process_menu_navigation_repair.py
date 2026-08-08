@@ -1,4 +1,4 @@
-# v157_process_menu_navigation_repair
+# v163_consolidated_tz_fixes
 """v157: process-window submenu, robust Back navigation, vertical INFO layout and button-log repairs."""
 
 import copy as _v157_copy
@@ -378,39 +378,31 @@ _V157_ORIG_RESTORE_PREVIOUS_WINDOW = globals().get("restore_previous_window")
 
 
 def restore_previous_window(call) -> bool:
-    try:
-        chat_id = int(call.message.chat.id)
-        message_id = int(call.message.message_id)
-    except Exception:
+    try: chat_id = int(call.message.chat.id); message_id = int(call.message.message_id)
+    except Exception: return False
+    key = _window_nav_key(chat_id, message_id)
+    with _WINDOW_NAV_HISTORY_LOCK:
+        stack = list(_WINDOW_NAV_HISTORY.get(key) or [])
+        snap = dict(stack[-1]) if stack else None
+    if not snap:
         return False
+    markup = _deserialize_inline_keyboard(snap.get("markup"))
     try:
-        if callable(globals().get("window_has_previous")) and not window_has_previous(chat_id, message_id):
-            day = get_chat_store(chat_id).get("current_view_day") or today_key()
-            return_to_main_window_closing_previous(chat_id, day, current_message_id=message_id)
-            try:
-                bot_journal("nav_prev_fallback_main", chat_id, f"msg={message_id}; reason=no_history")
-            except Exception:
-                pass
-            return True
-    except Exception:
-        pass
-    ok = False
-    try:
-        ok = bool(_V157_ORIG_RESTORE_PREVIOUS_WINDOW(call)) if callable(_V157_ORIG_RESTORE_PREVIOUS_WINDOW) else False
-    except Exception as exc:
-        try:
-            bot_journal("nav_prev_restore_error", chat_id, str(exc)[:300], "WARN")
-        except Exception:
-            pass
-        ok = False
-    if ok:
-        return True
-    day = get_chat_store(chat_id).get("current_view_day") or today_key()
-    return_to_main_window_closing_previous(chat_id, day, current_message_id=message_id)
-    try:
-        bot_journal("nav_prev_fallback_main", chat_id, f"msg={message_id}; reason=restore_failed")
-    except Exception:
-        pass
+        markup = ensure_previous_back_nav_keyboard(markup, chat_id, message_id)
+        markup = ensure_main_back_nav_keyboard(markup, chat_id)
+    except Exception: pass
+    result = _v161_edit_retry(chat_id, message_id, str(snap.get("text") or ""), reply_markup=markup, parse_mode=snap.get("parse_mode"), purpose="nav_prev_restore")
+    if result != "ok":
+        try: bot_journal("nav_prev_not_committed", chat_id, f"msg={message_id}; result={result}; history_kept=1", "WARN")
+        except Exception: pass
+        return False
+    with _WINDOW_NAV_HISTORY_LOCK:
+        live = _WINDOW_NAV_HISTORY.get(key) or []
+        if live: live.pop()
+        if not live: _WINDOW_NAV_HISTORY.pop(key, None)
+    _v161_register_from_render(chat_id, message_id, str(snap.get("text") or ""))
+    try: bot_journal("nav_prev_committed", chat_id, f"msg={message_id}; edit=ok")
+    except Exception: pass
     return True
 
 
@@ -731,4 +723,4 @@ try:
 except Exception:
     pass
 
-# v157_process_menu_navigation_repair
+# v163_consolidated_tz_fixes

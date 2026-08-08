@@ -1,11 +1,11 @@
-# v163_audit_hardening
+# v163_consolidated_tz_fixes
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v163_audit_hardening"
-MODULE_FILE_VERSION = "v163_audit_hardening"
+MODULAR_VERSION = "bot_v163_consolidated_tz_fixes"
+MODULE_FILE_VERSION = "v163_consolidated_tz_fixes"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -41,8 +41,6 @@ MODULAR_SOURCE_PARTS = [
     '109_v159_internal_timers_helper_windows.py',
     '110_v160_stability_parallel_windows_annotations.py',
     '111_v161_button_window_stability.py',
-    '112_v162_start_hard_fix.py',
-    '113_v163_audit_hardening.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -142,4 +140,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v163_audit_hardening
+# v163_consolidated_tz_fixes

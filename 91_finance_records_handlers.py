@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v163_consolidated_tz_fixes
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -450,6 +450,20 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
     Окно дня для владельца без document-caption.
     JSON-бэкапы отправляются отдельно через schedule_backup_flush().
     """
+    # v163: a finance refresh cannot overwrite INFO/reminders/menus opened in this Telegram message.
+    chat_id = int(chat_id); day_key = str(day_key)[:10]
+    try: active_mid = int(message_id_override or get_active_window_id(chat_id, day_key) or 0)
+    except Exception: active_mid = 0
+    if active_mid:
+        try:
+            explicit = bool(globals().get("_v161_explicit_main_action") and _v161_explicit_main_action())
+            auxiliary = bool(globals().get("_v161_window_is_auxiliary") and _v161_window_is_auxiliary(chat_id, active_mid))
+        except Exception:
+            explicit = False; auxiliary = False
+        if not explicit and auxiliary:
+            try: bot_journal("main_refresh_deferred_aux_window", chat_id, f"msg={active_mid}; day={day_key}")
+            except Exception: pass
+            return False
     lock = window_locks[(chat_id, day_key)]
 
     with lock:
@@ -1494,4 +1508,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v148_multitenant_spaces
+# v163_consolidated_tz_fixes

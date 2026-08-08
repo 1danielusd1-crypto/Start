@@ -1,4 +1,4 @@
-# v154_excel_usd_isolation_date_marks
+# v163_consolidated_tz_fixes
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -85,6 +85,34 @@ def on_callback(call):
             except Exception:
                 pass
             return
+        # v163: keep the v161 stability context in this one canonical callback
+        # router instead of monkey-wrapping every registered handler.
+        try:
+            source_ctx = globals().get("_V161_SOURCE_CONTEXT")
+            token_reader = globals().get("_v161_extract_token")
+            if source_ctx is not None:
+                msg_text = str(getattr(call.message, "text", None) or getattr(call.message, "caption", None) or "")
+                source_ctx.token = str(token_reader(msg_text) or "") if callable(token_reader) else ""
+                source_ctx.callback = str(data_str or "")
+                source_ctx.chat_id = int(chat_id)
+                source_ctx.message_id = int(call.message.message_id)
+        except Exception:
+            pass
+        try:
+            clear_same_button = globals().get("_v160_clear_legacy_same_button_suppression")
+            if callable(clear_same_button):
+                clear_same_button(call)
+        except Exception:
+            pass
+
+        # Critical Back / Back-main / INFO routing also lives here. The hardened
+        # implementation is loaded later but resolved at click time.
+        try:
+            critical = globals().get("_v161_critical_callback")
+            if callable(critical) and critical(call, data_str):
+                return
+        except Exception as critical_exc:
+            log_error(f"critical callback {data_str}: {critical_exc}")
         # v149 extensions are loaded after this router, but resolved dynamically at click time.
         try:
             _v149_callback = globals().get("v149_extension_callback")
@@ -3184,4 +3212,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v154_excel_usd_isolation_date_marks
+# v163_consolidated_tz_fixes

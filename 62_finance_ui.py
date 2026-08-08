@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v163_consolidated_tz_fixes
 def finance_mode_compact_icon(chat_id: int) -> str:
     """v108: hidden finance and visible auto-window mode are shown independently."""
     try:
@@ -619,9 +619,12 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
             path = chat_csv_file(target_chat_id)
             if os.path.exists(path):
                 fobj = file_bytesio_named(path, export_display_filename(target_chat_id, mode, day_key, "csv"))
-                if fobj:
-                    _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, purpose="send_csv_for_chat_to")
-                return
+                if not fobj:
+                    raise RuntimeError(f"Не удалось подготовить CSV для Telegram: {path}")
+                sent = _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, purpose="send_csv_for_chat_to")
+                if not getattr(sent, "document", None):
+                    raise RuntimeError("Telegram не подтвердил отправку CSV")
+                return True
         elif mode == "day":
             for r in store.get("daily_records", {}).get(day_key, []) or []:
                 rows.append((fmt_date_table(day_key), fmt_csv_amount(r.get("amount")), r.get("note", "")))
@@ -658,21 +661,26 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
 
         if not rows:
             send_and_auto_delete(recipient_chat_id, "Нет данных для CSV.", 8)
-            return
+            return True
         tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"fv_csv_{target_chat_id}_{mode}_{int(time.time())}.csv")
         with open(tmp_name, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["date", "amount", "note"])
             write_csv_rows_with_day_gaps(w, rows, 3)
         fobj = file_bytesio_named(tmp_name, export_display_filename(target_chat_id, mode, day_key, "csv"))
-        if fobj:
-            _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, purpose="send_csv_for_chat_to")
+        if not fobj:
+            raise RuntimeError(f"Не удалось подготовить CSV для Telegram: {tmp_name}")
+        sent = _tg_call_retry(bot.send_document, recipient_chat_id, fobj, caption=caption, purpose="send_csv_for_chat_to")
+        if not getattr(sent, "document", None):
+            raise RuntimeError("Telegram не подтвердил отправку CSV")
         try:
             os.remove(tmp_name)
         except Exception:
             pass
+        return True
     except Exception as e:
         log_error(f"send_csv_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
+        return False
 
 
 
@@ -725,4 +733,4 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     if financial_view_is_usd(store):
         label = "USD " + label
     return rows, label
-# v141_operation_ledger_windows_expense_reminders_safety
+# v163_consolidated_tz_fixes

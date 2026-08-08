@@ -1,4 +1,4 @@
-# v154_excel_usd_isolation_date_marks
+# v163_consolidated_tz_fixes
 """v154: expense marks in F111/F114 and strict ARS/USD Excel isolation."""
 
 import calendar as _v154_calendar
@@ -10,7 +10,7 @@ import gzip as _v154_gzip
 import tempfile as _v154_tempfile
 import json as _v154_json
 
-VERSION = "bot_v154_excel_usd_isolation_date_marks"
+VERSION = "bot_v163_consolidated_tz_fixes"
 
 _V154_BASE_PERIOD_EXCEL_KEYBOARD = globals().get("_period_excel_style_keyboard")
 _V154_BASE_CATEGORY_COMPACT = globals().get("_category_rows_without_description")
@@ -83,7 +83,12 @@ def _export_calendar_start_keyboard(view_year: int, view_month: int, return_day_
     buttons = []
     for day_num in range(1, last_day + 1):
         day_key = _date_key_from_ymd(view_year, view_month, day_num)
-        label = f"📝{day_num}" if _v154_day_has_expense(chat_id, day_key) else str(day_num)
+        # The originating day_key is the bot's current financial day (it may differ
+        # from the civil date around the configured accounting boundary).
+        if day_key == str(return_day_key)[:10]:
+            label = f"📅{day_num}"
+        else:
+            label = f"📝{day_num}" if _v154_day_has_expense(chat_id, day_key) else str(day_num)
         buttons.append(IB(label, callback_data=export_callback(
             f"exp_pick_set_start:{view_year}:{view_month}:{day_num}:{return_day_key}"
         )))
@@ -115,7 +120,10 @@ def _export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int
         if day_key < start_key:
             buttons.append(IB("·", callback_data="none"))
         else:
-            label = f"📝{day_num}" if _v154_day_has_expense(chat_id, day_key) else str(day_num)
+            if day_key == str(return_day_key)[:10]:
+                label = f"📅{day_num}"
+            else:
+                label = f"📝{day_num}" if _v154_day_has_expense(chat_id, day_key) else str(day_num)
             buttons.append(IB(label, callback_data=export_callback(
                 f"exp_pick_set_end:{start_key}:{int(start_rid)}:{view_year}:{view_month}:{day_num}:{return_day_key}"
             )))
@@ -140,6 +148,22 @@ def _export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int
         IB(str(view_year), callback_data="none"),
         IB("Год ▶️", callback_data=export_callback(f"exp_pick_end:{start_key}:{int(start_rid)}:{view_year+1}:{view_month}:{return_day_key}")),
     )
+    # F113: one-tap boundary to the end of the bot's current financial day.
+    current_key = str(return_day_key)[:10]
+    try:
+        datetime.strptime(current_key, "%Y-%m-%d")
+        if current_key >= str(start_key)[:10]:
+            kb.row(IB(
+                f"✅ До конца текущего дня · {fmt_date_ddmmyy(current_key)}",
+                callback_data=export_callback(
+                    f"exp_pick_end_record:{start_key}:{int(start_rid)}:{current_key}:0:{return_day_key}"
+                ),
+            ))
+    except Exception as exc:
+        try:
+            log_error(f"F113 current-day shortcut: {exc}")
+        except Exception:
+            pass
     start_dt = datetime.strptime(start_key, "%Y-%m-%d")
     kb.row(IB("🔙 Изменить начало", callback_data=export_callback(
         f"exp_pick_set_start:{start_dt.year}:{start_dt.month}:{start_dt.day}:{return_day_key}"
@@ -339,4 +363,4 @@ try:
 except Exception:
     pass
 
-# v154_excel_usd_isolation_date_marks
+# v163_consolidated_tz_fixes

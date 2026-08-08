@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v163_consolidated_tz_fixes
 
 # ─────────────────────────────────────────────────────────────
 # v148: независимые пространства (tenant isolation)
@@ -488,24 +488,80 @@ def bind_chat_to_owner_scope(chat_id: int, scope_id: int):
 # ─────────────────────────────────────────────────────────────
 # Strict chat-list and forwarding isolation
 # ─────────────────────────────────────────────────────────────
-def collect_forward_menu_chats() -> dict:
-    tid = tenant_current_id()
-    result = {}
-    for cid in tenant_chat_ids(tid):
+def _v163_all_known_chat_ids_unscoped() -> list[int]:
+    """Union every durable source that can legitimately know a Telegram chat."""
+    ids = set()
+    try:
+        ids.update(int(x) for x in (data.get("chats", {}) or {}).keys())
+    except Exception:
+        pass
+    try:
+        if OWNER_ID:
+            owner_store = get_chat_store(int(OWNER_ID))
+            ids.update(int(x) for x in (owner_store.get("known_chats", {}) or {}).keys())
+    except Exception:
+        pass
+    for field in ("forward_rules", "forward_finance"):
         try:
-            store = get_chat_store(cid)
+            mapping = data.get(field, {}) or {}
+            for src, dsts in mapping.items():
+                ids.add(int(src))
+                if isinstance(dsts, dict):
+                    ids.update(int(x) for x in dsts.keys())
+        except Exception:
+            pass
+    try:
+        root = _tenants_root()
+        for row in (root.get("tenants", {}) or {}).values():
+            if isinstance(row, dict):
+                ids.update(int(x) for x in (row.get("chat_ids") or []))
+    except Exception:
+        pass
+    try:
+        if OWNER_ID:
+            ids.add(int(OWNER_ID))
+    except Exception:
+        pass
+    return sorted({int(x) for x in ids if int(x)}, key=lambda cid: get_chat_display_name(cid).casefold())
+
+
+def collect_forward_menu_chats() -> dict:
+    """F52/F53 chat source.
+
+    Platform owner sees every known chat. Tenant owners/admins remain strictly scoped.
+    This repairs stale/incomplete tenant chat arrays without weakening tenant isolation.
+    """
+    if tenant_is_platform_owner_context():
+        chat_ids = _v163_all_known_chat_ids_unscoped()
+    else:
+        chat_ids = tenant_chat_ids(tenant_current_id())
+    result = {}
+    for cid in chat_ids:
+        try:
+            store = get_chat_store(int(cid))
             info = store.get("info") or {}
-            result[str(cid)] = {
-                "title": info.get("title") or get_chat_display_name(cid) or f"Чат {cid}",
+            result[str(int(cid))] = {
+                "title": info.get("title") or get_chat_display_name(int(cid)) or f"Чат {int(cid)}",
                 "username": info.get("username"),
                 "type": info.get("type"),
             }
-        except Exception:
-            continue
+        except Exception as exc:
+            try:
+                bot_journal("chat_menu_collect_error", int(cid), str(exc)[:220], "WARN")
+            except Exception:
+                pass
     return result
 
 
 def collect_all_known_chat_ids(include_owner: bool = True) -> list[int]:
+    if tenant_is_platform_owner_context():
+        ids = _v163_all_known_chat_ids_unscoped()
+        if not include_owner and OWNER_ID:
+            try:
+                ids = [cid for cid in ids if int(cid) != int(OWNER_ID)]
+            except Exception:
+                pass
+        return ids
     ids = tenant_chat_ids(tenant_current_id())
     if not include_owner:
         root_id = owner_scope_id(current_state_chat_id())
@@ -1524,4 +1580,4 @@ def tenant_v148_snapshot() -> dict:
         "active_invites": sum(1 for row in (root.get("invite_tokens") or {}).values() if isinstance(row, dict) and not row.get("revoked") and float(row.get("expires_ts") or 0) >= time.time() and int(row.get("uses") or 0) < int(row.get("max_uses") or 1)),
     }
 
-# v148_multitenant_spaces
+# v163_consolidated_tz_fixes
