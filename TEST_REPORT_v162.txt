@@ -1,0 +1,22 @@
+TEST REPORT v162
+
+Выполнено локально:
+- AST parse всех модулей: OK
+- py_compile всех модульных Python-файлов: OK
+- py_compile FULL_bot_v162_audit_hardening.py: OK
+- manifest SHA-256 для всех модулей: OK
+- first/last version markers: OK
+- secure webhook helper: BOT TOKEN не попадает в сгенерированный path: OK
+- callback lane classifier:
+  nav_prev -> отдельная window lane: OK
+  d:*:back_main -> отдельная window lane: OK
+  d:*:info -> отдельная window lane: OK
+  финансовый/mutating callback -> остаётся per-chat lane: OK
+- /start и /start@Bot payload определяются как priority start: OK
+- похожая команда /starter не считается /start: OK
+- restore compatibility bot_v162_*: OK (static)
+- старый @app.route(f"/{BOT_TOKEN}") отсутствует: OK
+- обязательный remove_webhook()+0.5s отсутствует: OK
+
+Ограничение проверки:
+Live Telegram / Render / MEGA API в этой среде не запускались, поэтому после deploy нужен короткий реальный smoke-test.

@@ -1,4 +1,4 @@
-# v161_button_window_stability
+# v162_audit_hardening
 """v161: deterministic buttons/navigation, parallel-window stability, file-only progress UI, exact window tokens."""
 
 import gzip as _v161_gzip
@@ -12,7 +12,7 @@ import tempfile as _v161_tempfile
 import threading as _v161_threading
 import time as _v161_time
 
-VERSION = "bot_v161_button_window_stability"
+VERSION = "bot_v162_audit_hardening"
 
 # 1. Ф232 is forbidden for ordinary telegram_update/background work. Ф233 stays for real file jobs.
 try:
@@ -800,7 +800,7 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
         if str(manifest.get("kind")) != "telegram_bot_full_state_v153": raise RuntimeError("unknown export kind")
         if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA): raise RuntimeError("unsupported export schema")
         export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_", "bot_v158_", "bot_v159_", "bot_v160_", "bot_v161_")):
+        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_", "bot_v158_", "bot_v159_", "bot_v160_", "bot_v161_", "bot_v162_")):
             raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
         if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
         return manifest, raw
@@ -814,8 +814,8 @@ _V161_CAPTURE_HANDLER = _v161_install_capture()
 try: globals()["_V160_FAST_EDIT_MIN_GAP"] = 0.02
 except Exception: pass
 try:
-    bot_journal("v161_button_window_stability_installed", int(OWNER_ID or 0),
-                f"start={_V161_START_HANDLER}; callbacks={_V161_CALLBACK_HANDLERS}; capture={_V161_CAPTURE_HANDLER}; F232=off; F233=file-only; delete_retries=3; nav_commit_after_edit=1; parallel=1; token=wXXXXXXXX")
+    bot_journal("v162_audit_hardening_installed", int(OWNER_ID or 0),
+                f"start={_V161_START_HANDLER}; callbacks={_V161_CALLBACK_HANDLERS}; capture={_V161_CAPTURE_HANDLER}; F232=off; F233=file-only; delete_retries=3; nav_commit_after_edit=1; parallel=1; token=wXXXXXXXX; webhook_secret_path=1; nav_window_lanes=1; start_priority_lane=1")
 except Exception: pass
 
-# v161_button_window_stability
+# v162_audit_hardening

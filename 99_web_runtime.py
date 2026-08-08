@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v162_audit_hardening
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -211,7 +211,60 @@ def _protect_pending_ui_timers_on_receipt(payload: dict):
             pass
 
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def _secure_webhook_path_token() -> str:
+    """Never expose the Telegram bot token in the public request path/access logs."""
+    explicit = str(os.getenv("WEBHOOK_PATH_SECRET", "") or "").strip()
+    if explicit:
+        cleaned = re.sub(r"[^A-Za-z0-9_-]", "", explicit)
+        if len(cleaned) >= 16:
+            return cleaned[:96]
+    # Deterministic across deploys, but does not reveal the bot token in Render access logs.
+    return hashlib.sha256(("telegram-webhook-path:" + str(BOT_TOKEN)).encode("utf-8")).hexdigest()[:40]
+
+
+WEBHOOK_PATH_TOKEN = _secure_webhook_path_token()
+
+
+def _callback_window_message_id(payload: dict) -> int:
+    try:
+        cq = (payload or {}).get("callback_query") or {}
+        msg = cq.get("message") or {}
+        return int(msg.get("message_id") or 0)
+    except Exception:
+        return 0
+
+
+def _callback_can_use_window_lane(payload: dict) -> bool:
+    """Only pure/navigation UI actions may bypass the per-chat callback queue.
+
+    Financial/state-changing callbacks intentionally remain serialized per chat.
+    """
+    try:
+        raw = str((((payload or {}).get("callback_query") or {}).get("data") or "")).strip()
+    except Exception:
+        return False
+    if raw == "nav_prev":
+        return True
+    if raw in {"info_close", "aux_close"}:
+        return True
+    if raw.startswith("d:") and (raw.endswith(":back_main") or raw.endswith(":info")):
+        return True
+    return False
+
+
+def _message_is_priority_start(payload: dict) -> bool:
+    try:
+        msg = (payload or {}).get("message") or {}
+        text = str(msg.get("text") or "").strip().casefold()
+        if not text.startswith("/start"):
+            return False
+        cmd = text.split(None, 1)[0].split("@", 1)[0]
+        return cmd == "/start"
+    except Exception:
+        return False
+
+
+@app.route(f"/tg/{WEBHOOK_PATH_TOKEN}", methods=["POST"])
 def telegram_webhook():
     try:
         payload = request.get_json(force=True, silent=False)
@@ -257,7 +310,7 @@ def telegram_webhook():
         if update_type == "callback_query":
             try:
                 cq_raw = (payload or {}).get("callback_query") or {}
-                schedule_callback_receipt_ack(str(cq_raw.get("id") or ""), update_chat_id)
+                schedule_callback_receipt_ack(str(cq_raw.get("id") or ""), update_chat_id, delay=0.15)
             except Exception as ack_exc:
                 log_error(f"CALLBACK RECEIPT ACK SCHEDULE: {ack_exc}")
 
@@ -350,8 +403,24 @@ def telegram_webhook():
                         except Exception as _lr_exc:
                             log_error(f"LOWRAM post-update release: {_lr_exc}")
 
-            selected_pool = UI_TASK_POOL if update_type == "callback_query" else WEBHOOK_TASK_POOL
-            selected_key = f"ui:{update_key}" if update_type == "callback_query" else update_key
+            if update_type == "callback_query":
+                selected_pool = UI_TASK_POOL
+                # Pure navigation is isolated per Telegram window, so one slow window does not
+                # freeze Back/INFO in another window of the same chat. Mutating callbacks stay
+                # serialized on the legacy per-chat key for financial ordering.
+                window_mid = _callback_window_message_id(payload)
+                if window_mid and _callback_can_use_window_lane(payload):
+                    selected_key = f"ui-window:{update_key}:{window_mid}"
+                else:
+                    selected_key = f"ui:{update_key}"
+            elif update_type == "message" and _message_is_priority_start(payload):
+                # /start is a UI recovery command. It must not wait behind a long content job
+                # (download/forward/finance parsing) from the same chat.
+                selected_pool = UI_TASK_POOL
+                selected_key = f"ui-start:{update_key}"
+            else:
+                selected_pool = WEBHOOK_TASK_POOL
+                selected_key = update_key
             if not selected_pool.submit(selected_key, _process_update):
                 log_error(f"{selected_pool.name.upper()} QUEUE FULL: chat={update_chat_id}")
                 UPDATE_DISPATCHER.release_failed_enqueue(update_id, f"{selected_pool.name}_queue_full")
@@ -378,10 +447,13 @@ def set_webhook():
         log_info("WEBHOOK_URL / APP_URL / RENDER_EXTERNAL_URL не указаны — webhook не установлен.")
         return
 
-    wh_url = WEBHOOK_URL.rstrip("/") + f"/{BOT_TOKEN}"
+    wh_url = WEBHOOK_URL.rstrip("/") + f"/tg/{WEBHOOK_PATH_TOKEN}"
 
-    bot.remove_webhook()
-    time.sleep(0.5)
+    # Telegram setWebhook replaces the previous URL. Avoid remove_webhook()+sleep by default:
+    # that old sequence created an unnecessary delivery gap on every Render deploy/restart.
+    if str(os.getenv("WEBHOOK_FORCE_RESET", "0") or "0").strip().lower() in {"1", "true", "yes", "on", "да"}:
+        bot.remove_webhook()
+        time.sleep(0.2)
 
     try:
         webhook_connections = max(1, min(100, int(os.getenv("WEBHOOK_MAX_CONNECTIONS", "40") or "40")))
@@ -399,7 +471,7 @@ def set_webhook():
             "deleted_business_messages",
         ],
     )
-    log_info(f"Webhook установлен: {wh_url} (max_connections={webhook_connections}; отдельные content/UI lanes)")
+    log_info(f"Webhook установлен: {WEBHOOK_URL.rstrip('/')} /tg/<secret> (max_connections={webhook_connections}; отдельные content/UI lanes)")
         
 def main():
     global data
@@ -673,4 +745,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v148_multitenant_spaces
+# v162_audit_hardening

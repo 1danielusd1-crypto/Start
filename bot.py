@@ -1,11 +1,11 @@
-# v161_button_window_stability
+# v162_audit_hardening
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v161_button_window_stability"
-MODULE_FILE_VERSION = "v161_button_window_stability"
+MODULAR_VERSION = "bot_v162_audit_hardening"
+MODULE_FILE_VERSION = "v162_audit_hardening"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -140,4 +140,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v161_button_window_stability
+# v162_audit_hardening
