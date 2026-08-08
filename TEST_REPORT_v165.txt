@@ -1,0 +1,15 @@
+bot_v165_owner_first_circle_compat
+
+Проверки:
+- py_compile всех разделённых модулей: PASS
+- py_compile bot.py: PASS
+- py_compile полного объединённого файла: PASS
+- manifest SHA-256 всех модулей: PASS
+- first/last version marker всех модулей: PASS
+- targeted picker test: owner context + first circle => OWNER + circle-1 chats: PASS
+- targeted picker test: second circle => OWNER excluded: PASS
+- targeted picker test: ordinary first-circle context => platform OWNER excluded: PASS
+- finance-mode picker uses existing finance_mode_compact_icon(OWNER_ID): PASS
+- ZIP integrity: PASS
+
+Live Telegram / Render / MEGA не запускались.

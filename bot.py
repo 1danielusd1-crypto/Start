@@ -1,11 +1,11 @@
-# v164_circle_hierarchy_spaces
+# v165_owner_first_circle_compat
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v164_circle_hierarchy_spaces"
-MODULE_FILE_VERSION = "v164_circle_hierarchy_spaces"
+MODULAR_VERSION = "bot_v165_owner_first_circle_compat"
+MODULE_FILE_VERSION = "v165_owner_first_circle_compat"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -44,6 +44,7 @@ MODULAR_SOURCE_PARTS = [
     '112_v162_start_hard_fix.py',
     '113_v163_audit_hardening.py',
     '114_v164_circle_hierarchy_spaces.py',
+    '115_v165_owner_first_circle_compat.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -143,4 +144,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v164_circle_hierarchy_spaces
+# v165_owner_first_circle_compat
