@@ -1,4 +1,4 @@
-# v147_diagnostic_hardening
+# v168_clean_core_record_identity
 # ─────────────────────────────────────────────────────────────
 # v147: защита диагностических секретов, точные reminder-witness и безопасный back-main,
 # один durable delta на финансовую партию, подробные failed-задачи,
@@ -83,6 +83,31 @@ def window_registry_epoch(chat_id: int, message_id: int) -> int:
         return 0
 
 
+def _v168_schedule_window_registry_persist():
+    """Window registry is diagnostic/UI state; never block a callback on a full root SQLite save."""
+    def _job():
+        try: save_data(data, root_only=True)
+        except Exception as exc:
+            try: log_error(f"v168 window registry persist: {exc}")
+            except Exception: pass
+    try:
+        scheduler = globals().get("V166_CONFIG_IO_SCHEDULER")
+        if scheduler is not None:
+            scheduler.cancel("window-registry-root-v168")
+            scheduler.schedule("window-registry-root-v168", 0.20, _job)
+            return
+    except Exception:
+        pass
+    try:
+        pool = globals().get("V166_CONFIG_IO_TASK_POOL")
+        if pool is not None and pool.submit("window-registry-root-v168", _job):
+            return
+    except Exception:
+        pass
+    try: DELAYED_SCHEDULER.schedule("window-registry-root-v168", 0.20, _job)
+    except Exception: pass
+
+
 def register_open_window(chat_id: int, message_id: int, window_type: str, code: str = "", day_key: str | None = None, params: dict | None = None):
     chat_id = int(chat_id); message_id = int(message_id)
     params = dict(params or {})
@@ -125,7 +150,7 @@ def register_open_window(chat_id: int, message_id: int, window_type: str, code: 
             "last_interaction_at": now_s,
         })
         reg[_v146_registry_key(chat_id, message_id)] = new_row
-        save_data(data, root_only=True)
+    _v168_schedule_window_registry_persist()
     try:
         _window_diag_emit(
             "window_registry_epoch_changed" if changed_identity and previous else "window_registry_registered",
@@ -156,7 +181,9 @@ def unregister_open_window(chat_id: int, message_id: int):
         for key, item in _v146_registry_rows_for_message(chat_id, message_id):
             removed.append(dict(item or {})); reg.pop(key, None)
         if removed:
-            save_data(data, root_only=True)
+            pass
+    if removed:
+        _v168_schedule_window_registry_persist()
     try:
         cancel_fast_ui_edit(chat_id, message_id)
     except Exception:
@@ -777,4 +804,4 @@ try:
 except Exception:
     pass
 
-# v147_diagnostic_hardening
+# v168_clean_core_record_identity

@@ -1,4 +1,4 @@
-# v150_excel_reserve_chat_lifecycle
+# v168_clean_core_record_identity
 
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -785,7 +785,7 @@ _V150_MUTATION_COMMANDS = {
 
 def _v150_is_mutation_command(command: str) -> bool:
     cmd = str(command or "").lower()
-    if cmd in _V150_MUTATION_COMMANDS or cmd.startswith("/izm_") or bool(_v150_re.fullmatch(r"/vyapl(?:_\d+)?", cmd)):
+    if cmd in _V150_MUTATION_COMMANDS or bool(_v150_re.fullmatch(r"/vyapl(?:_\d+)?", cmd)):
         return True
     # Hidden owner activation changes access rights and therefore must be durable,
     # although it is intentionally not advertised in Telegram's command menu.
@@ -799,11 +799,13 @@ def _v150_is_known_slash_command(text: str) -> bool:
     name = token[1:]
     known = {str(cmd).casefold() for cmd, _desc in _V150_TELEGRAM_COMMANDS} if "_V150_TELEGRAM_COMMANDS" in globals() else set()
     known.update({"старт", "кнопки", "маска", "остаток", "секрет", "sekret", "cekret"})
-    return name in known or bool(_v150_re.fullmatch(r"(?:vyapl_\d+|izm_[ru]\d+|\d+)", name, flags=_v150_re.I))
+    return name in known or bool(_v150_re.fullmatch(r"(?:vyapl_\d+|izm_[ru]\d+(?:_u[a-f0-9]{12})?|\d+)", name, flags=_v150_re.I))
 
 
 def durable_task_required(payload: dict) -> tuple[bool, str]:
     command, _chat_id, _msg_id, _uid = _v150_command_from_payload(payload)
+    if str(command or "").lower().startswith("/izm_"):
+        return False, "v168:record_edit_open"
     if _v150_is_mutation_command(command):
         try:
             if not mega_tasks_active():
@@ -1032,4 +1034,4 @@ def set_webhook():
     _v150_register_commands()
     return result
 
-# v150_excel_reserve_chat_lifecycle
+# v168_clean_core_record_identity

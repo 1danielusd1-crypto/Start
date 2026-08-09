@@ -1,4 +1,4 @@
-# v153_remaining_fixes_11_16
+# v168_clean_core_record_identity
 import os
 import io
 import json
@@ -3935,6 +3935,7 @@ WINDOW_MARKER_CONSTANTS = {
     'total_secret_mask_toggle': 'С20',
     'additional_owners': 'Ф1',
     'addown:*': 'Ф2',
+    'v168:owners_circle:*': 'Ф2',
     'articles_desc': 'Ф3',
     'aux_close': 'Ф4',
     'bp:collapse': 'Ф5',
@@ -7715,4 +7716,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v153_remaining_fixes_11_16
+# v168_clean_core_record_identity

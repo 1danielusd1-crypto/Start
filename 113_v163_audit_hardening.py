@@ -1,4 +1,4 @@
-# v163_audit_hardening
+# v168_clean_core_record_identity
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
 import calendar as _v163_calendar
@@ -18,11 +18,8 @@ START_UI_TASK_POOL = KeyedTaskPool(
     _env_int("START_UI_WORKERS", 2, 1, 4),
     _env_int("START_UI_MAX_PENDING", 120, 20, 600),
 )
-WINDOW_UI_TASK_POOL = KeyedTaskPool(
-    "window-ui",
-    _env_int("WINDOW_UI_WORKERS", 3, 1, 8),
-    _env_int("WINDOW_UI_MAX_PENDING", 500, 50, 2500),
-)
+# v168 clean-core: v166 has the active per-window pool. Do not keep three dead v163 workers alive.
+WINDOW_UI_TASK_POOL = UI_TASK_POOL
 
 # Receipt-level callback ACK: clear Telegram spinner quickly even if the action itself takes longer.
 CALLBACK_RECEIPT_ACK_DELAY_SECONDS = 0.15
@@ -613,4 +610,4 @@ try:
 except Exception:
     pass
 
-# v163_audit_hardening
+# v168_clean_core_record_identity

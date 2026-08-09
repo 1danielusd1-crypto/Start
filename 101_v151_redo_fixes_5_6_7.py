@@ -1,4 +1,4 @@
-# v151_redo_fixes_5_6_7
+# v168_clean_core_record_identity
 
 # Правки 5, 6, 7 выполнены заново поверх v150:
 # - Excel/Google: ARS + отдельная USD-таблица на том же листе, резервы,
@@ -675,9 +675,17 @@ def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, sourc
         source_finance_text=source_finance_text,
     )
     if isinstance(rec, dict):
+        try: ensure_finance_record_uid(int(chat_id), rec)
+        except Exception: pass
+        try: persist_finance_chat_local_fast(int(chat_id))
+        except Exception: pass
+        try: schedule_financial_window_refresh(int(chat_id), str(rec.get("day_key") or day_key or ""), reason="record_add_fast_v168")
+        except Exception: pass
         _v151_apply_reserve_cover(int(chat_id), "ars", rec)
         if usd_amount is not None:
             _v151_apply_reserve_cover(int(chat_id), "usd", rec)
+        try: persist_finance_chat_local_fast(int(chat_id))
+        except Exception: pass
     return rec
 
 
@@ -700,7 +708,15 @@ def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, not
     if rec is None and isinstance(result, dict):
         rec = result
     if isinstance(rec, dict):
+        try: ensure_finance_record_uid(int(chat_id), rec)
+        except Exception: pass
+        try: persist_finance_chat_local_fast(int(chat_id))
+        except Exception: pass
+        try: schedule_financial_window_refresh(int(chat_id), str(rec.get("day_key") or day_key or ""), reason="currency_record_add_fast_v168")
+        except Exception: pass
         _v151_apply_reserve_cover(int(chat_id), ledger, rec)
+        try: persist_finance_chat_local_fast(int(chat_id))
+        except Exception: pass
     return result if result is not None else rec
 
 
@@ -937,4 +953,4 @@ def set_webhook():
             pass
     return _V151_BASE_SET_WEBHOOK()
 
-# v151_redo_fixes_5_6_7
+# v168_clean_core_record_identity

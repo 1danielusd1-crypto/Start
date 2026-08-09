@@ -1,4 +1,4 @@
-# v167_excel_formulas_thuwed_google_tz
+# v168_clean_core_record_identity
 """v167: Excel formulas/formatting, Thu-Wed period, rolling Google tab, TZ lifecycle.
 
 This module deliberately patches only the active public hooks after v166 so older callbacks
@@ -14,8 +14,8 @@ import zipfile as _v167_zipfile
 import xml.etree.ElementTree as _v167_ET
 from datetime import datetime as _v167_datetime, timedelta as _v167_timedelta
 
-VERSION = "bot_v167_excel_formulas_thuwed_google_tz"
-V167_FILE_MARKER = "v167_excel_formulas_thuwed_google_tz"
+VERSION = "bot_v168_clean_core_record_identity"
+V167_FILE_MARKER = "v168_clean_core_record_identity"
 
 _V167_BASE_V151_CATEGORIES = globals().get("_v151_categories")
 _V167_BASE_V151_SIMPLE_TABLE = globals().get("_v151_simple_table")
@@ -757,10 +757,35 @@ def _v167_install_schedule_callback():
 # 7) TZ lifecycle. A new release starts with an empty active TZ list without
 # deleting history: older rows are archived, not falsely marked "fixed".
 # ---------------------------------------------------------------------------
-def _v167_archive_old_tz_once():
+def _v168_mark_resolved_tz_rows():
+    """Mark only TZ items explicitly fixed by this release; other old rows are merely archived."""
+    changed = False
+    try:
+        _catalog, rows = _v160_annotation_roots()
+        for row in rows or []:
+            if not isinstance(row, dict) or str(row.get("status") or "open").lower() != "open":
+                continue
+            marker = str(row.get("marker") or "").upper()
+            body = str(row.get("text") or "").casefold()
+            resolved = (
+                marker == "Ф2" and "переключ" in body and "владель" in body
+            ) or (
+                marker == "Ф91" and "быстро" in body and "обнов" in body and ("ввода" in body or "пересыл" in body or "редакт" in body)
+            )
+            if resolved:
+                row["status"] = "fixed"
+                row["fixed_by_version"] = VERSION
+                row["fixed_at"] = now_local().isoformat(timespec="seconds")
+                changed = True
+        return changed
+    except Exception:
+        return False
+
+
+def _v167_archive_old_tz_once(force: bool = False):
     global _V167_TZ_ARCHIVE_VERSION
     current_version = str(globals().get("VERSION") or VERSION)
-    if _V167_TZ_ARCHIVE_VERSION == current_version:
+    if not force and _V167_TZ_ARCHIVE_VERSION == current_version:
         return
     _V167_TZ_ARCHIVE_VERSION = current_version
     try:
@@ -880,6 +905,46 @@ try:
 except Exception:
     pass
 
+def _v168_migrate_all_record_uids_once():
+    gs = data.setdefault("_global_settings", {})
+    if str(gs.get("record_uid_schema") or "") == "v168":
+        return 0
+    changed = 0
+    for cid_s in list((data.get("chats") or {}).keys()):
+        try: changed += int(migrate_finance_record_uids(int(cid_s)) or 0)
+        except Exception as exc:
+            try: log_error(f"v168 startup UID migration {cid_s}: {exc}")
+            except Exception: pass
+    gs["record_uid_schema"] = "v168"
+    if changed:
+        # UID backfill changes hashes for old rows. Do not turn the migration itself into one giant delta.
+        # The local SQLite is already updated; reset the delta baseline and request a normal full snapshot.
+        try: initialize_delta_baseline(data)
+        except Exception: pass
+        try: _mark_global_snapshot_pending()
+        except Exception: pass
+    try:
+        scheduler = globals().get("V166_CONFIG_IO_SCHEDULER")
+        if scheduler is not None:
+            scheduler.schedule("v168-record-uid-schema", 0.1, lambda: save_data(data, root_only=True))
+        else:
+            save_data(data, root_only=True)
+    except Exception: pass
+    try: bot_journal("record_uid_migration_v168", int(OWNER_ID or 0), f"changed={changed}")
+    except Exception: pass
+    return changed
+
+
+try:
+    _V168_PREV_SET_WEBHOOK = globals().get("set_webhook")
+    if callable(_V168_PREV_SET_WEBHOOK):
+        def set_webhook():
+            _v168_migrate_all_record_uids_once()
+            return _V168_PREV_SET_WEBHOOK()
+except Exception:
+    pass
+
+
 _v167_archive_old_tz_once()
 _v167_install_schedule_callback()
 _v167_start_google_scheduler()
@@ -891,7 +956,13 @@ try:
     if callable(_V167_BASE_RUNTIME_MARK_READY):
         def runtime_mark_ready(detail: str = ""):
             result = _V167_BASE_RUNTIME_MARK_READY(detail)
-            try: _v167_archive_old_tz_once()
+            # Restore happens after module import. Mark the two v167 TZ items implemented in v168 as fixed,
+            # archive any other old open rows, and leave the v168 current-TZ export clean.
+            try:
+                if _v168_mark_resolved_tz_rows():
+                    _v160_persist_annotations(int(OWNER_ID or 0))
+            except Exception: pass
+            try: _v167_archive_old_tz_once(force=True)
             except Exception: pass
             try:
                 if OWNER_ID:
@@ -933,7 +1004,7 @@ try:
                     if not export_version.startswith((
                         "bot_v153_","bot_v154_","bot_v155_","bot_v156_","bot_v157_","bot_v158_",
                         "bot_v159_","bot_v160_","bot_v161_","bot_v162_","bot_v163_","bot_v164_",
-                        "bot_v165_","bot_v166_","bot_v167_",
+                        "bot_v165_","bot_v166_","bot_v167_","bot_v168_",
                     )): raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
                     if _v153_db_logical_checksum(raw)!=str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
                     return manifest,raw
@@ -944,7 +1015,7 @@ except Exception:
     pass
 
 try:
-    bot_journal("v167_installed", int(OWNER_ID or 0), "Excel formulas + all categories + Thu-Wed + Google rolling tab + TZ archive")
+    bot_journal("v168_installed", int(OWNER_ID or 0), "clean-core phase 1: immutable record UID + owner-access circles + fast finance UI")
 except Exception:
     pass
-# v167_excel_formulas_thuwed_google_tz
+# v168_clean_core_record_identity

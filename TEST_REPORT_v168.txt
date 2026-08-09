@@ -1,0 +1,28 @@
+bot_v168_clean_core_record_identity
+
+Статические проверки:
+- Все 40 модулей: py_compile OK.
+- bot.py: py_compile OK.
+- FULL_bot_v168_clean_core_record_identity.py: py_compile OK.
+- AST parse всех модулей/loader/full source: OK.
+- Маркеры первой/последней строки измененных source-файлов: проверяются при сборке.
+- manifest SHA-256: проверяется при сборке.
+
+Фокусные проверки:
+- record_uid создается как 12-символьный hex UID: OK.
+- Изменение amount/note/short_id после присвоения UID не меняет record_uid: OK.
+- Команда до перенумерации /izm_R60_u<uid> и после перенумерации /izm_R61_u<uid> содержит один и тот же UID: OK.
+- Предварительное угадывание /izm до появления записи: отключено (возвращает None): OK.
+- Legacy /izm_Rxx без UID в handler имеет fail-closed ветку: source assertion OK.
+- /izm_ исключен из durable mutation classifier: source assertion OK.
+- Ф2 имеет отдельное owner_access_chat_ids_v168 и callback 1/2 круга: source assertion OK.
+- Ф91 имеет immediate insert/edit/forward refresh и stale-window limiter: source assertion OK.
+- Delta key предпочитает record_uid; крупные window TZ/marker roots исключены из finance delta: source assertion OK.
+- v163 dead WINDOW_UI pool не создается отдельным KeyedTaskPool: source assertion OK.
+- Post-restore TZ rollover forced; две реализованные v167 записи маркируются fixed: source assertion OK.
+
+Ограничения проверки:
+- Live Telegram API не запускался.
+- Live Render deploy не запускался.
+- Live MEGA upload/restore не запускался.
+- Python runtime import в данном контейнере не выполнялся, потому что пакет pyTelegramBotAPI/telebot в контейнере отсутствует. Это не ошибка исходников; compile/AST проверки выполнены без импорта сторонней библиотеки.

@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v168_clean_core_record_identity
 
 # ─────────────────────────────────────────────────────────────
 # v148: независимые пространства (tenant isolation)
@@ -434,28 +434,73 @@ def update_chat_info_from_message(msg):
 # ─────────────────────────────────────────────────────────────
 # Owner scope compatibility layer
 # ─────────────────────────────────────────────────────────────
-def is_primary_owner(chat_id: int) -> bool:
-    try:
-        return int(chat_id) == _tenant_platform_owner_user_id()
-    except Exception:
-        return False
+def _v168_owner_access_ids() -> set[int]:
+    gs = data.setdefault("_global_settings", {})
+    raw = gs.get("owner_access_chat_ids_v168")
+    if not isinstance(raw, list):
+        # v148 legacy values represented user-owner identities, not the chat-access switches used by Ф2.
+        raw = []
+        gs["owner_access_chat_ids_v168"] = raw
+    out = set()
+    for value in raw or []:
+        try: out.add(int(value))
+        except Exception: pass
+    return out
 
 
 def get_additional_owner_ids() -> set[int]:
-    # v148 removes global additional owners. Their old scopes are migrated into tenant owners.
-    return set()
+    # v168: these are chats in which the platform owner explicitly enabled owner/testing access.
+    return _v168_owner_access_ids()
+
+
+def set_additional_owner(chat_id: int, enabled: bool):
+    cid = int(chat_id)
+    owners = _v168_owner_access_ids()
+    if enabled: owners.add(cid)
+    else: owners.discard(cid)
+    gs = data.setdefault("_global_settings", {})
+    gs["owner_access_chat_ids_v168"] = sorted(owners)
+    # Do not mirror chat IDs into legacy additional_owner_ids: v148 interprets that old field as user-owner IDs.
+    def _persist_owner_access():
+        try: save_data(data, root_only=True)
+        except Exception as exc:
+            try: log_error(f"v168 owner access persist {cid}: {exc}")
+            except Exception: pass
+    try:
+        scheduler = globals().get("V166_CONFIG_IO_SCHEDULER")
+        if scheduler is not None:
+            scheduler.cancel("owner-access-root-v168")
+            scheduler.schedule("owner-access-root-v168", 0.10, _persist_owner_access)
+        else:
+            _persist_owner_access()
+    except Exception:
+        _persist_owner_access()
+    try: schedule_config_backup_for_chats(cid, delay=0.25)
+    except Exception: pass
+
+
+def is_primary_owner(chat_id: int) -> bool:
+    try: cid = int(chat_id)
+    except Exception: return False
+    owner_uid = _tenant_platform_owner_user_id()
+    if cid == owner_uid:
+        return True
+    actor = tenant_current_actor_user_id()
+    return bool(actor == owner_uid and cid in _v168_owner_access_ids())
 
 
 def is_owner_chat(chat_id: int) -> bool:
-    try:
-        cid = int(chat_id)
-    except Exception:
-        return False
-    uid = tenant_current_actor_user_id()
-    if uid:
-        return tenant_can_manage(uid, chat_id=cid)
-    if cid == _tenant_platform_owner_user_id():
+    try: cid = int(chat_id)
+    except Exception: return False
+    owner_uid = _tenant_platform_owner_user_id()
+    actor = tenant_current_actor_user_id()
+    if cid == owner_uid:
         return True
+    # In a selected external chat only the real platform owner gains this extra owner/test access.
+    if actor == owner_uid:
+        return cid in _v168_owner_access_ids()
+    if actor:
+        return tenant_can_manage(actor, chat_id=cid)
     row = tenant_get(tenant_id_for_chat(cid, create=False))
     return bool(row and int(row.get("root_chat_id") or 0) == cid)
 
@@ -1524,4 +1569,4 @@ def tenant_v148_snapshot() -> dict:
         "active_invites": sum(1 for row in (root.get("invite_tokens") or {}).values() if isinstance(row, dict) and not row.get("revoked") and float(row.get("expires_ts") or 0) >= time.time() and int(row.get("uses") or 0) < int(row.get("max_uses") or 1)),
     }
 
-# v148_multitenant_spaces
+# v168_clean_core_record_identity

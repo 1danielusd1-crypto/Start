@@ -1,4 +1,4 @@
-# v141_operation_ledger_windows_expense_reminders_safety
+# v168_clean_core_record_identity
 def finance_mode_compact_icon(chat_id: int) -> str:
     """v108: hidden finance and visible auto-window mode are shown independently."""
     try:
@@ -467,7 +467,18 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, sour
     _snapshot_active_currency_ledger(store, active)
     rebuild_month_short_ids(chat_id)
     rebuild_global_records()
-    save_data(data, chat_ids=[chat_id])
+    try:
+        for _key, _target in targets:
+            ensure_finance_record_uid(chat_id, _target)
+    except Exception: pass
+    if "persist_finance_chat_local_fast" in globals():
+        persist_finance_chat_local_fast(chat_id)
+    else:
+        save_data(data, chat_ids=[chat_id])
+    try:
+        _dk = str((targets[0][1] if targets else {}).get("day_key") or store.get("current_view_day") or "")
+        schedule_financial_window_refresh(chat_id, _dk, reason="record_edit_fast_v168")
+    except Exception: pass
     try:
         finance_cache_invalidate(chat_id, "finance_edit")
         finance_integrity_append(chat_id, "edit", targets[0][1] if targets else {"id": rid}, details={"before": before_snapshot})
@@ -506,7 +517,12 @@ def delete_selected_records(chat_id: int, day_key: str) -> int:
         renumber_chat_records(chat_id)
         recalc_balance(chat_id)
         rebuild_global_records()
-        save_data(data)
+        if "persist_finance_chat_local_fast" in globals():
+            persist_finance_chat_local_fast(chat_id)
+        else:
+            save_data(data, chat_ids=[chat_id])
+        try: schedule_financial_window_refresh(chat_id, day_key, reason="record_delete_fast_v168")
+        except Exception: pass
         finance_changed(chat_id, day_key, reason="delete_selected", delay=0.1)
         try:
             finance_cache_invalidate(chat_id, "finance_bulk_delete")
@@ -725,4 +741,4 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     if financial_view_is_usd(store):
         label = "USD " + label
     return rows, label
-# v141_operation_ledger_windows_expense_reminders_safety
+# v168_clean_core_record_identity

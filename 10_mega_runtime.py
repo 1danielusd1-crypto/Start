@@ -1,4 +1,4 @@
-# v150_excel_reserve_chat_lifecycle
+# v168_clean_core_record_identity
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -3205,9 +3205,18 @@ _DELTA_VOLATILE_ROOT_KEYS = {
     "chats", "records", "active_messages", "bot_errors", "_state_meta",
     "open_window_registry",
 }
-_DELTA_ROOT_MAP_KEYS = {"forward_index", "forward_rules", "forward_finance", "finance_active_chats", "_global_settings", "csv_meta", "chat_backup_meta", "backup_flags", "_durable_processed_updates"}
+_DELTA_ROOT_MAP_KEYS = {"forward_index", "forward_rules", "forward_finance", "finance_active_chats", "_global_settings", "csv_meta", "chat_backup_meta", "backup_flags", "_durable_processed_updates", "durable_command_receipts_v150", "gomonk_rebalance_intents_v150", "gomonk_rebalance_receipts_v151", "_durable_reminder_edit_receipts", "_secret_notes"}
 _DELTA_GLOBAL_SETTINGS_EXCLUDE = {
     "version_mode_snapshots",  # хранится в полном global/config backup, а не в каждой финансовой delta
+    # v168: window annotations/TZ history can grow for months and is unrelated to exact-once finance.
+    # It stays in SQLite/full snapshots, but must never inflate each financial delta by hundreds of KB.
+    "_window_tz_v160",
+    "_window_marker_catalog_v160",
+}
+_DELTA_CHAT_SETTINGS_EXCLUDE = {
+    # Audit/history arrays are not needed to replay one financial mutation; current reserve state remains included.
+    "gomonk_rebalance_history_v150",
+    "gomonk_rebalance_history_v151",
 }
 
 
@@ -3231,6 +3240,9 @@ def _delta_hash(value) -> str:
 def _delta_record_key(rec: dict) -> str:
     if not isinstance(rec, dict):
         return "invalid:" + _delta_hash(rec)[:16]
+    uid = str(rec.get("record_uid") or "").strip().upper()
+    if re.fullmatch(r"[A-F0-9]{12}", uid):
+        return f"uid:{uid}"
     for key in ("id", "record_id"):
         value = rec.get(key)
         if value not in (None, ""):
@@ -3243,13 +3255,15 @@ def _delta_record_key(rec: dict) -> str:
 
 
 def _delta_chat_meta(store: dict) -> dict:
-    """Только компактные метаданные чата; финансовые массивы идут через upserts/deletes."""
-    return {
-        str(k): _delta_json_clone(v)
-        for k, v in (store or {}).items()
-        if k not in _DELTA_VOLATILE_CHAT_KEYS
-        and k not in _DELTA_DERIVED_CHAT_KEYS
-    }
+    """Only compact chat metadata; finance arrays are carried by record upserts/deletes."""
+    out = {}
+    for k, v in (store or {}).items():
+        if k in _DELTA_VOLATILE_CHAT_KEYS or k in _DELTA_DERIVED_CHAT_KEYS:
+            continue
+        if str(k) == "settings" and isinstance(v, dict):
+            v = {str(sk): sv for sk, sv in v.items() if str(sk) not in _DELTA_CHAT_SETTINGS_EXCLUDE}
+        out[str(k)] = _delta_json_clone(v)
+    return out
 
 
 def _delta_root_patch(payload: dict) -> dict:
@@ -8859,4 +8873,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v150_excel_reserve_chat_lifecycle
+# v168_clean_core_record_identity

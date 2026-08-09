@@ -1,4 +1,4 @@
-# v150_excel_reserve_chat_lifecycle
+# v168_clean_core_record_identity
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -203,6 +203,16 @@ def add_record_to_chat(
 
         rebuild_month_short_ids(chat_id)
         rebuild_global_records()
+        # v168: commit the concrete row locally and repaint visible Ф91 before slower reserve/root/MEGA work.
+        try:
+            if "ensure_finance_record_uid" in globals(): ensure_finance_record_uid(int(chat_id), rec)
+            if "persist_finance_chat_local_fast" in globals(): persist_finance_chat_local_fast(int(chat_id))
+        except Exception as _v168_local_exc:
+            try: log_error(f"v168 record local commit {chat_id}: {_v168_local_exc}")
+            except Exception: pass
+        try:
+            if "schedule_financial_window_refresh" in globals(): schedule_financial_window_refresh(int(chat_id), str(day_key), reason="record_insert_immediate_v168")
+        except Exception: pass
         try:
             finance_cache_invalidate(chat_id, "finance_add")
             finance_integrity_append(chat_id, "add", rec)
@@ -1666,4 +1676,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v150_excel_reserve_chat_lifecycle
+# v168_clean_core_record_identity

@@ -1,4 +1,4 @@
-# v149_tenant_google_merged_reminders
+# v168_clean_core_record_identity
 
 
 @bot.message_handler(
@@ -674,7 +674,14 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
         # Editing a forwarded row must survive a currency switch/deploy immediately, not only
         # after the later finance-window finalizer.
         _snapshot_active_currency_ledger(store, _ensure_currency_ledgers(store))
-        save_data(data, chat_ids=[int(dst_chat_id)])
+        try:
+            for _rows in _finance_record_lists(int(dst_chat_id)):
+                for _rec in _rows or []:
+                    if isinstance(_rec, dict): ensure_finance_record_uid(int(dst_chat_id), _rec)
+        except Exception: pass
+        if "persist_finance_chat_local_fast" in globals() and not persist_finance_chat_local_fast(int(dst_chat_id)):
+            log_error(f"[FWD FINANCE LOCAL PERSIST FAILED] dst={get_chat_display_name(dst_chat_id)} msg={dst_msg_id}")
+            return False
 
     # v92 fix: возвращаем конкретную запись, чтобы UI бот-копии не искал её второй раз.
     result_rec = find_record_by_message_id(dst_chat_id, dst_msg_id)
@@ -682,6 +689,8 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
         refresh_active_forward_copy_edit_prompt(int(dst_chat_id), int(dst_msg_id), result_rec)
     except Exception:
         pass
+    try: schedule_financial_window_refresh(int(dst_chat_id), str(entry_day), reason="forward_finance_fast_v168")
+    except Exception: pass
     schedule_finalize(dst_chat_id, entry_day)
     return result_rec if result_rec is not None else True
 
@@ -966,4 +975,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v149_tenant_google_merged_reminders
+# v168_clean_core_record_identity

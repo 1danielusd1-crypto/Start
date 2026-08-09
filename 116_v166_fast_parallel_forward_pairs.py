@@ -1,4 +1,4 @@
-# v166_fast_parallel_forward_pairs
+# v168_clean_core_record_identity
 """v166: restore forwarding pairs, fast callbacks, parallel per-window UI and fast finance refresh.
 
 Safety rule: actual finance mutations remain chat-serialized. Independent window UI, forwarding-pair
@@ -658,8 +658,23 @@ def _v166_refresh_registry_item(item: dict, target_chat_id: int):
         except Exception: pass
 
 
+def _v168_fin_window_is_recent(item: dict, max_age_seconds: float = 900.0) -> bool:
+    """Old parallel Telegram windows remain usable, but do not auto-repaint forever on every transaction."""
+    try:
+        raw = str((item or {}).get("last_interaction_at") or (item or {}).get("updated_at") or "")
+        if not raw:
+            return False
+        dt = datetime.fromisoformat(raw)
+        now = now_local()
+        if dt.tzinfo is None and getattr(now, "tzinfo", None) is not None:
+            dt = dt.replace(tzinfo=now.tzinfo)
+        return (now - dt).total_seconds() <= float(max_age_seconds)
+    except Exception:
+        return False
+
+
 def refresh_registered_financial_windows(chat_id: int):
-    """Fan out every independent finance window after a committed finance change.
+    """Fan out current/recent finance windows after a committed finance change.
 
     Same Telegram message is always serialized by one pool key; different messages in the same
     chat are allowed to refresh concurrently. This is the safe maximum parallelism for UI.
@@ -678,12 +693,16 @@ def refresh_registered_financial_windows(chat_id: int):
         except Exception:
             pass
 
-    # Active pointer(s).
+    # Active pointer(s) always refresh immediately.
+    active_mids = set()
     for day_value, mid in list((get_or_create_active_windows(chat_id) or {}).items()):
+        try:
+            if int(mid or 0): active_mids.add(int(mid))
+        except Exception: pass
         _submit_main(day_value, mid)
 
-    # Parallel/older still-live main windows are intentionally valid in v160+. Refresh all of them,
-    # not just the latest active pointer.
+    # v168: old parallel windows remain valid when clicked, but only recent windows auto-refresh.
+    # This prevents one transaction from generating dozens of Telegram edits after many versions/windows.
     registry_snapshot = list((_open_window_registry() or {}).items())
     for _key, item in registry_snapshot:
         try:
@@ -692,7 +711,10 @@ def refresh_registered_financial_windows(chat_id: int):
             host = int((item or {}).get("chat_id") or (item or {}).get("host_chat_id") or 0)
             if host != chat_id:
                 continue
-            _submit_main((item or {}).get("day_key") or store.get("current_view_day") or today_key(), (item or {}).get("message_id"))
+            mid = int((item or {}).get("message_id") or 0)
+            if mid not in active_mids and not _v168_fin_window_is_recent(item):
+                continue
+            _submit_main((item or {}).get("day_key") or store.get("current_view_day") or today_key(), mid)
         except Exception:
             continue
 
@@ -712,6 +734,8 @@ def refresh_registered_financial_windows(chat_id: int):
         try:
             wtype = str((item or {}).get("window_type") or "")
             if wtype not in {"fin_view", "local_fin_view", "fin_categories_view", "stored"}:
+                continue
+            if not _v168_fin_window_is_recent(item):
                 continue
             params = (item or {}).get("params") or {}
             if wtype == "fin_view" and int(params.get("target_chat_id") or 0) != chat_id:
@@ -750,12 +774,20 @@ def schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, 
             try: log_error(f"v166 finance window dispatch {chat_id}: {exc}")
             except Exception: pass
 
-    # No GENERAL/DELAYED queue: the dispatcher itself is tiny and only submits per-message jobs.
-    if not V166_FINANCE_UI_TASK_POOL.submit(f"dispatch:{chat_id}", _dispatch):
-        try: log_error(f"V166 FINANCE UI DISPATCH QUEUE FULL: {chat_id}")
-        except Exception: pass
-        return False
-    return True
+    # v168: several layers can report the same mutation (insert -> reserve -> finalize). Coalesce them
+    # for a few milliseconds so one transaction does not repaint the same Telegram windows 3-4 times.
+    def _fire_visual():
+        if not V166_FINANCE_UI_TASK_POOL.submit(f"dispatch:{chat_id}", _dispatch):
+            try: log_error(f"V166 FINANCE UI DISPATCH QUEUE FULL: {chat_id}")
+            except Exception: pass
+    try:
+        key = f"finance-visual:{chat_id}"
+        V166_FINANCE_DEBOUNCE_SCHEDULER.cancel(key)
+        V166_FINANCE_DEBOUNCE_SCHEDULER.schedule(key, max(0.01, min(float(delay or 0.0), 0.05)), _fire_visual)
+        return True
+    except Exception:
+        _fire_visual()
+        return True
 
 
 # Faster finance finalization debounce. Actual finance writes still go through FINANCE_TASK_POOL per chat.
@@ -768,7 +800,13 @@ def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "cha
         requested = 0.05
     # UI-oriented finance changes should settle almost immediately; restore/reset can still request 0.1 s.
     effective = min(requested, 0.10)
-    bot_journal("finance_changed_scheduled", chat_id, f"day={day_key} reason={reason} delay={effective} v166=fast")
+    bot_journal("finance_changed_scheduled", chat_id, f"day={day_key} reason={reason} delay={effective} v168=pre_refresh")
+    try:
+        # Visible windows must not wait for SQLite/MEGA/finalization. Per-message lanes coalesce safely.
+        schedule_financial_window_refresh(chat_id, day_key, reason=f"{reason}:precommit_v168")
+    except Exception as exc:
+        try: log_error(f"v168 immediate finance UI {chat_id}: {exc}")
+        except Exception: pass
 
     def _job():
         if not FINANCE_TASK_POOL.submit(chat_id, _finance_changed_now, chat_id, day_key, reason):
@@ -848,4 +886,4 @@ try:
 except Exception:
     pass
 
-# v166_fast_parallel_forward_pairs
+# v168_clean_core_record_identity

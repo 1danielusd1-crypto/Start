@@ -1,4 +1,4 @@
-# v150_excel_reserve_chat_lifecycle
+# v168_clean_core_record_identity
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
@@ -2007,19 +2007,40 @@ def handle_secret_sequence(msg) -> bool:
     return True
 
 
-def build_additional_owners_keyboard():
+def _v168_owner_access_circle(default: int = 1) -> int:
+    try:
+        return _v164_current_window_circle("owner_access", default)
+    except Exception:
+        return 2 if int(default) == 2 else 1
+
+
+def _v168_set_owner_access_circle(level: int) -> None:
+    try: _v164_set_window_circle("owner_access", 2 if int(level) == 2 else 1)
+    except Exception: pass
+
+
+def build_additional_owners_keyboard(level: int | None = None):
     kb = types.InlineKeyboardMarkup(row_width=2)
+    level = _v168_owner_access_circle(1) if level is None else (2 if int(level) == 2 else 1)
     owners = get_additional_owner_ids()
+    try:
+        ids = list(_v164_scope_ids(level, int(OWNER_ID or 0)))
+    except Exception:
+        ids = [int(x) for x in collect_all_known_chat_ids(include_owner=False)]
     buttons = []
-    for cid in collect_all_known_chat_ids(include_owner=False):
-        if is_primary_owner(cid):
+    for cid in ids:
+        try: cid = int(cid)
+        except Exception: continue
+        if cid == int(OWNER_ID or 0):
             continue
-        icon = "✅" if int(cid) in owners else "❌"
+        icon = "✅" if cid in owners else "❌"
         buttons.append(IB(f"{icon} {get_chat_display_name(cid)[:32]}", callback_data=f"addown:{cid}"))
     for i in range(0, len(buttons), 2):
         kb.row(*buttons[i:i + 2])
     if not buttons:
         kb.row(IB("Нет доступных чатов", callback_data="none"))
+    other = 1 if level == 2 else 2
+    kb.row(IB(f"{'1️⃣' if other == 1 else '2️⃣'} {other}-й круг", callback_data=f"v168:owners_circle:{other}"))
     kb.row(IB("🔙 Назад в Инфо", callback_data="journal_back"))
     return kb
 
@@ -2189,20 +2210,41 @@ def cmd_total_secret_capture(msg):
 
 @bot.message_handler(func=lambda m: bool(
     getattr(m, "text", None)
-    and re.match(r"^/izm_[RU]\d+(?:@[A-Za-z0-9_]+)?(?:\s*)$", m.text.strip(), flags=re.I)
+    and re.match(r"^/izm_[RU]\d+(?:_u[A-F0-9]{12})?(?:@[A-Za-z0-9_]+)?(?:\s*)$", m.text.strip(), flags=re.I)
 ))
 def cmd_forward_copy_edit(msg):
     try:
         token = (msg.text or "").strip().split()[0].split("@")[0]
-        short_id = token[len("/izm_"):].upper()
-        rec = _find_forward_copy_record_by_short_id(msg.chat.id, short_id)
-        if not rec:
-            send_and_auto_delete(msg.chat.id, f"❌ Бот-копия {short_id} не найдена.", 8)
+        match = re.fullmatch(r"/izm_([RU]\d+)(?:_u([A-F0-9]{12}))?", token, flags=re.I)
+        if not match:
+            return
+        shown_short_id = str(match.group(1) or "").upper()
+        record_uid = str(match.group(2) or "").upper()
+        if not record_uid:
+            send_and_auto_delete(
+                msg.chat.id,
+                f"⚠️ Старая ссылка {shown_short_id} больше не используется для поиска записи. "
+                "Номер R/U мог измениться после пересчёта. Откройте актуальную бот-копию с ID u…",
+                12,
+            )
             delete_message_later(msg.chat.id, msg.message_id, 1)
             return
-        dst_msg_id = int(rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id"))
+        rec = find_finance_record_by_uid(int(msg.chat.id), record_uid) if "find_finance_record_by_uid" in globals() else None
+        if not rec:
+            send_and_auto_delete(msg.chat.id, f"❌ Запись u{record_uid} не найдена.", 8)
+            delete_message_later(msg.chat.id, msg.message_id, 1)
+            return
+        actual_short_id = str(rec.get("short_id") or "")
+        if actual_short_id and actual_short_id != shown_short_id:
+            try: bot_journal("record_short_id_shift_v168", int(msg.chat.id), f"uid={record_uid}; old={shown_short_id}; now={actual_short_id}")
+            except Exception: pass
+        dst_msg_id = int(rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or 0)
+        if not dst_msg_id:
+            send_and_auto_delete(msg.chat.id, "❌ У записи нет связанной бот-копии.", 8)
+            delete_message_later(msg.chat.id, msg.message_id, 1)
+            return
         start_forward_copy_edit(msg.chat.id, dst_msg_id)
         delete_message_later(msg.chat.id, msg.message_id, 1)
     except Exception as e:
         log_error(f"cmd_forward_copy_edit: {e}")
-# v150_excel_reserve_chat_lifecycle
+# v168_clean_core_record_identity

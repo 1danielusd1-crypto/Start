@@ -1,4 +1,4 @@
-# v143_audit_stability_exact_wait_reminders_memory
+# v168_clean_core_record_identity
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -121,9 +121,6 @@ def get_forward_finance(src_chat_id: int, dst_chat_id: int) -> bool:
 
 
 FORWARD_COPY_EDIT_MODES = ("normal", "button", "slash")
-FORWARD_COPY_EDIT_COMMAND_RE = re.compile(r"(?:^|\s)/izm_([RU]\d+)\s*$", re.I)
-
-
 def forward_copy_edit_mode(chat_id: int | None = None) -> str:
     """One GLOBAL 💰Перес mode for every chat/copy.
 
@@ -465,65 +462,105 @@ def refresh_existing_forward_copy_ui(owner_chat_id: int, mode: str | None = None
     return changed
 
 
+def _v168_record_uid_seed(chat_id: int, rec: dict) -> str:
+    """Stable seed that deliberately excludes mutable amount/note/short_id fields."""
+    payload = {
+        "chat_id": int(chat_id or 0),
+        "operation_key": str((rec or {}).get("operation_key") or ""),
+        "source_msg_id": int((rec or {}).get("source_msg_id") or 0),
+        "origin_msg_id": int((rec or {}).get("origin_msg_id") or 0),
+        "msg_id": int((rec or {}).get("msg_id") or 0),
+        "forward_source_chat_id": int((rec or {}).get("forward_source_chat_id") or 0),
+        "forward_source_msg_id": int((rec or {}).get("forward_source_msg_id") or 0),
+        "source_order_msg_id": int((rec or {}).get("source_order_msg_id") or 0),
+        "timestamp": str((rec or {}).get("timestamp") or ""),
+        "day_key": str((rec or {}).get("day_key") or ""),
+        "id": int((rec or {}).get("id") or 0),
+        "currency": "usd" if bool((rec or {}).get("usd_only")) else "ars",
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:12].upper()
+
+
+def ensure_finance_record_uid(chat_id: int, rec: dict) -> str:
+    if not isinstance(rec, dict):
+        return ""
+    current = str(rec.get("record_uid") or "").strip().upper()
+    if re.fullmatch(r"[A-F0-9]{12}", current):
+        return current
+    current = _v168_record_uid_seed(int(chat_id), rec)
+    rec["record_uid"] = current
+    return current
+
+
+def find_finance_record_by_uid(chat_id: int, record_uid: str):
+    uid = str(record_uid or "").strip().upper()
+    if not re.fullmatch(r"[A-F0-9]{12}", uid):
+        return None
+    try:
+        for _key, rec in _finance_record_lists(get_chat_store(int(chat_id))):
+            if isinstance(rec, dict) and ensure_finance_record_uid(int(chat_id), rec) == uid:
+                return rec
+    except Exception:
+        pass
+    return None
+
+
+def persist_finance_chat_local_fast(chat_id: int) -> bool:
+    """Persist one finance chat without rebuilding/saving the global root/forward index."""
+    try:
+        cid = int(chat_id)
+        store = get_chat_store(cid)
+        with data_lock:
+            if LOWRAM_ENABLED:
+                _lowram_flush_chat(cid, store, evict=False)
+                SQLITE.save_chat(cid, _lowram_store_meta_payload(store))
+            else:
+                SQLITE.save_chat(cid, store)
+        return True
+    except Exception as exc:
+        try: log_error(f"v168 local finance persist {chat_id}: {exc}")
+        except Exception: pass
+        return False
+
+
+def migrate_finance_record_uids(chat_id: int) -> int:
+    changed = 0
+    seen = set()
+    try:
+        for _key, rec in _finance_record_lists(get_chat_store(int(chat_id))):
+            if not isinstance(rec, dict) or id(rec) in seen:
+                continue
+            seen.add(id(rec))
+            before = str(rec.get("record_uid") or "")
+            after = ensure_finance_record_uid(int(chat_id), rec)
+            if after and after != before:
+                changed += 1
+        if changed:
+            persist_finance_chat_local_fast(int(chat_id))
+    except Exception as exc:
+        try: log_error(f"v168 UID migration chat={chat_id}: {exc}")
+        except Exception: pass
+    return changed
+
+
 def _strip_forward_copy_edit_command(text: str) -> str:
     raw = str(text or "").rstrip()
-    return re.sub(r"(?:\n|\s)+/izm_[RU]\d+\s*$", "", raw, flags=re.I).rstrip()
+    return re.sub(r"(?:\n|\s)+/izm_[RU]\d+(?:_u[A-F0-9]{12})?\s*$", "", raw, flags=re.I).rstrip()
 
 
 def _forward_copy_record_command(rec: dict) -> str:
     sid = str((rec or {}).get("short_id") or f"R{(rec or {}).get('id', '')}").strip().upper()
     if not re.fullmatch(r"[RU]\d+", sid):
         sid = "R" + re.sub(r"\D+", "", sid)
-    return f"/izm_{sid}"
+    uid = str((rec or {}).get("record_uid") or "").strip().upper()
+    return f"/izm_{sid}_u{uid}" if re.fullmatch(r"[A-F0-9]{12}", uid) else f"/izm_{sid}"
 
 
 def _predict_forward_copy_record_command(dst_chat_id: int, source_msg, text: str) -> str | None:
-    """Predict the exact monthly R/U command before Telegram sends a new text copy.
-
-    Caller should hold locked_chat(dst_chat_id) until the matching finance row is created.
-    This makes slash-mode copies appear in their final form immediately instead of being
-    copied first and edited a moment later.
-    """
-    try:
-        raw = str(text or "").strip()
-        if not raw or not looks_like_amount(raw) or not is_finance_mode(int(dst_chat_id)):
-            return None
-        comp = parse_financial_components(raw)
-        store = get_chat_store(int(dst_chat_id))
-        normalize_chat_records(int(dst_chat_id))
-        day_key = finance_day_key_from_message(source_msg) if source_msg is not None else finance_today_key(int(dst_chat_id))
-        month_key = str(day_key)[:7]
-        temp = {
-            "id": int(store.get("next_id", 1) or 1),
-            "day_key": str(day_key),
-            "timestamp": message_timestamp_iso(source_msg),
-            "source_order_msg_id": int(getattr(source_msg, "message_id", 0) or 0),
-            "source_msg_id": 0,
-            "usd_only": bool(comp.get("usd_only", False)),
-            "usd_amount": float(comp.get("usd_amount", 0) or 0),
-        }
-        temp_key = record_sort_key(temp)
-        rows = []
-        for dk, arr in (store.get("daily_records", {}) or {}).items():
-            if str(dk)[:7] != month_key:
-                continue
-            for rec in arr or []:
-                if isinstance(rec, dict):
-                    rows.append(rec)
-        if bool(temp.get("usd_only")):
-            relevant = [r for r in rows if bool(float(r.get("usd_amount", 0) or 0))]
-            prefix = "U"
-        else:
-            relevant = [r for r in rows if not bool(r.get("usd_only", False))]
-            prefix = "R"
-        position = 1 + sum(1 for r in relevant if record_sort_key(r) < temp_key)
-        return f"/izm_{prefix}{position}"
-    except Exception as e:
-        try:
-            log_error(f"predict forward copy command dst={dst_chat_id}: {e}")
-        except Exception:
-            pass
-        return None
+    # v168: never publish a clickable edit command before the linked finance row exists
+    # and has already been committed to local SQLite. apply_forward_copy_edit_ui adds it later.
+    return None
 
 
 def _forward_copy_display_text(base_text: str, rec: dict | None, mode: str) -> str:
@@ -562,11 +599,13 @@ def _set_forward_record_metadata(dst_chat_id: int, dst_msg_id: int, source_chat_
         rec["forward_source_chat_id"] = int(source_chat_id)
         rec["forward_source_msg_id"] = int(getattr(source_msg, "message_id", 0) or 0)
         rec["forward_copy_content_type"] = str(getattr(source_msg, "content_type", "text") or "text")
-        for _dk, arr in (get_chat_store(int(dst_chat_id)).get("daily_records", {}) or {}).items():
-            for item in arr:
-                if int(item.get("id", -1)) == int(rec.get("id", -2)):
-                    item.update(rec)
-        save_data(data, chat_ids=[int(dst_chat_id)])
+        ensure_finance_record_uid(int(dst_chat_id), rec)
+        for _key, item in _finance_record_lists(get_chat_store(int(dst_chat_id))):
+            if int(item.get("id", -1)) == int(rec.get("id", -2)):
+                item.update(rec)
+                ensure_finance_record_uid(int(dst_chat_id), item)
+        if not persist_finance_chat_local_fast(int(dst_chat_id)):
+            return None
         return rec
     except Exception as e:
         log_error(f"_set_forward_record_metadata({dst_chat_id},{dst_msg_id}): {e}")
@@ -574,28 +613,35 @@ def _set_forward_record_metadata(dst_chat_id: int, dst_msg_id: int, source_chat_
 
 
 def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id: int, source_msg, rec: dict | None = None) -> bool:
-    """Apply current owner's normal/button/slash UI to a forwarded bot copy."""
+    """Apply edit UI only after the linked finance record is safely present in local SQLite."""
     if not version_mode_feature("forward_copy_edit"):
         return False
     mode = forward_copy_edit_mode(int(source_chat_id))
     if rec is None:
         rec = find_record_by_message_id(int(dst_chat_id), int(dst_msg_id))
-    if rec:
-        try:
-            rec["forward_source_chat_id"] = int(source_chat_id)
-            rec["forward_source_msg_id"] = int(getattr(source_msg, "message_id", 0) or 0)
-            rec["forward_copy_content_type"] = str(getattr(source_msg, "content_type", "text") or "text")
-            for _dk, arr in (get_chat_store(int(dst_chat_id)).get("daily_records", {}) or {}).items():
-                for item in arr:
-                    if int(item.get("id", -1)) == int(rec.get("id", -2)):
-                        item.update(rec)
-            save_data(data, chat_ids=[int(dst_chat_id)])
-        except Exception as e:
-            log_error(f"apply_forward_copy_edit_ui metadata {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
-    else:
+    if not rec:
         rec = _set_forward_record_metadata(dst_chat_id, dst_msg_id, source_chat_id, source_msg)
     if not rec:
         log_error(f"[FWD COPY UI] record not found: {source_chat_id}->{dst_chat_id}:{dst_msg_id} mode={mode}")
+        return False
+    try:
+        rec["forward_source_chat_id"] = int(source_chat_id)
+        rec["forward_source_msg_id"] = int(getattr(source_msg, "message_id", 0) or 0)
+        rec["forward_copy_content_type"] = str(getattr(source_msg, "content_type", "text") or "text")
+        ensure_finance_record_uid(int(dst_chat_id), rec)
+        for _key, item in _finance_record_lists(get_chat_store(int(dst_chat_id))):
+            if not isinstance(item, dict):
+                continue
+            same_id = int(item.get("id", -1)) == int(rec.get("id", -2))
+            same_msg = int(item.get("source_msg_id") or item.get("origin_msg_id") or item.get("msg_id") or 0) == int(dst_msg_id)
+            if same_id or same_msg:
+                item.update(rec)
+                ensure_finance_record_uid(int(dst_chat_id), item)
+        if not persist_finance_chat_local_fast(int(dst_chat_id)):
+            log_error(f"[FWD COPY UI] local finance persist failed: {source_chat_id}->{dst_chat_id}:{dst_msg_id}")
+            return False
+    except Exception as exc:
+        log_error(f"apply_forward_copy_edit_ui metadata {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {exc}")
         return False
     try:
         base_text = _message_text_for_finance(source_msg) or compose_edit_input_value(rec.get("amount"), rec.get("note", ""))
@@ -607,13 +653,16 @@ def apply_forward_copy_edit_ui(source_chat_id: int, dst_chat_id: int, dst_msg_id
         elif ct in {"photo", "video", "document", "audio", "animation", "voice"}:
             _tg_call_retry(bot.edit_message_caption, caption=display_text, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), reply_markup=reply_markup, attempts=3, purpose="forward_copy_edit_apply_caption")
         else:
-            _tg_call_retry(bot.edit_message_reply_markup, int(dst_chat_id), int(dst_msg_id), reply_markup=reply_markup, attempts=2, purpose="forward_copy_edit_apply_markup")
+            _tg_call_retry(bot.edit_message_reply_markup, chat_id=int(dst_chat_id), message_id=int(dst_msg_id), reply_markup=reply_markup, attempts=3, purpose="forward_copy_edit_apply_markup")
+        try: schedule_config_backup_for_chats(int(dst_chat_id), delay=0.5)
+        except Exception: pass
         return True
-    except Exception as e:
-        if "message is not modified" in str(e).lower():
+    except Exception as exc:
+        if "message is not modified" in str(exc).lower():
             return True
-        log_error(f"apply_forward_copy_edit_ui {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {e}")
+        log_error(f"apply_forward_copy_edit_ui Telegram {source_chat_id}->{dst_chat_id}:{dst_msg_id}: {exc}")
         return False
+
 
 def schedule_forward_copy_edit_ui_retry(source_chat_id: int, dst_chat_id: int, dst_msg_id: int, source_msg, rec: dict | None = None, delay: float = 0.8):
     """Одна отложенная повторная попытка, если Telegram ещё не дал изменить свежую copyMessage."""
@@ -626,23 +675,6 @@ def schedule_forward_copy_edit_ui_retry(source_chat_id: int, dst_chat_id: int, d
     DELAYED_SCHEDULER.cancel(key)
     DELAYED_SCHEDULER.schedule(key, float(delay), _job)
 
-
-def _find_forward_copy_record_by_short_id(chat_id: int, short_id: str):
-    sid = str(short_id or "").strip().upper()
-    rows = []
-    seen_msg = set()
-    store = get_chat_store(int(chat_id))
-    for _ledger_key, rec in _finance_record_lists(store):
-        record_ids = {str(rec.get("short_id") or "").strip().upper(), str(rec.get("usd_short_id") or "").strip().upper()}
-        if sid not in record_ids:
-            continue
-        is_copy, msg_id, _src_chat, _src_msg = _forward_copy_record_identity(int(chat_id), rec)
-        if not is_copy or not msg_id or msg_id in seen_msg:
-            continue
-        seen_msg.add(msg_id)
-        rows.append(rec)
-    rows.sort(key=record_sort_key, reverse=True)
-    return rows[0] if rows else None
 
 
 def _forward_copy_edit_wait_scheduler_key(chat_id: int) -> str:
@@ -702,7 +734,7 @@ def refresh_active_forward_copy_edit_prompt(chat_id: int, dst_msg_id: int, rec: 
         prompt = _forward_copy_edit_prompt_text(rec, current)
         wait["countdown_base_text"] = prompt
         store["forward_copy_edit_wait"] = wait
-        save_data(data, chat_ids=[chat_id])
+        # v168: 40-second edit-wait state is ephemeral; never block UI on SQLite/root persistence.
         prompt_id = int(wait.get("prompt_msg_id") or 0)
         if prompt_id:
             try:
@@ -728,7 +760,7 @@ def clear_forward_copy_edit_wait(chat_id: int, delete_prompt: bool = True):
     force_reply_msg_id = wait.get("force_reply_msg_id")
     DELAYED_SCHEDULER.cancel(_forward_copy_edit_wait_scheduler_key(int(chat_id)))
     store["forward_copy_edit_wait"] = None
-    save_data(data, chat_ids=[int(chat_id)])
+    # v168: ephemeral wait cancellation is RAM-only.
     if delete_prompt:
         for _mid in (prompt_id, force_reply_msg_id):
             if not _mid:
@@ -786,6 +818,7 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
         "type": "forward_copy_edit",
         "dst_msg_id": int(dst_msg_id),
         "rid": int(rec.get("id")),
+        "record_uid": ensure_finance_record_uid(int(chat_id), rec),
         "source_chat_id": int(source_chat_id or 0),
         "prompt_msg_id": int(sent.message_id),
         "force_reply_msg_id": int(force_msg_id or 0),
@@ -793,7 +826,7 @@ def start_forward_copy_edit(chat_id: int, dst_msg_id: int) -> bool:
         "countdown_base_text": prompt,
         "expires_at": time.time() + 40,
     }
-    save_data(data, chat_ids=[int(chat_id)])
+    # v168: edit-wait state is intentionally RAM-only and expires in seconds.
     schedule_forward_copy_edit_wait_cancel(int(chat_id), int(sent.message_id), None)
     return True
 
@@ -828,7 +861,12 @@ def edit_forward_copy_and_record(chat_id: int, dst_msg_id: int, new_text: str) -
                 rec["usd_note"] = ""
                 rec["usd_only"] = False
             rebuild_month_short_ids(int(chat_id))
-            save_data(data, chat_ids=[int(chat_id)])
+            try: ensure_finance_record_uid(int(chat_id), rec)
+            except Exception: pass
+            if not persist_finance_chat_local_fast(int(chat_id)):
+                return False
+            try: schedule_financial_window_refresh(int(chat_id), str(day_key), reason="forward_copy_edit_immediate_v168")
+            except Exception: pass
     mode = forward_copy_edit_mode(int(chat_id))
     display_text = _forward_copy_display_text(clean_text, rec, mode)
     reply_markup = _forward_copy_edit_keyboard(mode)
@@ -2180,4 +2218,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v143_audit_stability_exact_wait_reminders_memory
+# v168_clean_core_record_identity

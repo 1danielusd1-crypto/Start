@@ -1,11 +1,11 @@
-# v167_excel_formulas_thuwed_google_tz
+# v168_clean_core_record_identity
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v167_excel_formulas_thuwed_google_tz"
-MODULE_FILE_VERSION = "v167_excel_formulas_thuwed_google_tz"
+MODULAR_VERSION = "bot_v168_clean_core_record_identity"
+MODULE_FILE_VERSION = "v168_clean_core_record_identity"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -146,4 +146,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v167_excel_formulas_thuwed_google_tz
+# v168_clean_core_record_identity

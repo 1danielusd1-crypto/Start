@@ -1,4 +1,4 @@
-# v148_multitenant_spaces
+# v168_clean_core_record_identity
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -43,6 +43,9 @@ def normalize_chat_records(chat_id: int) -> None:
         rec.setdefault("owner", "")
         rec.setdefault("source_order_msg_id", rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id") or rec.get("id") or 0)
         _record_day_key(rec)
+        try:
+            if "ensure_finance_record_uid" in globals(): ensure_finance_record_uid(int(chat_id), rec)
+        except Exception: pass
         clean.append(rec)
 
     clean.sort(key=record_sort_key)
@@ -75,6 +78,9 @@ def rebuild_month_short_ids(chat_id: int):
         recs = sorted(daily.get(dk, []) or [], key=record_sort_key)
         daily[dk] = recs
         for r in recs:
+            try:
+                if "ensure_finance_record_uid" in globals(): ensure_finance_record_uid(int(chat_id), r)
+            except Exception: pass
             has_usd = bool(float(r.get("usd_amount", 0) or 0))
             usd_only = bool(r.get("usd_only", False))
             if not usd_only:
@@ -1494,4 +1500,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v148_multitenant_spaces
+# v168_clean_core_record_identity

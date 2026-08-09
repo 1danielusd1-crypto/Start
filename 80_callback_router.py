@@ -1,4 +1,4 @@
-# v154_excel_usd_isolation_date_marks
+# v168_clean_core_record_identity
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -839,30 +839,34 @@ def on_callback(call):
             except Exception as e:
                 log_error(f"secret day callback: {e}")
             return
+        if data_str.startswith("v168:owners_circle:"):
+            if not tenant_is_platform_owner_user(tenant_current_actor_user_id()):
+                return
+            try:
+                level = 2 if int(data_str.rsplit(":", 1)[1]) == 2 else 1
+                _v168_set_owner_access_circle(level)
+                title = "1️⃣ Первый круг" if level == 1 else "2️⃣ Второй круг"
+                safe_edit(bot, call, window_mark(f"👥 Доступ владельца к чатам\n\n{title}\n\n✅ — владелец может пользоваться ботом, смотреть и проверять этот чат\n❌ — дополнительный доступ выключен", "Ф2"), reply_markup=build_additional_owners_keyboard(level))
+            except Exception as e:
+                log_error(f"owner access circle callback: {e}")
+            return
         if data_str.startswith("addown:"):
-            if not is_primary_owner(chat_id):
+            if not tenant_is_platform_owner_user(tenant_current_actor_user_id()):
                 return
             try:
                 target_id = int(data_str.split(":", 1)[1])
                 set_additional_owner(target_id, target_id not in get_additional_owner_ids())
-                safe_edit(
-                    bot,
-                    call,
-                    wm_owner("👥 Дополнительные владельцы\n\n✅ — доступ владельца включён\n❌ — доступ выключен", 36),
-                    reply_markup=build_additional_owners_keyboard(),
-                )
+                level = _v168_owner_access_circle(1)
+                title = "1️⃣ Первый круг" if level == 1 else "2️⃣ Второй круг"
+                safe_edit(bot, call, window_mark(f"👥 Доступ владельца к чатам\n\n{title}\n\n✅ — владелец может пользоваться ботом, смотреть и проверять этот чат\n❌ — дополнительный доступ выключен", "Ф2"), reply_markup=build_additional_owners_keyboard(level))
             except Exception as e:
                 log_error(f"additional owner callback: {e}")
             return
         if data_str == "additional_owners":
-            if not is_primary_owner(chat_id):
+            if not tenant_is_platform_owner_user(tenant_current_actor_user_id()):
                 return
-            safe_edit(
-                bot,
-                call,
-                wm_owner("👥 Дополнительные владельцы\n\n✅ — доступ владельца включён\n❌ — доступ выключен", 36),
-                reply_markup=build_additional_owners_keyboard(),
-            )
+            _v168_set_owner_access_circle(1)
+            safe_edit(bot, call, window_mark("👥 Доступ владельца к чатам\n\n1️⃣ Первый круг\n\n✅ — владелец может пользоваться ботом, смотреть и проверять этот чат\n❌ — дополнительный доступ выключен", "Ф1"), reply_markup=build_additional_owners_keyboard(1))
             return
 
         # Статьи должны работать во всех режимах: обычное окно, быстрый остаток,
@@ -3184,4 +3188,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v154_excel_usd_isolation_date_marks
+# v168_clean_core_record_identity
