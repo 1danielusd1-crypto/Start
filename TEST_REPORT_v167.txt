@@ -1,0 +1,25 @@
+TEST REPORT — bot_v167_excel_formulas_thuwed_google_tz
+
+PASS: python -m py_compile for new module and bot.py.
+PASS: python -m compileall for the complete split source tree.
+PASS: manifest hash validation for all 40 numbered modules.
+PASS: first/last version-marker validation for all 40 numbered modules.
+PASS: synthetic Thu-Wed bounds: 2026-08-08 -> 2026-08-06 .. 2026-08-12.
+PASS: synthetic Google tab title: 06-12.08.26.
+PASS: synthetic F47 keyboard contains “📊 Чт–Ср” and Google schedule controls.
+PASS: category-list mock keeps configured zero-use expense articles.
+PASS: simple-table formula mock: SUM income, SUM expense, closing and turnover formulas.
+PASS: category-table formula mock: per-article SUM formulas, expense SUM, closing/turnover and Products reference.
+PASS: legacy 4-week Thu-Wed workbook formula mock: income/article totals, expense, closing and turnover are formula-driven.
+PASS: TZ lifecycle mock: old rows archive; normal TZ export contains only current-version open rows; archive export contains old rows.
+PASS: XLSX package-format mock: custom #,##0 format, wrapText, thin border style and Description width=42 inserted.
+PASS: standalone full source py_compile.
+PASS: ZIP integrity checks.
+
+Source/reference workbook was inspected with artifact_tool. Its visual structure was used as the reference for category colors, section highlighting, borders and column sizing.
+
+NOT LIVE TESTED:
+- Telegram callbacks against the real bot.
+- Render deploy/sleep/wake.
+- Real MEGA durable storage.
+- Real Google Sheets API creation/update at 00:01 or 05:01.

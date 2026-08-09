@@ -1,0 +1,45 @@
+bot_v167_excel_formulas_thuwed_google_tz
+
+1. Excel formulas restored
+- ARS and USD simple tables again contain real formulas for income, expense, closing balance and turnover.
+- Category/article tables contain formulas for income, every expense article total, total expense, closing balance and turnover.
+- The Products summary in category tables references the Products article total; the food-per-person metric recalculates from that cell.
+- The legacy 4-week Thursday-Wednesday workbook also gets formulas for income/article totals, expense, closing and turnover.
+- Formula dictionaries are also passed to Google Sheets as formulaValue, so manual cell edits recalculate there too.
+
+2. Expense article columns are stable
+- Excel article tables always include the complete configured expense article list, including articles with zero transactions in the selected period.
+- Used custom articles are appended if they are not present in the configured order.
+
+3. Excel appearance based on the supplied workbook
+- Thin cell borders are applied to local XLSX tables.
+- Description column width is 42 and text is wrapped/contained so it does not spill into adjacent cells.
+- Numeric cells use thousands grouping (#,##0), e.g. 1,234 / 12,345.
+- Existing modern category colors, orange day separators, income/expense/balance highlighting and Notes/Comments are preserved.
+
+4. F47 period corrected
+- Visible button changed from “Ср–Чт” to “Чт–Ср”.
+- Legacy internal callback token `wedthu` is retained so old buttons remain compatible.
+- `wedthu` now means the complete Thursday-through-Wednesday 7-day period.
+- For 2026-08-08 the period is 2026-08-06 through 2026-08-12.
+
+5. Rolling Google Sheet Thu-Wed
+- F47 contains Google Thu-Wed schedule controls.
+- Selectable daily update time: 00:01 or 05:01.
+- Current owner schedule defaults to enabled at 05:01.
+- A fixed period tab is created/updated, e.g. 06-12.08.26.
+- During the same period the same tab is overwritten/refreshed daily.
+- On the first Thursday of the next period a new tab name is generated automatically.
+- Render sleep/restart is handled with catch-up: if the exact minute was missed, the first READY after the selected time performs that day’s update once.
+- Added “Обновить лист Чт–Ср сейчас”.
+- Google rolling tab uses formulas, fixed column widths, clipped Description text, borders and #,##0 number formatting.
+
+6. TZ window task lifecycle
+- Existing TZ entries from previous bot versions are not deleted and are not falsely declared “fixed”. They are moved to archive.
+- “Скачать ТЗ окон” now exports only open TZ entries created in the current bot version; therefore every new release starts with a clean active TZ list.
+- Journal/F89 gains “🗃 Скачать архив ТЗ”.
+- New TZ rows are tagged with bot version and status=open.
+- The rollover is hooked to READY and uses the final VERSION dynamically, so the rule continues to work for future versions loaded after v167.
+
+7. Restore
+- Full-state restore validation accepts bot_v167_* while preserving SQLite integrity/schema/checksum validation.

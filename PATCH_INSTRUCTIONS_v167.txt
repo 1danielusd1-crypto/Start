@@ -1,0 +1,23 @@
+INSTALLATION v167
+
+Recommended:
+1. Deploy the complete bot_v167_FULL_PACKAGE_FLAT.zip.
+2. Keep all files from the same package together in the project root.
+3. Do not mix numbered modules from another release.
+
+Changed-only:
+- bot_v167_CHANGED_FILES_ONLY.zip is ONLY for installation over a complete v166 package.
+- It contains exactly:
+  bot.py
+  modules_manifest.json
+  117_v167_excel_formulas_thuwed_google_tz.py
+
+After deploy check:
+1. Open Ф47: period row must say “Чт–Ср”.
+2. Export “Excel статьи”: all configured article columns must be present, including zero-use articles.
+3. Edit an amount in Excel/Google Sheets and confirm totals recalculate.
+4. In Ф47 choose 00:01 or 05:01 and optionally press “Обновить лист Чт–Ср сейчас”.
+5. Google tab for 2026-08-08 should be named 06-12.08.26.
+6. Open Журнал/Ф89: “Скачать ТЗ окон” should contain only current-version open TZ; old TZ are available through “Скачать архив ТЗ”.
+
+Live Google/Telegram/Render execution was not available in the build environment; deploy verification is still required.

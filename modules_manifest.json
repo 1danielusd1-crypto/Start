@@ -1,6 +1,6 @@
 {
-  "version": "bot_v166_fast_parallel_forward_pairs",
-  "file_marker": "v166_fast_parallel_forward_pairs",
+  "version": "bot_v167_excel_formulas_thuwed_google_tz",
+  "file_marker": "v167_excel_formulas_thuwed_google_tz",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -40,7 +40,8 @@
     "113_v163_audit_hardening.py",
     "114_v164_circle_hierarchy_spaces.py",
     "115_v165_owner_first_circle_compat.py",
-    "116_v166_fast_parallel_forward_pairs.py"
+    "116_v166_fast_parallel_forward_pairs.py",
+    "117_v167_excel_formulas_thuwed_google_tz.py"
   ],
   "files": {
     "00_core.py": "61b35290e79f471c124ffcf9fa848ff98c64b6fc520832f8ccc8fe073ab3713c",
@@ -81,7 +82,8 @@
     "113_v163_audit_hardening.py": "3ccba854846ec401e4b674dd12e94b87ac15e8e3562307e92b085290c4794997",
     "114_v164_circle_hierarchy_spaces.py": "2b5f50ba5eeac362583cdc805e60326ba120a274edea770adbe1a19e5993216d",
     "115_v165_owner_first_circle_compat.py": "360e56f019eb54674aeceb6d88d8c3e52c0fba4ac9dd0d3bf15b71975849136d",
-    "116_v166_fast_parallel_forward_pairs.py": "039edb3bc0a8f2e77ab42b60d51ac27b9ce576b4de3a208fb76805d740b4c925"
+    "116_v166_fast_parallel_forward_pairs.py": "039edb3bc0a8f2e77ab42b60d51ac27b9ce576b4de3a208fb76805d740b4c925",
+    "117_v167_excel_formulas_thuwed_google_tz.py": "91f4f3057e63a23dc9c0bd19d137201aaa6ce7a89767c3478ce7f94b84b6194f"
   },
   "file_markers": {
     "00_core.py": "v153_remaining_fixes_11_16",
@@ -122,6 +124,7 @@
     "113_v163_audit_hardening.py": "v163_audit_hardening",
     "114_v164_circle_hierarchy_spaces.py": "v164_circle_hierarchy_spaces",
     "115_v165_owner_first_circle_compat.py": "v165_owner_first_circle_compat",
-    "116_v166_fast_parallel_forward_pairs.py": "v166_fast_parallel_forward_pairs"
+    "116_v166_fast_parallel_forward_pairs.py": "v166_fast_parallel_forward_pairs",
+    "117_v167_excel_formulas_thuwed_google_tz.py": "v167_excel_formulas_thuwed_google_tz"
   }
 }
