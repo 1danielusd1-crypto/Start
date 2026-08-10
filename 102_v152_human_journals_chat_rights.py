@@ -1,4 +1,4 @@
-# v152_human_journals_chat_rights
+# v170_clear_journal_names
 
 VERSION = "bot_v152_human_journals_chat_rights"
 
@@ -699,27 +699,86 @@ def _v152_file_text(document, caption: str = "", purpose: str = "") -> tuple[str
     return name, f"{name} {caption or ''} {purpose or ''}".casefold()
 
 
-def _v152_journal_kind(document, caption: str = "", purpose: str = "") -> str | None:
-    _name, low = _v152_file_text(document, caption, purpose)
-    if any(x in low for x in ("failed", "problem_tasks", "проблемные задачи")):
-        return "Журналы_failed"
-    if any(x in low for x in ("runtime", "diagnostic", "diagnostics", "диагност")):
+def _v152_without_version_noise(text: str) -> str:
+    """Remove version/build tokens before semantic filename classification.
+
+    v169 contained the word ``forward`` in VERSION itself.  The old classifier searched
+    the whole filename/caption and therefore renamed unrelated downloads (TZ export,
+    current-version journal and even the bot source) to ``Журнал_пересылки``.
+    Classification must be based on the actual export purpose, not on words inside the
+    release name.
+    """
+    low = str(text or "").casefold()
+    try:
+        ver = str(globals().get("VERSION") or "").casefold().strip()
+        if ver:
+            low = low.replace(ver, " ")
+    except Exception:
+        pass
+    # Also remove generic release tokens in case the file contains another/current build
+    # name not identical to VERSION (archives, restored files, historical journals).
+    low = _v152_re.sub(r"\bbot_v\d+[0-9a-z_\-]*\b", " ", low)
+    low = _v152_re.sub(r"\bv\d+_[0-9a-z_\-]+\b", " ", low)
+    low = _v152_re.sub(r"\s+", " ", low).strip()
+    return low
+
+
+def _v152_download_kind(document, caption: str = "", purpose: str = "") -> str | None:
+    """Return a unique human category for operational downloads.
+
+    The order is intentional: explicit export types win before generic journal keywords.
+    Financial XLSX/CSV exports are *not* journals and keep their own existing filenames.
+    """
+    name, raw_low = _v152_file_text(document, caption, purpose)
+    low = _v152_without_version_noise(raw_low)
+    base = _v152_os.path.basename(str(name or "")).casefold()
+    ext = _v152_os.path.splitext(base)[1].lower()
+
+    # Non-journal operational files that used to be accidentally classified as forwarding
+    # journals because VERSION contained the word "forward".
+    if ext == ".py" or "исходник текущего деплоя" in low or "исходник бота" in low:
+        return "Исходник_бота"
+    if "архив тз" in low or "архив_тз_окон" in low:
+        return "ТЗ_окон_архив"
+    if "тз по окнам" in low or "тз_окон_текущ" in low or "тз_окон" in base:
+        return "ТЗ_окон_текущая_версия"
+    if "маркировки окон" in low or "маркировки_окон" in base:
+        return "Маркировки_окон"
+    if "runtime mega zip" in low or base.startswith("runtime_export_"):
+        return "Диагностика_Runtime_MEGA"
+
+    # Journals.  Prefer captions/titles that state exactly what the file is.
+    if "журнал текущей версии" in low or "журнал текущей версии бота" in low:
+        return "Журнал_текущей_версии"
+    if any(x in low for x in ("максимальный диагностический журнал", "диагностический журнал", "diagnostic", "diagnostics")):
         return "Журнал_диагностики"
-    if any(x in low for x in ("error", "ошиб")):
+    if any(x in low for x in ("failed", "problem_tasks", "проблемные задачи", "проблемных задач")):
+        return "Журнал_FAILED_задач"
+    if any(x in low for x in ("журнал ошибок", "error journal", "errors journal", "журнал_ошибок")):
         return "Журнал_ошибок"
-    if any(x in low for x in ("recover", "restore", "восстанов")):
+    if any(x in low for x in ("журнал восстановления", "recovery journal", "restore journal", "журнал_восстановления")):
         return "Журнал_восстановления"
-    if any(x in low for x in ("forward", "fwd", "пересыл")):
+    if any(x in low for x in ("журнал пересылки", "forward journal", "forwarding journal", "журнал_пересылки")):
         return "Журнал_пересылки"
-    if any(x in low for x in ("audit", "integrity", "аудит", "целостност", "command_audit")):
+    if any(x in low for x in ("журнал аудита", "audit journal", "integrity journal", "журнал_аудита")):
         return "Журнал_аудита"
-    if any(x in low for x in ("backup", "snapshot", "sqlite", "бэкап", "резерв")):
-        return "Журнал_backup"
-    if any(x in low for x in ("finance", "финанс", "csv", "xlsx", "excel", "tabl_lsx", "data_")):
+    if any(x in low for x in ("журнал backup", "журнал бэкап", "backup journal", "журнал резерв", "журнал_backup")):
+        return "Журнал_резервных_копий"
+    if any(x in low for x in ("журнал финансов", "финансовый журнал", "finance journal", "журнал_финансов")):
         return "Журнал_финансов"
-    if any(x in low for x in ("journal", "log", "журнал")):
+    if any(x in low for x in ("журнал операций", "журнал действий", "action journal", "operations journal", "журнал_операций")):
+        return "Журнал_операций"
+
+    # Historical files can be named just journal_<timestamp>.  Do not infer forwarding,
+    # finance, etc. from unrelated words; the safe fallback is the generic bot journal.
+    if base.startswith("journal_") or " журнал " in f" {low} ":
         return "Журнал_операций"
     return None
+
+
+def _v152_journal_kind(document, caption: str = "", purpose: str = "") -> str | None:
+    """Compatibility alias retained for older modules."""
+    return _v152_download_kind(document, caption, purpose)
 
 
 def _v152_filename_component(value: str, fallback: str = "Чат") -> str:
@@ -727,6 +786,10 @@ def _v152_filename_component(value: str, fallback: str = "Чат") -> str:
     text = _v152_re.sub(r"[\\/:*?\"<>|]+", "-", text)
     text = _v152_re.sub(r"\s+", "-", text)
     text = _v152_re.sub(r"-+", "-", text).strip("-._")
+    # Emoji-only chat titles can become visually blank in downloaded filenames.
+    # Require at least one letter/digit; otherwise use the readable fallback.
+    if not _v152_re.search(r"[0-9A-Za-zА-Яа-яЁё]", text):
+        text = str(fallback or "Чат")
     return (text or fallback)[:80]
 
 
@@ -734,12 +797,20 @@ def _v152_scope_name(recipient_chat_id: int, kind: str) -> str:
     try:
         tid = _v152_tenant_id_for_chat(int(recipient_chat_id))
         tenant = _v152_tenant_row(tid)
-        if kind in {"Журналы_failed", "Журнал_диагностики", "Журнал_аудита"} and tenant:
+        system_scope_kinds = {
+            "Журнал_FAILED_задач", "Журнал_диагностики", "Журнал_аудита",
+            "Диагностика_Runtime_MEGA", "Журнал_текущей_версии",
+            "ТЗ_окон_текущая_версия", "ТЗ_окон_архив", "Маркировки_окон",
+        }
+        if kind in system_scope_kinds and tenant:
             return _v152_filename_component(tenant.get("name") or tid, "Пространство")
     except Exception:
         pass
     try:
-        return _v152_filename_component(get_chat_display_name(int(recipient_chat_id)) or f"Чат-{recipient_chat_id}")
+        return _v152_filename_component(
+            get_chat_display_name(int(recipient_chat_id)) or f"Чат-{recipient_chat_id}",
+            f"Чат-{recipient_chat_id}",
+        )
     except Exception:
         return _v152_filename_component(f"Чат-{recipient_chat_id}")
 
@@ -763,14 +834,19 @@ def _v152_period_suffix(document, caption: str = "", purpose: str = "") -> str:
 
 
 def v152_human_download_name(recipient_chat_id: int, document, caption: str = "", purpose: str = "") -> str | None:
-    kind = _v152_journal_kind(document, caption, purpose)
+    kind = _v152_download_kind(document, caption, purpose)
     if not kind:
         return None
     old_name = str(getattr(document, "name", "") or getattr(document, "file_name", "") or "")
     ext = _v152_os.path.splitext(old_name)[1].lower()
-    if ext not in {".txt", ".csv", ".zip", ".json", ".xlsx", ".gz", ".sqlite3"}:
-        ext = ".zip" if kind == "Журналы_failed" else ".txt"
-    return f"{kind}_{_v152_scope_name(int(recipient_chat_id), kind)}_{_v152_period_suffix(document, caption, purpose)}{ext}"
+    if kind == "Исходник_бота":
+        safe_ver = _v152_filename_component(str(globals().get("VERSION") or "текущая-версия"), "текущая-версия")
+        return f"Исходник_бота_{safe_ver}_{_v152_period_suffix(document, caption, purpose)}.py"
+    if ext not in {".txt", ".csv", ".zip", ".json", ".xlsx", ".gz", ".sqlite3", ".py"}:
+        ext = ".zip" if kind in {"Журнал_FAILED_задач", "Диагностика_Runtime_MEGA"} else ".txt"
+    scope = _v152_scope_name(int(recipient_chat_id), kind)
+    period = _v152_period_suffix(document, caption, purpose)
+    return f"{kind}_{scope}_{period}{ext}"
 
 
 _V152_ORIG_SEND_DOCUMENT = getattr(bot, "send_document", None)
@@ -891,4 +967,4 @@ try:
 except Exception:
     pass
 
-# v152_human_journals_chat_rights
+# v170_clear_journal_names

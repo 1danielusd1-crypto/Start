@@ -1,4 +1,4 @@
-# v169_fast_tz_forward_reminder_google
+# v170_clear_journal_names
 """v167: Excel formulas/formatting, Thu-Wed period, rolling Google tab, TZ lifecycle.
 
 This module deliberately patches only the active public hooks after v166 so older callbacks
@@ -14,8 +14,8 @@ import zipfile as _v167_zipfile
 import xml.etree.ElementTree as _v167_ET
 from datetime import datetime as _v167_datetime, timedelta as _v167_timedelta
 
-VERSION = "bot_v169_fast_tz_forward_reminder_google"
-V167_FILE_MARKER = "v169_fast_tz_forward_reminder_google"
+VERSION = "bot_v170_clear_journal_names"
+V167_FILE_MARKER = "v170_clear_journal_names"
 
 _V167_BASE_V151_CATEGORIES = globals().get("_v151_categories")
 _V167_BASE_V151_SIMPLE_TABLE = globals().get("_v151_simple_table")
@@ -1239,7 +1239,7 @@ try:
                     if not export_version.startswith((
                         "bot_v153_","bot_v154_","bot_v155_","bot_v156_","bot_v157_","bot_v158_",
                         "bot_v159_","bot_v160_","bot_v161_","bot_v162_","bot_v163_","bot_v164_",
-                        "bot_v165_","bot_v166_","bot_v167_","bot_v168_","bot_v169_",
+                        "bot_v165_","bot_v166_","bot_v167_","bot_v168_","bot_v169_","bot_v170_",
                     )): raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
                     if _v153_db_logical_checksum(raw)!=str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
                     return manifest,raw
@@ -1251,6 +1251,7 @@ except Exception:
 
 try:
     bot_journal("v169_installed", int(OWNER_ID or 0), "main TZ button + immediate finance-forward edit UI + tri-state reminder merge + Google Thu-Wed update modes")
+    bot_journal("v170_journal_names_installed", int(OWNER_ID or 0), "distinct human filenames; version words no longer misclassify downloads")
 except Exception:
     pass
-# v169_fast_tz_forward_reminder_google
+# v170_clear_journal_names

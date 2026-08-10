@@ -1,0 +1,30 @@
+TEST REPORT — bot_v171_all_tz_reliability
+
+PASS: py_compile всех 41 numbered modules.
+PASS: py_compile bot.py.
+PASS: py_compile standalone FULL_bot_v171_all_tz_reliability.py.
+PASS: manifest version / 41 parts / SHA-256 / historical file markers.
+PASS: first+last source marker validation for all 41 modules.
+PASS: focused isolated runtime test:
+  - global financial-forward mode is identical across chat/tenant ids;
+  - label is «💰фин.пересылка»;
+  - platform reminder may deliver only to explicitly selected known cross-contour chat;
+  - non-platform tenant isolation remains;
+  - reminder merge cycles smart -> single and single label is «1 СООБЩЕНИЕ»;
+  - marked menu receives Description / Back / Main / Close / marker / TZ controls;
+  - ~700KB delta passes soft guard;
+  - >1MiB delta is blocked and requests full snapshot.
+PASS: all 11 v169 TZ signatures matched the supplied TZ export.
+PASS: contour callback static audit: v164 circle/finback/space, sp:*, chat descriptions, finance-mode picks, back/main/close/no-op routes present.
+PASS: DEV KIT structural audit: no hard structural issues; 41 modules, 60,569 lines.
+PASS: ZIP integrity test for full and changed-only packages.
+
+Journal audit basis:
+- 11 button outcomes; median observed latency 868ms, max 892ms.
+- 10 historical window_edit_target_missing events.
+- 316 MEGA delta/critical lines.
+- 96 durable warning/failure lines.
+- dominant reminder warning: tenant_reminder_cross_chat_blocked.
+These are v169 observations; v171 fixes the concrete causes described in CHANGELOG.
+
+NOT RUN: live Telegram Bot API, live Render deploy, live MEGA upload/restore, live Google Sheets API.

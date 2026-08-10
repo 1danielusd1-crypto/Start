@@ -1,6 +1,6 @@
 {
-  "version": "bot_v169_fast_tz_forward_reminder_google",
-  "file_marker": "v169_fast_tz_forward_reminder_google",
+  "version": "bot_v171_all_tz_reliability",
+  "file_marker": "v171_all_tz_reliability",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -41,7 +41,8 @@
     "114_v164_circle_hierarchy_spaces.py",
     "115_v165_owner_first_circle_compat.py",
     "116_v166_fast_parallel_forward_pairs.py",
-    "117_v167_excel_formulas_thuwed_google_tz.py"
+    "117_v167_excel_formulas_thuwed_google_tz.py",
+    "118_v171_all_tz_reliability.py"
   ],
   "files": {
     "00_core.py": "ba4c220cf119cec704378e99a1a7c68312d935dae70c38c6b25aa942346d32ec",
@@ -68,7 +69,7 @@
     "99_web_runtime.py": "74640f59783d2e300758b61ed972ffa55b390637eaa7df2a58582647ef593fae",
     "100_v150_excel_reserve_chat_lifecycle.py": "04fb0e315f0ff31ce1fd925f8b8e23883837ae00b943c958d698f738bb74baa1",
     "101_v151_redo_fixes_5_6_7.py": "2c88799f6525d2d2c1762acef67b0fe4d539ddfe90ab17fa7a501489a3d2878e",
-    "102_v152_human_journals_chat_rights.py": "c93fbd1cb92b40002919c4c1ff35832a19fdc4c89236b81a65295fb84b5cd9c0",
+    "102_v152_human_journals_chat_rights.py": "239a7ea1835f76969a50ea81331d9a9027045b48b7f8fb075016a9941ef9e67f",
     "103_v153_remaining_fixes_11_16.py": "a3c93b0f2b721316f3629989401388efd86fad511550b2256f775ca2244b2b1a",
     "104_v154_excel_usd_isolation_date_marks.py": "2905ae12dcee71677c50de98b3d75a3f5b58116a6846a7b37820cb8e5441e78e",
     "105_v155_button_navigation_audit.py": "f9a2e5f1a348bfa85bedc751aff0d5f5780446a0b68657d6b3b7e235e826aa1f",
@@ -83,7 +84,8 @@
     "114_v164_circle_hierarchy_spaces.py": "2b5f50ba5eeac362583cdc805e60326ba120a274edea770adbe1a19e5993216d",
     "115_v165_owner_first_circle_compat.py": "360e56f019eb54674aeceb6d88d8c3e52c0fba4ac9dd0d3bf15b71975849136d",
     "116_v166_fast_parallel_forward_pairs.py": "3666091677967177aad2148d1a6eb35ce148cced749a6a8b70cac87ff037e724",
-    "117_v167_excel_formulas_thuwed_google_tz.py": "dad9b54354cec10e18fcf082939d1feb61d451733e05e4f82e50a7c95ed08ee4"
+    "117_v167_excel_formulas_thuwed_google_tz.py": "0e5cb111e8fb7b0a7af033e0289eec455841fcea0ae4542dbb68e704fb9cd1bd",
+    "118_v171_all_tz_reliability.py": "8ecffb0449f3f74b7751eebb0d3adec1a8c950435f05aee43140ceba5626e9b2"
   },
   "file_markers": {
     "00_core.py": "v168_clean_core_record_identity",
@@ -110,7 +112,7 @@
     "99_web_runtime.py": "v163_audit_hardening",
     "100_v150_excel_reserve_chat_lifecycle.py": "v168_clean_core_record_identity",
     "101_v151_redo_fixes_5_6_7.py": "v168_clean_core_record_identity",
-    "102_v152_human_journals_chat_rights.py": "v152_human_journals_chat_rights",
+    "102_v152_human_journals_chat_rights.py": "v170_clear_journal_names",
     "103_v153_remaining_fixes_11_16.py": "v153_remaining_fixes_11_16",
     "104_v154_excel_usd_isolation_date_marks.py": "v154_excel_usd_isolation_date_marks",
     "105_v155_button_navigation_audit.py": "v155_button_navigation_audit",
@@ -125,6 +127,7 @@
     "114_v164_circle_hierarchy_spaces.py": "v164_circle_hierarchy_spaces",
     "115_v165_owner_first_circle_compat.py": "v165_owner_first_circle_compat",
     "116_v166_fast_parallel_forward_pairs.py": "v168_clean_core_record_identity",
-    "117_v167_excel_formulas_thuwed_google_tz.py": "v169_fast_tz_forward_reminder_google"
+    "117_v167_excel_formulas_thuwed_google_tz.py": "v170_clear_journal_names",
+    "118_v171_all_tz_reliability.py": "v171_all_tz_reliability"
   }
 }

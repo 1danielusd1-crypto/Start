@@ -1,0 +1,16 @@
+JOURNAL AUDIT SUMMARY — source runtime v169
+
+Observed in supplied current/max journals:
+- Button outcome sample: 11; median 868ms; maximum 892ms.
+- window_edit_target_missing: 10 in maximum diagnostics.
+- MEGA delta/critical related lines: 316 in combined DEV KIT analysis.
+- Durable warning/failure lines: 96.
+- tenant_reminder_cross_chat_blocked is the dominant warning family.
+- Current compact deltas repeatedly measured around 630–690KB and were rejected by the bot's own 512KB hard guard.
+
+v171 actions:
+- cross-chat owner reminder rule fixed;
+- repeated registered-window refresh guarded by per-window lock and registry recheck;
+- delta 512KB threshold changed from hard block to warning; 1MiB remains hard safety limit;
+- all callback handlers now emit press -> result/error chain events;
+- contour callback routes statically audited.

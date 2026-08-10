@@ -1,0 +1,15 @@
+CONTOUR / CIRCLE BUTTON AUDIT — v171
+
+PASS routes:
+- v164:circle:* -> _v164_circle_callback
+- v164:finback:* -> _v164_circle_callback
+- v164:space_circle:* -> _v164_circle_callback
+- sp:* -> tenant_handle_callback
+- chat_desc_menu:* -> on_callback
+- chat_desc_open:* -> on_callback
+- d:*:fw_finmode_pick_* -> on_callback
+- d:*:back_main -> on_callback/v161
+- info_close -> on_callback
+- none -> v171 explicit no-op handler
+
+v171 additionally wraps callback handlers with button_chain_press / button_chain_result / button_chain_error diagnostics and gives permitted v164 contour navigation a quick ACK.

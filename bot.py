@@ -1,11 +1,11 @@
-# v169_fast_tz_forward_reminder_google
+# v171_all_tz_reliability
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v169_fast_tz_forward_reminder_google"
-MODULE_FILE_VERSION = "v169_fast_tz_forward_reminder_google"
+MODULAR_VERSION = "bot_v171_all_tz_reliability"
+MODULE_FILE_VERSION = "v171_all_tz_reliability"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -47,6 +47,7 @@ MODULAR_SOURCE_PARTS = [
     '115_v165_owner_first_circle_compat.py',
     '116_v166_fast_parallel_forward_pairs.py',
     '117_v167_excel_formulas_thuwed_google_tz.py',
+    '118_v171_all_tz_reliability.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -146,4 +147,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v169_fast_tz_forward_reminder_google
+# v171_all_tz_reliability

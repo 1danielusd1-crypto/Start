@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "version": "bot_v171_all_tz_reliability",
+  "issues": [],
+  "warnings": [
+    "high shadowed function count: 311",
+    "high silent except-pass count: 1356",
+    "many task-pool creation sites: 22"
+  ],
+  "metrics": {
+    "version": "bot_v171_all_tz_reliability",
+    "file_marker": "v171_all_tz_reliability",
+    "generated_from": "/mnt/data/v171_work",
+    "module_count": 41,
+    "total_lines": 60569,
+    "function_names": 2092,
+    "function_definitions": 2403,
+    "duplicate_function_names": 219,
+    "shadowed_function_definitions": 311,
+    "window_marker_actions": 335,
+    "window_marker_codes": 290,
+    "broad_except_handlers": 2727,
+    "silent_except_pass": 1356,
+    "thread_creation_sites": 13,
+    "task_pool_sites": 22
+  }
+}
