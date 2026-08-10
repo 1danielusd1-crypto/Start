@@ -1,0 +1,18 @@
+bot_v173_reminder_crosschat_unique_journals — TEST REPORT
+
+Источник: полный bot_v172_task_dispatcher + новый additive module 120.
+
+PASS: py_compile всех runtime-модулей.
+PASS: py_compile bot.py.
+PASS: py_compile standalone FULL_bot_v173_reminder_crosschat_unique_journals.py.
+PASS: manifest содержит все 43 runtime-модуля и их актуальные SHA-256.
+PASS: historical version markers неизменённых модулей сохранены.
+PASS: новый модуль и bot.py имеют marker v173_reminder_crosschat_unique_journals первой/последней строкой.
+PASS: platform reminder explicit targets [1,2,3] разрешаются все; невыбранный target блокируется.
+PASS: non-platform tenant target остаётся разрешён только при membership в своём tenant.
+PASS: reminder_delivery_v173 создаёт per-target witness.
+PASS: два последовательных скачивания одного диагностического журнала получают разные имена.
+PASS: Диагностика / Финансы / Пересылка получают визуально разные базовые имена.
+PASS: full ZIP и changed-only ZIP проходят unzip -t.
+
+Не выполнялось: live Telegram, Render, MEGA и реальная отправка в чат CZ. Это проверяется после deploy.

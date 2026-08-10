@@ -1,0 +1,17 @@
+АУДИТ ПРИЛОЖЕННОГО ЖУРНАЛА v171
+
+Наблюдение:
+- Планировщик reminder работает: reminder queue completed тысячи задач без failed/rejected.
+- В журнале регулярно повторяется tenant_reminder_cross_chat_blocked для выбранных chat target, при этом tenant=platform.
+- Сразу после серии блокировок reminder_v149_batch показывает chats=1, хотя у reminder несколько выбранных chat_ids.
+
+Корневая причина:
+- v171 пытался разрешить platform-owner cross-chat delivery через collect_all_known_chat_ids().
+- v148 ранее переопределил collect_all_known_chat_ids() как список только текущего tenant.
+- Поэтому owner reminder, выбранный для чата другого контура, повторно отфильтровывался при scheduler tick.
+- Изменение текста/переключение rearm-ит reminder, поэтому создавалось ощущение, что он оживает после изменения, но cross-chat target всё равно блокировался.
+
+Исправление v173:
+- Для tenant=platform выбранный cfg.chat_ids — конечный allow-list.
+- Для второго круга tenant isolation не ослаблена.
+- Каждая фактическая отправка теперь имеет reminder_delivery_v173 witness.

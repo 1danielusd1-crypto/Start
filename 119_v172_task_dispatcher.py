@@ -1,0 +1,1178 @@
+# v172_task_dispatcher
+"""v172: Telegram-native task / purchase dispatcher.
+
+Loaded last on top of v171.  Task state lives in compact root maps so each task is
+persisted as an incremental MEGA root-map delta instead of serializing the whole task
+registry inside every chat delta.
+"""
+import re as _v172_re
+import secrets as _v172_secrets
+import threading as _v172_threading
+import time as _v172_time
+from datetime import datetime as _v172_datetime, timedelta as _v172_timedelta
+
+VERSION = "bot_v172_task_dispatcher"
+V172_FILE_MARKER = "v172_task_dispatcher"
+
+V172_TASKS_KEY = "_tasks_v172"
+V172_TASK_SETTINGS_KEY = "_task_settings_v172"
+V172_TASK_SOURCE_INDEX_KEY = "_task_source_index_v172"
+V172_TASK_SCHEMA = 1
+V172_TASK_PAGE_SIZE = 7
+V172_HISTORY_KEEP = 100
+V172_COMMENT_KEEP = 100
+
+# Root-map delta integration: changing one task produces one root-map patch.
+try:
+    _DELTA_ROOT_MAP_KEYS.update({V172_TASKS_KEY, V172_TASK_SETTINGS_KEY, V172_TASK_SOURCE_INDEX_KEY})
+except Exception:
+    pass
+
+try:
+    data.setdefault(V172_TASKS_KEY, {})
+    data.setdefault(V172_TASK_SETTINGS_KEY, {})
+    data.setdefault(V172_TASK_SOURCE_INDEX_KEY, {})
+except Exception:
+    pass
+
+try:
+    WINDOW_MARKER_CONSTANTS.update({
+        "v172:task:admin": "Ф242",
+        "v172:task:list": "Ф243",
+        "v172:task:card": "Ф244",
+        "v172:task:history": "Ф245",
+        "v172:task:groups": "Ф246",
+    })
+except Exception:
+    pass
+
+_TASK_STATUS = {
+    "new": ("🆕", "Новая"),
+    "work": ("🔧", "В работе"),
+    "wait": ("🟣", "Ждёт"),
+    "deferred": ("⏸", "Отложена"),
+    "done": ("✅", "Выполнена"),
+}
+_PURCHASE_STATUS = {
+    "need": ("🛒", "Нужно купить"),
+    "search": ("🔎", "Ищем"),
+    "ordered": ("📦", "Заказано"),
+    "bought": ("💰", "Куплено"),
+    "received": ("✅", "Получено"),
+}
+_PRIORITY = {
+    "normal": ("🟢", "Обычная"),
+    "important": ("🟠", "Важная"),
+    "urgent": ("🔴", "Срочная"),
+}
+
+_V172_INPUT_LOCK = _v172_threading.RLock()
+_V172_INPUT_WAIT = {}
+_V172_SEARCH_CACHE = {}
+
+
+def _v172_now():
+    try:
+        return now_local()
+    except Exception:
+        return _v172_datetime.now()
+
+
+def _v172_iso():
+    return _v172_now().isoformat(timespec="seconds")
+
+
+def _v172_mark(text: str, marker: str) -> str:
+    try:
+        return window_mark(str(text), str(marker))
+    except Exception:
+        return str(text).rstrip() + f"\n\n{marker}"
+
+
+def _v172_user_name(user) -> str:
+    if user is None:
+        return "неизвестно"
+    username = str(getattr(user, "username", "") or "").strip().lstrip("@")
+    if username:
+        return "@" + username
+    first = str(getattr(user, "first_name", "") or "").strip()
+    last = str(getattr(user, "last_name", "") or "").strip()
+    full = (first + " " + last).strip()
+    if full:
+        return full
+    uid = int(getattr(user, "id", 0) or 0)
+    return f"user:{uid}" if uid else "неизвестно"
+
+
+def _v172_is_manager(user_id: int, chat_id: int) -> bool:
+    try:
+        uid = int(user_id or 0)
+        if uid and uid == int(OWNER_ID or 0):
+            return True
+        try:
+            if uid in {int(x) for x in get_additional_owner_ids()}:
+                return True
+        except Exception:
+            pass
+        fn = globals().get("tenant_can_manage")
+        if callable(fn):
+            for args, kwargs in (((uid,), {"chat_id": int(chat_id)}), ((uid, int(chat_id)), {})):
+                try:
+                    if fn(*args, **kwargs):
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return False
+
+
+def _v172_tasks_root() -> dict:
+    return data.setdefault(V172_TASKS_KEY, {})
+
+
+def _v172_settings_root() -> dict:
+    return data.setdefault(V172_TASK_SETTINGS_KEY, {})
+
+
+def _v172_source_root() -> dict:
+    return data.setdefault(V172_TASK_SOURCE_INDEX_KEY, {})
+
+
+def _v172_chat_settings(chat_id: int) -> dict:
+    root = _v172_settings_root()
+    key = str(int(chat_id))
+    row = root.setdefault(key, {})
+    row.setdefault("enabled", False)
+    row.setdefault("next_number", 1)
+    return row
+
+
+def task_dispatcher_enabled(chat_id: int) -> bool:
+    try:
+        return bool(_v172_chat_settings(int(chat_id)).get("enabled", False))
+    except Exception:
+        return False
+
+
+def _v172_persist(chat_id: int, reason: str = "task_change") -> None:
+    """Persist root state locally immediately and schedule compact MEGA delta."""
+    try:
+        with data_lock:
+            SQLITE.save_root(_sqlite_pack_root(data))
+    except Exception as exc:
+        try: log_error(f"v172 task SQLite root save: {exc}")
+        except Exception: pass
+    try:
+        schedule_delta_backup(int(chat_id), delay=0.12, reason=f"v172:{reason}")
+    except Exception:
+        try:
+            _mark_global_snapshot_pending()
+        except Exception:
+            pass
+
+
+def _v172_source_key(chat_id: int, message_id: int) -> str:
+    return f"{int(chat_id)}:{int(message_id)}"
+
+
+def _v172_new_uid() -> str:
+    root = _v172_tasks_root()
+    for _ in range(20):
+        uid = _v172_secrets.token_hex(5).upper()
+        if uid not in root:
+            return uid
+    return _v172_secrets.token_hex(8).upper()
+
+
+def _v172_task_for_uid(uid: str):
+    row = _v172_tasks_root().get(str(uid or "").upper())
+    return row if isinstance(row, dict) else None
+
+
+def _v172_tasks_for_chat(chat_id: int, include_deleted: bool = False) -> list[dict]:
+    cid = int(chat_id)
+    out = []
+    for row in _v172_tasks_root().values():
+        if not isinstance(row, dict) or int(row.get("chat_id", 0) or 0) != cid:
+            continue
+        if not include_deleted and bool(row.get("deleted", False)):
+            continue
+        out.append(row)
+    return out
+
+
+def _v172_status_map(task: dict):
+    return _PURCHASE_STATUS if str(task.get("type")) == "purchase" else _TASK_STATUS
+
+
+def _v172_is_complete(task: dict) -> bool:
+    return str(task.get("status")) in ({"received"} if str(task.get("type")) == "purchase" else {"done"})
+
+
+def _v172_deadline_dt(task: dict):
+    raw = str(task.get("deadline") or "").strip()
+    if not raw:
+        return None
+    try:
+        return _v172_datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def _v172_overdue(task: dict) -> bool:
+    dt = _v172_deadline_dt(task)
+    if not dt or _v172_is_complete(task):
+        return False
+    try:
+        return dt < _v172_now().replace(tzinfo=dt.tzinfo) if dt.tzinfo else dt < _v172_now().replace(tzinfo=None)
+    except Exception:
+        return False
+
+
+def _v172_title(text: str) -> str:
+    raw = " ".join(str(text or "").strip().split())
+    return raw[:110] if raw else "Без названия"
+
+
+def _v172_history(task: dict, action: str, user_id: int = 0, user_name: str = "", detail: str = "") -> None:
+    rows = task.setdefault("history", [])
+    rows.append({
+        "at": _v172_iso(), "action": str(action), "user_id": int(user_id or 0),
+        "user": str(user_name or ""), "detail": str(detail or "")[:600],
+    })
+    if len(rows) > V172_HISTORY_KEEP:
+        del rows[:-V172_HISTORY_KEEP]
+
+
+def _v172_create_task(chat_id: int, kind: str, text: str, creator, source_msg=None) -> dict:
+    cid = int(chat_id)
+    kind = "purchase" if str(kind) == "purchase" else "task"
+    settings = _v172_chat_settings(cid)
+    num = max(1, int(settings.get("next_number", 1) or 1))
+    settings["next_number"] = num + 1
+    uid = _v172_new_uid()
+    source_id = int(getattr(source_msg, "message_id", 0) or 0) if source_msg is not None else 0
+    source_user = getattr(source_msg, "from_user", None) if source_msg is not None else None
+    source_username = ""
+    try:
+        source_username = str(getattr(getattr(source_msg, "chat", None), "username", "") or "").lstrip("@")
+    except Exception:
+        pass
+    creator_id = int(getattr(creator, "id", 0) or 0)
+    creator_name = _v172_user_name(creator)
+    row = {
+        "schema": V172_TASK_SCHEMA,
+        "uid": uid,
+        "number": num,
+        "chat_id": cid,
+        "type": kind,
+        "title": _v172_title(text),
+        "description": str(text or "").strip()[:4000],
+        "object": "",
+        "creator_user_id": creator_id,
+        "creator_name": creator_name,
+        "source_author_id": int(getattr(source_user, "id", 0) or 0),
+        "source_author_name": _v172_user_name(source_user) if source_user else "",
+        "source_message_id": source_id,
+        "source_chat_username": source_username,
+        "assignees": [],
+        "status": "need" if kind == "purchase" else "new",
+        "priority": "normal",
+        "deadline": "",
+        "cost": "",
+        "comments": [],
+        "history": [],
+        "created_at": _v172_iso(),
+        "updated_at": _v172_iso(),
+        "completed_at": "",
+        "deleted": False,
+    }
+    _v172_history(row, "created", creator_id, creator_name, "Покупка" if kind == "purchase" else "Задача")
+    _v172_tasks_root()[uid] = row
+    if source_id:
+        _v172_source_root()[_v172_source_key(cid, source_id)] = uid
+    _v172_persist(cid, "task_create")
+    try:
+        bot_journal("task_v172_created", cid, f"uid={uid} num={num} type={kind} source={source_id}")
+    except Exception:
+        pass
+    return row
+
+
+def _v172_touch(task: dict, user=None, action: str = "updated", detail: str = "") -> None:
+    uid = int(getattr(user, "id", 0) or 0) if user is not None else 0
+    name = _v172_user_name(user) if user is not None else "system"
+    task["updated_at"] = _v172_iso()
+    task["updated_by"] = uid
+    _v172_history(task, action, uid, name, detail)
+    if _v172_is_complete(task):
+        task["completed_at"] = task.get("completed_at") or _v172_iso()
+    else:
+        task["completed_at"] = ""
+    _v172_persist(int(task.get("chat_id", 0) or 0), action)
+
+
+def _v172_source_url(task: dict) -> str:
+    mid = int(task.get("source_message_id", 0) or 0)
+    if not mid:
+        return ""
+    username = str(task.get("source_chat_username") or "").strip().lstrip("@")
+    if username:
+        return f"https://t.me/{username}/{mid}"
+    cid = str(int(task.get("chat_id", 0) or 0))
+    if cid.startswith("-100") and len(cid) > 4:
+        return f"https://t.me/c/{cid[4:]}/{mid}"
+    return ""
+
+
+def _v172_assignee_text(task: dict) -> str:
+    arr = task.get("assignees") or []
+    names = [str(x.get("name") or x.get("user_id") or "") for x in arr if isinstance(x, dict)]
+    return ", ".join([x for x in names if x]) or "не назначен"
+
+
+def _v172_deadline_text(task: dict) -> str:
+    dt = _v172_deadline_dt(task)
+    if not dt:
+        return "не указан"
+    try:
+        value = dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        value = str(task.get("deadline") or "")
+    return ("⏰ ПРОСРОЧЕНО · " if _v172_overdue(task) else "") + value
+
+
+def _v172_status_text(task: dict) -> str:
+    icon, label = _v172_status_map(task).get(str(task.get("status")), ("❔", str(task.get("status") or "—")))
+    return f"{icon} {label}"
+
+
+def _v172_priority_text(task: dict) -> str:
+    icon, label = _PRIORITY.get(str(task.get("priority")), _PRIORITY["normal"])
+    return f"{icon} {label}"
+
+
+def _v172_card_text(task: dict) -> str:
+    kind = "🛒 ПОКУПКА" if str(task.get("type")) == "purchase" else "📋 ЗАДАЧА"
+    lines = [
+        f"{kind} №{int(task.get('number', 0) or 0)}",
+        "",
+        f"📝 {str(task.get('description') or task.get('title') or 'Без названия')[:1800]}",
+        "",
+        f"🏠 Объект: {str(task.get('object') or 'не указан')}",
+        f"👤 Поставил: {str(task.get('creator_name') or task.get('creator_user_id') or '—')}",
+        f"👷 Ответственный: {_v172_assignee_text(task)}",
+        f"📅 Срок: {_v172_deadline_text(task)}",
+        f"⚡ Приоритет: {_v172_priority_text(task)}",
+        f"🔧 Статус: {_v172_status_text(task)}",
+    ]
+    if str(task.get("type")) == "purchase":
+        lines.append(f"💵 Стоимость/бюджет: {str(task.get('cost') or '—')}")
+    if task.get("source_author_name"):
+        lines.append(f"💬 Автор исходного сообщения: {task.get('source_author_name')}")
+    if task.get("comments"):
+        last = task.get("comments")[-1]
+        lines += ["", f"💬 Последний комментарий: {str(last.get('text') or '')[:450]}"]
+    lines += ["", f"UID: {task.get('uid')}"]
+    return _v172_mark("\n".join(lines), "Ф244")
+
+
+def _v172_standard_nav(kb, chat_id: int, back_cb: str = "v172:task:list:active:0"):
+    day = today_key()
+    try:
+        day = str(get_chat_store(int(chat_id)).get("current_view_day") or today_key())
+    except Exception:
+        pass
+    kb.row(IB("🔙 Назад", callback_data=back_cb), IB("⬅️ Назад осн. окно", callback_data=f"d:{day}:back_main"))
+    kb.row(IB("ℹ️ Описание", callback_data="v171:desc"), IB("❌ Закрыть", callback_data="info_close"))
+    kb.row(IB("/iz-mr", callback_data="v160:marker_capture"), IB("/tz", callback_data="v160:tz_capture"))
+    return kb
+
+
+def _v172_card_keyboard(task: dict, viewer_chat_id: int, viewer_user_id: int):
+    uid = str(task.get("uid"))
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    status_map = _v172_status_map(task)
+    buttons = []
+    for code, (icon, label) in status_map.items():
+        prefix = "✅ " if str(task.get("status")) == code else ""
+        buttons.append(IB(prefix + icon + " " + label, callback_data=f"v172:task:st:{uid}:{code}"))
+    for i in range(0, len(buttons), 2):
+        kb.row(*buttons[i:i+2])
+    kb.row(
+        IB("⚡ Приоритет", callback_data=f"v172:task:prio:{uid}"),
+        IB("📅 Срок", callback_data=f"v172:task:input:{uid}:deadline"),
+    )
+    kb.row(
+        IB("👤 Взять себе", callback_data=f"v172:task:take:{uid}"),
+        IB("👥 Назначить", callback_data=f"v172:task:input:{uid}:assign"),
+    )
+    kb.row(
+        IB("🏠 Объект", callback_data=f"v172:task:input:{uid}:object"),
+        IB("✏️ Текст", callback_data=f"v172:task:input:{uid}:text"),
+    )
+    if str(task.get("type")) == "purchase":
+        kb.row(IB("💰 Стоимость", callback_data=f"v172:task:input:{uid}:cost"))
+    kb.row(
+        IB("💬 Комментарий", callback_data=f"v172:task:input:{uid}:comment"),
+        IB("🕘 История", callback_data=f"v172:task:hist:{uid}"),
+    )
+    url = _v172_source_url(task)
+    if url:
+        kb.row(IB("💬 Исходное сообщение", url=url))
+    elif int(task.get("source_message_id", 0) or 0):
+        kb.row(IB("💬 Исходное сообщение", callback_data=f"v172:task:source:{uid}"))
+    if _v172_is_manager(viewer_user_id, int(task.get("chat_id", 0) or 0)) or int(viewer_user_id or 0) == int(task.get("creator_user_id", 0) or 0):
+        kb.row(IB("🗑 Удалить", callback_data=f"v172:task:del:{uid}"))
+    return _v172_standard_nav(kb, viewer_chat_id, "v172:task:list:active:0")
+
+
+def _v172_filter_task(task: dict, filt: str, user_id: int = 0) -> bool:
+    if bool(task.get("deleted", False)):
+        return False
+    f = str(filt or "active")
+    if f == "active": return not _v172_is_complete(task) and str(task.get("status")) != "deferred"
+    if f == "all": return not _v172_is_complete(task)
+    if f == "work": return str(task.get("status")) in {"work", "search", "ordered", "bought"}
+    if f == "wait": return str(task.get("status")) == "wait"
+    if f == "deferred": return str(task.get("status")) == "deferred"
+    if f == "urgent": return str(task.get("priority")) == "urgent" and not _v172_is_complete(task)
+    if f == "overdue": return _v172_overdue(task)
+    if f == "purchase": return str(task.get("type")) == "purchase" and not _v172_is_complete(task)
+    if f == "done": return _v172_is_complete(task)
+    if f == "mine":
+        return any(int(x.get("user_id", 0) or 0) == int(user_id or 0) for x in (task.get("assignees") or []) if isinstance(x, dict)) and not _v172_is_complete(task)
+    return True
+
+
+def _v172_sort_key(task: dict):
+    complete = 1 if _v172_is_complete(task) else 0
+    overdue = 0 if _v172_overdue(task) else 1
+    pri = {"urgent": 0, "important": 1, "normal": 2}.get(str(task.get("priority")), 3)
+    deadline = str(task.get("deadline") or "9999-99-99")
+    return (complete, overdue, pri, deadline, -int(task.get("number", 0) or 0))
+
+
+def _v172_list_title(filt: str) -> str:
+    return {
+        "active": "Все активные", "all": "Невыполненные", "work": "В работе",
+        "wait": "Ждут", "deferred": "Отложенные", "urgent": "Срочные",
+        "overdue": "Просроченные", "purchase": "Покупки", "done": "Выполненные",
+        "mine": "Мои задачи", "search": "Результаты поиска",
+    }.get(str(filt), "Задачи")
+
+
+def _v172_list_rows(chat_id: int, filt: str, user_id: int = 0):
+    if str(filt) == "search":
+        key = (int(chat_id), int(user_id or 0))
+        uids = list((_V172_SEARCH_CACHE.get(key) or {}).get("uids") or [])
+        rows = [_v172_task_for_uid(uid) for uid in uids]
+        return [x for x in rows if isinstance(x, dict) and not x.get("deleted")]
+    rows = [x for x in _v172_tasks_for_chat(chat_id) if _v172_filter_task(x, filt, user_id)]
+    rows.sort(key=_v172_sort_key)
+    return rows
+
+
+def _v172_dashboard_counts(chat_id: int) -> dict:
+    rows = _v172_tasks_for_chat(chat_id)
+    return {
+        "active": sum(1 for x in rows if not _v172_is_complete(x) and str(x.get("status")) != "deferred"),
+        "urgent": sum(1 for x in rows if str(x.get("priority")) == "urgent" and not _v172_is_complete(x)),
+        "overdue": sum(1 for x in rows if _v172_overdue(x)),
+        "work": sum(1 for x in rows if str(x.get("status")) in {"work", "search", "ordered", "bought"}),
+        "wait": sum(1 for x in rows if str(x.get("status")) == "wait"),
+        "deferred": sum(1 for x in rows if str(x.get("status")) == "deferred"),
+        "purchase": sum(1 for x in rows if str(x.get("type")) == "purchase" and not _v172_is_complete(x)),
+        "done": sum(1 for x in rows if _v172_is_complete(x)),
+    }
+
+
+def _v172_list_text(chat_id: int, filt: str, page: int, user_id: int = 0):
+    rows = _v172_list_rows(chat_id, filt, user_id)
+    total_pages = max(1, (len(rows) + V172_TASK_PAGE_SIZE - 1) // V172_TASK_PAGE_SIZE)
+    page = max(0, min(int(page or 0), total_pages - 1))
+    c = _v172_dashboard_counts(chat_id)
+    lines = [
+        "📋 ДИСПЕТЧЕР ЗАДАЧ",
+        f"Чат: {get_chat_display_name(int(chat_id))}",
+        "",
+        f"Раздел: {_v172_list_title(filt)} · {len(rows)}",
+        f"🔴 Срочные {c['urgent']} · ⏰ Просроченные {c['overdue']} · 🔧 В работе {c['work']} · 🛒 Купить {c['purchase']}",
+        "",
+    ]
+    chunk = rows[page * V172_TASK_PAGE_SIZE:(page + 1) * V172_TASK_PAGE_SIZE]
+    if not chunk:
+        lines.append("Здесь пока нет задач.")
+    else:
+        for task in chunk:
+            icon = "🛒" if str(task.get("type")) == "purchase" else "📋"
+            if _v172_overdue(task): icon = "⏰"
+            elif str(task.get("priority")) == "urgent": icon = "🔴"
+            lines.append(f"{icon} #{task.get('number')} · {_v172_status_text(task)} · {str(task.get('title') or '')[:95]}")
+    lines += ["", f"Страница {page + 1}/{total_pages}"]
+    return _v172_mark("\n".join(lines), "Ф243"), rows, page, total_pages
+
+
+def _v172_list_keyboard(chat_id: int, filt: str, page: int, user_id: int = 0):
+    text, rows, page, total_pages = _v172_list_text(chat_id, filt, page, user_id)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.row(IB("➕ Задача", callback_data="v172:task:new:task"), IB("🛒 Покупка", callback_data="v172:task:new:purchase"))
+    kb.row(IB("📋 Активные", callback_data="v172:task:list:active:0"), IB("👤 Мои", callback_data="v172:task:list:mine:0"))
+    kb.row(IB("🔴 Срочные", callback_data="v172:task:list:urgent:0"), IB("⏰ Просроченные", callback_data="v172:task:list:overdue:0"))
+    kb.row(IB("🔧 В работе", callback_data="v172:task:list:work:0"), IB("🟣 Ждут", callback_data="v172:task:list:wait:0"))
+    kb.row(IB("⏸ Отложенные", callback_data="v172:task:list:deferred:0"), IB("🛒 Покупки", callback_data="v172:task:list:purchase:0"))
+    kb.row(IB("🏠 Объекты", callback_data="v172:task:groups:object:0"), IB("👥 Исполнители", callback_data="v172:task:groups:assignee:0"))
+    kb.row(IB("✅ Выполненные", callback_data="v172:task:list:done:0"), IB("🔎 Поиск", callback_data="v172:task:search"))
+    chunk = rows[page * V172_TASK_PAGE_SIZE:(page + 1) * V172_TASK_PAGE_SIZE]
+    for task in chunk:
+        icon = "⏰" if _v172_overdue(task) else ("🔴" if str(task.get("priority")) == "urgent" else ("🛒" if str(task.get("type")) == "purchase" else "📋"))
+        kb.row(IB(f"{icon} #{task.get('number')} {str(task.get('title') or '')[:38]}", callback_data=f"v172:task:open:{task.get('uid')}"))
+    if total_pages > 1:
+        prevp = (page - 1) % total_pages
+        nextp = (page + 1) % total_pages
+        kb.row(IB("◀️", callback_data=f"v172:task:list:{filt}:{prevp}"), IB(f"{page+1}/{total_pages}", callback_data="none"), IB("▶️", callback_data=f"v172:task:list:{filt}:{nextp}"))
+    return text, _v172_standard_nav(kb, chat_id, f"v172:task:list:{filt}:{page}")
+
+
+def _v172_group_values(chat_id: int, kind: str):
+    vals = {}
+    for task in _v172_tasks_for_chat(chat_id):
+        if _v172_is_complete(task):
+            continue
+        if kind == "object":
+            value = str(task.get("object") or "").strip()
+            if value:
+                vals[value] = vals.get(value, 0) + 1
+        else:
+            for a in task.get("assignees") or []:
+                if isinstance(a, dict):
+                    value = str(a.get("name") or a.get("user_id") or "").strip()
+                    if value:
+                        vals[value] = vals.get(value, 0) + 1
+    return sorted(vals.items(), key=lambda x: (-x[1], x[0].casefold()))
+
+
+def _v172_value_token(value: str) -> str:
+    import hashlib
+    return hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:10]
+
+
+def _v172_groups_text_kb(chat_id: int, kind: str, page: int):
+    vals = _v172_group_values(chat_id, kind)
+    per = 10
+    pages = max(1, (len(vals)+per-1)//per)
+    page = max(0, min(int(page or 0), pages-1))
+    title = "🏠 ОБЪЕКТЫ" if kind == "object" else "👥 ИСПОЛНИТЕЛИ"
+    lines = [title, f"Чат: {get_chat_display_name(chat_id)}", "", "Выберите раздел:"]
+    kb = types.InlineKeyboardMarkup()
+    for value, count in vals[page*per:(page+1)*per]:
+        token = _v172_value_token(value)
+        kb.row(IB(f"{value[:44]} · {count}", callback_data=f"v172:task:groupopen:{kind}:{token}:0"))
+    if not vals:
+        lines.append("Пока нет заполненных данных.")
+    if pages > 1:
+        kb.row(IB("◀️", callback_data=f"v172:task:groups:{kind}:{(page-1)%pages}"), IB(f"{page+1}/{pages}", callback_data="none"), IB("▶️", callback_data=f"v172:task:groups:{kind}:{(page+1)%pages}"))
+    return _v172_mark("\n".join(lines), "Ф246"), _v172_standard_nav(kb, chat_id, "v172:task:list:active:0")
+
+
+def _v172_group_tasks(chat_id: int, kind: str, token: str):
+    value = ""
+    for v, _count in _v172_group_values(chat_id, kind):
+        if _v172_value_token(v) == token:
+            value = v; break
+    if not value:
+        return "", []
+    rows = []
+    for task in _v172_tasks_for_chat(chat_id):
+        if _v172_is_complete(task): continue
+        if kind == "object" and str(task.get("object") or "").strip() == value:
+            rows.append(task)
+        elif kind == "assignee" and any(str(a.get("name") or a.get("user_id") or "").strip() == value for a in (task.get("assignees") or []) if isinstance(a, dict)):
+            rows.append(task)
+    rows.sort(key=_v172_sort_key)
+    return value, rows
+
+
+def _v172_history_text(task: dict):
+    lines = [f"🕘 ИСТОРИЯ ЗАДАЧИ #{task.get('number')}", ""]
+    rows = list(task.get("history") or [])[-30:]
+    for h in rows:
+        at = str(h.get("at") or "").replace("T", " ")[:16]
+        user = str(h.get("user") or h.get("user_id") or "system")
+        action = str(h.get("action") or "изменено")
+        detail = str(h.get("detail") or "")
+        lines.append(f"• {at} · {user} · {action}" + (f" — {detail}" if detail else ""))
+    if not rows: lines.append("История пуста.")
+    return _v172_mark("\n".join(lines)[:3900], "Ф245")
+
+
+def _v172_admin_text(page: int = 0):
+    all_ids = []
+    try:
+        all_ids = list(collect_all_known_chat_ids(include_owner=True))
+    except Exception:
+        all_ids = [int(OWNER_ID)] if str(OWNER_ID or "").lstrip("-").isdigit() else []
+    ids = sorted({int(x) for x in all_ids}, key=lambda c: str(get_chat_display_name(c)).casefold())
+    per = 12
+    pages = max(1, (len(ids)+per-1)//per)
+    page = max(0, min(int(page or 0), pages-1))
+    enabled = sum(1 for cid in ids if task_dispatcher_enabled(cid))
+    text = _v172_mark(
+        "📋 ДИСПЕТЧЕР ЗАДАЧ — ЧАТЫ\n\n"
+        "Включите диспетчер только там, где нужно фиксировать работы и покупки.\n"
+        "Задачи каждого чата хранятся отдельно и не смешиваются с другими чатами/контурами.\n\n"
+        f"Чатов: {len(ids)} · включено: {enabled}\nСтраница {page+1}/{pages}",
+        "Ф242"
+    )
+    kb = types.InlineKeyboardMarkup()
+    for cid in ids[page*per:(page+1)*per]:
+        flag = "✅" if task_dispatcher_enabled(cid) else "❌"
+        kb.row(IB(f"{flag} {get_chat_display_name(cid)[:42]}", callback_data=f"v172:task:toggle:{cid}:{page}"))
+    if pages > 1:
+        kb.row(IB("◀️", callback_data=f"v172:task:admin:{(page-1)%pages}"), IB(f"{page+1}/{pages}", callback_data="none"), IB("▶️", callback_data=f"v172:task:admin:{(page+1)%pages}"))
+    owner_chat = int(OWNER_ID or 0)
+    return text, _v172_standard_nav(kb, owner_chat, f"d:{today_key()}:back_main")
+
+
+def _v172_set_input(chat_id: int, user_id: int, action: str, uid: str = "", message_id: int = 0, prompt_id: int = 0):
+    with _V172_INPUT_LOCK:
+        _V172_INPUT_WAIT[(int(chat_id), int(user_id))] = {
+            "action": str(action), "uid": str(uid or "").upper(), "message_id": int(message_id or 0),
+            "prompt_id": int(prompt_id or 0), "created": _v172_time.time(),
+        }
+
+
+def _v172_get_input(chat_id: int, user_id: int):
+    key = (int(chat_id), int(user_id))
+    with _V172_INPUT_LOCK:
+        row = _V172_INPUT_WAIT.get(key)
+        if row and _v172_time.time() - float(row.get("created", 0) or 0) > 900:
+            _V172_INPUT_WAIT.pop(key, None); row = None
+        return dict(row) if row else None
+
+
+def _v172_clear_input(chat_id: int, user_id: int):
+    with _V172_INPUT_LOCK:
+        return _V172_INPUT_WAIT.pop((int(chat_id), int(user_id)), None)
+
+
+def _v172_parse_deadline(text: str):
+    s = str(text or "").strip().lower()
+    if s in {"нет", "убрать", "очистить", "-", "без срока"}:
+        return ""
+    now = _v172_now()
+    m = _v172_re.fullmatch(r"(сегодня|завтра)\s+(\d{1,2}):(\d{2})", s)
+    if m:
+        base = now if m.group(1) == "сегодня" else now + _v172_timedelta(days=1)
+        return base.replace(hour=int(m.group(2)), minute=int(m.group(3)), second=0, microsecond=0).isoformat(timespec="minutes")
+    formats = ("%d.%m.%Y %H:%M", "%d.%m.%y %H:%M", "%d.%m %H:%M", "%Y-%m-%d %H:%M")
+    for fmt in formats:
+        try:
+            dt = _v172_datetime.strptime(s, fmt)
+            if fmt == "%d.%m %H:%M":
+                dt = dt.replace(year=now.year)
+                if dt < now.replace(tzinfo=None) - _v172_timedelta(days=2):
+                    dt = dt.replace(year=now.year + 1)
+            if getattr(now, "tzinfo", None) is not None and dt.tzinfo is None:
+                dt = dt.replace(tzinfo=now.tzinfo)
+            return dt.isoformat(timespec="minutes")
+        except Exception:
+            continue
+    return None
+
+
+def _v172_prompt(chat_id: int, user_id: int, action: str, uid: str = "", message_id: int = 0):
+    prompts = {
+        "new_task": "✍️ Напишите текст новой задачи. Для отмены: отмена",
+        "new_purchase": "🛒 Напишите, что нужно купить. Для отмены: отмена",
+        "text": "✏️ Напишите новый текст задачи. Для отмены: отмена",
+        "object": "🏠 Напишите объект/дом/зону. Например: Дом №2, бассейн, сад. «нет» — очистить.",
+        "deadline": "📅 Введите срок: 12.08.2026 18:00, 12.08 18:00, сегодня 18:00, завтра 15:00. «нет» — убрать срок.",
+        "assign": "👥 Напишите ответственных через запятую: Daniel, Juan, @maria. «нет» — снять всех.",
+        "comment": "💬 Напишите комментарий к задаче. Для отмены: отмена",
+        "cost": "💰 Напишите стоимость/бюджет свободным текстом, например: 250 000 ARS или 180 USD. «нет» — очистить.",
+        "search": "🔎 Напишите слово или фразу для поиска по тексту, объекту и исполнителям.",
+    }
+    try:
+        sent = bot.send_message(int(chat_id), prompts.get(action, "Введите значение:"))
+        _v172_set_input(chat_id, user_id, action, uid, message_id, int(getattr(sent, "message_id", 0) or 0))
+    except Exception:
+        _v172_set_input(chat_id, user_id, action, uid, message_id, 0)
+
+
+def _v172_delete_quiet(chat_id: int, message_id: int):
+    if not message_id: return
+    try: bot.delete_message(int(chat_id), int(message_id))
+    except Exception: pass
+
+
+def _v172_refresh_card(chat_id: int, message_id: int, task: dict, user_id: int):
+    try:
+        bot.edit_message_text(_v172_card_text(task), chat_id=int(chat_id), message_id=int(message_id), reply_markup=_v172_card_keyboard(task, chat_id, user_id))
+    except Exception:
+        pass
+
+
+def _v172_task_message_input(msg) -> bool:
+    if getattr(msg, "content_type", "") != "text":
+        return False
+    cid = int(msg.chat.id)
+    uid_user = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
+    wait = _v172_get_input(cid, uid_user)
+    if not wait:
+        return False
+    text = str(getattr(msg, "text", "") or "").strip()
+    if text.lower() in {"отмена", "cancel", "стоп"}:
+        old = _v172_clear_input(cid, uid_user) or wait
+        _v172_delete_quiet(cid, int(old.get("prompt_id", 0) or 0))
+        _v172_delete_quiet(cid, int(getattr(msg, "message_id", 0) or 0))
+        try: send_and_auto_delete(cid, "❎ Действие отменено.", 6)
+        except Exception: pass
+        return True
+    action = str(wait.get("action") or "")
+    task = _v172_task_for_uid(wait.get("uid")) if wait.get("uid") else None
+    if task is not None and int(task.get("chat_id", 0) or 0) != cid:
+        _v172_clear_input(cid, uid_user); return True
+    user = getattr(msg, "from_user", None)
+    ok = True
+    notice = "✅ Сохранено."
+    if action in {"new_task", "new_purchase"}:
+        if not task_dispatcher_enabled(cid):
+            notice = "❌ Диспетчер задач в этом чате выключен."; ok = False
+        elif not text:
+            notice = "❌ Текст пустой."; ok = False
+        else:
+            task = _v172_create_task(cid, "purchase" if action == "new_purchase" else "task", text, user, source_msg=None)
+            notice = f"✅ Создана {'покупка' if action == 'new_purchase' else 'задача'} #{task.get('number')}."
+    elif not isinstance(task, dict):
+        notice = "❌ Задача не найдена."; ok = False
+    elif action == "text":
+        if not (_v172_is_manager(uid_user, cid) or uid_user == int(task.get("creator_user_id", 0) or 0)):
+            notice = "⛔ Изменять текст может автор или управляющий."; ok = False
+        else:
+            task["description"] = text[:4000]; task["title"] = _v172_title(text); _v172_touch(task, user, "text_changed", text[:180])
+    elif action == "object":
+        value = "" if text.lower() in {"нет", "убрать", "очистить", "-"} else text[:180]
+        task["object"] = value; _v172_touch(task, user, "object_changed", value or "очищено")
+    elif action == "deadline":
+        value = _v172_parse_deadline(text)
+        if value is None:
+            notice = "❌ Срок не распознан. Пример: 12.08 18:00 или завтра 15:00."; ok = False
+        else:
+            task["deadline"] = value; _v172_touch(task, user, "deadline_changed", value or "срок убран")
+    elif action == "assign":
+        if not (_v172_is_manager(uid_user, cid) or uid_user == int(task.get("creator_user_id", 0) or 0)):
+            notice = "⛔ Назначать других может автор или управляющий."; ok = False
+        else:
+            if text.lower() in {"нет", "убрать", "очистить", "-"}:
+                task["assignees"] = []
+            else:
+                names = [x.strip() for x in text.split(",") if x.strip()][:10]
+                task["assignees"] = [{"user_id": 0, "name": x[:100]} for x in names]
+            _v172_touch(task, user, "assignees_changed", _v172_assignee_text(task))
+    elif action == "comment":
+        arr = task.setdefault("comments", [])
+        arr.append({"at": _v172_iso(), "user_id": uid_user, "user": _v172_user_name(user), "text": text[:1200]})
+        if len(arr) > V172_COMMENT_KEEP: del arr[:-V172_COMMENT_KEEP]
+        _v172_touch(task, user, "comment_added", text[:220])
+    elif action == "cost":
+        value = "" if text.lower() in {"нет", "убрать", "очистить", "-"} else text[:120]
+        task["cost"] = value; _v172_touch(task, user, "cost_changed", value or "очищено")
+    elif action == "search":
+        q = text.casefold()
+        hits = []
+        for row in _v172_tasks_for_chat(cid):
+            hay = " ".join([
+                str(row.get("title") or ""), str(row.get("description") or ""), str(row.get("object") or ""), _v172_assignee_text(row)
+            ]).casefold()
+            if q in hay: hits.append(row)
+        hits.sort(key=_v172_sort_key)
+        _V172_SEARCH_CACHE[(cid, uid_user)] = {"query": text[:200], "uids": [x.get("uid") for x in hits], "at": _v172_time.time()}
+        notice = f"🔎 Найдено: {len(hits)}"
+    old = _v172_clear_input(cid, uid_user) or wait
+    _v172_delete_quiet(cid, int(old.get("prompt_id", 0) or 0))
+    _v172_delete_quiet(cid, int(getattr(msg, "message_id", 0) or 0))
+    if not ok:
+        try: send_and_auto_delete(cid, notice, 10)
+        except Exception: pass
+        # keep deadline input retry only for parse error
+        if action == "deadline" and isinstance(task, dict):
+            _v172_prompt(cid, uid_user, "deadline", task.get("uid"), int(wait.get("message_id", 0) or 0))
+        return True
+    mid = int(wait.get("message_id", 0) or 0)
+    if action == "search":
+        text2, kb2 = _v172_list_keyboard(cid, "search", 0, uid_user)
+        if mid:
+            try: bot.edit_message_text(text2, chat_id=cid, message_id=mid, reply_markup=kb2)
+            except Exception: bot.send_message(cid, text2, reply_markup=kb2)
+        else:
+            bot.send_message(cid, text2, reply_markup=kb2)
+    elif isinstance(task, dict):
+        if mid: _v172_refresh_card(cid, mid, task, uid_user)
+        elif action in {"new_task", "new_purchase"}:
+            bot.send_message(cid, _v172_card_text(task), reply_markup=_v172_card_keyboard(task, cid, uid_user))
+    try: send_and_auto_delete(cid, notice, 6)
+    except Exception: pass
+    return True
+
+
+# Wrap the already-registered generic non-command message handler so task input wins
+# before finance parsing / forwarding.
+def _v172_install_message_input_wrapper() -> int:
+    for row in list(getattr(bot, "message_handlers", []) or []):
+        if not isinstance(row, dict): continue
+        fn = row.get("function")
+        if not callable(fn) or getattr(fn, "_v172_task_input", False): continue
+        if getattr(fn, "__name__", "") != "on_any_message": continue
+        def _wrapped(msg, _original=fn):
+            try:
+                if _v172_task_message_input(msg): return
+            except Exception as exc:
+                try: log_error(f"v172 task input: {exc}")
+                except Exception: pass
+            return _original(msg)
+        _wrapped._v172_task_input = True
+        row["function"] = _wrapped
+        return 1
+    return 0
+
+
+def _v172_command_text(msg) -> str:
+    raw = str(getattr(msg, "text", "") or "")
+    parts = raw.split(None, 1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def _v172_reply_text(msg) -> str:
+    src = getattr(msg, "reply_to_message", None)
+    if src is None: return ""
+    text = str(getattr(src, "text", "") or getattr(src, "caption", "") or "").strip()
+    if text: return text
+    ct = str(getattr(src, "content_type", "") or "сообщение")
+    return f"{ct}: вложение из исходного сообщения"
+
+
+def _v172_command_create(msg, kind: str):
+    cid = int(msg.chat.id)
+    if not task_dispatcher_enabled(cid):
+        try: bot.reply_to(msg, "📋 Диспетчер задач в этом чате выключен. Владелец может включить его в основном окне.")
+        except Exception: pass
+        return
+    text = _v172_command_text(msg)
+    src = getattr(msg, "reply_to_message", None)
+    if not text and src is not None:
+        text = _v172_reply_text(msg)
+    if not text:
+        action = "new_purchase" if kind == "purchase" else "new_task"
+        _v172_prompt(cid, int(getattr(msg.from_user, "id", 0) or 0), action)
+        return
+    if src is not None:
+        skey = _v172_source_key(cid, int(getattr(src, "message_id", 0) or 0))
+        existing_uid = _v172_source_root().get(skey)
+        existing = _v172_task_for_uid(existing_uid) if existing_uid else None
+        if isinstance(existing, dict) and not existing.get("deleted"):
+            try:
+                bot.reply_to(msg, f"ℹ️ Это сообщение уже зафиксировано как #{existing.get('number')}.", reply_markup=_v172_card_keyboard(existing, cid, int(getattr(msg.from_user,'id',0) or 0)))
+            except Exception: pass
+            return
+    task = _v172_create_task(cid, kind, text, msg.from_user, source_msg=src)
+    try:
+        sent = bot.send_message(cid, _v172_card_text(task), reply_markup=_v172_card_keyboard(task, cid, int(getattr(msg.from_user,'id',0) or 0)), reply_to_message_id=int(getattr(src, "message_id", 0) or 0) or None)
+        task["card_message_id"] = int(getattr(sent, "message_id", 0) or 0)
+        _v172_persist(cid, "task_card_link")
+    except Exception:
+        try: bot.send_message(cid, _v172_card_text(task), reply_markup=_v172_card_keyboard(task, cid, int(getattr(msg.from_user,'id',0) or 0)))
+        except Exception: pass
+
+
+@bot.message_handler(commands=["tasks", "задачи"])
+def cmd_tasks_v172(msg):
+    cid = int(msg.chat.id)
+    uid = int(getattr(msg.from_user, "id", 0) or 0)
+    if cid == int(OWNER_ID or 0) and not task_dispatcher_enabled(cid):
+        text, kb = _v172_admin_text(0)
+        bot.send_message(cid, text, reply_markup=kb)
+        return
+    if not task_dispatcher_enabled(cid):
+        bot.reply_to(msg, "📋 Диспетчер задач в этом чате выключен.")
+        return
+    text, kb = _v172_list_keyboard(cid, "active", 0, uid)
+    bot.send_message(cid, text, reply_markup=kb)
+
+
+@bot.message_handler(commands=["task", "задача"])
+def cmd_task_v172(msg):
+    _v172_command_create(msg, "task")
+
+
+@bot.message_handler(commands=["buy", "покупка"])
+def cmd_buy_v172(msg):
+    _v172_command_create(msg, "purchase")
+
+
+@bot.message_handler(commands=["task_cancel", "задачи_отмена"])
+def cmd_task_cancel_v172(msg):
+    row = _v172_clear_input(int(msg.chat.id), int(getattr(msg.from_user, "id", 0) or 0))
+    if row:
+        _v172_delete_quiet(int(msg.chat.id), int(row.get("prompt_id", 0) or 0))
+    try: send_and_auto_delete(int(msg.chat.id), "❎ Ввод задачи отменён.", 6)
+    except Exception: pass
+
+
+def _v172_edit_call(call, text, kb):
+    try:
+        safe_edit(bot, call, text, reply_markup=kb)
+    except Exception:
+        try:
+            bot.edit_message_text(text, chat_id=int(call.message.chat.id), message_id=int(call.message.message_id), reply_markup=kb)
+        except Exception:
+            pass
+
+
+def _v172_callback(call):
+    raw = str(getattr(call, "data", "") or "")
+    try:
+        resolver = globals().get("resolve_short_callback")
+        if callable(resolver): raw = str(resolver(raw) or raw)
+    except Exception: pass
+    if not raw.startswith("v172:task:"):
+        return False
+    viewer_chat = int(call.message.chat.id)
+    user = getattr(call, "from_user", None)
+    user_id = int(getattr(user, "id", 0) or 0)
+    parts = raw.split(":")
+    action = parts[2] if len(parts) > 2 else ""
+    try: bot.answer_callback_query(call.id)
+    except Exception: pass
+
+    if action == "admin":
+        if viewer_chat != int(OWNER_ID or 0) and not _v172_is_manager(user_id, viewer_chat):
+            return True
+        page = int(parts[3]) if len(parts) > 3 and parts[3].lstrip("-").isdigit() else 0
+        text, kb = _v172_admin_text(page); _v172_edit_call(call, text, kb); return True
+
+    if action == "toggle":
+        if viewer_chat != int(OWNER_ID or 0): return True
+        try: target = int(parts[3]); page = int(parts[4]) if len(parts) > 4 else 0
+        except Exception: return True
+        s = _v172_chat_settings(target); s["enabled"] = not bool(s.get("enabled")); s["updated_at"] = _v172_iso(); s["updated_by"] = user_id
+        _v172_persist(target, "dispatcher_toggle")
+        try:
+            note = "✅ Диспетчер задач включён. Используйте /tasks, /task и /buy." if s["enabled"] else "⏸ Диспетчер задач выключен владельцем. Существующие задачи сохранены."
+            bot.send_message(target, note)
+        except Exception: pass
+        try: schedule_main_window_recreate_after_quiet(target, delay=0.2)
+        except Exception: pass
+        text, kb = _v172_admin_text(page); _v172_edit_call(call, text, kb); return True
+
+    # Remaining callbacks operate on the current work chat.
+    if not task_dispatcher_enabled(viewer_chat):
+        try: bot.answer_callback_query(call.id, "Диспетчер в этом чате выключен.", show_alert=True)
+        except Exception: pass
+        return True
+
+    if action == "list":
+        filt = parts[3] if len(parts) > 3 else "active"
+        try: page = int(parts[4]) if len(parts) > 4 else 0
+        except Exception: page = 0
+        text, kb = _v172_list_keyboard(viewer_chat, filt, page, user_id); _v172_edit_call(call, text, kb); return True
+
+    if action == "new":
+        kind = parts[3] if len(parts) > 3 else "task"
+        _v172_prompt(viewer_chat, user_id, "new_purchase" if kind == "purchase" else "new_task", message_id=int(call.message.message_id)); return True
+
+    if action == "search":
+        _v172_prompt(viewer_chat, user_id, "search", message_id=int(call.message.message_id)); return True
+
+    if action == "groups":
+        kind = parts[3] if len(parts) > 3 else "object"
+        try: page = int(parts[4]) if len(parts)>4 else 0
+        except Exception: page = 0
+        text, kb = _v172_groups_text_kb(viewer_chat, kind, page); _v172_edit_call(call, text, kb); return True
+
+    if action == "groupopen":
+        if len(parts) < 6: return True
+        kind, token = parts[3], parts[4]
+        try: page = int(parts[5])
+        except Exception: page = 0
+        value, rows = _v172_group_tasks(viewer_chat, kind, token)
+        per = V172_TASK_PAGE_SIZE; pages=max(1,(len(rows)+per-1)//per); page=max(0,min(page,pages-1))
+        title = ("🏠 " if kind=="object" else "👤 ") + (value or "Не найдено")
+        text = _v172_mark(f"{title}\n\nЗадач: {len(rows)}\nСтраница {page+1}/{pages}", "Ф246")
+        kb = types.InlineKeyboardMarkup()
+        for task in rows[page*per:(page+1)*per]:
+            kb.row(IB(f"#{task.get('number')} {str(task.get('title') or '')[:42]}", callback_data=f"v172:task:open:{task.get('uid')}"))
+        if pages>1:
+            kb.row(IB("◀️", callback_data=f"v172:task:groupopen:{kind}:{token}:{(page-1)%pages}"), IB(f"{page+1}/{pages}", callback_data="none"), IB("▶️", callback_data=f"v172:task:groupopen:{kind}:{token}:{(page+1)%pages}"))
+        _v172_standard_nav(kb, viewer_chat, f"v172:task:groups:{kind}:0")
+        _v172_edit_call(call, text, kb); return True
+
+    uid = parts[3].upper() if len(parts) > 3 else ""
+    task = _v172_task_for_uid(uid)
+    if not isinstance(task, dict) or int(task.get("chat_id", 0) or 0) != viewer_chat or task.get("deleted"):
+        try: bot.answer_callback_query(call.id, "Задача не найдена или уже удалена.", show_alert=True)
+        except Exception: pass
+        return True
+
+    if action == "open":
+        _v172_edit_call(call, _v172_card_text(task), _v172_card_keyboard(task, viewer_chat, user_id)); return True
+
+    if action == "st":
+        status = parts[4] if len(parts)>4 else ""
+        if status in _v172_status_map(task):
+            task["status"] = status; _v172_touch(task, user, "status_changed", _v172_status_text(task))
+            _v172_edit_call(call, _v172_card_text(task), _v172_card_keyboard(task, viewer_chat, user_id))
+        return True
+
+    if action == "prio":
+        order = ["normal", "important", "urgent"]
+        cur = str(task.get("priority") or "normal")
+        task["priority"] = order[(order.index(cur) + 1) % len(order)] if cur in order else "normal"
+        _v172_touch(task, user, "priority_changed", _v172_priority_text(task))
+        _v172_edit_call(call, _v172_card_text(task), _v172_card_keyboard(task, viewer_chat, user_id)); return True
+
+    if action == "take":
+        arr = [x for x in (task.get("assignees") or []) if isinstance(x, dict)]
+        existing = next((x for x in arr if int(x.get("user_id",0) or 0) == user_id and user_id), None)
+        if existing:
+            arr = [x for x in arr if int(x.get("user_id",0) or 0) != user_id]
+            detail = "снял себя"
+        else:
+            arr.append({"user_id": user_id, "name": _v172_user_name(user)})
+            detail = "взял себе"
+            if str(task.get("type")) == "task" and str(task.get("status")) == "new": task["status"] = "work"
+            if str(task.get("type")) == "purchase" and str(task.get("status")) == "need": task["status"] = "search"
+        task["assignees"] = arr[:10]; _v172_touch(task, user, "assignee_self", detail)
+        _v172_edit_call(call, _v172_card_text(task), _v172_card_keyboard(task, viewer_chat, user_id)); return True
+
+    if action == "input":
+        # callback format v172:task:input:UID:field
+        field = parts[4] if len(parts) > 4 else ""
+        if field in {"text","assign"} and not (_v172_is_manager(user_id, viewer_chat) or user_id == int(task.get("creator_user_id",0) or 0)):
+            try: bot.answer_callback_query(call.id, "Это может изменить автор или управляющий.", show_alert=True)
+            except Exception: pass
+            return True
+        if field in {"text","object","deadline","assign","comment","cost"}:
+            _v172_prompt(viewer_chat, user_id, field, uid, int(call.message.message_id)); return True
+
+    if action == "hist":
+        kb = types.InlineKeyboardMarkup(); _v172_standard_nav(kb, viewer_chat, f"v172:task:open:{uid}")
+        _v172_edit_call(call, _v172_history_text(task), kb); return True
+
+    if action == "source":
+        try: bot.answer_callback_query(call.id, f"Исходное сообщение ID: {task.get('source_message_id')}. Прямая ссылка для этого типа чата недоступна.", show_alert=True)
+        except Exception: pass
+        return True
+
+    if action == "del":
+        if not (_v172_is_manager(user_id, viewer_chat) or user_id == int(task.get("creator_user_id", 0) or 0)):
+            try: bot.answer_callback_query(call.id, "Удалить может автор или управляющий.", show_alert=True)
+            except Exception: pass
+            return True
+        kb = types.InlineKeyboardMarkup(); kb.row(IB("✅ Да, удалить", callback_data=f"v172:task:delok:{uid}"), IB("❌ Нет", callback_data=f"v172:task:open:{uid}")); _v172_standard_nav(kb, viewer_chat, f"v172:task:open:{uid}")
+        _v172_edit_call(call, _v172_mark(f"🗑 Удалить задачу #{task.get('number')}?\n\n{task.get('title')}", "Ф244"), kb); return True
+
+    if action == "delok":
+        if not (_v172_is_manager(user_id, viewer_chat) or user_id == int(task.get("creator_user_id", 0) or 0)):
+            return True
+        task["deleted"] = True; _v172_touch(task, user, "deleted", "soft delete")
+        text, kb = _v172_list_keyboard(viewer_chat, "active", 0, user_id); _v172_edit_call(call, text, kb); return True
+
+    return True
+
+
+def _v172_register_callback() -> int:
+    try:
+        bot.callback_query_handler(func=lambda c: str(getattr(c, "data", "") or "").startswith("v172:task:"))(_v172_callback)
+        handlers = getattr(bot, "callback_query_handlers", None)
+        if isinstance(handlers, list) and handlers:
+            row = handlers.pop(); handlers.insert(0, row)
+        return 1
+    except Exception:
+        return 0
+
+
+# Add dispatcher buttons to the active main keyboard without editing historical modules.
+_V172_PREV_BUILD_MAIN_KEYBOARD = globals().get("build_main_keyboard")
+
+def build_main_keyboard(day_key: str, chat_id=None):
+    kb = _V172_PREV_BUILD_MAIN_KEYBOARD(day_key, chat_id) if callable(_V172_PREV_BUILD_MAIN_KEYBOARD) else types.InlineKeyboardMarkup()
+    try:
+        cid = int(chat_id) if chat_id is not None else 0
+        rows = list(getattr(kb, "keyboard", None) or getattr(kb, "inline_keyboard", None) or [])
+        callbacks = {str(getattr(b, "callback_data", "") or "") for row in rows for b in (row or [])}
+        inserts = []
+        if cid and task_dispatcher_enabled(cid) and "v172:task:list:active:0" not in callbacks:
+            inserts.append(IB("📋 Задачи", callback_data="v172:task:list:active:0"))
+        if cid and cid == int(OWNER_ID or 0) and "v172:task:admin:0" not in callbacks:
+            inserts.append(IB("📋 Диспетчер задач", callback_data="v172:task:admin:0"))
+        if inserts:
+            # Place before the final Close row.
+            idx = len(rows)
+            for i, row in enumerate(rows):
+                if any("закры" in str(getattr(b, "text", "") or "").casefold() for b in (row or [])):
+                    idx = i; break
+            rows.insert(idx, inserts)
+            try: kb.keyboard = rows
+            except Exception:
+                try: kb.inline_keyboard = rows
+                except Exception: pass
+    except Exception as exc:
+        try: log_error(f"v172 main keyboard: {exc}")
+        except Exception: pass
+    return kb
+
+
+# Restore validator accepts v172 backups too.
+_V172_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
+def _v153_validate_restore_gz(gz_path: str):
+    try:
+        return _V172_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V172_PREV_RESTORE_VALIDATOR) else (None, None)
+    except Exception as exc:
+        if "unsupported bot version" not in str(exc):
+            raise
+    # v171 validator only rejected the version; validate by temporarily accepting v172
+    # with the same v153 schema/checksum contract.
+    import gzip, os, shutil, sqlite3, tempfile, json
+    folder = tempfile.mkdtemp(prefix="v172_restore_validate_"); raw = os.path.join(folder, "restore.sqlite3")
+    try:
+        with gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout: shutil.copyfileobj(fin, fout, 1024*1024)
+        conn = sqlite3.connect(raw)
+        try:
+            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+            if integrity.lower() != "ok": raise RuntimeError(f"SQLite integrity_check: {integrity}")
+            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
+            if not row: raise RuntimeError("manifest v153 not found")
+            manifest = json.loads(row[0])
+        finally: conn.close()
+        if str(manifest.get("kind")) != "telegram_bot_full_state_v153": raise RuntimeError("unknown export kind")
+        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA): raise RuntimeError("unsupported export schema")
+        export_version = str(manifest.get("bot_version") or "")
+        if not export_version.startswith(tuple(f"bot_v{i}_" for i in range(153,173))): raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
+        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
+        return manifest, raw
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True); raise
+
+
+# READY-time migration after MEGA restore.
+_V172_PREV_RUNTIME_MARK_READY = globals().get("runtime_mark_ready")
+if callable(_V172_PREV_RUNTIME_MARK_READY):
+    def runtime_mark_ready(detail: str = ""):
+        result = _V172_PREV_RUNTIME_MARK_READY(detail)
+        try:
+            data.setdefault(V172_TASKS_KEY, {}); data.setdefault(V172_TASK_SETTINGS_KEY, {}); data.setdefault(V172_TASK_SOURCE_INDEX_KEY, {})
+            _DELTA_ROOT_MAP_KEYS.update({V172_TASKS_KEY, V172_TASK_SETTINGS_KEY, V172_TASK_SOURCE_INDEX_KEY})
+            bot_journal("v172_task_dispatcher_ready", int(OWNER_ID or 0), f"tasks={len(_v172_tasks_root())}; enabled={sum(1 for x in _v172_settings_root().values() if isinstance(x,dict) and x.get('enabled'))}")
+        except Exception: pass
+        return result
+
+
+_V172_MESSAGE_WRAPPERS = _v172_install_message_input_wrapper()
+_V172_CALLBACK_HANDLERS = _v172_register_callback()
+try:
+    bot_journal("v172_installed", int(OWNER_ID or 0), f"task_dispatcher=1; callback={_V172_CALLBACK_HANDLERS}; message_wrap={_V172_MESSAGE_WRAPPERS}; root_delta_maps=3")
+except Exception:
+    pass
+# v172_task_dispatcher
