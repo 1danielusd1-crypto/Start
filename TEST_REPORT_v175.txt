@@ -1,0 +1,27 @@
+TEST REPORT — bot_v175_light_mode
+
+Статические проверки:
+PASS — 45 numbered runtime modules присутствуют.
+PASS — py_compile всех 45 modules.
+PASS — py_compile bot.py.
+PASS — py_compile FULL_bot_v175_light_mode.py.
+PASS — SHA-256 всех runtime modules совпадает с modules_manifest.json.
+PASS — first/last version markers всех numbered modules совпадают с manifest.
+PASS — bot.py загружает 122_v175_light_mode.py последним.
+PASS — INFO callback v175:heavy_toggle присутствует.
+PASS — есть gate WINDOW_DIAGNOSTICS_ENABLED.
+PASS — есть gate durable MEGA journal.
+PASS — есть gate runtime heartbeat/watcher upload.
+PASS — есть gate автоматического Google update.
+PASS — есть gate full chat backup/global snapshot.
+PASS — compact schedule_delta_backup сохранён.
+PASS — restore validator разрешает bot_v175_*.
+
+Что НЕ проверялось в этой среде:
+- реальный Telegram API;
+- реальный Render runtime;
+- реальный MEGA CMD;
+- реальный Google Sheets API;
+- фактическое сравнение latency до/после на продакшене.
+
+Цель v175 именно дать безопасный A/B-переключатель, чтобы такое сравнение сделать на работающем Render.

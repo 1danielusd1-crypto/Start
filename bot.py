@@ -1,11 +1,11 @@
-# v174_simplified_task_dispatcher
+# v175_light_mode
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v174_simplified_task_dispatcher"
-MODULE_FILE_VERSION = "v174_simplified_task_dispatcher"
+MODULAR_VERSION = "bot_v175_light_mode"
+MODULE_FILE_VERSION = "v175_light_mode"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -51,6 +51,7 @@ MODULAR_SOURCE_PARTS = [
     '119_v172_task_dispatcher.py',
     '120_v173_reminder_crosschat_unique_journals.py',
     '121_v174_simplified_task_dispatcher.py',
+    '122_v175_light_mode.py',
 ]
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -150,4 +151,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v174_simplified_task_dispatcher
+# v175_light_mode

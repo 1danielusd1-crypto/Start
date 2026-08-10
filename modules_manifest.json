@@ -1,6 +1,6 @@
 {
-  "version": "bot_v174_simplified_task_dispatcher",
-  "file_marker": "v174_simplified_task_dispatcher",
+  "version": "bot_v175_light_mode",
+  "file_marker": "v175_light_mode",
   "parts": [
     "00_core.py",
     "10_mega_runtime.py",
@@ -45,7 +45,8 @@
     "118_v171_all_tz_reliability.py",
     "119_v172_task_dispatcher.py",
     "120_v173_reminder_crosschat_unique_journals.py",
-    "121_v174_simplified_task_dispatcher.py"
+    "121_v174_simplified_task_dispatcher.py",
+    "122_v175_light_mode.py"
   ],
   "files": {
     "00_core.py": "ba4c220cf119cec704378e99a1a7c68312d935dae70c38c6b25aa942346d32ec",
@@ -91,7 +92,8 @@
     "118_v171_all_tz_reliability.py": "8ecffb0449f3f74b7751eebb0d3adec1a8c950435f05aee43140ceba5626e9b2",
     "119_v172_task_dispatcher.py": "6fddf57ccc13673f5710f7073770411746b836e7b2e3b03f6c0b44f90c938559",
     "120_v173_reminder_crosschat_unique_journals.py": "40f78d9598aa3c71734caf37bd4730e705518c156ef6cb22419528c8d286dcdf",
-    "121_v174_simplified_task_dispatcher.py": "86bfdc1bde9af73e3fd08aed5b78034da8e591efd7f3b4f1b8972dfea29fe58f"
+    "121_v174_simplified_task_dispatcher.py": "86bfdc1bde9af73e3fd08aed5b78034da8e591efd7f3b4f1b8972dfea29fe58f",
+    "122_v175_light_mode.py": "249ff1fce29c409f50ab39c9d0121bf3c8d916b3fdbdcd403b0f8dd7f364b22e"
   },
   "file_markers": {
     "00_core.py": "v168_clean_core_record_identity",
@@ -137,6 +139,7 @@
     "118_v171_all_tz_reliability.py": "v171_all_tz_reliability",
     "119_v172_task_dispatcher.py": "v172_task_dispatcher",
     "120_v173_reminder_crosschat_unique_journals.py": "v173_reminder_crosschat_unique_journals",
-    "121_v174_simplified_task_dispatcher.py": "v174_simplified_task_dispatcher"
+    "121_v174_simplified_task_dispatcher.py": "v174_simplified_task_dispatcher",
+    "122_v175_light_mode.py": "v175_light_mode"
   }
 }
