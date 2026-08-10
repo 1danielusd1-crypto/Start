@@ -1,4 +1,4 @@
-# v149_tenant_google_merged_reminders
+# v169_fast_tz_forward_reminder_google
 
 # ─────────────────────────────────────────────────────────────
 # v149: per-tenant Google + dynamic merged reminders
@@ -790,18 +790,43 @@ def _v149_reminder_chat_settings(tenant_id: str | None = None, chat_id: int | No
         # Safely migrate the early tenant-wide draft values as defaults only.
         item = {
             "merge_enabled": bool(settings.get("reminder_merge_enabled_v149", False)),
+            "merge_mode": "smart" if bool(settings.get("reminder_merge_enabled_v149", False)) else "off",
             "show_complete_command": bool(settings.get("reminder_show_complete_command_v149", False)),
         }
         mapping[key] = item
     item.setdefault("merge_enabled", False)
+    if str(item.get("merge_mode") or "") not in {"off", "smart", "single"}:
+        item["merge_mode"] = "smart" if bool(item.get("merge_enabled", False)) else "off"
+    item["merge_enabled"] = str(item.get("merge_mode") or "off") != "off"
     item.setdefault("show_complete_command", False)
     item["chat_id"] = cid
     item["tenant_id"] = tid
     return item
 
 
+REMINDER_MERGE_MODES_V169 = ("off", "smart", "single")
+
+
+def reminder_merge_mode(tenant_id: str | None = None, chat_id: int | None = None) -> str:
+    settings = _v149_reminder_chat_settings(tenant_id, chat_id)
+    mode = str(settings.get("merge_mode") or "").strip().lower()
+    if mode not in REMINDER_MERGE_MODES_V169:
+        mode = "smart" if bool(settings.get("merge_enabled", False)) else "off"
+    settings["merge_mode"] = mode
+    settings["merge_enabled"] = mode != "off"  # legacy mirror
+    return mode
+
+
 def reminder_merge_enabled(tenant_id: str | None = None, chat_id: int | None = None) -> bool:
-    return bool(_v149_reminder_chat_settings(tenant_id, chat_id).get("merge_enabled", False))
+    return reminder_merge_mode(tenant_id, chat_id) != "off"
+
+
+def reminder_merge_mode_label(tenant_id: str | None = None, chat_id: int | None = None) -> str:
+    return {
+        "off": "ВЫКЛ",
+        "smart": "ВКЛ",
+        "single": "1 СООБЩЕНИЕ",
+    }.get(reminder_merge_mode(tenant_id, chat_id), "ВЫКЛ")
 
 
 def reminder_show_complete_command(tenant_id: str | None = None, chat_id: int | None = None) -> bool:
@@ -1012,8 +1037,13 @@ def _v149_reminder_batch_job(force_chat_id: int | None = None) -> None:
             old_member_ids = [int(x) for x in (state.get("member_ids") or []) if str(x).isdigit()]
             current_ids = [rid for rid, _cfg in members]
             due_here = [rid for rid, _cfg in members if rid in due_ids]
-            merge = reminder_merge_enabled(chat_id=cid)
-            keep_group = bool(merge and (len(members) >= 2 or old_group_mid))
+            merge_mode = reminder_merge_mode(chat_id=cid)
+            # smart = historical v149 behavior; single = force one common message even
+            # when only one reminder is currently active in the chat.
+            keep_group = bool(
+                (merge_mode == "smart" and (len(members) >= 2 or old_group_mid))
+                or (merge_mode == "single" and (bool(members) or old_group_mid))
+            )
             membership_changed = current_ids != old_member_ids
 
             if keep_group and not members:
@@ -1142,15 +1172,21 @@ def _reminder_group_send_job(target_chat_id: int, day_key: str | None = None, fo
 def build_reminder_list_text() -> str:
     rows = _reminder_items()
     enabled = sum(1 for _rid, cfg in rows if bool(cfg.get("enabled")))
-    merged = reminder_merge_enabled()
+    merge_mode = reminder_merge_mode()
     commands = reminder_show_complete_command()
+    merge_desc = {
+        "off": "каждая напоминалка отдельным сообщением",
+        "smart": "объединение включается для нескольких активных напоминалок",
+        "single": "все активные тексты всегда находятся в одном сообщении",
+    }.get(merge_mode, "отдельные сообщения")
     return (
         "⏰ НАПОМИНАЛКИ\n\n"
         f"Текущих: {len(rows)} · активных: {enabled}\n"
-        f"Объединять напоминания: {'✅ включено' if merged else '❌ выключено'}\n"
+        f"Объединять: {reminder_merge_mode_label()} — {merge_desc}\n"
         f"Показывать команду выполнения: {'✅ включено' if commands else '❌ выключено'}\n"
         f"Завершённых: {len(_reminder_completed_items())}\n\n"
-        "При объединении каждый интервал сохраняется. Общее сообщение обновляется по ближайшей отправке — фактически по самому маленькому активному интервалу."
+        "Переключатель «Объединять» тройной: ВЫКЛ → ВКЛ → 1 СООБЩЕНИЕ. "
+        "Интервал каждой напоминалки при этом сохраняется."
     )
 
 
@@ -1160,7 +1196,7 @@ def build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
     pages = max(1, (len(rows) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE)
     page = max(0, min(int(page or 0), pages - 1))
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.row(IB(f"🔗 Объединять: {'ВКЛ' if reminder_merge_enabled() else 'ВЫКЛ'}", callback_data=f"v149:rem:merge:{page}:{day_key}"))
+    kb.row(IB(f"🔗 Объединять: {reminder_merge_mode_label()}", callback_data=f"v149:rem:merge:{page}:{day_key}"))
     kb.row(IB(f"✅ Команда /vyapl: {'ВКЛ' if reminder_show_complete_command() else 'ВЫКЛ'}", callback_data=f"v149:rem:command:{page}:{day_key}"))
     kb.row(IB("+добавить⏰", callback_data=f"rem:add:{page}:{day_key}"))
     start = page * _REMINDER_LIST_PAGE_SIZE
@@ -1365,8 +1401,18 @@ def v149_extension_callback(call, data_str: str) -> bool:
                 if not tenant_can_manage(user_id, tid):
                     bot.answer_callback_query(call.id, "Недостаточно прав", show_alert=True); return True
                 settings = _v149_reminder_chat_settings(tid, chat_id)
-                key = "merge_enabled" if action == "merge" else "show_complete_command"
-                settings[key] = not bool(settings.get(key, False))
+                if action == "merge":
+                    current_mode = reminder_merge_mode(tid, chat_id)
+                    try:
+                        idx = REMINDER_MERGE_MODES_V169.index(current_mode)
+                    except ValueError:
+                        idx = 0
+                    next_mode = REMINDER_MERGE_MODES_V169[(idx + 1) % len(REMINDER_MERGE_MODES_V169)]
+                    settings["merge_mode"] = next_mode
+                    settings["merge_enabled"] = next_mode != "off"
+                else:
+                    key = "show_complete_command"
+                    settings[key] = not bool(settings.get(key, False))
                 settings["updated_at"] = _v149_now_iso()
                 tenant_google_persist(tid, "reminder_chat_settings_v149")
                 page = int(parts[3]) if len(parts) > 3 and str(parts[3]).isdigit() else 0
@@ -1409,4 +1455,4 @@ def v149_extension_callback(call, data_str: str) -> bool:
         return True
     return True
 
-# v149_tenant_google_merged_reminders
+# v169_fast_tz_forward_reminder_google

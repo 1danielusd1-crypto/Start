@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v169_fast_tz_forward_reminder_google
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -557,10 +557,97 @@ def _forward_copy_record_command(rec: dict) -> str:
     return f"/izm_{sid}_u{uid}" if re.fullmatch(r"[A-F0-9]{12}", uid) else f"/izm_{sid}"
 
 
+def _v169_forward_uid_for_copy(dst_chat_id: int, source_msg) -> str:
+    """Deterministic UID known before Telegram creates the destination copy."""
+    try:
+        src_chat_id = int(getattr(getattr(source_msg, "chat", None), "id", 0) or 0)
+        src_msg_id = int(getattr(source_msg, "message_id", 0) or 0)
+        raw = f"forward-copy:{src_chat_id}:{src_msg_id}:{int(dst_chat_id)}"
+        return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:12].upper()
+    except Exception:
+        return ""
+
+
 def _predict_forward_copy_record_command(dst_chat_id: int, source_msg, text: str) -> str | None:
-    # v168: never publish a clickable edit command before the linked finance row exists
-    # and has already been committed to local SQLite. apply_forward_copy_edit_ui adds it later.
-    return None
+    """Predict the final R/U + stable UID while caller holds locked_chat(dst_chat_id).
+
+    The destination chat lock stays held through Telegram send + finance-row creation in
+    _forward_single_to_target, so another finance insert cannot steal the predicted monthly
+    position.  The UID is derived only from the immutable forwarding edge and is assigned to
+    the concrete row immediately after it is created.
+    """
+    try:
+        raw = str(text or "").strip()
+        if not raw or not looks_like_amount(raw) or not is_finance_mode(int(dst_chat_id)):
+            return None
+        comp = parse_financial_components(raw)
+        store = get_chat_store(int(dst_chat_id))
+        normalize_chat_records(int(dst_chat_id))
+        day_key = finance_day_key_from_message(source_msg) if source_msg is not None else finance_today_key()
+        month_key = str(day_key)[:7]
+        temp = {
+            "id": int(store.get("next_id", 1) or 1),
+            "day_key": str(day_key),
+            "timestamp": message_timestamp_iso(source_msg),
+            "source_order_msg_id": int(getattr(source_msg, "message_id", 0) or 0),
+            "source_msg_id": 0,
+            "usd_only": bool(comp.get("usd_only", False)),
+            "usd_amount": float(comp.get("usd_amount", 0) or 0),
+        }
+        temp_key = record_sort_key(temp)
+        rows = []
+        for dk, arr in (store.get("daily_records", {}) or {}).items():
+            if str(dk)[:7] != month_key:
+                continue
+            for rec in arr or []:
+                if isinstance(rec, dict):
+                    rows.append(rec)
+        if bool(temp.get("usd_only")):
+            # U numbering is shared by *all* records that contain a USD component,
+            # including mixed ARS+USD rows; mirror rebuild_month_short_ids exactly.
+            relevant = [r for r in rows if bool(float(r.get("usd_amount", 0) or 0))]
+            prefix = "U"
+        else:
+            relevant = [r for r in rows if not bool(r.get("usd_only", False))]
+            prefix = "R"
+        position = 1 + sum(1 for r in relevant if record_sort_key(r) < temp_key)
+        uid = _v169_forward_uid_for_copy(int(dst_chat_id), source_msg)
+        return f"/izm_{prefix}{position}_u{uid}" if uid else None
+    except Exception as e:
+        try: log_error(f"v169 predict forward copy command dst={dst_chat_id}: {e}")
+        except Exception: pass
+        return None
+
+
+def _v169_apply_predicted_record_uid(dst_chat_id: int, rec: dict | None, command: str | None) -> dict | None:
+    if not isinstance(rec, dict) or not command:
+        return rec
+    try:
+        match = re.search(r"_u([A-F0-9]{12})$", str(command), flags=re.I)
+        if not match:
+            return rec
+        uid = str(match.group(1)).upper()
+        rec["record_uid"] = uid
+        store = get_chat_store(int(dst_chat_id))
+        rid = int(rec.get("id", -1) or -1)
+        for _key, item in _finance_record_lists(store):
+            try:
+                if int(item.get("id", -2) or -2) == rid:
+                    item["record_uid"] = uid
+            except Exception:
+                pass
+        for arr in (store.get("daily_records", {}) or {}).values():
+            for item in arr or []:
+                try:
+                    if int(item.get("id", -2) or -2) == rid:
+                        item["record_uid"] = uid
+                except Exception:
+                    pass
+        persist_finance_chat_local_fast(int(dst_chat_id))
+    except Exception as exc:
+        try: log_error(f"v169 apply predicted UID {dst_chat_id}: {exc}")
+        except Exception: pass
+    return rec
 
 
 def _forward_copy_display_text(base_text: str, rec: dict | None, mode: str) -> str:
@@ -1769,6 +1856,10 @@ def _forward_single_to_target(source_chat_id: int, msg, dst_chat_id: int, financ
                     initial_slash_synced_rec = sync_forwarded_finance_message(
                         int(dst_chat_id), int(dst_msg_id), text_for_finance, owner_id, source_msg=msg
                     )
+                    if isinstance(initial_slash_synced_rec, dict):
+                        initial_slash_synced_rec = _v169_apply_predicted_record_uid(
+                            int(dst_chat_id), initial_slash_synced_rec, initial_slash_command
+                        )
 
         if not initial_slash_sent:
             if reply_to_target_id:
@@ -2218,4 +2309,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v168_clean_core_record_identity
+# v169_fast_tz_forward_reminder_google

@@ -1,4 +1,4 @@
-# v150_excel_reserve_chat_lifecycle
+# v169_fast_tz_forward_reminder_google
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -1099,6 +1099,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
     if is_owner_chat(chat_id):
         kb.row(IB("🔁 Пересылка", callback_data=f"d:{day_key}:forward_menu"), IB("💰 Фин режим", callback_data=f"d:{day_key}:forward_finmode_menu"))
         kb.row(IB("⏰ Напоминалка", callback_data=f"rem:list:0:{day_key}"), IB("💾 BACKUP", callback_data=f"d:{day_key}:backup_menu"))
+        kb.row(IB("📝 Скачать ТЗ окон", callback_data="v160:export_tz"))
     kb.row(IB("❌ Закрыть", callback_data=f"main_close:{day_key}"))
     return kb
 
@@ -2102,4 +2103,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v150_excel_reserve_chat_lifecycle
+# v169_fast_tz_forward_reminder_google

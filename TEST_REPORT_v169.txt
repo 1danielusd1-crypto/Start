@@ -1,0 +1,52 @@
+bot_v169_fast_tz_forward_reminder_google — TEST REPORT
+Дата: 2026-08-09
+
+PASS — Python syntax / compilation
+- py_compile изменённых runtime-файлов
+- compileall всех 40 модулей + bot.py
+- AST parse всех Python-файлов рабочей копии
+
+PASS — release manifest
+- version: bot_v169_fast_tz_forward_reminder_google
+- numbered modules: 40
+- SHA-256 каждого модуля совпадает с modules_manifest.json
+- first/last marker каждого модуля совпадает с historical file_markers
+- изменённые модули имеют marker v169_fast_tz_forward_reminder_google
+- bot.py first/last marker = v169_fast_tz_forward_reminder_google
+- standalone FULL file first/last marker = v169_fast_tz_forward_reminder_google
+
+PASS — v169 feature mock/static tests
+1. 💰Перес immediate slash:
+   - прогноз R3 для ARS тестового набора
+   - прогноз U3 учитывает смешанную ARS+USD запись при USD-нумерации
+   - deterministic 12-hex UID создаётся до Telegram destination message
+   - predicted UID присваивается конкретной записи
+   - итоговая /izm_R..._u... совпадает с предварительно отправленной командой
+2. Ф91 содержит «📝 Скачать ТЗ окон» -> v160:export_tz.
+3. INFO содержит «☁️ Google Чт–Ср» -> v169:gmenu.
+4. Напоминалки содержат tri-state off/smart/single и ветку single для одного сообщения.
+5. Google settings содержат manual/change/15m/1h/00:01/05:01, marker Ф240⏰ и EXPORT_TASK_POOL.
+6. Restore compatibility включает bot_v169_*.
+
+PASS — changed-file audit
+Фактическое отличие от полного v168 baseline до version/manifest generation:
+- 50_forwarding.py
+- 60_finance_currency.py
+- 70_fast_ui.py
+- 94_v149_tenant_google_merged_reminders.py
+- 117_v167_excel_formulas_thuwed_google_tz.py
+После release generation также ожидаемо изменены bot.py и modules_manifest.json.
+
+PASS — package integrity
+- full ZIP flat root
+- changed-only ZIP содержит только 5 изменённых модулей + bot.py + modules_manifest.json
+- unzip -t обоих ZIP: OK
+
+НЕ ПРОВЕРЯЛОСЬ LIVE
+- Telegram Bot API
+- Render deploy/restart
+- MEGA persistence
+- реальный Google Sheets API / credentials
+- фактическое срабатывание scheduler по реальным часам
+
+Это означает: код/контракты/пакет проверены локально, но после deploy нужен короткий smoke-test из PATCH_INSTRUCTIONS_v169.txt.

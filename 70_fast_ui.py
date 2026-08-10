@@ -1,4 +1,4 @@
-# v147_diagnostic_hardening
+# v169_fast_tz_forward_reminder_google
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -1216,6 +1216,7 @@ def build_info_keyboard(chat_id: int):
         if version_mode_feature("keepalive_menu"):
             kb.row(IB("💓 Не спать", callback_data="keepalive_status"))
         kb.row(IB("⏱ Внутренние таймеры", callback_data="internal_timers"))
+        kb.row(IB("☁️ Google Чт–Ср", callback_data=f"v169:gmenu:{int(chat_id)}"))
         kb.row(IB("📱 Быстрый расход iPhone", callback_data="expense_shortcut_info"))
         kb.row(
             IB(expense_quick_buttons_label(), callback_data="expense_quick_buttons_toggle"),
@@ -2683,4 +2684,4 @@ def build_integrity_keyboard(chat_id: int):
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
 
-# v147_diagnostic_hardening
+# v169_fast_tz_forward_reminder_google

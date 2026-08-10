@@ -1,11 +1,11 @@
-# v168_clean_core_record_identity
+# v169_fast_tz_forward_reminder_google
 from pathlib import Path
 import hashlib
 import json
 import os
 
-MODULAR_VERSION = "bot_v168_clean_core_record_identity"
-MODULE_FILE_VERSION = "v168_clean_core_record_identity"
+MODULAR_VERSION = "bot_v169_fast_tz_forward_reminder_google"
+MODULE_FILE_VERSION = "v169_fast_tz_forward_reminder_google"
 MODULAR_SOURCE_PARTS = [
     '00_core.py',
     '10_mega_runtime.py',
@@ -146,4 +146,4 @@ for _part in MODULAR_SOURCE_PARTS:
 
 if __name__ == "__main__":
     main()
-# v168_clean_core_record_identity
+# v169_fast_tz_forward_reminder_google

@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v169_fast_tz_forward_reminder_google
 """v167: Excel formulas/formatting, Thu-Wed period, rolling Google tab, TZ lifecycle.
 
 This module deliberately patches only the active public hooks after v166 so older callbacks
@@ -14,8 +14,8 @@ import zipfile as _v167_zipfile
 import xml.etree.ElementTree as _v167_ET
 from datetime import datetime as _v167_datetime, timedelta as _v167_timedelta
 
-VERSION = "bot_v168_clean_core_record_identity"
-V167_FILE_MARKER = "v168_clean_core_record_identity"
+VERSION = "bot_v169_fast_tz_forward_reminder_google"
+V167_FILE_MARKER = "v169_fast_tz_forward_reminder_google"
 
 _V167_BASE_V151_CATEGORIES = globals().get("_v151_categories")
 _V167_BASE_V151_SIMPLE_TABLE = globals().get("_v151_simple_table")
@@ -481,10 +481,21 @@ def _v167_google_schedule_cfg(target_chat_id: int, create: bool = True) -> dict:
         store["google_thuwed_v167"] = cfg
     cfg.setdefault("enabled", True)
     cfg.setdefault("time", "05:01")
+    # v169 adds one explicit update mode while keeping the old enabled/time keys as mirrors.
+    # Existing v167/v168 settings migrate without changing their daily behaviour.
+    if str(cfg.get("mode") or "") not in {"manual", "change", "m15", "h1", "d0001", "d0501"}:
+        if not bool(cfg.get("enabled", True)):
+            cfg["mode"] = "manual"
+        else:
+            cfg["mode"] = "d0001" if str(cfg.get("time") or "05:01") == "00:01" else "d0501"
+    cfg["enabled"] = str(cfg.get("mode")) != "manual"
+    if str(cfg.get("mode")) == "d0001": cfg["time"] = "00:01"
+    if str(cfg.get("mode")) == "d0501": cfg["time"] = "05:01"
     cfg.setdefault("last_run_key", "")
     cfg.setdefault("last_ok_at", "")
     cfg.setdefault("last_error", "")
-    cfg.setdefault("schema", 1)
+    cfg.setdefault("last_period", "")
+    cfg["schema"] = max(2, int(cfg.get("schema", 1) or 1))
     return cfg
 
 
@@ -514,7 +525,9 @@ def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | 
         kb.row(IB(label, callback_data="none"), IB("CSV", callback_data=csv_cb), IB("Excel", callback_data=xlsx_cb), IB("Excel статьи", callback_data=xlsxstat_cb))
     if target:
         cfg = _v167_google_schedule_cfg(target)
-        enabled = bool(cfg.get("enabled", True)); selected = str(cfg.get("time") or "05:01")
+        mode = str(cfg.get("mode") or "d0501")
+        enabled = mode != "manual"
+        selected = str(cfg.get("time") or "05:01") if mode in {"d0001", "d0501"} else ""
         kb.row(
             IB(("✅ " if enabled else "❌ ") + "Google Чт–Ср авто", callback_data=f"v167:gtoggle:{target}"),
             IB(("✅ " if selected == "00:01" else "") + "00:01", callback_data=f"v167:gtime:{target}:0001"),
@@ -665,6 +678,156 @@ def _v167_known_chat_ids():
     return sorted(out)
 
 
+def _v169_google_mode(cfg: dict | None) -> str:
+    cfg = cfg if isinstance(cfg, dict) else {}
+    mode = str(cfg.get("mode") or "").strip().lower()
+    if mode not in {"manual", "change", "m15", "h1", "d0001", "d0501"}:
+        if not bool(cfg.get("enabled", True)):
+            mode = "manual"
+        else:
+            mode = "d0001" if str(cfg.get("time") or "05:01") == "00:01" else "d0501"
+    return mode
+
+
+def _v169_google_mode_label(mode: str) -> str:
+    return {
+        "manual": "✋ Только вручную",
+        "change": "⚡ После изменений",
+        "m15": "🕒 Каждые 15 минут",
+        "h1": "🕐 Каждый час",
+        "d0001": "🌙 Ежедневно 00:01",
+        "d0501": "🌅 Ежедневно 05:01",
+    }.get(str(mode), "✋ Только вручную")
+
+
+def _v169_set_google_mode(target_chat_id: int, mode: str) -> dict:
+    mode = str(mode or "manual").strip().lower()
+    if mode not in {"manual", "change", "m15", "h1", "d0001", "d0501"}:
+        mode = "manual"
+    cfg = _v167_google_schedule_cfg(int(target_chat_id))
+    cfg["mode"] = mode
+    cfg["enabled"] = mode != "manual"  # legacy mirror for F47 / old backups
+    if mode == "d0001": cfg["time"] = "00:01"
+    elif mode == "d0501": cfg["time"] = "05:01"
+    cfg["last_run_key"] = ""  # selected mode may run immediately/catch up once
+    _v167_persist_schedule(int(target_chat_id))
+    return cfg
+
+
+def _v169_google_settings_text(target_chat_id: int) -> str:
+    target_chat_id = int(target_chat_id)
+    cfg = _v167_google_schedule_cfg(target_chat_id)
+    mode = _v169_google_mode(cfg)
+    start_key, end_key = _v167_thuwed_bounds(today_key())
+    tab = _v167_period_title(start_key, end_key)
+    last_ok = str(cfg.get("last_ok_at") or "—")
+    last_error = str(cfg.get("last_error") or "").strip()
+    lines = [
+        "☁️ GOOGLE ТАБЛИЦА ЧТ–СР",
+        "",
+        f"Чат: {get_chat_display_name(target_chat_id)}",
+        f"Текущий лист: {tab}",
+        f"Режим обновления: {_v169_google_mode_label(mode)}",
+        f"Последнее успешное: {last_ok}",
+    ]
+    if last_error:
+        lines.append(f"Последняя ошибка: {last_error[:350]}")
+    lines += [
+        "",
+        "Период листа всегда четверг → среда. При наступлении нового четверга создаётся новый лист; внутри периода обновляется тот же лист.",
+        "",
+        "Выберите способ/период обновления ниже.",
+        "",
+        "Ф240⏰",
+    ]
+    return "\n".join(lines)[:3900]
+
+
+def _v169_google_settings_keyboard(target_chat_id: int, day_key: str | None = None):
+    target_chat_id = int(target_chat_id)
+    day_key = str(day_key or get_chat_store(target_chat_id).get("current_view_day") or today_key())[:10]
+    mode = _v169_google_mode(_v167_google_schedule_cfg(target_chat_id))
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    def _b(label, value):
+        mark = "✅ " if mode == value else ""
+        return IB(mark + label, callback_data=f"v169:gmode:{target_chat_id}:{value}")
+    kb.row(_b("✋ Вручную", "manual"), _b("⚡ После изменений", "change"))
+    kb.row(_b("🕒 15 минут", "m15"), _b("🕐 1 час", "h1"))
+    kb.row(_b("🌙 00:01", "d0001"), _b("🌅 05:01", "d0501"))
+    kb.row(IB("☁️ Обновить Чт–Ср сейчас", callback_data=f"v169:gnow:{target_chat_id}"))
+    kb.row(
+        IB("🔙 Назад в Инфо", callback_data=f"d:{day_key}:info"),
+        IB("⬅️ Осн. окно", callback_data=f"d:{day_key}:back_main"),
+    )
+    return kb
+
+
+def _v169_google_enqueue(target_chat_id: int, reason: str) -> bool:
+    target_chat_id = int(target_chat_id)
+    key = f"google-thuwed:{target_chat_id}"
+    pool = globals().get("EXPORT_TASK_POOL")
+    if pool is not None:
+        try:
+            ok = bool(pool.submit_unique(key, _v167_google_update_target, target_chat_id, str(reason)))
+            if not ok:
+                try: bot_journal("google_thuwed_coalesced", target_chat_id, f"reason={reason}")
+                except Exception: pass
+            return ok
+        except Exception as exc:
+            try: log_error(f"v169 Google queue {target_chat_id}: {exc}")
+            except Exception: pass
+    # Compatibility fallback only; normal v168+ runtime always has EXPORT_TASK_POOL.
+    try:
+        _v167_threading.Thread(
+            target=_v167_google_update_target, args=(target_chat_id, str(reason)),
+            daemon=True, name=f"v169-gsheet-{target_chat_id}"
+        ).start()
+        return True
+    except Exception:
+        return False
+
+
+def _v169_google_change_fire(target_chat_id: int):
+    if _v169_google_mode(_v167_google_schedule_cfg(int(target_chat_id), create=False)) != "change":
+        return
+    if not _v169_google_enqueue(int(target_chat_id), "finance-change"):
+        try:
+            DELAYED_SCHEDULER.schedule(
+                f"google-change-retry:{int(target_chat_id)}", 15.0,
+                _v169_google_change_fire, int(target_chat_id)
+            )
+        except Exception:
+            pass
+
+
+def _v169_schedule_google_after_change(target_chat_id: int, reason: str = "finance_changed") -> None:
+    try:
+        cfg = _v167_google_schedule_cfg(int(target_chat_id), create=False)
+        if not cfg or _v169_google_mode(cfg) != "change":
+            return
+        low = str(reason or "").casefold()
+        if low and not any(x in low for x in ("finance", "record", "forward", "edit", "delete", "add", "currency")):
+            return
+        # Debounce bursts: multiple records/forwarded copies become one Google API write.
+        DELAYED_SCHEDULER.schedule(
+            f"google-change:{int(target_chat_id)}", 8.0,
+            _v169_google_change_fire, int(target_chat_id)
+        )
+    except Exception as exc:
+        try: log_error(f"v169 schedule Google after change {target_chat_id}: {exc}")
+        except Exception: pass
+
+
+# Late wrapper: every real finance mutation already goes through this active v166 hook.
+_V169_BASE_SCHEDULE_FINANCIAL_WINDOW_REFRESH = globals().get("schedule_financial_window_refresh")
+def schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, reason: str = "finance_changed", delay: float = 0.0):
+    result = None
+    if callable(_V169_BASE_SCHEDULE_FINANCIAL_WINDOW_REFRESH):
+        result = _V169_BASE_SCHEDULE_FINANCIAL_WINDOW_REFRESH(int(chat_id), day_key, reason=reason, delay=delay)
+    _v169_schedule_google_after_change(int(chat_id), reason)
+    return result
+
+
 def _v167_google_scheduler_loop():
     while True:
         try:
@@ -672,23 +835,33 @@ def _v167_google_scheduler_loop():
                 return
             if callable(globals().get("runtime_is_ready")) and not runtime_is_ready():
                 _v167_time.sleep(5); continue
-            now=now_local(); hhmm=now.strftime("%H:%M"); date_key=now.strftime("%Y-%m-%d")
+            now = now_local(); hhmm = now.strftime("%H:%M"); date_key = now.strftime("%Y-%m-%d")
+            minute = int(now.strftime("%M")); hour = int(now.strftime("%H"))
             for cid in _v167_known_chat_ids():
-                cfg=_v167_google_schedule_cfg(cid,create=False)
-                if not cfg or not bool(cfg.get("enabled",True)):
+                cfg = _v167_google_schedule_cfg(cid, create=False)
+                if not cfg:
                     continue
-                selected=str(cfg.get("time") or "05:01")
-                if selected not in {"00:01","05:01"} or hhmm < selected:
+                mode = _v169_google_mode(cfg)
+                if mode in {"manual", "change"}:
                     continue
-                # Catch-up is intentional: if Render slept/restarted at the selected minute,
-                # the first READY after that time performs today's update exactly once.
-                run_key=f"{date_key}@{selected}"
-                if str(cfg.get("last_run_key") or "") == run_key:
+                run_key = ""
+                reason = mode
+                if mode == "m15":
+                    run_key = f"{date_key}@{hour:02d}:{(minute // 15) * 15:02d}"
+                elif mode == "h1":
+                    run_key = f"{date_key}@{hour:02d}"
+                elif mode in {"d0001", "d0501"}:
+                    selected = "00:01" if mode == "d0001" else "05:01"
+                    if hhmm < selected:
+                        continue
+                    run_key = f"{date_key}@{selected}"
+                if not run_key or str(cfg.get("last_run_key") or "") == run_key:
                     continue
-                cfg["last_run_key"]=run_key; _v167_persist_schedule(cid)
-                _v167_threading.Thread(target=_v167_google_update_target,args=(cid,"daily"),daemon=True,name=f"v167-gsheet-{cid}").start()
+                cfg["last_run_key"] = run_key
+                _v167_persist_schedule(cid)
+                _v169_google_enqueue(cid, reason)
         except Exception as exc:
-            try: log_error(f"v167 google scheduler: {exc}")
+            try: log_error(f"v169 google scheduler: {exc}")
             except Exception: pass
         _v167_time.sleep(20)
 
@@ -696,61 +869,123 @@ def _v167_google_scheduler_loop():
 def _v167_start_google_scheduler():
     global _V167_GOOGLE_SCHEDULER_STARTED
     if _V167_GOOGLE_SCHEDULER_STARTED: return
-    _V167_GOOGLE_SCHEDULER_STARTED=True
-    _v167_threading.Thread(target=_v167_google_scheduler_loop,daemon=True,name="v167-google-thuwed").start()
+    _V167_GOOGLE_SCHEDULER_STARTED = True
+    _v167_threading.Thread(target=_v167_google_scheduler_loop, daemon=True, name="v169-google-thuwed").start()
 
 
 def _v167_schedule_callback_filter(call):
-    try: return str(getattr(call,"data","") or "").startswith("v167:g")
-    except Exception: return False
+    try:
+        raw = str(getattr(call, "data", "") or "")
+        return raw.startswith("v167:g") or raw.startswith("v169:g")
+    except Exception:
+        return False
 
 
 def _v167_schedule_callback(call):
-    raw=str(getattr(call,"data","") or ""); parts=raw.split(":")
+    raw = str(getattr(call, "data", "") or ""); parts = raw.split(":")
     try:
-        target=int(parts[2]) if len(parts)>2 else int(OWNER_ID or 0)
-        uid=int(getattr(getattr(call,"from_user",None),"id",0) or 0)
+        # v169 INFO configuration window.
+        if raw.startswith("v169:"):
+            action = str(parts[1] if len(parts) > 1 else "")
+            target = int(parts[2]) if len(parts) > 2 else int(getattr(getattr(call, "message", None), "chat", None).id)
+            uid = int(getattr(getattr(call, "from_user", None), "id", 0) or 0)
+            if not (tenant_is_platform_owner_user(uid) or tenant_can_manage(uid, chat_id=target)):
+                bot.answer_callback_query(call.id, "Недостаточно прав", show_alert=True); return
+            if action == "gmenu":
+                try: bot.answer_callback_query(call.id)
+                except Exception: pass
+                safe_edit(
+                    bot, call, _v169_google_settings_text(target),
+                    reply_markup=_v169_google_settings_keyboard(target)
+                )
+                return
+            if action == "gmode":
+                mode = str(parts[3] if len(parts) > 3 else "manual")
+                cfg = _v169_set_google_mode(target, mode)
+                try: bot.answer_callback_query(call.id, _v169_google_mode_label(_v169_google_mode(cfg)))
+                except Exception: pass
+                safe_edit(
+                    bot, call, _v169_google_settings_text(target),
+                    reply_markup=_v169_google_settings_keyboard(target)
+                )
+                return
+            if action == "gnow":
+                queued = _v169_google_enqueue(target, "manual-info")
+                try:
+                    bot.answer_callback_query(call.id, "Обновление поставлено в очередь" if queued else "Обновление уже выполняется")
+                except Exception: pass
+                safe_edit(
+                    bot, call, _v169_google_settings_text(target),
+                    reply_markup=_v169_google_settings_keyboard(target)
+                )
+                return
+            return
+
+        # v167/F47 compatibility controls.
+        target = int(parts[2]) if len(parts) > 2 else int(OWNER_ID or 0)
+        uid = int(getattr(getattr(call, "from_user", None), "id", 0) or 0)
         if not (tenant_is_platform_owner_user(uid) or tenant_can_manage(uid, chat_id=target)):
-            bot.answer_callback_query(call.id,"Недостаточно прав",show_alert=True); return
-        cfg=_v167_google_schedule_cfg(target)
-        if parts[1]=="gtoggle":
-            cfg["enabled"]=not bool(cfg.get("enabled",True)); msg="Автообновление включено" if cfg["enabled"] else "Автообновление выключено"
-        elif parts[1]=="gtime":
-            code=str(parts[3] if len(parts)>3 else "0501"); cfg["time"]="00:01" if code=="0001" else "05:01"; cfg["enabled"]=True; msg=f"Чт–Ср: ежедневно в {cfg['time']}"
-        elif parts[1]=="gnow":
-            msg="Обновляю текущий лист Чт–Ср"; _v167_threading.Thread(target=_v167_google_update_target,args=(target,"manual"),daemon=True,name=f"v167-gsheet-now-{target}").start()
+            bot.answer_callback_query(call.id, "Недостаточно прав", show_alert=True); return
+        cfg = _v167_google_schedule_cfg(target)
+        if parts[1] == "gtoggle":
+            if _v169_google_mode(cfg) == "manual":
+                _v169_set_google_mode(target, "d0001" if str(cfg.get("time") or "05:01") == "00:01" else "d0501")
+                msg = "Автообновление включено"
+            else:
+                _v169_set_google_mode(target, "manual")
+                msg = "Автообновление выключено"
+            cfg = _v167_google_schedule_cfg(target)
+        elif parts[1] == "gtime":
+            code = str(parts[3] if len(parts) > 3 else "0501")
+            cfg = _v169_set_google_mode(target, "d0001" if code == "0001" else "d0501")
+            msg = f"Чт–Ср: ежедневно в {cfg['time']}"
+        elif parts[1] == "gnow":
+            msg = "Обновляю текущий лист Чт–Ср"
+            _v169_google_enqueue(target, "manual-f47")
         else:
             return
         _v167_persist_schedule(target)
-        try: bot.answer_callback_query(call.id,msg)
+        try: bot.answer_callback_query(call.id, msg)
         except Exception: pass
-        # Update only button labels in the same F47 message; no heavy work on callback line.
+        # Update only F47 button labels; no Google API work on callback thread.
         try:
-            kb=_v167_copy.deepcopy(getattr(getattr(call,"message",None),"reply_markup",None))
-            for row in getattr(kb,"keyboard",[]) or []:
+            kb = _v167_copy.deepcopy(getattr(getattr(call, "message", None), "reply_markup", None))
+            mode = _v169_google_mode(cfg)
+            for row in getattr(kb, "keyboard", []) or []:
                 for btn in row:
-                    cb=str(getattr(btn,"callback_data","") or "")
-                    if cb==f"v167:gtoggle:{target}": btn.text=("✅ " if cfg.get("enabled") else "❌ ")+"Google Чт–Ср авто"
-                    elif cb==f"v167:gtime:{target}:0001": btn.text=("✅ " if cfg.get("time")=="00:01" else "")+"00:01"
-                    elif cb==f"v167:gtime:{target}:0501": btn.text=("✅ " if cfg.get("time")=="05:01" else "")+"05:01"
-            bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=kb)
+                    cb = str(getattr(btn, "callback_data", "") or "")
+                    if cb == f"v167:gtoggle:{target}": btn.text = ("✅ " if mode != "manual" else "❌ ") + "Google Чт–Ср авто"
+                    elif cb == f"v167:gtime:{target}:0001": btn.text = ("✅ " if mode == "d0001" else "") + "00:01"
+                    elif cb == f"v167:gtime:{target}:0501": btn.text = ("✅ " if mode == "d0501" else "") + "05:01"
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=kb)
         except Exception: pass
     except Exception as exc:
-        try: log_error(f"v167 schedule callback {raw}: {exc}")
+        try: log_error(f"v169 schedule callback {raw}: {exc}")
         except Exception: pass
-        try: bot.answer_callback_query(call.id,"Ошибка настройки Google",show_alert=True)
+        try: bot.answer_callback_query(call.id, "Ошибка настройки Google", show_alert=True)
         except Exception: pass
 
 
 def _v167_install_schedule_callback():
     try:
         bot.callback_query_handler(func=_v167_schedule_callback_filter)(_v167_schedule_callback)
-        handlers=getattr(bot,"callback_query_handlers",None)
-        if isinstance(handlers,list) and handlers:
-            row=handlers.pop(); handlers.insert(0,row)
+        handlers = getattr(bot, "callback_query_handlers", None)
+        if isinstance(handlers, list) and handlers:
+            row = handlers.pop(); handlers.insert(0, row)
         return 1
     except Exception:
         return 0
+
+
+# Diagnostics/window map for the new INFO Google settings window.
+try:
+    WINDOW_MARKER_CONSTANTS.update({
+        "v169:gmenu:*": "Ф240",
+        "v169:gmode:*": "Ф240",
+        "v169:gnow:*": "Ф240",
+    })
+except Exception:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -1004,7 +1239,7 @@ try:
                     if not export_version.startswith((
                         "bot_v153_","bot_v154_","bot_v155_","bot_v156_","bot_v157_","bot_v158_",
                         "bot_v159_","bot_v160_","bot_v161_","bot_v162_","bot_v163_","bot_v164_",
-                        "bot_v165_","bot_v166_","bot_v167_","bot_v168_",
+                        "bot_v165_","bot_v166_","bot_v167_","bot_v168_","bot_v169_",
                     )): raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
                     if _v153_db_logical_checksum(raw)!=str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
                     return manifest,raw
@@ -1015,7 +1250,7 @@ except Exception:
     pass
 
 try:
-    bot_journal("v168_installed", int(OWNER_ID or 0), "clean-core phase 1: immutable record UID + owner-access circles + fast finance UI")
+    bot_journal("v169_installed", int(OWNER_ID or 0), "main TZ button + immediate finance-forward edit UI + tri-state reminder merge + Google Thu-Wed update modes")
 except Exception:
     pass
-# v168_clean_core_record_identity
+# v169_fast_tz_forward_reminder_google
