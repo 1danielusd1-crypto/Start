@@ -1,0 +1,29 @@
+bot_v174_simplified_task_dispatcher — TEST REPORT
+
+STATIC / PACKAGE
+PASS: 44 numbered runtime modules.
+PASS: bot.py + все numbered modules py_compile.
+PASS: standalone FULL_bot_v174_simplified_task_dispatcher.py py_compile.
+PASS: first/last version marker каждого numbered source совпадает с manifest file_markers.
+PASS: bot.py marker = v174_simplified_task_dispatcher.
+PASS: standalone marker = v174_simplified_task_dispatcher.
+PASS: manifest version = bot_v174_simplified_task_dispatcher.
+
+V174 LOGIC HARNESS
+PASS: owner/0 IDs исключаются из circle inventory.
+PASS: removed chat исключается.
+PASS: first-circle inventory и second-circle inventory независимы.
+PASS: «Нужно купить новый насос» распознаёт purchase keyword.
+PASS: слово «задача» не совпадает с частью слова «подзадачами».
+PASS: reply «готово» закрывает именно связанную покупку.
+PASS: «готово» без reply/#number не изменяет чужую задачу.
+PASS: «#N отложить» меняет только задачу N.
+
+SAFETY
+PASS: при активном старом v172 input prompt auto-capture пропускается, чтобы ввод редактирования не создавал дубликат.
+PASS: старые v172 admin/list/open/history callbacks имеют compatibility redirect в простой v174 UI.
+
+НЕ ПРОВЕРЕНО В ЭТОЙ СРЕДЕ
+- реальная Telegram API-доставка/редактирование сообщений;
+- live Render deploy;
+- live MEGA upload/restore.
