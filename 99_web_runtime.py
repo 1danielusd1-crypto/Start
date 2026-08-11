@@ -1,4 +1,4 @@
-# v180_total_final_diagnostics
+# v178_global_performance_final
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -257,7 +257,7 @@ def telegram_webhook():
                 log_info("WEBHOOK: получен update с callback_query")
             try:
                 upd_type = "edited_message" if "edited_message" in payload else "message" if "message" in payload else "callback_query" if "callback_query" in payload else "other"
-                bot_journal("webhook_update", _extract_update_chat_id(payload), f"type={upd_type}; update_id={(payload or {}).get('update_id','')}")
+                bot_journal("webhook_update", _extract_update_chat_id(payload), upd_type)
             except Exception:
                 pass
 
@@ -322,13 +322,6 @@ def telegram_webhook():
                 started = time.time()
                 wait = started - update_enqueued_at
                 UPDATE_DISPATCHER.mark_started(update_id)
-                try:
-                    _u = ((payload or {}).get("callback_query") or {}).get("from") or ((payload or {}).get("message") or {}).get("from") or ((payload or {}).get("edited_message") or {}).get("from") or {}
-                    _uid = int((_u or {}).get("id") or 0)
-                    _msg = (payload or {}).get("callback_query", {}).get("message") or (payload or {}).get("message") or (payload or {}).get("edited_message") or {}
-                    v180_diag_set_context(update_id=update_id, update_type=update_type, chat_id=update_chat_id, user_id=_uid, message_id=(_msg or {}).get("message_id"), contour=v180_contour_for(update_chat_id, _uid))
-                except Exception:
-                    pass
                 bot_journal("update_process_start", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s durable={durable_cloud}")
                 success = False
                 error_text = ""
@@ -367,8 +360,6 @@ def telegram_webhook():
                 finally:
                     UPDATE_DISPATCHER.finish(update_id, success, error_text)
                     bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s success={success} durable={durable_cloud}")
-                    try: v180_diag_clear_context()
-                    except Exception: pass
                     # Non-durable updates can release cold history immediately. Durable background
                     # finalizer owns a delayed release after its witness check.
                     if not durable_cloud:
@@ -568,7 +559,7 @@ def main():
     except Exception as e:
         log_error(f"audit_window_marker_registry: {e}")
     try:
-        DELAYED_SCHEDULER.schedule("usd-rate-refresh", 2.0, _usd_rate_refresh_tick)
+        threading.Thread(target=_usd_rate_refresh_loop, name="usd-rate-refresh", daemon=True).start()
     except Exception as e:
         log_error(f"usd rate refresh start: {e}")
     for cid in list((data.get("chats", {}) or {}).keys()):
@@ -667,10 +658,7 @@ def main():
 
     if boot_recovery_remaining > 0:
         runtime_set_phase("boot_recovery_background", f"осталось {boot_recovery_remaining}; webhook временно 503")
-        try:
-            RECOVERY_TASK_POOL.submit_unique("boot-task-recovery", runtime_continue_boot_recovery_background)
-        except Exception:
-            runtime_continue_boot_recovery_background()
+        threading.Thread(target=runtime_continue_boot_recovery_background, name="boot-task-recovery", daemon=True).start()
     else:
         runtime_mark_ready("SQLite/global + delta восстановлены; pending/running durable tasks проверены")
         try:
@@ -692,10 +680,7 @@ def main():
                 mega_upload_latest_database_backup(force=True)
             except Exception as exc:
                 log_error(f"LOWRAM initial DB snapshot: {exc}")
-        try:
-            MAINTENANCE_TASK_POOL.submit_unique("lowram-db-seed", _seed_primary_db_snapshot)
-        except Exception:
-            pass
+        threading.Thread(target=_seed_primary_db_snapshot, name="lowram-db-seed", daemon=True).start()
     # Never replay failed business work automatically. Heal only metadata-only/reclassified-safe gaps.
     try:
         schedule_safe_failed_task_repairs(8.0, 20)
@@ -740,4 +725,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v180_total_final_diagnostics
+# v178_global_performance_final

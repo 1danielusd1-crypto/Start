@@ -1,4 +1,4 @@
-# v180_total_final_diagnostics
+# v178_global_performance_final
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -1697,4 +1697,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v180_total_final_diagnostics
+# v178_global_performance_final
