@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ def _safe_stabilize(action_name, func):
         return None
 
 
-def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str = "change"):
+def _v177_legacy_0237_finance_changed_now(chat_id: int, day_key: str | None = None, reason: str = "change"):
     """
     Единая точка после фин-изменения.
     Важно: Telegram-отправки/редактирования окон и бэкапы не держат chat_lock,
@@ -422,9 +422,12 @@ def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str =
 
     except Exception as e:
         raise
+try: _v177_legacy_0237_finance_changed_now.__name__ = '_finance_changed_now'
+except Exception: pass
+_finance_changed_now = _v177_legacy_0237_finance_changed_now
 
 
-def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.35):
+def _v177_legacy_0238_finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.35):
     """Debounced универсальный финальный пересчёт для одного чата."""
     chat_id = int(chat_id)
     bot_journal("finance_changed_scheduled", chat_id, f"day={day_key} reason={reason} delay={delay}")
@@ -444,14 +447,20 @@ def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "cha
             _finalize_timers.pop(chat_id, None)
         _job()
     DELAYED_SCHEDULER.schedule(f"finance-finalize:{chat_id}", delay, _fire_finance)
+try: _v177_legacy_0238_finance_changed.__name__ = 'finance_changed'
+except Exception: pass
+finance_changed = _v177_legacy_0238_finance_changed
 
 
-def schedule_finalize(chat_id: int, day_key: str, delay: float = 0.35):
+def _v177_legacy_0239_schedule_finalize(chat_id: int, day_key: str, delay: float = 0.35):
     """Совместимость со старым кодом: теперь всё идёт через finance_changed()."""
     return finance_changed(chat_id, day_key, reason="schedule_finalize", delay=delay)
+try: _v177_legacy_0239_schedule_finalize.__name__ = 'schedule_finalize'
+except Exception: pass
+schedule_finalize = _v177_legacy_0239_schedule_finalize
 
 
-def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
+def _v177_legacy_0240_backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
     """
     Окно дня для владельца без document-caption.
     JSON-бэкапы отправляются отдельно через schedule_backup_flush().
@@ -474,35 +483,30 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
 
         if mid:
             try:
-                bot.edit_message_text(
-                    txt,
-                    chat_id=chat_id,
-                    message_id=mid,
-                    reply_markup=kb,
-                    parse_mode="HTML"
+                result = fast_ui_edit_message_text(
+                    chat_id, mid, txt, reply_markup=kb, parse_mode="HTML",
+                    purpose="main_day_background_v178",
                 )
+            except Exception:
+                result = "failed"
+            if str(result or "") in {"ok", "scheduled"}:
                 set_active_window_id(chat_id, day_key, mid)
-                return
-            except Exception as e:
-                err = str(e).lower()
-                if "message is not modified" in err:
-                    return
-                # Старое окно могли удалить руками или Telegram уже не даёт его редактировать.
-                # Это не критическая ошибка: очищаем сохранённый id и создаём новое окно.
-                if any(x in err for x in ("message to edit not found", "message_id_invalid", "message not found")):
-                    try:
-                        aw = get_or_create_active_windows(chat_id)
-                        if aw.get(day_key) == mid:
-                            aw.pop(day_key, None)
-                            save_data(data)
-                    except Exception:
-                        pass
-                else:
-                    log_error(f"backup_window_for_owner edit failed: {e}")
+                return result
+            if str(result or "") == "not_found":
                 try:
-                    bot.delete_message(chat_id, mid)
+                    aw = get_or_create_active_windows(chat_id)
+                    if aw.get(day_key) == mid:
+                        aw.pop(day_key, None)
+                        save_data(data)
                 except Exception:
                     pass
+                try:
+                    delete_async = globals().get("v177_delete_message_async")
+                    if callable(delete_async): delete_async(chat_id, mid, "main_day_replace_v178")
+                except Exception:
+                    pass
+            elif str(result or "") not in {"rate_limited", "failed"}:
+                return result
 
         sent = bot.send_message(
             chat_id,
@@ -511,6 +515,9 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
             parse_mode="HTML"
         )
         set_active_window_id(chat_id, day_key, sent.message_id)
+try: _v177_legacy_0240_backup_window_for_owner.__name__ = 'backup_window_for_owner'
+except Exception: pass
+backup_window_for_owner = _v177_legacy_0240_backup_window_for_owner
 
 def cancel_auto_delete_for_message(chat_id: int, message_id: int):
     """Если окно с автоудалением превращается кнопкой «Назад» в основное — его старый таймер больше не должен удалить О1."""
@@ -575,16 +582,19 @@ def recreate_main_window_now(chat_id: int, day_key: str):
     force_new_day_window(chat_id, day_key)
 
 
-def force_new_day_window(chat_id: int, day_key: str):
+def _v177_legacy_0241_force_new_day_window(chat_id: int, day_key: str):
     # v108: hidden accounting no longer forbids an explicitly requested visible main window.
     txt, _ = render_day_window(chat_id, day_key)
     kb = build_main_keyboard(day_key, chat_id)
     sent = bot.send_message(chat_id, txt, reply_markup=kb, parse_mode="HTML")
     set_active_window_id(chat_id, day_key, sent.message_id)
     schedule_balance_panel_refresh(chat_id, 0.5)
+try: _v177_legacy_0241_force_new_day_window.__name__ = 'force_new_day_window'
+except Exception: pass
+force_new_day_window = _v177_legacy_0241_force_new_day_window
 
 
-def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
+def _v177_legacy_0242_return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
     """Return to О1 without promoting a missing/stale Telegram message to active."""
     chat_id = int(chat_id)
     try:
@@ -663,6 +673,9 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
             log_error(f"return_to_main fallback({chat_id},{day_key}): {e}")
     if not GENERAL_TASK_POOL.submit(f"back-send:{chat_id}", _send_fallback):
         _send_fallback()
+try: _v177_legacy_0242_return_to_main_window_closing_previous.__name__ = 'return_to_main_window_closing_previous'
+except Exception: pass
+return_to_main_window_closing_previous = _v177_legacy_0242_return_to_main_window_closing_previous
 
 
 def reset_chat_data(chat_id: int):
@@ -1500,4 +1513,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v168_clean_core_record_identity
+# v178_global_performance_final

@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 
 
 @bot.message_handler(
@@ -395,7 +395,7 @@ def _text_without_spans(text: str, spans: list[tuple[int, int]]) -> str:
     return re.sub(r"\s+", " ", "".join(chars)).strip()
 
 
-def _add_record_to_currency_ledger(
+def _v177_legacy_0136_add_record_to_currency_ledger(
     chat_id: int,
     ledger: str,
     amount: float,
@@ -457,9 +457,12 @@ def _add_record_to_currency_ledger(
     except Exception as _integrity_exc:
         log_error(f"finance currency add integrity: {_integrity_exc}")
     if op_id and "operation_complete" in globals(): operation_complete(op_id, f"record={rid} currency={ledger}")
+try: _v177_legacy_0136_add_record_to_currency_ledger.__name__ = '_add_record_to_currency_ledger'
+except Exception: pass
+_add_record_to_currency_ledger = _v177_legacy_0136_add_record_to_currency_ledger
 
 
-def handle_finance_text(msg):
+def _v177_legacy_0138_handle_finance_text(msg):
     """
     Обработка обычного ввода для финучёта.
     Теперь принимает сумму не только из text, но и из caption
@@ -525,8 +528,11 @@ def handle_finance_text(msg):
     except Exception as e:
         log_error(f"[FINANCE ADD ERROR] {describe_msg_for_log(msg)} amount={amount} note={note!r}: {e}")
         return False
+try: _v177_legacy_0138_handle_finance_text.__name__ = 'handle_finance_text'
+except Exception: pass
+handle_finance_text = _v177_legacy_0138_handle_finance_text
 
-def handle_finance_edit(msg):
+def _v177_legacy_0139_handle_finance_edit(msg):
     chat_id = msg.chat.id
     text = (msg.text or msg.caption or "").strip()
 
@@ -583,6 +589,9 @@ def handle_finance_edit(msg):
     )
     save_data(data, chat_ids=[int(chat_id)])
     return True
+try: _v177_legacy_0139_handle_finance_edit.__name__ = 'handle_finance_edit'
+except Exception: pass
+handle_finance_edit = _v177_legacy_0139_handle_finance_edit
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0, source_msg=None):
     with locked_chat(dst_chat_id):
         if not is_finance_mode(dst_chat_id):
@@ -975,4 +984,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v168_clean_core_record_identity
+# v178_global_performance_final

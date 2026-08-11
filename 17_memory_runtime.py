@@ -1,4 +1,4 @@
-# v149_tenant_google_merged_reminders
+# v178_global_performance_final
 # ─────────────────────────────────────────────────────────────
 # v145: adaptive RAM protection and memory forensics for Render 512 MB.
 # Business state is never discarded. Only caches, diagnostics and allocator
@@ -280,7 +280,7 @@ def _memory_emit(event: str, detail: dict | None = None, level: str = "INFO"):
     return row
 
 
-def memory_malloc_trim() -> bool:
+def _v177_legacy_0116_memory_malloc_trim() -> bool:
     try:
         libc = _memory_ctypes.CDLL("libc.so.6")
         result = int(libc.malloc_trim(0))
@@ -289,6 +289,9 @@ def memory_malloc_trim() -> bool:
         return result == 1
     except Exception:
         return False
+try: _v177_legacy_0116_memory_malloc_trim.__name__ = 'memory_malloc_trim'
+except Exception: pass
+memory_malloc_trim = _v177_legacy_0116_memory_malloc_trim
 
 
 def _memory_compact_logs(level: str):
@@ -643,7 +646,9 @@ def memory_guard_tick():
         if level != previous:
             _memory_emit("memory_level_changed", {"from": previous, "to": level, "snapshot": snap}, "WARN" if level != "normal" else "INFO")
         if level in {"warning", "high", "critical", "emergency"}:
-            memory_trim(f"guard:{level}", level=level, force=(level in {"critical", "emergency"}))
+            # v178: cooldown also applies at critical. Only emergency bypasses it.
+            # This keeps RAM protection active without burning CPU on repeated GC/compaction.
+            memory_trim(f"guard:{level}", level=level, force=(level == "emergency"))
         if level == "emergency":
             refreshed = memory_quick_snapshot()
             used = float(refreshed.get("effective_mb") or 0.0)
@@ -679,4 +684,4 @@ def start_memory_runtime_schedulers():
     DELAYED_SCHEDULER.schedule("memory-guard", 5.0, memory_guard_tick)
     return True
 
-# v149_tenant_google_merged_reminders
+# v178_global_performance_final

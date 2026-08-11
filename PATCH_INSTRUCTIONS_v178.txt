@@ -1,0 +1,19 @@
+bot_v178_global_performance_final
+
+Base: bot_v177_performance_final.
+Recommended deploy: FULL_PACKAGE_FLAT.
+
+GLOBAL RULE:
+Performance/UI changes apply to every available contour and user (owner, first circle, second circle), not owner-only.
+
+Important migration behavior:
+- detailed window/button diagnostics are switched OFF once for speed;
+- historical failed-task auto repair/deep scan is switched OFF once;
+- failed task files are NOT deleted;
+- critical delta, finance, forwarding, reminders, SQLite, lease and memory guard remain enabled.
+
+After deploy:
+1. Open INFO -> Processes / speed -> Clear measurement.
+2. Test 15-20 identical day transitions in owner chat.
+3. Repeat in a first-circle chat and a second-circle chat where finance UI is available.
+4. Send the Speed window if P90 remains above ~2 seconds.

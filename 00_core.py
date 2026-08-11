@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 import os
 import io
 import json
@@ -776,7 +776,7 @@ def _forward_sender_skip_reason_raw(raw: dict) -> str:
         return ""
 
 
-def schedule_forward_any_message(source_chat_id: int, msg):
+def _v177_legacy_0001_schedule_forward_any_message(source_chat_id: int, msg):
     """Пересылка: порядок по исходному чату сохраняется; finance имеет приоритет.
 
     v121 keeps an explicit live outcome for the asynchronous worker. This prevents a
@@ -817,6 +817,9 @@ def schedule_forward_any_message(source_chat_id: int, msg):
     if not FIN_FORWARD_TASK_POOL.submit(int(source_chat_id), _forward_with_finance_priority, source_chat_id, msg):
         log_error(f"FIN-FORWARD QUEUE FULL, INLINE FALLBACK: {source_chat_id}")
         _forward_with_finance_priority(source_chat_id, msg)
+try: _v177_legacy_0001_schedule_forward_any_message.__name__ = 'schedule_forward_any_message'
+except Exception: pass
+schedule_forward_any_message = _v177_legacy_0001_schedule_forward_any_message
 
 
 def schedule_propagate_edited_to_copies(msg):
@@ -1556,9 +1559,12 @@ def _import_legacy_global_json_to_db(path: str = DATA_FILE, force: bool = False)
     return True
 
 
-def log_info(msg: str):
+def _v177_legacy_0002_log_info(msg: str):
     logger.info(msg)
-def log_error(msg: str):
+try: _v177_legacy_0002_log_info.__name__ = 'log_info'
+except Exception: pass
+log_info = _v177_legacy_0002_log_info
+def _v177_legacy_0003_log_error(msg: str):
     logger.error(msg)
     try:
         if 'bot_journal' in globals():
@@ -1573,6 +1579,9 @@ def log_error(msg: str):
             })
     except Exception:
         pass
+try: _v177_legacy_0003_log_error.__name__ = 'log_error'
+except Exception: pass
+log_error = _v177_legacy_0003_log_error
 
 def get_recent_errors(limit: int = 20):
     try:
@@ -2290,17 +2299,23 @@ def forward_menu_new_style_enabled(chat_id: int | None = None) -> bool:
     return bool(_owner_setting_value("forward_menu_new_style", False, chat_id))
 
 
-def set_forward_menu_new_style_enabled(enabled: bool, chat_id: int | None = None):
+def _v177_legacy_0004_set_forward_menu_new_style_enabled(enabled: bool, chat_id: int | None = None):
     try:
         _set_owner_setting_value("forward_menu_new_style", bool(enabled), chat_id)
     except Exception as e:
         log_error(f"set_forward_menu_new_style_enabled: {e}")
+try: _v177_legacy_0004_set_forward_menu_new_style_enabled.__name__ = 'set_forward_menu_new_style_enabled'
+except Exception: pass
+set_forward_menu_new_style_enabled = _v177_legacy_0004_set_forward_menu_new_style_enabled
 
 
-def toggle_forward_menu_new_style(chat_id: int | None = None) -> bool:
+def _v177_legacy_0005_toggle_forward_menu_new_style(chat_id: int | None = None) -> bool:
     new_value = not forward_menu_new_style_enabled(chat_id)
     set_forward_menu_new_style_enabled(new_value, chat_id)
     return new_value
+try: _v177_legacy_0005_toggle_forward_menu_new_style.__name__ = 'toggle_forward_menu_new_style'
+except Exception: pass
+toggle_forward_menu_new_style = _v177_legacy_0005_toggle_forward_menu_new_style
 
 
 def forward_menu_style_label(chat_id: int | None = None) -> str:
@@ -2391,7 +2406,7 @@ def _journal_write_row(row: dict):
         pass
 
 
-def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
+def _v177_legacy_0006_bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"):
     """Пишет действие в общий журнал: команды, кнопки, функции, Telegram API, backup, ошибки."""
     try:
         # Если регистрация выключена — не пишем обычные действия. Ошибки и полная
@@ -2459,6 +2474,9 @@ def bot_journal(action: str, chat_id=None, detail: str = "", level: str = "INFO"
         return row
     except Exception:
         return None
+try: _v177_legacy_0006_bot_journal.__name__ = 'bot_journal'
+except Exception: pass
+bot_journal = _v177_legacy_0006_bot_journal
 
 
 def get_recent_journal(limit: int = 200):
@@ -2513,7 +2531,7 @@ def _journal_read_file_rows(limit: int = 20000) -> list[dict]:
 
 
 
-def _atomic_json_dump(path: str, payload) -> None:
+def _v177_legacy_0008_atomic_json_dump(path: str, payload) -> None:
     """Atomically write JSON on the local ephemeral disk before a MEGA upload.
 
     v111 referenced this helper before it existed, so both runtime_latest and the
@@ -2538,6 +2556,9 @@ def _atomic_json_dump(path: str, payload) -> None:
                 os.remove(tmp)
         except Exception:
             pass
+try: _v177_legacy_0008_atomic_json_dump.__name__ = '_atomic_json_dump'
+except Exception: pass
+_atomic_json_dump = _v177_legacy_0008_atomic_json_dump
 
 
 def _journal_durable_remote_dir() -> str:
@@ -2970,7 +2991,7 @@ def build_all_processes_toast(chat_id=None) -> str:
     return text[:190]
 
 
-def _file_job_progress(phase: str, current=None, total=None, force: bool = False):
+def _v177_legacy_0009_file_job_progress(phase: str, current=None, total=None, force: bool = False):
     """Update one temporary Telegram status message at a throttled rate."""
     ctx = _file_job_current()
     if not ctx:
@@ -3006,10 +3027,13 @@ def _file_job_progress(phase: str, current=None, total=None, force: bool = False
             bot.edit_message_text(text, chat_id=chat_id, message_id=int(msg_id))
     except Exception:
         pass
+try: _v177_legacy_0009_file_job_progress.__name__ = '_file_job_progress'
+except Exception: pass
+_file_job_progress = _v177_legacy_0009_file_job_progress
 
 
 
-def _file_job_tick(key: str):
+def _v177_legacy_0010_file_job_tick(key: str):
     """Keep elapsed time moving even when the builder is inside one long blocking call."""
     key = str(key)
     with _FILE_JOB_LOCK:
@@ -3038,9 +3062,12 @@ def _file_job_tick(key: str):
         alive = isinstance(_FILE_JOB_STATE.get(key), dict)
     if alive:
         DELAYED_SCHEDULER.schedule(f"file-job-tick:{key}", internal_timer_seconds("process_status_refresh", 10.0), _file_job_tick, key)
+try: _v177_legacy_0010_file_job_tick.__name__ = '_file_job_tick'
+except Exception: pass
+_file_job_tick = _v177_legacy_0010_file_job_tick
 
 
-def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
+def _v177_legacy_0012_interactive_file_job_runner(job_meta: dict, func, args, kwargs):
     key = str(job_meta.get("key") or _INTERACTIVE_FILE_JOB_KEY)
     previous = getattr(_FILE_JOB_CONTEXT, "value", None)
     _FILE_JOB_CONTEXT.value = {"key": key}
@@ -3107,9 +3134,12 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
                 pass
         else:
             _FILE_JOB_CONTEXT.value = previous
+try: _v177_legacy_0012_interactive_file_job_runner.__name__ = '_interactive_file_job_runner'
+except Exception: pass
+_interactive_file_job_runner = _v177_legacy_0012_interactive_file_job_runner
 
 
-def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
+def _v177_legacy_0016_submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
     """Start one heavy user-requested file job; duplicate taps are coalesced."""
     chat_id = int(chat_id)
     gate = globals().get("memory_heavy_allowed")
@@ -3165,6 +3195,9 @@ def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args
     except Exception:
         pass
     return True, "Запущено"
+try: _v177_legacy_0016_submit_interactive_file_job.__name__ = 'submit_interactive_file_job'
+except Exception: pass
+submit_interactive_file_job = _v177_legacy_0016_submit_interactive_file_job
 
 
 def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
@@ -3732,7 +3765,7 @@ def handle_secret_note_message(msg) -> bool:
         return True
 
 
-def handle_o9_secret_triple_click(call, data_str: str) -> bool:
+def _v177_legacy_0020_handle_o9_secret_triple_click(call, data_str: str) -> bool:
     """Перехватывает О9: Закрыть ×3 = ввод секрета, Назад ×3 = показать секреты."""
     try:
         if not _is_o9_owner_call(call):
@@ -3813,6 +3846,9 @@ def handle_o9_secret_triple_click(call, data_str: str) -> bool:
     except Exception as e:
         log_error(f"handle_o9_secret_triple_click: {e}")
         return False
+try: _v177_legacy_0020_handle_o9_secret_triple_click.__name__ = 'handle_o9_secret_triple_click'
+except Exception: pass
+handle_o9_secret_triple_click = _v177_legacy_0020_handle_o9_secret_triple_click
 
 
 
@@ -4504,7 +4540,7 @@ def _format_duration_short(seconds: int | float) -> str:
     return f"{sec}с"
 
 
-def internal_timer_seconds(key: str, fallback=None) -> float:
+def _v177_legacy_0021_internal_timer_seconds(key: str, fallback=None) -> float:
     cfg = INTERNAL_TIMER_DEFS.get(str(key)) or {}
     default = float(cfg.get("default", fallback if fallback is not None else 30) or 30)
     try:
@@ -4516,9 +4552,12 @@ def internal_timer_seconds(key: str, fallback=None) -> float:
     low = float(cfg.get("min", 1) or 1)
     high = float(cfg.get("max", 86400) or 86400)
     return max(low, min(high, value))
+try: _v177_legacy_0021_internal_timer_seconds.__name__ = 'internal_timer_seconds'
+except Exception: pass
+internal_timer_seconds = _v177_legacy_0021_internal_timer_seconds
 
 
-def set_internal_timer_seconds(key: str, seconds: int | float) -> float:
+def _v177_legacy_0022_set_internal_timer_seconds(key: str, seconds: int | float) -> float:
     key = str(key)
     cfg = INTERNAL_TIMER_DEFS.get(key)
     if not cfg:
@@ -4537,9 +4576,12 @@ def set_internal_timer_seconds(key: str, seconds: int | float) -> float:
         except Exception:
             pass
     return value
+try: _v177_legacy_0022_set_internal_timer_seconds.__name__ = 'set_internal_timer_seconds'
+except Exception: pass
+set_internal_timer_seconds = _v177_legacy_0022_set_internal_timer_seconds
 
 
-def build_internal_timers_text() -> str:
+def _v177_legacy_0023_build_internal_timers_text() -> str:
     lines = [
         "⏱ Внутренние таймеры",
         "",
@@ -4552,6 +4594,9 @@ def build_internal_timers_text() -> str:
         lines.append(f"{cfg['label']}: {_format_duration_short(internal_timer_seconds(key))}")
     lines.extend(["", "Выберите таймер для изменения."])
     return wm_owner("\n".join(lines), 9)
+try: _v177_legacy_0023_build_internal_timers_text.__name__ = 'build_internal_timers_text'
+except Exception: pass
+build_internal_timers_text = _v177_legacy_0023_build_internal_timers_text
 
 
 def build_internal_timers_keyboard(chat_id: int):
@@ -4590,7 +4635,7 @@ def _timer_input_total_preview(session: dict) -> int:
     return minutes * 60 + seconds
 
 
-def build_internal_timer_input_text(chat_id: int) -> str:
+def _v177_legacy_0024_build_internal_timer_input_text(chat_id: int) -> str:
     session = _timer_input_session(chat_id)
     key = session.get("key")
     cfg = INTERNAL_TIMER_DEFS.get(str(key)) or {"label": "Таймер"}
@@ -4607,6 +4652,9 @@ def build_internal_timer_input_text(chat_id: int) -> str:
         "Если единицу не нажимать, число считается секундами. Затем нажмите «✅ Выбрать».",
         9,
     )
+try: _v177_legacy_0024_build_internal_timer_input_text.__name__ = 'build_internal_timer_input_text'
+except Exception: pass
+build_internal_timer_input_text = _v177_legacy_0024_build_internal_timer_input_text
 
 
 def build_internal_timer_input_keyboard(chat_id: int):
@@ -5180,7 +5228,7 @@ def set_finance_window_mode(chat_id: int, mode: str, *, persist_now: bool = Fals
         schedule_config_backup_for_chats(chat_id)
 
 
-def delete_auto_finance_windows_for_chat(chat_id: int, *, persist_now: bool = False) -> int:
+def _v177_legacy_0025_delete_auto_finance_windows_for_chat(chat_id: int, *, persist_now: bool = False) -> int:
     """Delete only automatic finance windows controlled by the three F39 modes, not manual reports/F91/category views."""
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
@@ -5225,6 +5273,9 @@ def delete_auto_finance_windows_for_chat(chat_id: int, *, persist_now: bool = Fa
         except Exception:
             pass
     return removed
+try: _v177_legacy_0025_delete_auto_finance_windows_for_chat.__name__ = 'delete_auto_finance_windows_for_chat'
+except Exception: pass
+delete_auto_finance_windows_for_chat = _v177_legacy_0025_delete_auto_finance_windows_for_chat
 
 
 def set_quick_balance_behavior(chat_id: int, behavior: str):
@@ -5307,16 +5358,22 @@ def toggle_mega_backup_priority(chat_id: int | None = None) -> bool:
 def mega_backup_priority_label(chat_id: int | None = None) -> str:
     return "☁️ Сразу в MEGA" if mega_backup_priority_enabled(chat_id) else "🕓 MEGA как обычно"
 
-def backup_excel_all_enabled() -> bool:
+def _v177_legacy_0026_backup_excel_all_enabled() -> bool:
     try:
         return bool((data or {}).setdefault("_global_settings", {}).get("backup_excel_all_enabled", True))
     except Exception:
         return True
+try: _v177_legacy_0026_backup_excel_all_enabled.__name__ = 'backup_excel_all_enabled'
+except Exception: pass
+backup_excel_all_enabled = _v177_legacy_0026_backup_excel_all_enabled
 
 
-def set_backup_excel_all_enabled(enabled: bool):
+def _v177_legacy_0027_set_backup_excel_all_enabled(enabled: bool):
     data.setdefault("_global_settings", {})["backup_excel_all_enabled"] = bool(enabled)
     save_data(data, full=True)
+try: _v177_legacy_0027_set_backup_excel_all_enabled.__name__ = 'set_backup_excel_all_enabled'
+except Exception: pass
+set_backup_excel_all_enabled = _v177_legacy_0027_set_backup_excel_all_enabled
 
 
 def toggle_backup_excel_all_enabled() -> bool:
@@ -5342,7 +5399,7 @@ def _normalize_excel_table_style(value) -> str:
     return mode if mode in {"old", "new_plain", "new_comments", "new_notes", "google_notes"} else ""
 
 
-def excel_interface_mode(chat_id: int | None = None) -> str:
+def _v177_legacy_0028_excel_interface_mode(chat_id: int | None = None) -> str:
     """INFO switch: old interface (v136 chooser) or new checkbox recipe."""
     gs = data.setdefault("_global_settings", {})
     mode = str(gs.get("excel_interface_mode") or "old").strip().lower()
@@ -5350,9 +5407,12 @@ def excel_interface_mode(chat_id: int | None = None) -> str:
         mode = "old"
         gs["excel_interface_mode"] = mode
     return mode
+try: _v177_legacy_0028_excel_interface_mode.__name__ = 'excel_interface_mode'
+except Exception: pass
+excel_interface_mode = _v177_legacy_0028_excel_interface_mode
 
 
-def set_excel_interface_mode(mode: str) -> str:
+def _v177_legacy_0029_set_excel_interface_mode(mode: str) -> str:
     mode = "new" if str(mode or "").strip().lower() == "new" else "old"
     data.setdefault("_global_settings", {})["excel_interface_mode"] = mode
     save_data(data, root_only=True)
@@ -5362,13 +5422,16 @@ def set_excel_interface_mode(mode: str) -> str:
     except Exception:
         pass
     return mode
+try: _v177_legacy_0029_set_excel_interface_mode.__name__ = 'set_excel_interface_mode'
+except Exception: pass
+set_excel_interface_mode = _v177_legacy_0029_set_excel_interface_mode
 
 
 def toggle_excel_interface_mode(chat_id: int | None = None) -> str:
     return set_excel_interface_mode("new" if excel_interface_mode(chat_id) == "old" else "old")
 
 
-def excel_new_export_options() -> dict:
+def _v177_legacy_0030_excel_new_export_options() -> dict:
     gs = data.setdefault("_global_settings", {})
     raw = gs.get("excel_new_export_options")
     if not isinstance(raw, dict):
@@ -5386,9 +5449,12 @@ def excel_new_export_options() -> dict:
         options["comments"] = False
     gs["excel_new_export_options"] = dict(options)
     return options
+try: _v177_legacy_0030_excel_new_export_options.__name__ = 'excel_new_export_options'
+except Exception: pass
+excel_new_export_options = _v177_legacy_0030_excel_new_export_options
 
 
-def toggle_excel_new_export_option(option: str) -> dict:
+def _v177_legacy_0031_toggle_excel_new_export_option(option: str) -> dict:
     option = str(option or "").strip().lower()
     options = excel_new_export_options()
     if option == "old_table":
@@ -5419,6 +5485,9 @@ def toggle_excel_new_export_option(option: str) -> dict:
     except Exception:
         pass
     return dict(options)
+try: _v177_legacy_0031_toggle_excel_new_export_option.__name__ = 'toggle_excel_new_export_option'
+except Exception: pass
+toggle_excel_new_export_option = _v177_legacy_0031_toggle_excel_new_export_option
 
 
 def normalize_excel_export_options(value: dict | None = None) -> dict:
@@ -5447,7 +5516,7 @@ def excel_export_options_style(options: dict | None = None) -> str:
     return "new_plain"
 
 
-def excel_table_style(chat_id: int) -> str:
+def _v177_legacy_0032_excel_table_style(chat_id: int) -> str:
     gs = data.setdefault("_global_settings", {})
     mode = _normalize_excel_table_style(gs.get("excel_table_style_global"))
     if not mode:
@@ -5465,9 +5534,12 @@ def excel_table_style(chat_id: int) -> str:
         gs["excel_table_style_global"] = mode
         gs["excel_table_style"] = mode
     return mode
+try: _v177_legacy_0032_excel_table_style.__name__ = 'excel_table_style'
+except Exception: pass
+excel_table_style = _v177_legacy_0032_excel_table_style
 
 
-def set_excel_table_style(chat_id: int, mode: str) -> str:
+def _v177_legacy_0033_set_excel_table_style(chat_id: int, mode: str) -> str:
     chat_id = int(chat_id)
     mode = _normalize_excel_table_style(mode) or "new_notes"
     gs = data.setdefault("_global_settings", {})
@@ -5488,6 +5560,9 @@ def set_excel_table_style(chat_id: int, mode: str) -> str:
     except Exception:
         pass
     return mode
+try: _v177_legacy_0033_set_excel_table_style.__name__ = 'set_excel_table_style'
+except Exception: pass
+set_excel_table_style = _v177_legacy_0033_set_excel_table_style
 
 
 def toggle_excel_table_style(chat_id: int) -> str:
@@ -5642,7 +5717,7 @@ def set_auto_backup_enabled(chat_id: int, enabled: bool):
     schedule_config_backup_for_chats(chat_id)
 
 
-def _is_bot_removed_error(err) -> bool:
+def _v177_legacy_0034_is_bot_removed_error(err) -> bool:
     text = str(err or "").lower()
     needles = (
         "bot was kicked",
@@ -5654,9 +5729,12 @@ def _is_bot_removed_error(err) -> bool:
         "have no rights",
     )
     return any(n in text for n in needles)
+try: _v177_legacy_0034_is_bot_removed_error.__name__ = '_is_bot_removed_error'
+except Exception: pass
+_is_bot_removed_error = _v177_legacy_0034_is_bot_removed_error
 
 
-def set_chat_bot_removed(chat_id: int, removed: bool = True, reason: str = ""):
+def _v177_legacy_0035_set_chat_bot_removed(chat_id: int, removed: bool = True, reason: str = ""):
     try:
         store = get_chat_store(int(chat_id))
         settings = store.setdefault("settings", {})
@@ -5683,19 +5761,28 @@ def set_chat_bot_removed(chat_id: int, removed: bool = True, reason: str = ""):
             pass
     except Exception as e:
         log_error(f"set_chat_bot_removed({chat_id}): {e}")
+try: _v177_legacy_0035_set_chat_bot_removed.__name__ = 'set_chat_bot_removed'
+except Exception: pass
+set_chat_bot_removed = _v177_legacy_0035_set_chat_bot_removed
 
 
-def is_chat_bot_removed(chat_id: int) -> bool:
+def _v177_legacy_0036_is_chat_bot_removed(chat_id: int) -> bool:
     try:
         store = get_chat_store(int(chat_id))
         return bool(store.setdefault("settings", {}).get("bot_removed", False))
     except Exception:
         return False
+try: _v177_legacy_0036_is_chat_bot_removed.__name__ = 'is_chat_bot_removed'
+except Exception: pass
+is_chat_bot_removed = _v177_legacy_0036_is_chat_bot_removed
 
 
-def chat_button_title(chat_id: int, title: str | None = None) -> str:
+def _v177_legacy_0037_chat_button_title(chat_id: int, title: str | None = None) -> str:
     title = title or get_chat_display_name(chat_id)
     return ("➖ " if is_chat_bot_removed(chat_id) else "") + str(title)
+try: _v177_legacy_0037_chat_button_title.__name__ = 'chat_button_title'
+except Exception: pass
+chat_button_title = _v177_legacy_0037_chat_button_title
 
 
 def answer_removed_chat(call, target_chat_id: int) -> bool:
@@ -5713,7 +5800,7 @@ def answer_removed_chat(call, target_chat_id: int) -> bool:
     return True
 
 
-def collect_all_known_chat_ids(include_owner: bool = True) -> list[int]:
+def _v177_legacy_0038_collect_all_known_chat_ids(include_owner: bool = True) -> list[int]:
     """Все известные чаты из памяти/пересылок/финрежима для проверки наличия бота."""
     ids = set()
     try:
@@ -5740,9 +5827,12 @@ def collect_all_known_chat_ids(include_owner: bool = True) -> list[int]:
         except Exception:
             pass
     return sorted(ids, key=lambda cid: get_chat_display_name(cid).lower())
+try: _v177_legacy_0038_collect_all_known_chat_ids.__name__ = 'collect_all_known_chat_ids'
+except Exception: pass
+collect_all_known_chat_ids = _v177_legacy_0038_collect_all_known_chat_ids
 
 
-def update_chat_info_from_chat_object(chat_obj) -> bool:
+def _v177_legacy_0039_update_chat_info_from_chat_object(chat_obj) -> bool:
     """Обновляет карточку чата по результату Telegram getChat: title/username/type."""
     try:
         chat_id = int(getattr(chat_obj, "id"))
@@ -5800,8 +5890,11 @@ def update_chat_info_from_chat_object(chat_obj) -> bool:
         except Exception as e:
             log_error(f"update_chat_info_from_chat_object backup {chat_id}: {e}")
     return changed
+try: _v177_legacy_0039_update_chat_info_from_chat_object.__name__ = 'update_chat_info_from_chat_object'
+except Exception: pass
+update_chat_info_from_chat_object = _v177_legacy_0039_update_chat_info_from_chat_object
 
-def probe_bot_in_chat(chat_id: int) -> bool:
+def _v177_legacy_0040_probe_bot_in_chat(chat_id: int) -> bool:
     """Проверяет, видит ли бот чат. При успехе обновляет имя/username, при ошибке помечает как удалённый."""
     try:
         chat_obj = _tg_call_retry(bot.get_chat, int(chat_id), attempts=2, purpose="probe_get_chat")
@@ -5814,6 +5907,9 @@ def probe_bot_in_chat(chat_id: int) -> bool:
         else:
             log_error(f"probe_bot_in_chat({get_chat_display_name(chat_id)}): {e}")
         return False
+try: _v177_legacy_0040_probe_bot_in_chat.__name__ = 'probe_bot_in_chat'
+except Exception: pass
+probe_bot_in_chat = _v177_legacy_0040_probe_bot_in_chat
 
 
 def probe_all_known_chats() -> tuple[int, int]:
@@ -6131,7 +6227,7 @@ def _open_window_registry() -> dict:
     return data.setdefault("open_window_registry", {})
 
 
-def register_open_window(chat_id: int, message_id: int, window_type: str, code: str = "", day_key: str | None = None, params: dict | None = None):
+def _v177_legacy_0041_register_open_window(chat_id: int, message_id: int, window_type: str, code: str = "", day_key: str | None = None, params: dict | None = None):
     try:
         chat_id = int(chat_id)
         message_id = int(message_id)
@@ -6158,9 +6254,12 @@ def register_open_window(chat_id: int, message_id: int, window_type: str, code: 
         save_data(data, root_only=True)
     except Exception as e:
         log_error(f"register_open_window: {e}")
+try: _v177_legacy_0041_register_open_window.__name__ = 'register_open_window'
+except Exception: pass
+register_open_window = _v177_legacy_0041_register_open_window
 
 
-def unregister_open_window(chat_id: int, message_id: int):
+def _v177_legacy_0042_unregister_open_window(chat_id: int, message_id: int):
     try:
         chat_id = int(chat_id); message_id = int(message_id)
         reg = _open_window_registry()
@@ -6173,9 +6272,12 @@ def unregister_open_window(chat_id: int, message_id: int):
             save_data(data, root_only=True)
     except Exception:
         pass
+try: _v177_legacy_0042_unregister_open_window.__name__ = 'unregister_open_window'
+except Exception: pass
+unregister_open_window = _v177_legacy_0042_unregister_open_window
 
 
-def get_registered_open_window(chat_id: int, message_id: int) -> dict | None:
+def _v177_legacy_0043_get_registered_open_window(chat_id: int, message_id: int) -> dict | None:
     """Возвращает фактическое последнее состояние конкретного Telegram-сообщения."""
     try:
         chat_id = int(chat_id); message_id = int(message_id)
@@ -6189,6 +6291,9 @@ def get_registered_open_window(chat_id: int, message_id: int) -> dict | None:
         return best
     except Exception:
         return None
+try: _v177_legacy_0043_get_registered_open_window.__name__ = 'get_registered_open_window'
+except Exception: pass
+get_registered_open_window = _v177_legacy_0043_get_registered_open_window
 
 
 def register_static_open_view(chat_id: int, message_id: int, code: str = "", day_key: str | None = None, params: dict | None = None):
@@ -6549,7 +6654,7 @@ def _refresh_registered_stored_window(item: dict, changed_chat_id: int) -> bool:
     return False
 
 
-def refresh_registered_financial_windows(chat_id: int):
+def _v177_legacy_0044_refresh_registered_financial_windows(chat_id: int):
     """Обновляет известные открытые окна текущего owner scope после изменения финансов."""
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
@@ -6601,6 +6706,9 @@ def refresh_registered_financial_windows(chat_id: int):
                 _refresh_registered_stored_window(item, chat_id)
         except Exception as e:
             log_error(f"refresh_registered_financial_windows registry item: {e}")
+try: _v177_legacy_0044_refresh_registered_financial_windows.__name__ = 'refresh_registered_financial_windows'
+except Exception: pass
+refresh_registered_financial_windows = _v177_legacy_0044_refresh_registered_financial_windows
 
 
 def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_markup=None, parse_mode=None, delay: int | float | None = None):
@@ -6689,19 +6797,25 @@ def send_or_edit_stored_window(chat_id: int, store_key: str, text: str, reply_ma
     return sent.message_id
 
 
-def is_primary_owner(chat_id: int) -> bool:
+def _v177_legacy_0046_is_primary_owner(chat_id: int) -> bool:
     return bool(OWNER_ID and str(chat_id) == str(OWNER_ID))
+try: _v177_legacy_0046_is_primary_owner.__name__ = 'is_primary_owner'
+except Exception: pass
+is_primary_owner = _v177_legacy_0046_is_primary_owner
 
 
-def get_additional_owner_ids() -> set[int]:
+def _v177_legacy_0047_get_additional_owner_ids() -> set[int]:
     try:
         raw = data.setdefault("_global_settings", {}).setdefault("additional_owner_ids", [])
         return {int(x) for x in raw}
     except Exception:
         return set()
+try: _v177_legacy_0047_get_additional_owner_ids.__name__ = 'get_additional_owner_ids'
+except Exception: pass
+get_additional_owner_ids = _v177_legacy_0047_get_additional_owner_ids
 
 
-def set_additional_owner(user_id: int, enabled: bool):
+def _v177_legacy_0048_set_additional_owner(user_id: int, enabled: bool):
     user_id = int(user_id)
     owners = get_additional_owner_ids()
     if enabled:
@@ -6715,16 +6829,22 @@ def set_additional_owner(user_id: int, enabled: bool):
     data.setdefault("_global_settings", {})["additional_owner_ids"] = sorted(owners)
     save_data(data)
     schedule_config_backup_for_chats(user_id)
+try: _v177_legacy_0048_set_additional_owner.__name__ = 'set_additional_owner'
+except Exception: pass
+set_additional_owner = _v177_legacy_0048_set_additional_owner
 
 
-def is_owner_chat(chat_id: int) -> bool:
+def _v177_legacy_0049_is_owner_chat(chat_id: int) -> bool:
     try:
         return is_primary_owner(chat_id) or int(chat_id) in get_additional_owner_ids()
     except Exception:
         return is_primary_owner(chat_id)
+try: _v177_legacy_0049_is_owner_chat.__name__ = 'is_owner_chat'
+except Exception: pass
+is_owner_chat = _v177_legacy_0049_is_owner_chat
 
 
-def owner_scope_id(chat_id: int | None = None) -> int:
+def _v177_legacy_0050_owner_scope_id(chat_id: int | None = None) -> int:
     """Logical owner namespace. Each additional owner keeps an independent settings world."""
     try:
         cid = int(chat_id) if chat_id is not None else int(OWNER_ID or 0)
@@ -6740,23 +6860,32 @@ def owner_scope_id(chat_id: int | None = None) -> int:
     except Exception:
         pass
     return int(OWNER_ID or cid or 0)
+try: _v177_legacy_0050_owner_scope_id.__name__ = 'owner_scope_id'
+except Exception: pass
+owner_scope_id = _v177_legacy_0050_owner_scope_id
 
 
-def owner_scoped_settings(chat_id: int | None = None) -> dict:
+def _v177_legacy_0051_owner_scoped_settings(chat_id: int | None = None) -> dict:
     scope = owner_scope_id(chat_id)
     if not scope:
         return data.setdefault("_global_settings", {})
     store = get_chat_store(scope)
     settings = store.setdefault("settings", {})
     return settings.setdefault("owner_scope_settings", {})
+try: _v177_legacy_0051_owner_scoped_settings.__name__ = 'owner_scoped_settings'
+except Exception: pass
+owner_scoped_settings = _v177_legacy_0051_owner_scoped_settings
 
 
-def bind_chat_to_owner_scope(chat_id: int, scope_id: int):
+def _v177_legacy_0052_bind_chat_to_owner_scope(chat_id: int, scope_id: int):
     try:
         get_chat_store(int(chat_id)).setdefault("settings", {})["owner_scope_id"] = int(scope_id)
         save_data(data, chat_ids=[int(chat_id)])
     except Exception as e:
         log_error(f"bind_chat_to_owner_scope({chat_id},{scope_id}): {e}")
+try: _v177_legacy_0052_bind_chat_to_owner_scope.__name__ = 'bind_chat_to_owner_scope'
+except Exception: pass
+bind_chat_to_owner_scope = _v177_legacy_0052_bind_chat_to_owner_scope
 
 
 def is_backup_channel_chat(chat_id: int) -> bool:
@@ -6826,7 +6955,7 @@ def add_buttons_in_rows(kb, buttons, per_row: int = 3):
     return kb
 
 
-def build_help_text(chat_id: int) -> str:
+def _v177_legacy_0053_build_help_text(chat_id: int) -> str:
     lines = [
         f"ℹ️ Финансовый бот — версия {VERSION}",
         "",
@@ -6870,9 +6999,12 @@ def build_help_text(chat_id: int) -> str:
         ])
     lines.append("/help — эта справка")
     return "\n".join(lines)
+try: _v177_legacy_0053_build_help_text.__name__ = 'build_help_text'
+except Exception: pass
+build_help_text = _v177_legacy_0053_build_help_text
 
 
-def build_info_text(chat_id: int) -> str:
+def _v177_legacy_0054_build_info_text(chat_id: int) -> str:
     """Компактный INFO: одна функция показывается один раз, без дублей команд и кнопок."""
     layout = version_mode_layout()
     identity = f"🤖 {BOT_DISPLAY_NAME} | {version_animal_badge()} | {VERSION}"
@@ -6956,8 +7088,11 @@ def build_info_text(chat_id: int) -> str:
         lines.append(row)
     lines.extend(["", "Нажмите нужную кнопку ниже. Полное описание — «📘 Инструкция».", "", identity])
     return "\n".join(lines)
+try: _v177_legacy_0054_build_info_text.__name__ = 'build_info_text'
+except Exception: pass
+build_info_text = _v177_legacy_0054_build_info_text
 
-def get_connected_chat_ids(chat_id: int):
+def _v177_legacy_0059_get_connected_chat_ids(chat_id: int):
     connected = set()
     fr = data.get("forward_rules", {}) or {}
     src_key = str(chat_id)
@@ -6977,6 +7112,9 @@ def get_connected_chat_ids(chat_id: int):
 
     connected.discard(int(chat_id))
     return sorted(connected, key=lambda cid: get_chat_display_name(cid).lower())
+try: _v177_legacy_0059_get_connected_chat_ids.__name__ = 'get_connected_chat_ids'
+except Exception: pass
+get_connected_chat_ids = _v177_legacy_0059_get_connected_chat_ids
 
 
 def build_dozvon_menu(chat_id: int):
@@ -7116,7 +7254,7 @@ def _forward_fin_icon(ab_fin: bool, ba_fin: bool) -> str:
     return "❌"
 
 
-def build_forward_status_lines() -> list[str]:
+def _v177_legacy_0060_build_forward_status_lines() -> list[str]:
     """Статус В22: короткая схема связей.
     Всегда показываем Чат A первым:
     Чат A -(⏩️/⏪️/🔄)-(💰▶️/💰◀️/💰🔄/❌)-Чат B
@@ -7166,6 +7304,9 @@ def build_forward_status_lines() -> list[str]:
     if not lines:
         lines.append("• Связи пересылки не настроены")
     return lines
+try: _v177_legacy_0060_build_forward_status_lines.__name__ = 'build_forward_status_lines'
+except Exception: pass
+build_forward_status_lines = _v177_legacy_0060_build_forward_status_lines
 
 def build_forward_status_text(title: str | None = None) -> str:
     lines = []
@@ -7508,7 +7649,7 @@ def send_minimized_balance_panel(chat_id: int):
         log_error(f"send_minimized_balance_panel({chat_id}): {e}")
 
 
-def refresh_balance_panel_now(chat_id: int):
+def _v177_legacy_0062_refresh_balance_panel_now(chat_id: int):
     if finance_window_mode(chat_id) not in {"open", "first"}:
         return
     if not is_finance_mode(chat_id) or not is_quick_balance_enabled(chat_id):
@@ -7553,6 +7694,9 @@ def refresh_balance_panel_now(chat_id: int):
         save_data(data)
         _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
         send_minimized_balance_panel(chat_id)
+try: _v177_legacy_0062_refresh_balance_panel_now.__name__ = 'refresh_balance_panel_now'
+except Exception: pass
+refresh_balance_panel_now = _v177_legacy_0062_refresh_balance_panel_now
 
 
 def schedule_balance_panel_refresh(chat_id: int, delay: float | None = None):
@@ -7716,4 +7860,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v168_clean_core_record_identity
+# v178_global_performance_final

@@ -1,4 +1,4 @@
-# v172_task_dispatcher
+# v178_global_performance_final
 """v172: Telegram-native task / purchase dispatcher.
 
 Loaded last on top of v171.  Task state lives in compact root maps so each task is
@@ -206,8 +206,11 @@ def _v172_status_map(task: dict):
     return _PURCHASE_STATUS if str(task.get("type")) == "purchase" else _TASK_STATUS
 
 
-def _v172_is_complete(task: dict) -> bool:
+def _v177_legacy_0327_v172_is_complete(task: dict) -> bool:
     return str(task.get("status")) in ({"received"} if str(task.get("type")) == "purchase" else {"done"})
+try: _v177_legacy_0327_v172_is_complete.__name__ = '_v172_is_complete'
+except Exception: pass
+_v172_is_complete = _v177_legacy_0327_v172_is_complete
 
 
 def _v172_deadline_dt(task: dict):
@@ -925,7 +928,10 @@ def _v172_edit_call(call, text, kb):
         safe_edit(bot, call, text, reply_markup=kb)
     except Exception:
         try:
-            bot.edit_message_text(text, chat_id=int(call.message.chat.id), message_id=int(call.message.message_id), reply_markup=kb)
+            fast_ui_edit_message_text(
+                int(call.message.chat.id), int(call.message.message_id), text,
+                reply_markup=kb, purpose="task_callback_fallback_v178",
+            )
         except Exception:
             pass
 
@@ -1096,7 +1102,7 @@ def _v172_register_callback() -> int:
 # Add dispatcher buttons to the active main keyboard without editing historical modules.
 _V172_PREV_BUILD_MAIN_KEYBOARD = globals().get("build_main_keyboard")
 
-def build_main_keyboard(day_key: str, chat_id=None):
+def _v177_legacy_0166_build_main_keyboard(day_key: str, chat_id=None):
     kb = _V172_PREV_BUILD_MAIN_KEYBOARD(day_key, chat_id) if callable(_V172_PREV_BUILD_MAIN_KEYBOARD) else types.InlineKeyboardMarkup()
     try:
         cid = int(chat_id) if chat_id is not None else 0
@@ -1122,11 +1128,14 @@ def build_main_keyboard(day_key: str, chat_id=None):
         try: log_error(f"v172 main keyboard: {exc}")
         except Exception: pass
     return kb
+try: _v177_legacy_0166_build_main_keyboard.__name__ = 'build_main_keyboard'
+except Exception: pass
+build_main_keyboard = _v177_legacy_0166_build_main_keyboard
 
 
 # Restore validator accepts v172 backups too.
 _V172_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
-def _v153_validate_restore_gz(gz_path: str):
+def _v177_legacy_0289_v153_validate_restore_gz(gz_path: str):
     try:
         return _V172_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V172_PREV_RESTORE_VALIDATOR) else (None, None)
     except Exception as exc:
@@ -1154,6 +1163,9 @@ def _v153_validate_restore_gz(gz_path: str):
         return manifest, raw
     except Exception:
         shutil.rmtree(folder, ignore_errors=True); raise
+try: _v177_legacy_0289_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0289_v153_validate_restore_gz
 
 
 # READY-time migration after MEGA restore.
@@ -1175,4 +1187,4 @@ try:
     bot_journal("v172_installed", int(OWNER_ID or 0), f"task_dispatcher=1; callback={_V172_CALLBACK_HANDLERS}; message_wrap={_V172_MESSAGE_WRAPPERS}; root_delta_maps=3")
 except Exception:
     pass
-# v172_task_dispatcher
+# v178_global_performance_final

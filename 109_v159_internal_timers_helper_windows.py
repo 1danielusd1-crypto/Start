@@ -1,4 +1,4 @@
-# v159_internal_timers_helper_windows
+# v178_global_performance_final
 """v159: correct timer markers, make helper-window lifetime configurable, restore visible file progress."""
 
 import copy as _v159_copy
@@ -125,22 +125,28 @@ if callable(_V159_PREV_FAST_UI_EDIT):
 # 2) Restore the small process window from v156, but make its refresh and
 #    post-completion lifetime controlled by Internal Timers.
 # ---------------------------------------------------------------------------
-def process_visual_status_enabled(chat_id: int) -> bool:
+def _v177_legacy_0299_process_visual_status_enabled(chat_id: int) -> bool:
     # v158 intentionally disabled these messages. v159 restores them by request.
     # There is one reusable process message per chat, not one message per phase.
     return True
+try: _v177_legacy_0299_process_visual_status_enabled.__name__ = 'process_visual_status_enabled'
+except Exception: pass
+process_visual_status_enabled = _v177_legacy_0299_process_visual_status_enabled
 
 
-def _v156_process_status_schedule(chat_id: int, delay: float) -> None:
+def _v177_legacy_0303_v156_process_status_schedule(chat_id: int, delay: float) -> None:
     try:
         key = f"{_V156_PROCESS_STATUS_KEY_PREFIX}{int(chat_id)}"
         DELAYED_SCHEDULER.cancel(key)
         DELAYED_SCHEDULER.schedule(key, max(0.05, float(delay)), _v156_process_status_tick, int(chat_id))
     except Exception:
         pass
+try: _v177_legacy_0303_v156_process_status_schedule.__name__ = '_v156_process_status_schedule'
+except Exception: pass
+_v156_process_status_schedule = _v177_legacy_0303_v156_process_status_schedule
 
 
-def _v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
+def _v177_legacy_0307_v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
     try:
         chat_id = int(chat_id or 0)
     except Exception:
@@ -154,6 +160,9 @@ def _v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
         state["armed_at"] = min(float(state.get("armed_at") or _v159_time.monotonic()), _v159_time.monotonic())
     # Do not flash on sub-second work.
     _v156_process_status_schedule(chat_id, 0.8)
+try: _v177_legacy_0307_v156_process_status_arm.__name__ = '_v156_process_status_arm'
+except Exception: pass
+_v156_process_status_arm = _v177_legacy_0307_v156_process_status_arm
 
 
 def _v159_process_status_text(chat_id: int, rows: list[dict], hint: str = "") -> str:
@@ -175,7 +184,7 @@ def _v159_process_status_text(chat_id: int, rows: list[dict], hint: str = "") ->
     return _v159_force_marker("\n".join(lines)[:3800], "Ф232", "⏰")
 
 
-def _v156_process_status_tick(chat_id: int) -> None:
+def _v177_legacy_0312_v156_process_status_tick(chat_id: int) -> None:
     chat_id = int(chat_id)
     rows = _v156_active_process_rows(chat_id)
     with _V156_PROCESS_UI_LOCK:
@@ -230,6 +239,9 @@ def _v156_process_status_tick(chat_id: int) -> None:
         except Exception:
             pass
     _v156_process_status_schedule(chat_id, internal_timer_seconds("process_status_refresh", 10.0))
+try: _v177_legacy_0312_v156_process_status_tick.__name__ = '_v156_process_status_tick'
+except Exception: pass
+_v156_process_status_tick = _v177_legacy_0312_v156_process_status_tick
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +305,7 @@ def _file_job_progress(phase: str, current=None, total=None, force: bool = False
         pass
 
 
-def _file_job_tick(key: str):
+def _v177_legacy_0011_file_job_tick(key: str):
     key = str(key)
     with _FILE_JOB_LOCK:
         st = _FILE_JOB_STATE.get(key)
@@ -318,9 +330,12 @@ def _file_job_tick(key: str):
         DELAYED_SCHEDULER.schedule(
             f"file-job-tick:{key}", internal_timer_seconds("process_status_refresh", 10.0), _file_job_tick, key
         )
+try: _v177_legacy_0011_file_job_tick.__name__ = '_file_job_tick'
+except Exception: pass
+_file_job_tick = _v177_legacy_0011_file_job_tick
 
 
-def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
+def _v177_legacy_0014_interactive_file_job_runner(job_meta: dict, func, args, kwargs):
     key = str(job_meta.get("key") or _INTERACTIVE_FILE_JOB_KEY)
     previous = getattr(_FILE_JOB_CONTEXT, "value", None)
     _FILE_JOB_CONTEXT.value = {"key": key}
@@ -392,9 +407,12 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
                 pass
         else:
             _FILE_JOB_CONTEXT.value = previous
+try: _v177_legacy_0014_interactive_file_job_runner.__name__ = '_interactive_file_job_runner'
+except Exception: pass
+_interactive_file_job_runner = _v177_legacy_0014_interactive_file_job_runner
 
 
-def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
+def _v177_legacy_0019_submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
     chat_id = int(chat_id)
     gate = globals().get("memory_heavy_allowed")
     if callable(gate):
@@ -450,6 +468,9 @@ def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args
     except Exception:
         pass
     return True, "Запущено"
+try: _v177_legacy_0019_submit_interactive_file_job.__name__ = 'submit_interactive_file_job'
+except Exception: pass
+submit_interactive_file_job = _v177_legacy_0019_submit_interactive_file_job
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +494,7 @@ def _v159_helper_mark(text: str) -> str:
     return _v159_force_marker(str(text or ""), "Ф234", "⏳")
 
 
-def send_and_auto_delete(chat_id: int, text: str, delay: int = 25):
+def _v177_legacy_0232_send_and_auto_delete(chat_id: int, text: str, delay: int = 25):
     if is_finance_output_suppressed(chat_id):
         return
     delay = _v159_helper_delay(delay)
@@ -489,9 +510,12 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = 25):
         )
     except Exception as e:
         log_error(f"send_and_auto_delete: {e}")
+try: _v177_legacy_0232_send_and_auto_delete.__name__ = 'send_and_auto_delete'
+except Exception: pass
+send_and_auto_delete = _v177_legacy_0232_send_and_auto_delete
 
 
-def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 25):
+def _v177_legacy_0234_send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 25):
     if is_finance_output_suppressed(chat_id):
         return
     delay = _v159_helper_delay(delay)
@@ -507,6 +531,9 @@ def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 25):
         )
     except Exception as e:
         log_error(f"send_html_and_auto_delete: {e}")
+try: _v177_legacy_0234_send_html_and_auto_delete.__name__ = 'send_html_and_auto_delete'
+except Exception: pass
+send_html_and_auto_delete = _v177_legacy_0234_send_html_and_auto_delete
 
 
 def _v159_delete_quiet(chat_id: int, message_id: int) -> None:
@@ -528,7 +555,7 @@ except Exception:
 
 
 # v153 restore validator: permit v159 full-state snapshots as well.
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0284_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v159_tempfile.mkdtemp(prefix="v159_restore_validate_")
     raw = _v159_os.path.join(folder, "restore.sqlite3")
     try:
@@ -561,6 +588,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v159_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0284_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0284_v153_validate_restore_gz
 
 
 try:
@@ -572,4 +602,4 @@ try:
 except Exception:
     pass
 
-# v159_internal_timers_helper_windows
+# v178_global_performance_final

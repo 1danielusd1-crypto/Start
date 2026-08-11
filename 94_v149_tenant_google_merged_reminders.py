@@ -1,4 +1,4 @@
-# v169_fast_tz_forward_reminder_google
+# v178_global_performance_final
 
 # ─────────────────────────────────────────────────────────────
 # v149: per-tenant Google + dynamic merged reminders
@@ -807,7 +807,7 @@ def _v149_reminder_chat_settings(tenant_id: str | None = None, chat_id: int | No
 REMINDER_MERGE_MODES_V169 = ("off", "smart", "single")
 
 
-def reminder_merge_mode(tenant_id: str | None = None, chat_id: int | None = None) -> str:
+def _v177_legacy_0261_reminder_merge_mode(tenant_id: str | None = None, chat_id: int | None = None) -> str:
     settings = _v149_reminder_chat_settings(tenant_id, chat_id)
     mode = str(settings.get("merge_mode") or "").strip().lower()
     if mode not in REMINDER_MERGE_MODES_V169:
@@ -815,18 +815,27 @@ def reminder_merge_mode(tenant_id: str | None = None, chat_id: int | None = None
     settings["merge_mode"] = mode
     settings["merge_enabled"] = mode != "off"  # legacy mirror
     return mode
+try: _v177_legacy_0261_reminder_merge_mode.__name__ = 'reminder_merge_mode'
+except Exception: pass
+reminder_merge_mode = _v177_legacy_0261_reminder_merge_mode
 
 
-def reminder_merge_enabled(tenant_id: str | None = None, chat_id: int | None = None) -> bool:
+def _v177_legacy_0262_reminder_merge_enabled(tenant_id: str | None = None, chat_id: int | None = None) -> bool:
     return reminder_merge_mode(tenant_id, chat_id) != "off"
+try: _v177_legacy_0262_reminder_merge_enabled.__name__ = 'reminder_merge_enabled'
+except Exception: pass
+reminder_merge_enabled = _v177_legacy_0262_reminder_merge_enabled
 
 
-def reminder_merge_mode_label(tenant_id: str | None = None, chat_id: int | None = None) -> str:
+def _v177_legacy_0263_reminder_merge_mode_label(tenant_id: str | None = None, chat_id: int | None = None) -> str:
     return {
         "off": "ВЫКЛ",
         "smart": "ВКЛ",
         "single": "1 СООБЩЕНИЕ",
     }.get(reminder_merge_mode(tenant_id, chat_id), "ВЫКЛ")
+try: _v177_legacy_0263_reminder_merge_mode_label.__name__ = 'reminder_merge_mode_label'
+except Exception: pass
+reminder_merge_mode_label = _v177_legacy_0263_reminder_merge_mode_label
 
 
 def reminder_show_complete_command(tenant_id: str | None = None, chat_id: int | None = None) -> bool:
@@ -854,9 +863,12 @@ def _v149_reminder_cfg_tenant(cfg: dict) -> str:
     return str((cfg or {}).get("tenant_id") or TENANT_PLATFORM_ID)
 
 
-def _v149_reminder_chat_allowed(cfg: dict, chat_id: int) -> bool:
+def _v177_legacy_0264_v149_reminder_chat_allowed(cfg: dict, chat_id: int) -> bool:
     tid = _v149_reminder_cfg_tenant(cfg)
     return _v149_chat_belongs_to_tenant(int(chat_id), tid)
+try: _v177_legacy_0264_v149_reminder_chat_allowed.__name__ = '_v149_reminder_chat_allowed'
+except Exception: pass
+_v149_reminder_chat_allowed = _v177_legacy_0264_v149_reminder_chat_allowed
 
 
 def _v149_reminder_active_now(cfg: dict, now_dt) -> bool:
@@ -1329,7 +1341,7 @@ def cmd_v149_vyapl_history(msg):
     bot.send_message(chat_id, _v149_completion_history_text(tid))
 
 
-def v149_extension_callback(call, data_str: str) -> bool:
+def _v177_legacy_0266_v149_extension_callback(call, data_str: str) -> bool:
     data_str = str(data_str or "")
     if not data_str.startswith("v149:"):
         return False
@@ -1434,8 +1446,11 @@ def v149_extension_callback(call, data_str: str) -> bool:
                 try: bot.answer_callback_query(call.id, text[:180], show_alert=not ok)
                 except Exception: pass
                 if ok:
-                    try: bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id)
-                    except Exception: bot.send_message(chat_id, text)
+                    try:
+                        safe_edit(bot, call, text)
+                    except Exception:
+                        try: bot.send_message(chat_id, text)
+                        except Exception: pass
                 return True
             if action == "history":
                 if not tenant_can_manage(user_id, tid):
@@ -1454,5 +1469,8 @@ def v149_extension_callback(call, data_str: str) -> bool:
             pass
         return True
     return True
+try: _v177_legacy_0266_v149_extension_callback.__name__ = 'v149_extension_callback'
+except Exception: pass
+v149_extension_callback = _v177_legacy_0266_v149_extension_callback
 
-# v169_fast_tz_forward_reminder_google
+# v178_global_performance_final

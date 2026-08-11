@@ -1,4 +1,4 @@
-# v156_process_status_usd_excel
+# v178_global_performance_final
 """v156: persistent visual process status + strict USD-only Excel data/description isolation."""
 
 import copy as _v156_copy
@@ -26,12 +26,15 @@ _V156_PROCESS_STATUS_INTERVAL = 2.0
 _V156_PROCESS_STATUS_KEY_PREFIX = "v156-process-status:"
 
 
-def process_visual_status_enabled(chat_id: int) -> bool:
+def _v177_legacy_0296_process_visual_status_enabled(chat_id: int) -> bool:
     try:
         settings = get_chat_store(int(chat_id)).setdefault("settings", {})
         return bool(settings.get("process_visual_status_enabled", True))
     except Exception:
         return True
+try: _v177_legacy_0296_process_visual_status_enabled.__name__ = 'process_visual_status_enabled'
+except Exception: pass
+process_visual_status_enabled = _v177_legacy_0296_process_visual_status_enabled
 
 
 def set_process_visual_status_enabled(chat_id: int, enabled: bool) -> bool:
@@ -118,16 +121,19 @@ def _v156_process_status_text(chat_id: int, rows: list[dict], hint: str = "") ->
     return "\n".join(lines)[:3900]
 
 
-def _v156_process_status_schedule(chat_id: int, delay: float) -> None:
+def _v177_legacy_0301_v156_process_status_schedule(chat_id: int, delay: float) -> None:
     try:
         key = f"{_V156_PROCESS_STATUS_KEY_PREFIX}{int(chat_id)}"
         DELAYED_SCHEDULER.cancel(key)
         DELAYED_SCHEDULER.schedule(key, max(0.05, float(delay)), _v156_process_status_tick, int(chat_id))
     except Exception:
         pass
+try: _v177_legacy_0301_v156_process_status_schedule.__name__ = '_v156_process_status_schedule'
+except Exception: pass
+_v156_process_status_schedule = _v177_legacy_0301_v156_process_status_schedule
 
 
-def _v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
+def _v177_legacy_0305_v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
     try:
         chat_id = int(chat_id or 0)
     except Exception:
@@ -140,9 +146,12 @@ def _v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
             state["hint"] = str(hint)[:120]
         state["armed_at"] = min(float(state.get("armed_at") or _v156_time.monotonic()), _v156_time.monotonic())
     _v156_process_status_schedule(chat_id, _V156_PROCESS_STATUS_DELAY)
+try: _v177_legacy_0305_v156_process_status_arm.__name__ = '_v156_process_status_arm'
+except Exception: pass
+_v156_process_status_arm = _v177_legacy_0305_v156_process_status_arm
 
 
-def _v156_process_status_tick(chat_id: int) -> None:
+def _v177_legacy_0309_v156_process_status_tick(chat_id: int) -> None:
     chat_id = int(chat_id)
     if not process_visual_status_enabled(chat_id):
         _v156_process_status_clear(chat_id, delete=True)
@@ -188,6 +197,9 @@ def _v156_process_status_tick(chat_id: int) -> None:
         except Exception:
             pass
     _v156_process_status_schedule(chat_id, _V156_PROCESS_STATUS_INTERVAL)
+try: _v177_legacy_0309_v156_process_status_tick.__name__ = '_v156_process_status_tick'
+except Exception: pass
+_v156_process_status_tick = _v177_legacy_0309_v156_process_status_tick
 
 
 _V156_ORIG_PROCESS_REGISTER = globals().get("process_register")
@@ -243,7 +255,7 @@ if callable(_V156_ORIG_PROCESS_FINISH):
 
 # Interactive files already had a good progress message. Make that message obey
 # the same INFO switch instead of always showing it.
-def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
+def _v177_legacy_0018_submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
     chat_id = int(chat_id)
     gate = globals().get("memory_heavy_allowed")
     if callable(gate):
@@ -297,6 +309,9 @@ def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args
     except Exception:
         pass
     return True, "Запущено"
+try: _v177_legacy_0018_submit_interactive_file_job.__name__ = 'submit_interactive_file_job'
+except Exception: pass
+submit_interactive_file_job = _v177_legacy_0018_submit_interactive_file_job
 
 
 # INFO switch.
@@ -576,7 +591,7 @@ if callable(_V156_ORIG_LOAD_LEDGER):
 
 
 # v156 full-state exports must be restorable by the same release.
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0281_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v156_tempfile.mkdtemp(prefix="v156_restore_validate_")
     raw = _v156_os.path.join(folder, "restore.sqlite3")
     try:
@@ -607,6 +622,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v156_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0281_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0281_v153_validate_restore_gz
 
 
 _V156_CALLBACK_INTERCEPTS = _v156_install_callback_intercept()
@@ -619,4 +637,4 @@ try:
 except Exception:
     pass
 
-# v156_process_status_usd_excel
+# v178_global_performance_final

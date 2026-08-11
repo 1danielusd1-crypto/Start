@@ -1,4 +1,4 @@
-# v143_audit_stability_exact_wait_reminders_memory
+# v178_global_performance_final
 
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
@@ -155,7 +155,7 @@ def _security_roles_root() -> dict:
     return root
 
 
-def security_role_for_user(user_id: int | None) -> str:
+def _v177_legacy_0105_security_role_for_user(user_id: int | None) -> str:
     try:
         uid = int(user_id or 0)
     except Exception:
@@ -169,6 +169,9 @@ def security_role_for_user(user_id: int | None) -> str:
         pass
     role = str((_security_roles_root().get("users") or {}).get(str(uid)) or "standard")
     return role if role in _SECURITY_ROLE_PRESETS else "standard"
+try: _v177_legacy_0105_security_role_for_user.__name__ = 'security_role_for_user'
+except Exception: pass
+security_role_for_user = _v177_legacy_0105_security_role_for_user
 
 
 def security_role_label(role: str) -> str:
@@ -177,7 +180,7 @@ def security_role_label(role: str) -> str:
     return _SECURITY_ROLE_PRESETS.get(str(role), _SECURITY_ROLE_PRESETS["standard"])[0]
 
 
-def security_set_role(user_id: int, role: str) -> str:
+def _v177_legacy_0106_security_set_role(user_id: int, role: str) -> str:
     uid = int(user_id)
     role = str(role or "standard")
     if role not in _SECURITY_ROLE_PRESETS:
@@ -189,9 +192,12 @@ def security_set_role(user_id: int, role: str) -> str:
     except Exception:
         pass
     return role
+try: _v177_legacy_0106_security_set_role.__name__ = 'security_set_role'
+except Exception: pass
+security_set_role = _v177_legacy_0106_security_set_role
 
 
-def security_known_users() -> list[dict]:
+def _v177_legacy_0107_security_known_users() -> list[dict]:
     merged = {}
     try:
         chats = (data.get("chats") or {}) if isinstance(data, dict) else {}
@@ -231,6 +237,9 @@ def security_known_users() -> list[dict]:
     rows = list(merged.values())
     rows.sort(key=lambda r: (float(r.get("last_seen_ts") or 0), int(r.get("id") or 0)), reverse=True)
     return rows
+try: _v177_legacy_0107_security_known_users.__name__ = 'security_known_users'
+except Exception: pass
+security_known_users = _v177_legacy_0107_security_known_users
 
 
 def security_user_display(user_id: int) -> str:
@@ -260,15 +269,18 @@ def _security_callback_capability(action: str) -> str:
     return "view"
 
 
-def security_user_allowed(user_id: int | None, capability: str) -> bool:
+def _v177_legacy_0108_security_user_allowed(user_id: int | None, capability: str) -> bool:
     role = security_role_for_user(user_id)
     if role == "owner":
         return True
     allowed = _SECURITY_ROLE_PRESETS.get(role, _SECURITY_ROLE_PRESETS["standard"])[1]
     return str(capability or "view") in allowed
+try: _v177_legacy_0108_security_user_allowed.__name__ = 'security_user_allowed'
+except Exception: pass
+security_user_allowed = _v177_legacy_0108_security_user_allowed
 
 
-def safety_permission_allowed(user_id: int | None, chat_id: int | None, action: str) -> bool:
+def _v177_legacy_0110_safety_permission_allowed(user_id: int | None, chat_id: int | None, action: str) -> bool:
     """Новый профиль усиливает только опасные действия; обычная работа чатов не ломается."""
     if not safety_profile_new_enabled():
         return True
@@ -289,6 +301,9 @@ def safety_permission_allowed(user_id: int | None, chat_id: int | None, action: 
     if normalized.startswith(tuple(str(x).lower() for x in _SENSITIVE_ACTION_PREFIXES)):
         return False
     return security_user_allowed(uid, _security_callback_capability(normalized))
+try: _v177_legacy_0110_safety_permission_allowed.__name__ = 'safety_permission_allowed'
+except Exception: pass
+safety_permission_allowed = _v177_legacy_0110_safety_permission_allowed
 
 
 # ─────────────────────────────────────────────────────────────
@@ -723,7 +738,7 @@ def _expense_event_dt(row: dict):
             return None
 
 
-def migrate_recent_expense_shortcut_events(days: int = 2, refresh_messages: bool = False) -> dict:
+def _v177_legacy_0112_migrate_recent_expense_shortcut_events(days: int = 2, refresh_messages: bool = False) -> dict:
     """Подхватывает быстрые отметки v140/v141 за последние 48 часов."""
     cfg_fn = globals().get("expense_shortcut_config")
     if not callable(cfg_fn):
@@ -792,6 +807,9 @@ def migrate_recent_expense_shortcut_events(days: int = 2, refresh_messages: bool
         pass
     return {"imported": imported, "updated": updated, "seen": seen, "existing": duplicate,
             "too_old": too_old, "missing_message_id": missing_message_id, "refresh_failed": refresh_failed}
+try: _v177_legacy_0112_migrate_recent_expense_shortcut_events.__name__ = 'migrate_recent_expense_shortcut_events'
+except Exception: pass
+migrate_recent_expense_shortcut_events = _v177_legacy_0112_migrate_recent_expense_shortcut_events
 
 
 def expense_draft_create(source: str, target_chat_id: int, created_at: str | None = None, source_event_id: str = "") -> dict:
@@ -1263,4 +1281,4 @@ def expense_draft_input_message(msg):
     finally:
         msg.text = original_text
 
-# v143_audit_stability_exact_wait_reminders_memory
+# v178_global_performance_final

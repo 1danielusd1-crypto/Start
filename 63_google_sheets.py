@@ -1,4 +1,4 @@
-# v150_excel_reserve_chat_lifecycle
+# v178_global_performance_final
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _google_service_account_info() -> dict:
+def _v177_legacy_0205_google_service_account_info() -> dict:
     raw = GOOGLE_SERVICE_ACCOUNT_JSON
     if not raw:
         raise RuntimeError(
@@ -43,6 +43,9 @@ def _google_service_account_info() -> dict:
         if not info.get(key):
             raise RuntimeError(f"GOOGLE_SERVICE_ACCOUNT_JSON: отсутствует {key}")
     return info
+try: _v177_legacy_0205_google_service_account_info.__name__ = '_google_service_account_info'
+except Exception: pass
+_google_service_account_info = _v177_legacy_0205_google_service_account_info
 
 
 def _google_sign_rs256(message: bytes, private_key_pem: str) -> bytes:
@@ -73,7 +76,7 @@ def _google_sign_rs256(message: bytes, private_key_pem: str) -> bytes:
                     pass
 
 
-def _google_access_token() -> str:
+def _v177_legacy_0206_google_access_token() -> str:
     with _GOOGLE_TOKEN_LOCK:
         now = time.time()
         if _GOOGLE_TOKEN_CACHE.get("token") and now < float(_GOOGLE_TOKEN_CACHE.get("expires_at", 0)) - 120:
@@ -108,6 +111,9 @@ def _google_access_token() -> str:
             raise RuntimeError("Google OAuth не вернул access_token")
         _GOOGLE_TOKEN_CACHE.update(token=token, expires_at=now + int(payload.get("expires_in", 3600) or 3600))
         return token
+try: _v177_legacy_0206_google_access_token.__name__ = '_google_access_token'
+except Exception: pass
+_google_access_token = _v177_legacy_0206_google_access_token
 
 
 def _google_cell_value(value):
@@ -133,7 +139,7 @@ def _google_category_fill(col_idx_zero: int) -> dict:
     return {"red": 0.92, "green": 0.95, "blue": 0.90}
 
 
-def _google_spreadsheet_id(value: str | None = None) -> str:
+def _v177_legacy_0207_google_spreadsheet_id(value: str | None = None) -> str:
     """Accepts either raw spreadsheet ID or a full docs.google.com/spreadsheets URL."""
     raw = str(value if value is not None else GOOGLE_SHEETS_SPREADSHEET_ID).strip()
     if not raw:
@@ -145,6 +151,9 @@ def _google_spreadsheet_id(value: str | None = None) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", raw):
         raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID имеет неверный формат")
     return raw
+try: _v177_legacy_0207_google_spreadsheet_id.__name__ = '_google_spreadsheet_id'
+except Exception: pass
+_google_spreadsheet_id = _v177_legacy_0207_google_spreadsheet_id
 
 
 def _google_sheet_tab_title(title: str) -> str:
@@ -157,7 +166,7 @@ def _google_sheet_tab_title(title: str) -> str:
     return base[:limit].rstrip() + suffix
 
 
-def _google_sheets_create_category_report(title: str, rows: list[list], layout: str = "category", annotations_override: dict | None = None, include_annotations: bool = True) -> str:
+def _v177_legacy_0208_google_sheets_create_category_report(title: str, rows: list[list], layout: str = "category", annotations_override: dict | None = None, include_annotations: bool = True) -> str:
     """v129: writes a category report to a NEW TAB in an existing owner-shared spreadsheet.
 
     The service account does not create/own a Drive file. The owner creates one spreadsheet once
@@ -332,8 +341,11 @@ def _google_sheets_create_category_report(title: str, rows: list[list], layout: 
             )
 
     return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={sheet_id}"
+try: _v177_legacy_0208_google_sheets_create_category_report.__name__ = '_google_sheets_create_category_report'
+except Exception: pass
+_google_sheets_create_category_report = _v177_legacy_0208_google_sheets_create_category_report
 
-def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv", excel_style_override: str | None = None, excel_options_override: dict | None = None, delivery: str = "chat"):
+def _v177_legacy_0209_send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str, file_type: str = "csv", excel_style_override: str | None = None, excel_options_override: dict | None = None, delivery: str = "chat"):
 
     """Отправка CSV/XLSX или создание Google Sheets по выбранному периоду."""
     tmp_name = None
@@ -504,6 +516,9 @@ def send_export_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: s
                 os.remove(tmp_name)
             except Exception:
                 pass
+try: _v177_legacy_0209_send_export_for_chat_to.__name__ = 'send_export_for_chat_to'
+except Exception: pass
+send_export_for_chat_to = _v177_legacy_0209_send_export_for_chat_to
 
 
 def build_fin_categories_summary_keyboard(target_chat_id: int, mode: str, start: str, end: str, owner_day_key: str):
@@ -834,4 +849,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v150_excel_reserve_chat_lifecycle
+# v178_global_performance_final

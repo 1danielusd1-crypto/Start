@@ -1,4 +1,4 @@
-# v161_button_window_stability
+# v178_global_performance_final
 """v161: deterministic buttons/navigation, parallel-window stability, file-only progress UI, exact window tokens."""
 
 import gzip as _v161_gzip
@@ -217,7 +217,7 @@ def update_or_send_day_window(chat_id: int, day_key: str):
 
 
 # 4. General safe edit: a button is successful only after real edit=ok; no silent scheduled/rate-limit success.
-def _v161_edit_retry(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "ui") -> str:
+def _v177_legacy_0324_v161_edit_retry(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "ui") -> str:
     last = "failed"
     for attempt in range(3):
         try:
@@ -230,9 +230,36 @@ def _v161_edit_retry(chat_id: int, message_id: int, text: str, reply_markup=None
         if attempt < 2:
             _v161_time.sleep(0.15 if last != "rate_limited" else (0.35 if attempt == 0 else 0.65))
     return last
+try: _v177_legacy_0324_v161_edit_retry.__name__ = '_v161_edit_retry'
+except Exception: pass
+_v161_edit_retry = _v177_legacy_0324_v161_edit_retry
+
+
+def _v177_safe_edit_fallback_send(bot_obj, chat_id: int, msg_id: int, raw_action: str, text: str, reply_markup=None, parse_mode=None):
+    """Create a replacement window outside the callback thread when the old Telegram message is unusable."""
+    started = _v161_time.monotonic()
+    try:
+        sent = _tg_call_retry(
+            bot_obj.send_message, int(chat_id), text, reply_markup=reply_markup,
+            parse_mode=parse_mode, attempts=1, purpose="safe_edit_fallback_v177",
+        )
+        try: _touch_v98_auto_close_for_callback(int(chat_id), int(sent.message_id), raw_action)
+        except Exception: pass
+        try: _v161_register_from_render(int(chat_id), int(sent.message_id), text)
+        except Exception: pass
+    except Exception as exc:
+        try: log_error(f"safe_edit_v177 async fallback {chat_id}/{msg_id}: {exc}")
+        except Exception: pass
+    finally:
+        try:
+            stage = globals().get("v177_perf_stage")
+            if callable(stage): stage("telegram_fallback_send", _v161_time.monotonic() - started)
+        except Exception:
+            pass
 
 
 def safe_edit(bot_obj, call, text, reply_markup=None, parse_mode=None):
+    prep_started = _v161_time.monotonic()
     chat_id = int(call.message.chat.id); msg_id = int(call.message.message_id)
     raw_action = str(getattr(call, "data", "") or "")
     if raw_action != "nav_prev" and not _v161_state_preserving_callback(raw_action):
@@ -253,27 +280,34 @@ def safe_edit(bot_obj, call, text, reply_markup=None, parse_mode=None):
         reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
     except Exception:
         pass
-    result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_v161")
-    if result == "ok":
+    try:
+        stage = globals().get("v177_perf_stage")
+        if callable(stage): stage("ui_prepare", _v161_time.monotonic() - prep_started)
+    except Exception:
+        pass
+    result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_v177")
+    if result in {"ok", "scheduled"}:
         try: _touch_v98_auto_close_for_callback(chat_id, msg_id, raw_action)
         except Exception: pass
-        return "ok"
-    try:
-        # Never leave a click with no visible outcome. A missing/uneditable old window gets a new parallel copy.
-        sent = bot_obj.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
-        try: _touch_v98_auto_close_for_callback(chat_id, int(sent.message_id), raw_action)
-        except Exception: pass
-        try: _v161_register_from_render(chat_id, int(sent.message_id), text)
-        except Exception: pass
-        return "created"
-    except Exception as exc:
-        try:
-            bot_obj.answer_callback_query(call.id, "Telegram не подтвердил обновление. Нажмите ещё раз.", show_alert=False)
-        except Exception:
-            pass
-        try: log_error(f"safe_edit_v161 fallback {chat_id}/{msg_id}: {exc}")
-        except Exception: pass
         return result
+    # Never block the callback with a second Telegram network call. A missing/uneditable
+    # message is recreated asynchronously; the next button press is free immediately.
+    try:
+        pool = globals().get("GENERAL_TASK_POOL")
+        key = f"v177-safe-edit-fallback:{chat_id}:{msg_id}"
+        queued = bool(pool and pool.submit_unique(
+            key, _v177_safe_edit_fallback_send, bot_obj, chat_id, msg_id, raw_action,
+            text, reply_markup, parse_mode,
+        ))
+        if queued:
+            return "scheduled_fallback"
+    except Exception:
+        pass
+    try:
+        bot_obj.answer_callback_query(call.id, "Telegram не подтвердил обновление. Нажмите ещё раз.", show_alert=False)
+    except Exception:
+        pass
+    return result
 
 
 def safe_edit_current_only(bot_obj, call, text, reply_markup=None, parse_mode=None):
@@ -295,8 +329,8 @@ def safe_edit_current_only(bot_obj, call, text, reply_markup=None, parse_mode=No
         reply_markup = ensure_main_back_nav_keyboard(reply_markup, chat_id)
     except Exception:
         pass
-    result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_current_v161")
-    if result != "ok":
+    result = _v161_edit_retry(chat_id, msg_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="safe_edit_current_v177")
+    if result not in {"ok", "scheduled"}:
         try: bot_obj.answer_callback_query(call.id, "Это окно устарело. Откройте его заново.", show_alert=False)
         except Exception: pass
     return result
@@ -785,7 +819,7 @@ def _v155_expected_marker(action: str, chat_id: int) -> str:
     return ""
 
 
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0286_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v161_tempfile.mkdtemp(prefix="v161_restore_validate_"); raw = _v161_os.path.join(folder, "restore.sqlite3")
     try:
         with _v161_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout: _v161_shutil.copyfileobj(fin, fout, 1024 * 1024)
@@ -806,6 +840,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
         return manifest, raw
     except Exception:
         _v161_shutil.rmtree(folder, ignore_errors=True); raise
+try: _v177_legacy_0286_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0286_v153_validate_restore_gz
 
 
 _V161_START_HANDLER = _v161_install_start_handler()
@@ -818,4 +855,4 @@ try:
                 f"start={_V161_START_HANDLER}; callbacks={_V161_CALLBACK_HANDLERS}; capture={_V161_CAPTURE_HANDLER}; F232=off; F233=file-only; delete_retries=3; nav_commit_after_edit=1; parallel=1; token=wXXXXXXXX")
 except Exception: pass
 
-# v161_button_window_stability
+# v178_global_performance_final

@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 
 # Правки 5, 6, 7 выполнены заново поверх v150:
 # - Excel/Google: ARS + отдельная USD-таблица на том же листе, резервы,
@@ -92,7 +92,7 @@ def _v151_ars_records(chat_id: int) -> list[dict]:
         return rows
 
 
-def _v151_usd_records(chat_id: int) -> list[dict]:
+def _v177_legacy_0271_v151_usd_records(chat_id: int) -> list[dict]:
     """Собирает отдельный USD-контур и старые usd_amount без дублей."""
     store = get_chat_store(int(chat_id))
     active = _v151_sync_currency_snapshots(store)
@@ -142,6 +142,9 @@ def _v151_usd_records(chat_id: int) -> list[dict]:
         return sorted(rows, key=record_sort_key)
     except Exception:
         return rows
+try: _v177_legacy_0271_v151_usd_records.__name__ = '_v151_usd_records'
+except Exception: pass
+_v151_usd_records = _v177_legacy_0271_v151_usd_records
 
 
 def _v151_all_records(chat_id: int, currency: str) -> list[dict]:
@@ -152,7 +155,7 @@ def _v151_context() -> dict:
     return dict(getattr(_V151_EXPORT_LOCAL, "value", None) or {})
 
 
-def _v151_context_bounds(chat_id: int, ctx: dict | None = None) -> tuple[str, str]:
+def _v177_legacy_0273_v151_context_bounds(chat_id: int, ctx: dict | None = None) -> tuple[str, str]:
     ctx = dict(ctx or _v151_context())
     day_key = str(ctx.get("day_key") or today_key())[:10]
     kind = str(ctx.get("kind") or "period")
@@ -178,6 +181,9 @@ def _v151_context_bounds(chat_id: int, ctx: dict | None = None) -> tuple[str, st
     days = [_v151_day_key(r) for r in (_v151_ars_records(chat_id) + _v151_usd_records(chat_id))]
     days = sorted(x for x in days if _v151_parse_day(x))
     return (days[0], days[-1]) if days else (day_key, day_key)
+try: _v177_legacy_0273_v151_context_bounds.__name__ = '_v151_context_bounds'
+except Exception: pass
+_v151_context_bounds = _v177_legacy_0273_v151_context_bounds
 
 
 def _v151_period_days(start_key: str, end_key: str) -> int:
@@ -282,7 +288,7 @@ def _v151_table_totals(records: list[dict], opening: float) -> tuple[float, floa
     return income, expense, opening + income - expense
 
 
-def _v151_simple_table(chat_id: int, currency: str, compact: bool = False) -> tuple[list[list], dict[tuple[int, int], str]]:
+def _v177_legacy_0274_v151_simple_table(chat_id: int, currency: str, compact: bool = False) -> tuple[list[list], dict[tuple[int, int], str]]:
     ctx = _v151_context()
     start_key, end_key = _v151_context_bounds(chat_id, ctx)
     records = _v151_records_in_context(chat_id, currency, ctx)
@@ -355,9 +361,12 @@ def _v151_simple_table(chat_id: int, currency: str, compact: bool = False) -> tu
             ["", "Расчёт", f"{days} дн. · 5 чел. · курс {rate:g}" if rate > 0 else f"{days} дн. · 5 чел. · курс не найден", ""],
         ])
     return rows, annotations
+try: _v177_legacy_0274_v151_simple_table.__name__ = '_v151_simple_table'
+except Exception: pass
+_v151_simple_table = _v177_legacy_0274_v151_simple_table
 
 
-def _v151_categories(chat_id: int, records: list[dict]) -> list[str]:
+def _v177_legacy_0275_v151_categories(chat_id: int, records: list[dict]) -> list[str]:
     store = get_chat_store(int(chat_id))
     totals = {}
     for rec in records:
@@ -378,9 +387,12 @@ def _v151_categories(chat_id: int, records: list[dict]) -> list[str]:
     except Exception:
         categories = list(totals)
     return categories or ["прочие"]
+try: _v177_legacy_0275_v151_categories.__name__ = '_v151_categories'
+except Exception: pass
+_v151_categories = _v177_legacy_0275_v151_categories
 
 
-def _v151_category_table(chat_id: int, currency: str) -> list[list]:
+def _v177_legacy_0276_v151_category_table(chat_id: int, currency: str) -> list[list]:
     ctx = _v151_context()
     start_key, end_key = _v151_context_bounds(chat_id, ctx)
     records = _v151_records_in_context(chat_id, currency, ctx)
@@ -447,9 +459,12 @@ def _v151_category_table(chat_id: int, currency: str) -> list[list]:
             ["", "Расчёт", f"{days} дн. · 5 чел. · курс {rate:g}" if rate > 0 else f"{days} дн. · 5 чел. · курс не найден"] + [""] * len(categories),
         ])
     return rows
+try: _v177_legacy_0276_v151_category_table.__name__ = '_v151_category_table'
+except Exception: pass
+_v151_category_table = _v177_legacy_0276_v151_category_table
 
 
-def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
+def _v177_legacy_0176_build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
     previous = getattr(_V151_EXPORT_LOCAL, "value", None)
     if not previous:
         _V151_EXPORT_LOCAL.value = {
@@ -464,18 +479,24 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
     finally:
         if not previous:
             _V151_EXPORT_LOCAL.value = None
+try: _v177_legacy_0176_build_exact_category_stats_xlsx_rows.__name__ = 'build_exact_category_stats_xlsx_rows'
+except Exception: pass
+build_exact_category_stats_xlsx_rows = _v177_legacy_0176_build_exact_category_stats_xlsx_rows
 
 
-def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None = None) -> list[list]:
+def _v177_legacy_0092_xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None = None) -> list[list]:
     if target_chat_id is None:
         # No chat means there is no safe way to resolve the two isolated ledgers.
         return globals().get("_V150_BASE_SIMPLE_ROWS", lambda r, o, *_: r)(rows, opening_balance, target_chat_id)
     ars_rows, _ = _v151_simple_table(int(target_chat_id), "ars", compact=False)
     usd_rows, _ = _v151_simple_table(int(target_chat_id), "usd", compact=False)
     return ars_rows + [[], []] + usd_rows
+try: _v177_legacy_0092_xlsx_simple_rows_with_balances.__name__ = '_xlsx_simple_rows_with_balances'
+except Exception: pass
+_xlsx_simple_rows_with_balances = _v177_legacy_0092_xlsx_simple_rows_with_balances
 
 
-def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
+def _v177_legacy_0095_compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
     if target_chat_id is None:
         base = globals().get("_V150_BASE_COMPACT_ROWS")
         return base(raw_rows, opening_balance, target_chat_id) if callable(base) else ([], {})
@@ -486,6 +507,9 @@ def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_ba
     for (row_idx, col_idx), text in usd_notes.items():
         notes[(int(row_idx) + offset, int(col_idx))] = text
     return ars_rows + [[], []] + usd_rows, notes
+try: _v177_legacy_0095_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
+except Exception: pass
+_compact_simple_excel_rows_and_annotations = _v177_legacy_0095_compact_simple_excel_rows_and_annotations
 
 
 def _v151_excel_options_for_style(style: str | None, options: dict | None) -> dict | None:
@@ -552,7 +576,7 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
         _V151_EXPORT_LOCAL.value = previous
 
 
-def _period_export_rows(chat_id: int, mode: str, day_key: str):
+def _v177_legacy_0204_period_export_rows(chat_id: int, mode: str, day_key: str):
     ctx = _v151_context()
     if str(ctx.get("file_type") or "").lower() not in {"xlsx", "xlsxstat"}:
         return _V151_BASE_PERIOD_ROWS(chat_id, mode, day_key)
@@ -561,6 +585,9 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     labels = {"day": "за день", "week": "за неделю", "month": "за месяц", "wedthu": "Ср–Чт", "all": "за всё время"}
     normalized = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
     return rows, labels.get(normalized, "за всё время")
+try: _v177_legacy_0204_period_export_rows.__name__ = '_period_export_rows'
+except Exception: pass
+_period_export_rows = _v177_legacy_0204_period_export_rows
 
 
 def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
@@ -844,7 +871,7 @@ def build_gomonk_menu_text(chat_id: int, currency: str | None = None) -> str:
     return wm_common("\n".join(lines), 9)
 
 
-def handle_gomonk_insert_message(msg) -> bool:
+def _v177_legacy_0162_handle_gomonk_insert_message(msg) -> bool:
     if getattr(msg, "content_type", None) != "text" or not _v85_enabled("gomonk_wallets"):
         return False
     raw = str(getattr(msg, "text", "") or "")
@@ -880,6 +907,9 @@ def handle_gomonk_insert_message(msg) -> bool:
     except Exception:
         pass
     return True
+try: _v177_legacy_0162_handle_gomonk_insert_message.__name__ = 'handle_gomonk_insert_message'
+except Exception: pass
+handle_gomonk_insert_message = _v177_legacy_0162_handle_gomonk_insert_message
 
 
 # ─────────────────────────────────────────────────────────────
@@ -953,4 +983,4 @@ def set_webhook():
             pass
     return _V151_BASE_SET_WEBHOOK()
 
-# v168_clean_core_record_identity
+# v178_global_performance_final

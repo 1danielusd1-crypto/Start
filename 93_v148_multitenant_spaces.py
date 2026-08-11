@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 
 # ─────────────────────────────────────────────────────────────
 # v148: независимые пространства (tenant isolation)
@@ -162,7 +162,7 @@ def tenant_all() -> list[dict]:
     return rows
 
 
-def tenant_id_for_chat(chat_id: int | None, create: bool = False, actor_user_id: int | None = None) -> str:
+def _v177_legacy_0248_tenant_id_for_chat(chat_id: int | None, create: bool = False, actor_user_id: int | None = None) -> str:
     explicit = getattr(_TENANT_CONTEXT, "tenant_id", None)
     if explicit:
         return str(explicit)
@@ -184,6 +184,9 @@ def tenant_id_for_chat(chat_id: int | None, create: bool = False, actor_user_id:
     owner_uid = uid if tenant_user_is_chat_admin(cid, uid) else 0
     tid = tenant_create(_tenant_default_name(cid), owner_uid, cid, created_by=uid, deterministic_chat_id=cid)
     return tid
+try: _v177_legacy_0248_tenant_id_for_chat.__name__ = 'tenant_id_for_chat'
+except Exception: pass
+tenant_id_for_chat = _v177_legacy_0248_tenant_id_for_chat
 
 
 def tenant_current_id(chat_id: int | None = None) -> str:
@@ -339,13 +342,16 @@ def tenant_set_user_role(tenant_id: str, user_id: int, role: str, changed_by: in
     return True
 
 
-def tenant_can_manage(user_id: int | None, tenant_id: str | None = None, chat_id: int | None = None, owner_only: bool = False) -> bool:
+def _v177_legacy_0249_tenant_can_manage(user_id: int | None, tenant_id: str | None = None, chat_id: int | None = None, owner_only: bool = False) -> bool:
     role = tenant_role_for_user(user_id, tenant_id, chat_id)
     if role == "platform_owner":
         return True
     if owner_only:
         return role == "tenant_owner"
     return role in {"tenant_owner", "tenant_admin"}
+try: _v177_legacy_0249_tenant_can_manage.__name__ = 'tenant_can_manage'
+except Exception: pass
+tenant_can_manage = _v177_legacy_0249_tenant_can_manage
 
 
 def tenant_user_is_chat_admin(chat_id: int, user_id: int) -> bool:
@@ -379,7 +385,7 @@ def tenant_chat_ids(tenant_id: str | None = None) -> list[int]:
     return sorted({int(x) for x in row.get("chat_ids") or []}, key=lambda x: get_chat_display_name(x).casefold())
 
 
-def tenant_same_space(chat_a: int, chat_b: int) -> bool:
+def _v177_legacy_0250_tenant_same_space(chat_a: int, chat_b: int) -> bool:
     """True only for two explicitly bound chats in the same space.
 
     Unknown chat IDs must never inherit the platform tenant implicitly: an old/stale
@@ -395,9 +401,12 @@ def tenant_same_space(chat_a: int, chat_b: int) -> bool:
     ta = str(mapping.get(str(a)) or "")
     tb = str(mapping.get(str(b)) or "")
     return bool(ta and tb and ta == tb and tenant_get(ta))
+try: _v177_legacy_0250_tenant_same_space.__name__ = 'tenant_same_space'
+except Exception: pass
+tenant_same_space = _v177_legacy_0250_tenant_same_space
 
 
-def tenant_note_chat_seen(msg) -> None:
+def _v177_legacy_0251_tenant_note_chat_seen(msg) -> None:
     try:
         chat_id = int(msg.chat.id)
         user_id = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
@@ -416,11 +425,14 @@ def tenant_note_chat_seen(msg) -> None:
         store["settings"]["owner_scope_id"] = int(row.get("root_chat_id") or chat_id)
     except Exception:
         pass
+try: _v177_legacy_0251_tenant_note_chat_seen.__name__ = 'tenant_note_chat_seen'
+except Exception: pass
+tenant_note_chat_seen = _v177_legacy_0251_tenant_note_chat_seen
 
 
 # Preserve v147 chat-info behavior, then attach/refresh the tenant card.
 _V148_ORIG_UPDATE_CHAT_INFO = globals().get("update_chat_info_from_message")
-def update_chat_info_from_message(msg):
+def _v177_legacy_0236_update_chat_info_from_message(msg):
     result = None
     if callable(_V148_ORIG_UPDATE_CHAT_INFO):
         result = _V148_ORIG_UPDATE_CHAT_INFO(msg)
@@ -429,6 +441,9 @@ def update_chat_info_from_message(msg):
     except Exception as exc:
         log_error(f"tenant_note_chat_seen: {exc}")
     return result
+try: _v177_legacy_0236_update_chat_info_from_message.__name__ = 'update_chat_info_from_message'
+except Exception: pass
+update_chat_info_from_message = _v177_legacy_0236_update_chat_info_from_message
 
 
 # ─────────────────────────────────────────────────────────────
@@ -574,10 +589,13 @@ def resolve_forward_targets(source_chat_id: int):
 
 
 _V148_ORIG_ADD_FORWARD_LINK = globals().get("add_forward_link")
-def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
+def _v177_legacy_0142_add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     if not tenant_same_space(int(src_chat_id), int(dst_chat_id)):
         raise PermissionError("Нельзя связать пересылкой чаты из разных пространств")
     return _V148_ORIG_ADD_FORWARD_LINK(int(src_chat_id), int(dst_chat_id), mode)
+try: _v177_legacy_0142_add_forward_link.__name__ = 'add_forward_link'
+except Exception: pass
+add_forward_link = _v177_legacy_0142_add_forward_link
 
 
 def clear_forward_all():
@@ -603,11 +621,14 @@ def clear_forward_all():
 
 
 _V148_ORIG_COLLECT_FORWARD_PAIRS = globals().get("collect_forward_pairs_for_menu")
-def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
+def _v177_legacy_0190_collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
     rows = _V148_ORIG_COLLECT_FORWARD_PAIRS() if callable(_V148_ORIG_COLLECT_FORWARD_PAIRS) else []
     tid = tenant_current_id()
     allowed = set(tenant_chat_ids(tid))
     return [(int(a), int(b)) for a, b in rows if int(a) in allowed and int(b) in allowed]
+try: _v177_legacy_0190_collect_forward_pairs_for_menu.__name__ = 'collect_forward_pairs_for_menu'
+except Exception: pass
+collect_forward_pairs_for_menu = _v177_legacy_0190_collect_forward_pairs_for_menu
 
 
 _V148_ORIG_GET_CONNECTED = globals().get("get_connected_chat_ids")
@@ -623,18 +644,24 @@ def _tenant_settings_for_context(chat_id: int | None = None) -> dict:
     return owner_scoped_settings(chat_id)
 
 
-def forward_copy_edit_mode(chat_id: int | None = None) -> str:
+def _v177_legacy_0147_forward_copy_edit_mode(chat_id: int | None = None) -> str:
     mode = str(_tenant_settings_for_context(chat_id).get("forward_copy_edit_mode") or "normal").lower()
     return mode if mode in FORWARD_COPY_EDIT_MODES and version_mode_feature("forward_copy_edit") else "normal"
+try: _v177_legacy_0147_forward_copy_edit_mode.__name__ = 'forward_copy_edit_mode'
+except Exception: pass
+forward_copy_edit_mode = _v177_legacy_0147_forward_copy_edit_mode
 
 
-def set_forward_copy_edit_mode(chat_id: int, mode: str):
+def _v177_legacy_0149_set_forward_copy_edit_mode(chat_id: int, mode: str):
     mode = str(mode or "normal").lower()
     if mode not in FORWARD_COPY_EDIT_MODES:
         mode = "normal"
     _tenant_settings_for_context(chat_id)["forward_copy_edit_mode"] = mode
     save_data(data, root_only=True)
     return mode
+try: _v177_legacy_0149_set_forward_copy_edit_mode.__name__ = 'set_forward_copy_edit_mode'
+except Exception: pass
+set_forward_copy_edit_mode = _v177_legacy_0149_set_forward_copy_edit_mode
 
 
 def reminder_ui_mode() -> str:
@@ -824,7 +851,7 @@ def security_known_users() -> list[dict]:
     return sorted(merged.values(), key=lambda x: (float(x.get("last_seen_ts") or 0), int(x.get("id") or 0)), reverse=True)
 
 
-def security_user_allowed(user_id: int | None, capability: str) -> bool:
+def _v177_legacy_0109_security_user_allowed(user_id: int | None, capability: str) -> bool:
     role = tenant_role_for_user(user_id, chat_id=current_state_chat_id())
     if role in {"platform_owner", "tenant_owner", "tenant_admin"}:
         return True
@@ -834,6 +861,9 @@ def security_user_allowed(user_id: int | None, capability: str) -> bool:
         return str(capability or "view") == "view"
     # Existing members of a migrated chat retain ordinary input/view behavior.
     return str(capability or "view") in {"view", "finance_input"}
+try: _v177_legacy_0109_security_user_allowed.__name__ = 'security_user_allowed'
+except Exception: pass
+security_user_allowed = _v177_legacy_0109_security_user_allowed
 
 
 def _tenant_action_target_chat_ids(action: str) -> set[int]:
@@ -847,7 +877,7 @@ def _tenant_action_target_chat_ids(action: str) -> set[int]:
     return ids
 
 
-def safety_permission_allowed(user_id: int | None, chat_id: int | None, action: str) -> bool:
+def _v177_legacy_0111_safety_permission_allowed(user_id: int | None, chat_id: int | None, action: str) -> bool:
     try:
         uid = int(user_id or 0); cid = int(chat_id or 0)
     except Exception:
@@ -878,6 +908,9 @@ def safety_permission_allowed(user_id: int | None, chat_id: int | None, action: 
     if not safety_profile_new_enabled():
         return True
     return security_user_allowed(uid, _security_callback_capability(normalized))
+try: _v177_legacy_0111_safety_permission_allowed.__name__ = 'safety_permission_allowed'
+except Exception: pass
+safety_permission_allowed = _v177_legacy_0111_safety_permission_allowed
 
 
 # ─────────────────────────────────────────────────────────────
@@ -913,7 +946,7 @@ def _tenant_prune_invites() -> None:
             tokens.pop(key, None)
 
 
-def tenant_create_invite(tenant_id: str, kind: str, role: str, created_by: int, max_uses: int = 1, ttl_hours: int = 72) -> str:
+def _v177_legacy_0252_tenant_create_invite(tenant_id: str, kind: str, role: str, created_by: int, max_uses: int = 1, ttl_hours: int = 72) -> str:
     row = tenant_get(tenant_id)
     if not row:
         raise ValueError("Пространство не найдено")
@@ -934,9 +967,12 @@ def tenant_create_invite(tenant_id: str, kind: str, role: str, created_by: int, 
     }
     save_data(data, root_only=True)
     return payload
+try: _v177_legacy_0252_tenant_create_invite.__name__ = 'tenant_create_invite'
+except Exception: pass
+tenant_create_invite = _v177_legacy_0252_tenant_create_invite
 
 
-def tenant_consume_invite(payload: str, user_id: int, chat_id: int, chat_type: str = "") -> tuple[bool, str, str]:
+def _v177_legacy_0253_tenant_consume_invite(payload: str, user_id: int, chat_id: int, chat_type: str = "") -> tuple[bool, str, str]:
     key = _tenant_token_hash(str(payload or "").strip())
     row = (_tenants_root().get("invite_tokens") or {}).get(key)
     if not isinstance(row, dict):
@@ -968,6 +1004,9 @@ def tenant_consume_invite(payload: str, user_id: int, chat_id: int, chat_type: s
     row["last_used_at"] = _tenant_now(); row["last_used_by"] = int(user_id or 0)
     save_data(data, full=True)
     return True, message, tid
+try: _v177_legacy_0253_tenant_consume_invite.__name__ = 'tenant_consume_invite'
+except Exception: pass
+tenant_consume_invite = _v177_legacy_0253_tenant_consume_invite
 
 
 def tenant_invite_link(payload: str) -> str:
@@ -1002,11 +1041,14 @@ def tenant_handle_start_payload(msg) -> bool:
     return True
 
 
-def tenant_visible_spaces(user_id: int) -> list[dict]:
+def _v177_legacy_0254_tenant_visible_spaces(user_id: int) -> list[dict]:
     return tenant_all() if tenant_is_platform_owner_user(user_id) else tenant_user_spaces(user_id)
+try: _v177_legacy_0254_tenant_visible_spaces.__name__ = 'tenant_visible_spaces'
+except Exception: pass
+tenant_visible_spaces = _v177_legacy_0254_tenant_visible_spaces
 
 
-def tenant_dashboard_text(chat_id: int, user_id: int) -> str:
+def _v177_legacy_0255_tenant_dashboard_text(chat_id: int, user_id: int) -> str:
     current_tid = tenant_id_for_chat(chat_id, create=True, actor_user_id=user_id)
     current = tenant_get(current_tid) or {}
     spaces = tenant_visible_spaces(user_id)
@@ -1021,9 +1063,12 @@ def tenant_dashboard_text(chat_id: int, user_id: int) -> str:
         f"Доступно пространств: {len(spaces)}\n"
         "Чужие чаты, настройки, финансы, напоминания и пересылки здесь не отображаются."
     )
+try: _v177_legacy_0255_tenant_dashboard_text.__name__ = 'tenant_dashboard_text'
+except Exception: pass
+tenant_dashboard_text = _v177_legacy_0255_tenant_dashboard_text
 
 
-def tenant_dashboard_keyboard(chat_id: int, user_id: int):
+def _v177_legacy_0256_tenant_dashboard_keyboard(chat_id: int, user_id: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
     current_tid = tenant_id_for_chat(chat_id, create=True, actor_user_id=user_id)
     for row in tenant_visible_spaces(user_id)[:25]:
@@ -1036,9 +1081,12 @@ def tenant_dashboard_keyboard(chat_id: int, user_id: int):
         kb.row(IB("👤 Ссылка для пользователя", callback_data=f"sp:userlink:{current_tid}:operator"))
     kb.row(IB("❌ Закрыть", callback_data="info_close"))
     return kb
+try: _v177_legacy_0256_tenant_dashboard_keyboard.__name__ = 'tenant_dashboard_keyboard'
+except Exception: pass
+tenant_dashboard_keyboard = _v177_legacy_0256_tenant_dashboard_keyboard
 
 
-def tenant_detail_text(tenant_id: str, viewer_user_id: int) -> str:
+def _v177_legacy_0257_tenant_detail_text(tenant_id: str, viewer_user_id: int) -> str:
     row = tenant_get(tenant_id)
     visible_ids = {str(item.get("id")) for item in tenant_visible_spaces(viewer_user_id)}
     if not row or str(tenant_id) not in visible_ids:
@@ -1056,6 +1104,9 @@ def tenant_detail_text(tenant_id: str, viewer_user_id: int) -> str:
     for cid in row.get("chat_ids") or []:
         lines.append(f"• {get_chat_display_name(int(cid))} · {int(cid)}")
     return "\n".join(lines)[:3900]
+try: _v177_legacy_0257_tenant_detail_text.__name__ = 'tenant_detail_text'
+except Exception: pass
+tenant_detail_text = _v177_legacy_0257_tenant_detail_text
 
 
 def tenant_users_text(tenant_id: str) -> str:
@@ -1069,16 +1120,19 @@ def tenant_users_text(tenant_id: str) -> str:
     return "\n".join(lines)[:3900]
 
 
-def tenant_chats_text(tenant_id: str) -> str:
+def _v177_legacy_0258_tenant_chats_text(tenant_id: str) -> str:
     row = tenant_get(tenant_id) or {}
     lines = [f"💬 ЧАТЫ · {row.get('name')}", ""]
     for cid in row.get("chat_ids") or []:
         marker = "🏠" if int(cid) == int(row.get("root_chat_id") or 0) else "•"
         lines.append(f"{marker} {get_chat_display_name(int(cid))} · {int(cid)}")
     return "\n".join(lines)[:3900]
+try: _v177_legacy_0258_tenant_chats_text.__name__ = 'tenant_chats_text'
+except Exception: pass
+tenant_chats_text = _v177_legacy_0258_tenant_chats_text
 
 
-def tenant_handle_callback(call, data_str: str) -> bool:
+def _v177_legacy_0260_tenant_handle_callback(call, data_str: str) -> bool:
     raw = str(data_str or "")
     if not raw.startswith("sp:"):
         return False
@@ -1133,6 +1187,9 @@ def tenant_handle_callback(call, data_str: str) -> bool:
         kb = types.InlineKeyboardMarkup(); kb.row(IB("🔙 Назад", callback_data=f"sp:open:{tid}"))
         safe_edit(bot, call, text, reply_markup=kb); return True
     return True
+try: _v177_legacy_0260_tenant_handle_callback.__name__ = 'tenant_handle_callback'
+except Exception: pass
+tenant_handle_callback = _v177_legacy_0260_tenant_handle_callback
 
 
 def _tenant_command_parts(msg) -> list[str]:
@@ -1339,7 +1396,7 @@ def build_fin_windows_chat_menu(day_key: str):
     return kb
 
 
-def build_forward_status_lines() -> list[str]:
+def _v177_legacy_0061_build_forward_status_lines() -> list[str]:
     lines = []
     fr = data.get("forward_rules", {}) or {}
     ff = data.get("forward_finance", {}) or {}
@@ -1369,10 +1426,13 @@ def build_forward_status_lines() -> list[str]:
         ba_fin = bool((ff.get(str(b), {}) or {}).get(str(a), False))
         lines.append(f"• {chat_button_title(a)} -({_forward_arrow_icon(ab, ba)})-({_forward_fin_icon(ab_fin, ba_fin)})-{chat_button_title(b)}")
     return lines or ["• Связи пересылки не настроены"]
+try: _v177_legacy_0061_build_forward_status_lines.__name__ = 'build_forward_status_lines'
+except Exception: pass
+build_forward_status_lines = _v177_legacy_0061_build_forward_status_lines
 
 
 _V148_ORIG_BUILD_INFO_KEYBOARD = globals().get("build_info_keyboard")
-def build_info_keyboard(chat_id: int):
+def _v177_legacy_0217_build_info_keyboard(chat_id: int):
     kb = _V148_ORIG_BUILD_INFO_KEYBOARD(int(chat_id))
     platform = tenant_is_platform_owner_context(int(chat_id))
     if not platform:
@@ -1399,10 +1459,13 @@ def build_info_keyboard(chat_id: int):
         if not any(str(getattr(button, "callback_data", "") or "") == "sp:dashboard" for row in getattr(kb, "keyboard", []) for button in row):
             kb.row(IB("🏢 Пространство", callback_data="sp:dashboard"))
     return kb
+try: _v177_legacy_0217_build_info_keyboard.__name__ = 'build_info_keyboard'
+except Exception: pass
+build_info_keyboard = _v177_legacy_0217_build_info_keyboard
 
 
 _V148_ORIG_BUILD_INFO_TEXT = globals().get("build_info_text")
-def build_info_text(chat_id: int) -> str:
+def _v177_legacy_0055_build_info_text(chat_id: int) -> str:
     text = _V148_ORIG_BUILD_INFO_TEXT(int(chat_id))
     if not tenant_is_platform_owner_context(int(chat_id)):
         forbidden = ("/errors", "/runtime_export", "/mega_", "/queues", "/journal", "/sqlite", "/db", "/restore_guard", "MEGA:")
@@ -1411,6 +1474,9 @@ def build_info_text(chat_id: int) -> str:
     row = tenant_get(tid) or {}
     suffix = f"\n\n🏢 Пространство: {row.get('name') or tid}\n/space — чаты, пользователи и ссылки подключения"
     return (str(text).rstrip() + suffix)[:3900]
+try: _v177_legacy_0055_build_info_text.__name__ = 'build_info_text'
+except Exception: pass
+build_info_text = _v177_legacy_0055_build_info_text
 
 
 _V148_ORIG_BUILD_HELP_TEXT = globals().get("build_help_text")
@@ -1569,4 +1635,4 @@ def tenant_v148_snapshot() -> dict:
         "active_invites": sum(1 for row in (root.get("invite_tokens") or {}).values() if isinstance(row, dict) and not row.get("revoked") and float(row.get("expires_ts") or 0) >= time.time() and int(row.get("uses") or 0) < int(row.get("max_uses") or 1)),
     }
 
-# v168_clean_core_record_identity
+# v178_global_performance_final

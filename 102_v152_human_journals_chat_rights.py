@@ -1,4 +1,4 @@
-# v170_clear_journal_names
+# v178_global_performance_final
 
 VERSION = "bot_v152_human_journals_chat_rights"
 
@@ -404,7 +404,7 @@ def build_v152_permission_keyboard(scope: str, target: str | int, page: int = 0)
 
 # INFO: the status button now opens the existing protection menu instead of toggling it.
 _V152_ORIG_BUILD_INFO_KEYBOARD = globals().get("build_info_keyboard")
-def build_info_keyboard(chat_id: int):
+def _v177_legacy_0218_build_info_keyboard(chat_id: int):
     kb = _V152_ORIG_BUILD_INFO_KEYBOARD(int(chat_id))
     try:
         for row in getattr(kb, "keyboard", None) or getattr(kb, "inline_keyboard", None) or []:
@@ -417,6 +417,9 @@ def build_info_keyboard(chat_id: int):
     except Exception:
         pass
     return kb
+try: _v177_legacy_0218_build_info_keyboard.__name__ = 'build_info_keyboard'
+except Exception: pass
+build_info_keyboard = _v177_legacy_0218_build_info_keyboard
 
 
 _V152_ORIG_BUILD_SAFETY_KEYBOARD = globals().get("build_safety_profile_keyboard")
@@ -833,7 +836,7 @@ def _v152_period_suffix(document, caption: str = "", purpose: str = "") -> str:
         return _v152_datetime.now().strftime("%Y-%m-%d")
 
 
-def v152_human_download_name(recipient_chat_id: int, document, caption: str = "", purpose: str = "") -> str | None:
+def _v177_legacy_0277_v152_human_download_name(recipient_chat_id: int, document, caption: str = "", purpose: str = "") -> str | None:
     kind = _v152_download_kind(document, caption, purpose)
     if not kind:
         return None
@@ -847,6 +850,9 @@ def v152_human_download_name(recipient_chat_id: int, document, caption: str = ""
     scope = _v152_scope_name(int(recipient_chat_id), kind)
     period = _v152_period_suffix(document, caption, purpose)
     return f"{kind}_{scope}_{period}{ext}"
+try: _v177_legacy_0277_v152_human_download_name.__name__ = 'v152_human_download_name'
+except Exception: pass
+v152_human_download_name = _v177_legacy_0277_v152_human_download_name
 
 
 _V152_ORIG_SEND_DOCUMENT = getattr(bot, "send_document", None)
@@ -953,12 +959,15 @@ def _v152_handle_rights_callback(call, data_str: str) -> bool:
     return True
 
 
-def v149_extension_callback(call, data_str: str) -> bool:
+def _v177_legacy_0267_v149_extension_callback(call, data_str: str) -> bool:
     if _v152_handle_rights_callback(call, data_str):
         return True
     if callable(_V152_ORIG_EXTENSION_CALLBACK):
         return bool(_V152_ORIG_EXTENSION_CALLBACK(call, data_str))
     return False
+try: _v177_legacy_0267_v149_extension_callback.__name__ = 'v149_extension_callback'
+except Exception: pass
+v149_extension_callback = _v177_legacy_0267_v149_extension_callback
 
 
 _V152_WRAPPED_COMMAND_HANDLERS = _v152_install_command_wrappers()
@@ -967,4 +976,4 @@ try:
 except Exception:
     pass
 
-# v170_clear_journal_names
+# v178_global_performance_final

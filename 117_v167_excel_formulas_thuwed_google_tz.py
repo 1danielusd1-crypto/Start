@@ -1,4 +1,4 @@
-# v170_clear_journal_names
+# v178_global_performance_final
 """v167: Excel formulas/formatting, Thu-Wed period, rolling Google tab, TZ lifecycle.
 
 This module deliberately patches only the active public hooks after v166 so older callbacks
@@ -500,10 +500,28 @@ def _v167_google_schedule_cfg(target_chat_id: int, create: bool = True) -> dict:
 
 
 def _v167_persist_schedule(target_chat_id: int):
-    try: save_chat_json(int(target_chat_id))
-    except Exception: pass
-    try: schedule_config_backup_for_chats(int(target_chat_id), delay=0.3)
-    except Exception: pass
+    """Persist only the changed settings on the callback thread.
+
+    v176 measurements exposed that the old implementation rebuilt JSON + CSV +
+    optional XLSX for a simple Google schedule toggle.  SQLite is the immediate
+    source of truth; external/config backup remains debounced in the background.
+    """
+    cid = int(target_chat_id)
+    started = _v167_time.monotonic()
+    try:
+        save_data(data, chat_ids=[cid])
+    except Exception as exc:
+        try: log_error(f"v177 google schedule SQLite persist {cid}: {exc}")
+        except Exception: pass
+    try:
+        schedule_config_backup_for_chats(cid, delay=0.8)
+    except Exception:
+        pass
+    try:
+        stage = globals().get("v177_perf_stage")
+        if callable(stage): stage("sqlite_google_settings", _v167_time.monotonic() - started)
+    except Exception:
+        pass
 
 
 def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | None = None, target_chat_id: int | None = None):
@@ -944,7 +962,8 @@ def _v167_schedule_callback(call):
             _v169_google_enqueue(target, "manual-f47")
         else:
             return
-        _v167_persist_schedule(target)
+        # _v169_set_google_mode() already persisted gtoggle/gtime exactly once.
+        # Manual gnow changes no configuration and needs no local file rebuild.
         try: bot.answer_callback_query(call.id, msg)
         except Exception: pass
         # Update only F47 button labels; no Google API work on callback thread.
@@ -957,7 +976,10 @@ def _v167_schedule_callback(call):
                     if cb == f"v167:gtoggle:{target}": btn.text = ("✅ " if mode != "manual" else "❌ ") + "Google Чт–Ср авто"
                     elif cb == f"v167:gtime:{target}:0001": btn.text = ("✅ " if mode == "d0001" else "") + "00:01"
                     elif cb == f"v167:gtime:{target}:0501": btn.text = ("✅ " if mode == "d0501" else "") + "05:01"
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=kb)
+            v178_edit_reply_markup_async(
+                call.message.chat.id, call.message.message_id, kb,
+                "google_schedule_markup_v178",
+            )
         except Exception: pass
     except Exception as exc:
         try: log_error(f"v169 schedule callback {raw}: {exc}")
@@ -1040,7 +1062,7 @@ def _v167_archive_old_tz_once(force: bool = False):
         pass
 
 
-def _v160_save_tz(chat_id: int, user_id: int, marker: str, body: str, source: dict) -> dict:
+def _v177_legacy_0321_v160_save_tz(chat_id: int, user_id: int, marker: str, body: str, source: dict) -> dict:
     if not callable(_V167_BASE_SAVE_TZ):
         raise RuntimeError("TZ storage unavailable")
     row=_V167_BASE_SAVE_TZ(chat_id,user_id,marker,body,source)
@@ -1049,9 +1071,12 @@ def _v160_save_tz(chat_id: int, user_id: int, marker: str, body: str, source: di
         _v160_persist_annotations(chat_id)
     except Exception: pass
     return row
+try: _v177_legacy_0321_v160_save_tz.__name__ = '_v160_save_tz'
+except Exception: pass
+_v160_save_tz = _v177_legacy_0321_v160_save_tz
 
 
-def _v167_tz_export(kind: str):
+def _v177_legacy_0326_v167_tz_export(kind: str):
     catalog,rows=_v160_annotation_roots(); now_s=now_local().strftime("%Y-%m-%d %H:%M:%S")
     archive=(kind=="tz_archive")
     selected=[]
@@ -1073,6 +1098,9 @@ def _v167_tz_export(kind: str):
             str(row.get("text") or ""),"","---","",
         ])
     return ("Архив_ТЗ_окон" if archive else "ТЗ_окон_текущая_версия"),"\n".join(lines).rstrip()+"\n"
+try: _v177_legacy_0326_v167_tz_export.__name__ = '_v167_tz_export'
+except Exception: pass
+_v167_tz_export = _v177_legacy_0326_v167_tz_export
 
 
 def _v160_export_text(kind: str):
@@ -1112,7 +1140,7 @@ def _v160_handle_special_callback(call, resolved: str) -> bool:
     return False
 
 
-def _v160_augment_markup(reply_markup, text: str):
+def _v177_legacy_0318_v160_augment_markup(reply_markup, text: str):
     kb=_V167_BASE_AUGMENT_MARKUP(reply_markup,text) if callable(_V167_BASE_AUGMENT_MARKUP) else reply_markup
     try:
         if _v160_marker_from_text(text)=="Ф89" and isinstance(kb,types.InlineKeyboardMarkup):
@@ -1121,6 +1149,9 @@ def _v160_augment_markup(reply_markup, text: str):
                 kb.row(IB("🗃 Скачать архив ТЗ",callback_data="v167:export_tz_archive"))
     except Exception: pass
     return kb
+try: _v177_legacy_0318_v160_augment_markup.__name__ = '_v160_augment_markup'
+except Exception: pass
+_v160_augment_markup = _v177_legacy_0318_v160_augment_markup
 
 
 # Marker constants for the two new logical actions.
@@ -1254,4 +1285,4 @@ try:
     bot_journal("v170_journal_names_installed", int(OWNER_ID or 0), "distinct human filenames; version words no longer misclassify downloads")
 except Exception:
     pass
-# v170_clear_journal_names
+# v178_global_performance_final

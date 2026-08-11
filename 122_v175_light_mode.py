@@ -1,4 +1,4 @@
-# v175_light_mode
+# v178_global_performance_final
 """v175: owner-controlled light mode for isolating UI latency.
 
 Light mode deliberately keeps the business core alive:
@@ -38,16 +38,22 @@ _V175_ORIGINAL_JOURNAL_DURABLE_ENABLED = bool(globals().get("BOT_JOURNAL_DURABLE
 _V175_MODE_LOCK = _v175_threading.RLock()
 
 
-def heavy_processes_enabled_v175() -> bool:
+def _v177_legacy_0328_heavy_processes_enabled_v175() -> bool:
     try:
         gs = data.setdefault("_global_settings", {})
         return bool(gs.get(V175_HEAVY_SETTING, True))
     except Exception:
         return True
+try: _v177_legacy_0328_heavy_processes_enabled_v175.__name__ = 'heavy_processes_enabled_v175'
+except Exception: pass
+heavy_processes_enabled_v175 = _v177_legacy_0328_heavy_processes_enabled_v175
 
 
-def light_mode_enabled_v175() -> bool:
+def _v177_legacy_0329_light_mode_enabled_v175() -> bool:
     return not heavy_processes_enabled_v175()
+try: _v177_legacy_0329_light_mode_enabled_v175.__name__ = 'light_mode_enabled_v175'
+except Exception: pass
+light_mode_enabled_v175 = _v177_legacy_0329_light_mode_enabled_v175
 
 
 def _v175_known_chat_ids() -> list[int]:
@@ -188,11 +194,14 @@ def set_heavy_processes_enabled_v175(enabled: bool, actor_user_id: int = 0) -> b
     return enabled
 
 
-def heavy_processes_label_v175() -> str:
+def _v177_legacy_0330_heavy_processes_label_v175() -> str:
     return "🧱 Тяжёлые процессы: ВКЛ" if heavy_processes_enabled_v175() else "⚡ Тяжёлые процессы: ВЫКЛ"
+try: _v177_legacy_0330_heavy_processes_label_v175.__name__ = 'heavy_processes_label_v175'
+except Exception: pass
+heavy_processes_label_v175 = _v177_legacy_0330_heavy_processes_label_v175
 
 
-def heavy_processes_status_v175() -> str:
+def _v177_legacy_0331_heavy_processes_status_v175() -> str:
     if heavy_processes_enabled_v175():
         return (
             "🧱 Тяжёлые процессы: ВКЛ\n"
@@ -206,6 +215,9 @@ def heavy_processes_status_v175() -> str:
         "авто-Google, full backup/полные snapshots и служебные фоновые сканы.\n"
         "Уже запущенная тяжёлая задача может один раз завершиться после переключения."
     )
+try: _v177_legacy_0331_heavy_processes_status_v175.__name__ = 'heavy_processes_status_v175'
+except Exception: pass
+heavy_processes_status_v175 = _v177_legacy_0331_heavy_processes_status_v175
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +361,7 @@ if callable(_V175_ORIG_RUNTIME_MARK_READY):
 # INFO UI: one owner-only switch, no extra window required.
 # ---------------------------------------------------------------------------
 _V175_PREV_BUILD_INFO_TEXT = globals().get("build_info_text")
-def build_info_text(chat_id: int, *args, **kwargs) -> str:
+def _v177_legacy_0058_build_info_text(chat_id: int, *args, **kwargs) -> str:
     try:
         base = str(_V175_PREV_BUILD_INFO_TEXT(int(chat_id), *args, **kwargs) if callable(_V175_PREV_BUILD_INFO_TEXT) else "")
     except TypeError:
@@ -362,10 +374,13 @@ def build_info_text(chat_id: int, *args, **kwargs) -> str:
     except Exception:
         pass
     return base[:3900]
+try: _v177_legacy_0058_build_info_text.__name__ = 'build_info_text'
+except Exception: pass
+build_info_text = _v177_legacy_0058_build_info_text
 
 
 _V175_PREV_BUILD_INFO_KEYBOARD = globals().get("build_info_keyboard")
-def build_info_keyboard(chat_id: int):
+def _v177_legacy_0222_build_info_keyboard(chat_id: int):
     kb = _V175_PREV_BUILD_INFO_KEYBOARD(int(chat_id)) if callable(_V175_PREV_BUILD_INFO_KEYBOARD) else types.InlineKeyboardMarkup()
     try:
         if int(chat_id) != int(OWNER_ID or 0):
@@ -391,6 +406,9 @@ def build_info_keyboard(chat_id: int):
     except Exception:
         pass
     return kb
+try: _v177_legacy_0222_build_info_keyboard.__name__ = 'build_info_keyboard'
+except Exception: pass
+build_info_keyboard = _v177_legacy_0222_build_info_keyboard
 
 
 def _v175_callback_filter(call):
@@ -429,7 +447,10 @@ def _v175_callback(call):
         safe_edit(bot, call, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id))
     except Exception:
         try:
-            bot.edit_message_text(build_info_text(chat_id), chat_id=chat_id, message_id=int(call.message.message_id), reply_markup=build_info_keyboard(chat_id))
+            fast_ui_edit_message_text(
+                chat_id, int(call.message.message_id), build_info_text(chat_id),
+                reply_markup=build_info_keyboard(chat_id), purpose="light_mode_fallback_v178",
+            )
         except Exception:
             pass
 
@@ -456,7 +477,7 @@ if callable(_V175_PREV_QUEUE_STATUS):
 
 # Restore compatibility for v175 snapshots.
 _V175_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
-def _v153_validate_restore_gz(gz_path: str):
+def _v177_legacy_0292_v153_validate_restore_gz(gz_path: str):
     try:
         return _V175_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V175_PREV_RESTORE_VALIDATOR) else (None, None)
     except Exception as exc:
@@ -493,6 +514,9 @@ def _v153_validate_restore_gz(gz_path: str):
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0292_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0292_v153_validate_restore_gz
 
 
 _V175_CALLBACK_REGISTERED = _v175_register_callback()
@@ -504,4 +528,4 @@ try:
     )
 except Exception:
     pass
-# v175_light_mode
+# v178_global_performance_final

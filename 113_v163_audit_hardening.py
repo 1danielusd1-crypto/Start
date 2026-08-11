@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
 import calendar as _v163_calendar
@@ -98,7 +98,7 @@ def _v163_is_navigation_callback(raw: str) -> bool:
     return False
 
 
-def v163_webhook_select_lane(payload: dict, update_type: str, update_key):
+def _v177_legacy_0325_v163_webhook_select_lane(payload: dict, update_type: str, update_key):
     """Called by 99_web_runtime at request time after every module is loaded."""
     if str(update_type) == "message" and _v163_start_payload(payload):
         chat_id = _extract_update_chat_id(payload)
@@ -109,13 +109,16 @@ def v163_webhook_select_lane(payload: dict, update_type: str, update_key):
             return WINDOW_UI_TASK_POOL, f"window:{chat_id}:{message_id}"
         return UI_TASK_POOL, f"ui:{chat_id if chat_id else update_key}"
     return WEBHOOK_TASK_POOL, update_key
+try: _v177_legacy_0325_v163_webhook_select_lane.__name__ = 'v163_webhook_select_lane'
+except Exception: pass
+v163_webhook_select_lane = _v177_legacy_0325_v163_webhook_select_lane
 
 
 # ---------------------------------------------------------------------------
 # 2) Execution locking: priority /start and safe navigation must not re-enter
 #    the same chat-wide lock used by long finance/forward operations.
 # ---------------------------------------------------------------------------
-def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str = "other"):
+def _v177_legacy_0074_execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str = "other"):
     update = telebot.types.Update.de_json(payload)
     if update_chat_id is None:
         update_chat_id = _extract_update_chat_id(payload) if isinstance(payload, dict) else None
@@ -187,6 +190,9 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
         else:
             _TELEGRAM_UPDATE_CONTEXT.value = previous_ctx
     return execution_ctx
+try: _v177_legacy_0074_execute_telegram_payload.__name__ = '_execute_telegram_payload'
+except Exception: pass
+_execute_telegram_payload = _v177_legacy_0074_execute_telegram_payload
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +399,7 @@ def _v163_forward_scope_ids() -> list[int]:
     return sorted(ids, key=lambda cid: get_chat_display_name(cid).casefold())
 
 
-def _collect_forward_picker_items(include_owner: bool = True, include_removed: bool = False):
+def _v177_legacy_0181_collect_forward_picker_items(include_owner: bool = True, include_removed: bool = False):
     items = []
     owner_item = None
     try:
@@ -416,6 +422,9 @@ def _collect_forward_picker_items(include_owner: bool = True, include_removed: b
     if not include_owner:
         owner_item = None
     return items, owner_item
+try: _v177_legacy_0181_collect_forward_picker_items.__name__ = '_collect_forward_picker_items'
+except Exception: pass
+_collect_forward_picker_items = _v177_legacy_0181_collect_forward_picker_items
 
 
 # ---------------------------------------------------------------------------
@@ -610,4 +619,4 @@ try:
 except Exception:
     pass
 
-# v168_clean_core_record_identity
+# v178_global_performance_final

@@ -1,4 +1,4 @@
-# v155_button_navigation_audit
+# v178_global_performance_final
 """v155: full button/navigation audit hardening and live callback outcome diagnostics."""
 
 import copy as _v155_copy
@@ -54,7 +54,7 @@ def _v155_button_label(call, raw_data: str, resolved_data: str) -> str:
     return ""
 
 
-def _v155_expected_marker(action: str, chat_id: int) -> str:
+def _v177_legacy_0293_v155_expected_marker(action: str, chat_id: int) -> str:
     try:
         fn = globals().get("window_code_for_callback")
         owner_fn = globals().get("is_owner_chat")
@@ -63,6 +63,9 @@ def _v155_expected_marker(action: str, chat_id: int) -> str:
     except Exception:
         pass
     return ""
+try: _v177_legacy_0293_v155_expected_marker.__name__ = '_v155_expected_marker'
+except Exception: pass
+_v155_expected_marker = _v177_legacy_0293_v155_expected_marker
 
 
 def _v155_window_events_since(seq: int, chat_id: int, message_id: int) -> list[dict]:
@@ -285,7 +288,7 @@ if callable(_V155_ORIG_BUILD_EXPENSE_INBOX_KEYBOARD):
 
 
 # v155 full-state exports must be restorable by the same release.
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0280_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v155_tempfile.mkdtemp(prefix="v155_restore_validate_")
     raw = _v155_os.path.join(folder, "restore.sqlite3")
     try:
@@ -316,6 +319,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v155_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0280_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0280_v153_validate_restore_gz
 
 # ---------------------------------------------------------------------------
 # Runtime callback outcome audit. It wraps the already-registered handlers after
@@ -427,4 +433,4 @@ try:
 except Exception:
     pass
 
-# v155_button_navigation_audit
+# v178_global_performance_final

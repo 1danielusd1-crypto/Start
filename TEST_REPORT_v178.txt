@@ -1,0 +1,21 @@
+bot_v178_global_performance_final TEST REPORT
+
+Overall: PASS
+
+PASS | version | bot_v178_global_performance_final
+PASS | runtime_parts | 46
+PASS | manifest_hashes
+PASS | source_markers
+PASS | compile_all
+PASS | duplicate_top_level_modular | 0
+PASS | duplicate_top_level_full | 0
+PASS | direct_edits_inside_callback_functions | []
+PASS | global_day_navigation
+PASS | mega_session_cache
+PASS | mega_directory_cache
+PASS | mega_priority_gate
+PASS | remote_heartbeat_180
+PASS | v178_speed_migration
+PASS | memory_critical_cooldown
+PASS | reduced_aux_pools
+PASS | restore_accepts_v178

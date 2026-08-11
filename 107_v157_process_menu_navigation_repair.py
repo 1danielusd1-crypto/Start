@@ -1,4 +1,4 @@
-# v157_process_menu_navigation_repair
+# v178_global_performance_final
 """v157: process-window submenu, robust Back navigation, vertical INFO layout and button-log repairs."""
 
 import copy as _v157_copy
@@ -54,12 +54,15 @@ def _v157_process_settings() -> dict:
     return root
 
 
-def process_visual_status_enabled(chat_id: int) -> bool:
+def _v177_legacy_0297_process_visual_status_enabled(chat_id: int) -> bool:
     try:
         cfg = _v157_process_settings()
         return bool(cfg.get("owner_enabled", True) if _v157_is_primary_owner_chat(int(chat_id)) else cfg.get("others_enabled", True))
     except Exception:
         return True
+try: _v177_legacy_0297_process_visual_status_enabled.__name__ = 'process_visual_status_enabled'
+except Exception: pass
+process_visual_status_enabled = _v177_legacy_0297_process_visual_status_enabled
 
 
 def _v157_save_process_settings() -> None:
@@ -159,7 +162,7 @@ def _v157_process_menu_keyboard(chat_id: int):
 _V157_ORIG_BUILD_INFO_TEXT = globals().get("build_info_text")
 
 
-def build_info_text(chat_id: int, *args, **kwargs) -> str:
+def _v177_legacy_0056_build_info_text(chat_id: int, *args, **kwargs) -> str:
     text = ""
     try:
         if callable(_V157_ORIG_BUILD_INFO_TEXT):
@@ -185,6 +188,9 @@ def build_info_text(chat_id: int, *args, **kwargs) -> str:
         except Exception:
             rows.extend(["", summary])
     return "\n".join(rows)[:3900]
+try: _v177_legacy_0056_build_info_text.__name__ = 'build_info_text'
+except Exception: pass
+build_info_text = _v177_legacy_0056_build_info_text
 
 
 _V157_ORIG_BUILD_INFO_KEYBOARD = globals().get("build_info_keyboard")
@@ -206,7 +212,7 @@ def _v157_btn_cb(btn) -> str:
     return str(getattr(btn, "callback_data", "") or "")
 
 
-def build_info_keyboard(chat_id: int):
+def _v177_legacy_0219_build_info_keyboard(chat_id: int):
     kb = _V157_ORIG_BUILD_INFO_KEYBOARD(int(chat_id)) if callable(_V157_ORIG_BUILD_INFO_KEYBOARD) else types.InlineKeyboardMarkup()
     rows = _v157_kb_rows(kb)
     # Replace the direct v156 switch with an opening submenu. This also repairs
@@ -243,6 +249,9 @@ def build_info_keyboard(chat_id: int):
         except Exception:
             pass
     return kb
+try: _v177_legacy_0219_build_info_keyboard.__name__ = 'build_info_keyboard'
+except Exception: pass
+build_info_keyboard = _v177_legacy_0219_build_info_keyboard
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +266,7 @@ def _v157_process_message_missing(exc) -> bool:
     ))
 
 
-def _v156_process_status_tick(chat_id: int) -> None:
+def _v177_legacy_0310_v156_process_status_tick(chat_id: int) -> None:
     chat_id = int(chat_id)
     if not process_visual_status_enabled(chat_id):
         _v156_process_status_clear(chat_id, delete=True)
@@ -310,6 +319,9 @@ def _v156_process_status_tick(chat_id: int) -> None:
         except Exception:
             pass
     _v156_process_status_schedule(chat_id, _V156_PROCESS_STATUS_INTERVAL)
+try: _v177_legacy_0310_v156_process_status_tick.__name__ = '_v156_process_status_tick'
+except Exception: pass
+_v156_process_status_tick = _v177_legacy_0310_v156_process_status_tick
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +368,7 @@ except Exception:
 _V157_ORIG_V155_EXPECTED_MARKER = globals().get("_v155_expected_marker")
 
 
-def _v155_expected_marker(action: str, chat_id: int) -> str:
+def _v177_legacy_0294_v155_expected_marker(action: str, chat_id: int) -> str:
     raw = str(action or "")
     if raw == "nav_prev":
         # The destination is the actual previous snapshot and therefore dynamic.
@@ -372,12 +384,15 @@ def _v155_expected_marker(action: str, chat_id: int) -> str:
         except Exception:
             pass
     return ""
+try: _v177_legacy_0294_v155_expected_marker.__name__ = '_v155_expected_marker'
+except Exception: pass
+_v155_expected_marker = _v177_legacy_0294_v155_expected_marker
 
 
 _V157_ORIG_RESTORE_PREVIOUS_WINDOW = globals().get("restore_previous_window")
 
 
-def restore_previous_window(call) -> bool:
+def _v177_legacy_0213_restore_previous_window(call) -> bool:
     try:
         chat_id = int(call.message.chat.id)
         message_id = int(call.message.message_id)
@@ -412,6 +427,9 @@ def restore_previous_window(call) -> bool:
     except Exception:
         pass
     return True
+try: _v177_legacy_0213_restore_previous_window.__name__ = 'restore_previous_window'
+except Exception: pass
+restore_previous_window = _v177_legacy_0213_restore_previous_window
 
 
 _V157_ORIG_FORCE_NEW_DAY_WINDOW = globals().get("force_new_day_window")
@@ -448,7 +466,7 @@ def force_new_day_window(chat_id: int, day_key: str):
 _V157_ORIG_RETURN_TO_MAIN = globals().get("return_to_main_window_closing_previous")
 
 
-def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
+def _v177_legacy_0243_return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
     chat_id = int(chat_id)
     day_key = str(day_key)[:10]
     try:
@@ -475,6 +493,9 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
     if callable(_V157_ORIG_RETURN_TO_MAIN):
         return _V157_ORIG_RETURN_TO_MAIN(chat_id, day_key, current_message_id=current_message_id)
     return None
+try: _v177_legacy_0243_return_to_main_window_closing_previous.__name__ = 'return_to_main_window_closing_previous'
+except Exception: pass
+return_to_main_window_closing_previous = _v177_legacy_0243_return_to_main_window_closing_previous
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +620,7 @@ def _v157_primary_actor(call) -> bool:
         return False
 
 
-def _v157_handle_callback(call) -> bool:
+def _v177_legacy_0314_v157_handle_callback(call) -> bool:
     raw = str(getattr(call, "data", "") or "")
     resolved = raw
     try:
@@ -633,6 +654,9 @@ def _v157_handle_callback(call) -> bool:
     except Exception:
         pass
     return True
+try: _v177_legacy_0314_v157_handle_callback.__name__ = '_v157_handle_callback'
+except Exception: pass
+_v157_handle_callback = _v177_legacy_0314_v157_handle_callback
 
 
 def _v157_install_callback_intercept() -> int:
@@ -688,7 +712,7 @@ def _v157_install_callback_intercept() -> int:
 
 
 # v157 full-state exports must remain restorable by this release.
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0282_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v157_tempfile.mkdtemp(prefix="v157_restore_validate_")
     raw = _v157_os.path.join(folder, "restore.sqlite3")
     try:
@@ -719,6 +743,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v157_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0282_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0282_v153_validate_restore_gz
 
 
 _V157_CALLBACK_INTERCEPTS = _v157_install_callback_intercept()
@@ -731,4 +758,4 @@ try:
 except Exception:
     pass
 
-# v157_process_menu_navigation_repair
+# v178_global_performance_final

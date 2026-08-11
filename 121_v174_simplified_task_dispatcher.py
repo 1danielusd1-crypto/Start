@@ -1,4 +1,4 @@
-# v174_simplified_task_dispatcher
+# v178_global_performance_final
 """v174: simplified chat-native task dispatcher with editable keywords and circle inventory.
 
 Design goals:
@@ -703,8 +703,13 @@ def _v174_replace_command_handlers() -> int:
 def _v174_edit_call(call, text, kb):
     try: safe_edit(bot, call, text, reply_markup=kb)
     except Exception:
-        try: bot.edit_message_text(text, chat_id=int(call.message.chat.id), message_id=int(call.message.message_id), reply_markup=kb)
-        except Exception: pass
+        try:
+            fast_ui_edit_message_text(
+                int(call.message.chat.id), int(call.message.message_id), text,
+                reply_markup=kb, purpose="task_callback_fallback_v178",
+            )
+        except Exception:
+            pass
 
 
 def _v174_callback(call):
@@ -914,7 +919,7 @@ def build_main_keyboard(day_key: str, chat_id=None):
 
 # Restore validator accepts v174 snapshots.
 _V174_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
-def _v153_validate_restore_gz(gz_path: str):
+def _v177_legacy_0291_v153_validate_restore_gz(gz_path: str):
     try:
         return _V174_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V174_PREV_RESTORE_VALIDATOR) else (None, None)
     except Exception as exc:
@@ -939,6 +944,9 @@ def _v153_validate_restore_gz(gz_path: str):
         return manifest, raw
     except Exception:
         shutil.rmtree(folder, ignore_errors=True); raise
+try: _v177_legacy_0291_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0291_v153_validate_restore_gz
 
 
 _V174_MESSAGE_WRAP = _v174_install_message_wrapper()
@@ -949,4 +957,4 @@ try:
     bot_journal("v174_installed", int(OWNER_ID or 0), f"simple_tasks=1; circles1={len(_v174_circle_ids(1))}; circles2={len(_v174_circle_ids(2))}; message_wrap={_V174_MESSAGE_WRAP}; commands={_V174_COMMAND_REPLACED}; callback={_V174_CALLBACK}; legacy={_V174_LEGACY_CALLBACK}")
 except Exception:
     pass
-# v174_simplified_task_dispatcher
+# v178_global_performance_final

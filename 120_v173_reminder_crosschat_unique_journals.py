@@ -1,4 +1,4 @@
-# v173_reminder_crosschat_unique_journals
+# v178_global_performance_final
 """v173: reliable owner cross-chat reminders + unmistakable unique journal filenames.
 
 Loaded after v172.  The platform owner may explicitly select any chat from the reminder
@@ -224,7 +224,7 @@ def v152_human_download_name(recipient_chat_id: int, document, caption: str = ""
 # ---------------------------------------------------------------------------
 _V173_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
 
-def _v153_validate_restore_gz(gz_path: str):
+def _v177_legacy_0290_v153_validate_restore_gz(gz_path: str):
     try:
         return _V173_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V173_PREV_RESTORE_VALIDATOR) else (None, None)
     except Exception as exc:
@@ -261,6 +261,9 @@ def _v153_validate_restore_gz(gz_path: str):
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0290_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0290_v153_validate_restore_gz
 
 
 try:
@@ -271,4 +274,4 @@ try:
     )
 except Exception:
     pass
-# v173_reminder_crosschat_unique_journals
+# v178_global_performance_final

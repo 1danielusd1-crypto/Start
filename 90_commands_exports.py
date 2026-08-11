@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -70,7 +70,7 @@ def send_csv_month(chat_id: int, day_key: str):
 
     except Exception as e:
         log_error(f"send_csv_month: {e}")
-def send_csv_wedthu(chat_id: int, day_key: str):
+def _v177_legacy_0226_send_csv_wedthu(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
     if usd_transactions_view_enabled(int(chat_id)):
@@ -109,6 +109,9 @@ def send_csv_wedthu(chat_id: int, day_key: str):
 
     except Exception as e:
         log_error(f"send_csv_wedthu: {e}")
+try: _v177_legacy_0226_send_csv_wedthu.__name__ = 'send_csv_wedthu'
+except Exception: pass
+send_csv_wedthu = _v177_legacy_0226_send_csv_wedthu
 
 
 def finance_operation_key(chat_id: int, source_msg_id, ledger: str = "main") -> str:
@@ -132,7 +135,7 @@ def find_record_by_operation_key(chat_id: int, operation_key: str):
         pass
     return None
 
-def add_record_to_chat(
+def _v177_legacy_0227_add_record_to_chat(
     chat_id: int,
     amount: float,
     note: str,
@@ -220,6 +223,9 @@ def add_record_to_chat(
             log_error(f"finance add integrity: {_integrity_exc}")
         if op_id and "operation_complete" in globals(): operation_complete(op_id, f"record={rec.get('id')}")
         return rec
+try: _v177_legacy_0227_add_record_to_chat.__name__ = 'add_record_to_chat'
+except Exception: pass
+add_record_to_chat = _v177_legacy_0227_add_record_to_chat
 
 def delete_record_in_chat(chat_id: int, rid: int):
     op_id = operation_begin("finance_delete", chat_id, target=str(rid), payload={"rid": rid}, critical=True) if "operation_begin" in globals() else ""
@@ -310,7 +316,7 @@ def close_previous_main_window_before_back(chat_id: int, day_key: str, current_m
         clear_active_window_id(chat_id, day_key)
     except Exception as e:
         log_error(f"close_previous_main_window_before_back({chat_id},{day_key}): {e}")
-def update_or_send_day_window(chat_id: int, day_key: str):
+def _v177_legacy_0229_update_or_send_day_window(chat_id: int, day_key: str):
     # v108: hidden accounting is independent from explicitly selected visible window modes/manual opening.
     if is_owner_chat(chat_id):
         backup_window_for_owner(chat_id, day_key)
@@ -357,6 +363,9 @@ def update_or_send_day_window(chat_id: int, day_key: str):
         )
         set_active_window_id(chat_id, day_key, sent.message_id)
     schedule_balance_panel_refresh(chat_id, 0.5)
+try: _v177_legacy_0229_update_or_send_day_window.__name__ = 'update_or_send_day_window'
+except Exception: pass
+update_or_send_day_window = _v177_legacy_0229_update_or_send_day_window
 def is_finance_mode(chat_id):
 
     store = get_chat_store(chat_id)
@@ -440,7 +449,7 @@ def require_finance(chat_id: int) -> bool:
         send_and_auto_delete(chat_id, "⚙️ Финансовый режим выключен.\nАктивируйте командой /ok")
         return False
     return True
-def refresh_total_message_if_any(chat_id: int):
+def _v177_legacy_0230_refresh_total_message_if_any(chat_id: int):
     """
     Если в чате есть активное сообщение '💰 Общий итог',
     пересчитывает и обновляет его текст.
@@ -501,6 +510,9 @@ def refresh_total_message_if_any(chat_id: int):
         log_error(f"refresh_total_message_if_any({chat_id}): {e}")
         store["total_msg_id"] = None
         save_data(data)
+try: _v177_legacy_0230_refresh_total_message_if_any.__name__ = 'refresh_total_message_if_any'
+except Exception: pass
+refresh_total_message_if_any = _v177_legacy_0230_refresh_total_message_if_any
 def refresh_owner_after_chat_change(source_chat_id: int):
     if not OWNER_ID:
         return
@@ -1126,7 +1138,7 @@ def cmd_dozvon(msg):
         reply_markup=build_dozvon_menu(chat_id)
     )
 
-def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DELAY):
+def _v177_legacy_0231_send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DELAY):
     if is_finance_output_suppressed(chat_id):
         return
     if chat_buttons_current_window_enabled(chat_id):
@@ -1142,9 +1154,12 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = HELPER_DELETE_DEL
         DELAYED_SCHEDULER.schedule(f"auto-delete:{chat_id}:{msg.message_id}", delay, _delete)
     except Exception as e:
         log_error(f"send_and_auto_delete: {e}")
+try: _v177_legacy_0231_send_and_auto_delete.__name__ = 'send_and_auto_delete'
+except Exception: pass
+send_and_auto_delete = _v177_legacy_0231_send_and_auto_delete
 
 
-def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = HELPER_DELETE_DELAY):
+def _v177_legacy_0233_send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = HELPER_DELETE_DELAY):
     if is_finance_output_suppressed(chat_id):
         return
     if chat_buttons_current_window_enabled(chat_id):
@@ -1160,6 +1175,9 @@ def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = HELPER_
         DELAYED_SCHEDULER.schedule(f"auto-delete-html:{chat_id}:{msg.message_id}", delay, _delete)
     except Exception as e:
         log_error(f"send_html_and_auto_delete: {e}")
+try: _v177_legacy_0233_send_html_and_auto_delete.__name__ = 'send_html_and_auto_delete'
+except Exception: pass
+send_html_and_auto_delete = _v177_legacy_0233_send_html_and_auto_delete
 def delete_message_later(chat_id: int, message_id: int, delay: int = 30):
     """
     Отложенное удаление сообщения пользователя (например, команд).
@@ -1341,7 +1359,7 @@ def _remember_known_chat_user(store: dict, msg) -> bool:
         return False
 
 
-def update_chat_info_from_message(msg):
+def _v177_legacy_0235_update_chat_info_from_message(msg):
     """
     Обновляет информацию о чате в памяти.
     На диск пишем только если реально что-то изменилось.
@@ -1440,6 +1458,9 @@ def update_chat_info_from_message(msg):
             maybe_prompt_owner_for_new_chat_auto_backup(chat_id)
     except Exception as e:
         log_error(f"new chat auto-backup prompt failed for {get_chat_display_name(chat_id)}: {e}")
+try: _v177_legacy_0235_update_chat_info_from_message.__name__ = 'update_chat_info_from_message'
+except Exception: pass
+update_chat_info_from_message = _v177_legacy_0235_update_chat_info_from_message
 
 
 def maybe_prompt_owner_for_new_chat_auto_backup(chat_id: int):
@@ -1676,4 +1697,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v168_clean_core_record_identity
+# v178_global_performance_final

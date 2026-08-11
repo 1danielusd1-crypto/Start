@@ -1,4 +1,4 @@
-# v143_audit_stability_exact_wait_reminders_memory
+# v178_global_performance_final
 
 _REMINDER_THREAD_STARTED = False
 _REMINDER_THREAD_LOCK = threading.RLock()
@@ -18,16 +18,19 @@ _REMINDER_FINANCE_BUSY_SINCE = 0.0
 _REMINDER_FINANCE_PRIORITY_GRACE_SECONDS = 60.0
 
 
-def reminder_ui_mode() -> str:
+def _v177_legacy_0117_reminder_ui_mode() -> str:
     mode = str(data.setdefault("_global_settings", {}).get("reminder_ui_mode_v142") or "new").strip().lower()
     return mode if mode in {"old", "new"} else "new"
+try: _v177_legacy_0117_reminder_ui_mode.__name__ = 'reminder_ui_mode'
+except Exception: pass
+reminder_ui_mode = _v177_legacy_0117_reminder_ui_mode
 
 
 def reminder_ui_new_enabled() -> bool:
     return reminder_ui_mode() == "new"
 
 
-def set_reminder_ui_mode(mode: str) -> str:
+def _v177_legacy_0118_set_reminder_ui_mode(mode: str) -> str:
     mode = "new" if str(mode).strip().lower() == "new" else "old"
     data.setdefault("_global_settings", {})["reminder_ui_mode_v142"] = mode
     try:
@@ -35,6 +38,9 @@ def set_reminder_ui_mode(mode: str) -> str:
     except Exception:
         save_data(data, root_only=True)
     return mode
+try: _v177_legacy_0118_set_reminder_ui_mode.__name__ = 'set_reminder_ui_mode'
+except Exception: pass
+set_reminder_ui_mode = _v177_legacy_0118_set_reminder_ui_mode
 
 
 def toggle_reminder_ui_mode() -> str:
@@ -135,7 +141,7 @@ def _reminders_root() -> dict:
 
 
 
-def _reminder_items(include_completed: bool = False) -> list[tuple[int, dict]]:
+def _v177_legacy_0119_reminder_items(include_completed: bool = False) -> list[tuple[int, dict]]:
     root = _reminders_root()
     rows = []
     for rid_raw, cfg in (root.get("items") or {}).items():
@@ -151,6 +157,9 @@ def _reminder_items(include_completed: bool = False) -> list[tuple[int, dict]]:
         rows.append((rid, cfg))
     rows.sort(key=lambda x: x[0])
     return rows
+try: _v177_legacy_0119_reminder_items.__name__ = '_reminder_items'
+except Exception: pass
+_reminder_items = _v177_legacy_0119_reminder_items
 
 
 def _reminder_completed_items() -> list[tuple[int, dict]]:
@@ -161,7 +170,7 @@ def _reminder_completed_items() -> list[tuple[int, dict]]:
     rows.sort(key=lambda x: (str(x[1].get("completed_at") or ""), x[0]), reverse=True)
     return rows
 
-def _reminder_cfg(reminder_id: int | str | None = None, create: bool = False) -> dict | None:
+def _v177_legacy_0120_reminder_cfg(reminder_id: int | str | None = None, create: bool = False) -> dict | None:
     if reminder_id is None:
         rows = _reminder_items()
         return rows[0][1] if rows else None
@@ -176,9 +185,12 @@ def _reminder_cfg(reminder_id: int | str | None = None, create: bool = False) ->
         cfg = _new_reminder_cfg()
         items[str(rid)] = cfg
     return _normalize_reminder_cfg(cfg) if isinstance(cfg, dict) else None
+try: _v177_legacy_0120_reminder_cfg.__name__ = '_reminder_cfg'
+except Exception: pass
+_reminder_cfg = _v177_legacy_0120_reminder_cfg
 
 
-def _reminder_create() -> tuple[int, dict]:
+def _v177_legacy_0121_reminder_create() -> tuple[int, dict]:
     with _REMINDER_CONFIG_LOCK:
         root = _reminders_root()
         try:
@@ -192,6 +204,9 @@ def _reminder_create() -> tuple[int, dict]:
         root["next_id"] = rid + 1
     _reminder_save("reminder_add")
     return rid, cfg
+try: _v177_legacy_0121_reminder_create.__name__ = '_reminder_create'
+except Exception: pass
+_reminder_create = _v177_legacy_0121_reminder_create
 
 
 def _reminder_position(reminder_id: int) -> int:
@@ -213,7 +228,7 @@ def _reminder_return_callback(page: int, day_key: str) -> str:
     return f"rem:list:{max(0, int(page))}:{day_key}"
 
 
-def _reminder_mark_completed(reminder_id: int, cfg: dict, reason: str = "time_finished", delete_messages: bool = True) -> None:
+def _v177_legacy_0122_reminder_mark_completed(reminder_id: int, cfg: dict, reason: str = "time_finished", delete_messages: bool = True) -> None:
     if _reminder_is_completed(cfg):
         return
     cfg["enabled"] = False
@@ -229,6 +244,9 @@ def _reminder_mark_completed(reminder_id: int, cfg: dict, reason: str = "time_fi
             operation_complete(op_id, "reminder moved to completed")
     except Exception:
         pass
+try: _v177_legacy_0122_reminder_mark_completed.__name__ = '_reminder_mark_completed'
+except Exception: pass
+_reminder_mark_completed = _v177_legacy_0122_reminder_mark_completed
 
 
 def _reminder_end_has_passed(cfg: dict, now_dt=None) -> bool:
@@ -466,7 +484,7 @@ def _reminder_button_label(position: int, cfg: dict) -> str:
 
 
 
-def build_reminder_list_text() -> str:
+def _v177_legacy_0123_build_reminder_list_text() -> str:
     rows = _reminder_items()
     completed = _reminder_completed_items()
     enabled = sum(1 for _rid, cfg in rows if bool(cfg.get("enabled")))
@@ -477,9 +495,12 @@ def build_reminder_list_text() -> str:
         f"Завершённых: {len(completed)}\n\n"
         "Нажмите напоминалку для просмотра и настройки."
     )
+try: _v177_legacy_0123_build_reminder_list_text.__name__ = 'build_reminder_list_text'
+except Exception: pass
+build_reminder_list_text = _v177_legacy_0123_build_reminder_list_text
 
 
-def build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
+def _v177_legacy_0125_build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
     day_key = day_key or today_key()
     rows = _reminder_items()
     pages = max(1, (len(rows) + _REMINDER_LIST_PAGE_SIZE - 1) // _REMINDER_LIST_PAGE_SIZE)
@@ -500,6 +521,9 @@ def build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
     kb.row(IB(f"✅ Завершённые ({len(_reminder_completed_items())})", callback_data="rem:completed:0:0"))
     kb.row(IB("⬅️ Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
+try: _v177_legacy_0125_build_reminder_list_keyboard.__name__ = 'build_reminder_list_keyboard'
+except Exception: pass
+build_reminder_list_keyboard = _v177_legacy_0125_build_reminder_list_keyboard
 
 def _reminder_bind_editor(reminder_id: int, chat_id: int, message_id: int, day_key: str, page: int = 0) -> None:
     _REMINDER_UI_BINDINGS[int(reminder_id)] = {
@@ -513,7 +537,7 @@ def _reminder_unbind(reminder_id: int) -> None:
 
 
 
-def build_reminder_menu_text(reminder_id: int) -> str:
+def _v177_legacy_0127_build_reminder_menu_text(reminder_id: int) -> str:
     cfg = _reminder_cfg(reminder_id)
     if not cfg:
         return "⏰ Напоминалка не найдена."
@@ -540,6 +564,9 @@ def build_reminder_menu_text(reminder_id: int) -> str:
         f"Последняя: {_reminder_fmt_dt(cfg.get('last_sent_at'))}"
         + (f"\nЗавершена: {_reminder_fmt_dt(cfg.get('completed_at'))}" if _reminder_is_completed(cfg) else "")
     )
+try: _v177_legacy_0127_build_reminder_menu_text.__name__ = 'build_reminder_menu_text'
+except Exception: pass
+build_reminder_menu_text = _v177_legacy_0127_build_reminder_menu_text
 
 def _reminder_insert_query(token: str, current_text: str = "") -> str:
     service = f"({token} служебное — можно не трогать)"
@@ -559,7 +586,7 @@ def compose_reminder_interval_insert_value(reminder_id: int, cfg: dict) -> str:
 
 
 
-def build_reminder_menu_keyboard(reminder_id: int, day_key: str | None = None, page: int = 0, viewer_chat_id: int | None = None):
+def _v177_legacy_0129_build_reminder_menu_keyboard(reminder_id: int, day_key: str | None = None, page: int = 0, viewer_chat_id: int | None = None):
     day_key = day_key or today_key()
     cfg = _reminder_cfg(reminder_id)
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -585,6 +612,9 @@ def build_reminder_menu_keyboard(reminder_id: int, day_key: str | None = None, p
     )
     kb.row(IB("⬅️ К напоминалкам", callback_data=_reminder_return_callback(page, day_key)))
     return kb
+try: _v177_legacy_0129_build_reminder_menu_keyboard.__name__ = 'build_reminder_menu_keyboard'
+except Exception: pass
+build_reminder_menu_keyboard = _v177_legacy_0129_build_reminder_menu_keyboard
 
 def _reminder_edit_menu_keyboard(reminder_id: int, page: int, day_key: str, viewer_chat_id: int):
     cfg = _reminder_cfg(reminder_id) or {}
@@ -726,12 +756,15 @@ def _reminder_parse_custom_interval(text: str) -> int | None:
     return minutes if 5 <= minutes <= 43200 else None
 
 
-def _reminder_delete_message_map(last_map: dict) -> None:
+def _v177_legacy_0131_reminder_delete_message_map(last_map: dict) -> None:
     for cid_raw, mid_raw in list((last_map or {}).items()):
         try:
             bot.delete_message(int(cid_raw), int(mid_raw))
         except Exception:
             pass
+try: _v177_legacy_0131_reminder_delete_message_map.__name__ = '_reminder_delete_message_map'
+except Exception: pass
+_reminder_delete_message_map = _v177_legacy_0131_reminder_delete_message_map
 
 
 def _reminder_delete_last_messages(cfg: dict) -> None:
@@ -888,7 +921,7 @@ def _reminder_tick_job(reminder_id: int) -> None:
     if updated:
         _reminder_save("reminders_tick")
 
-def _reminder_tick() -> None:
+def _v177_legacy_0132_reminder_tick() -> None:
     now_dt = now_local()
     due_ids = []
     with _REMINDER_CONFIG_LOCK:
@@ -904,6 +937,9 @@ def _reminder_tick() -> None:
                 bot_journal("reminder_dispatch_coalesced", None, f"reminder_id={rid}")
             except Exception:
                 pass
+try: _v177_legacy_0132_reminder_tick.__name__ = '_reminder_tick'
+except Exception: pass
+_reminder_tick = _v177_legacy_0132_reminder_tick
 
 
 def _reminder_scheduler_loop() -> None:
@@ -1357,7 +1393,7 @@ def _reminder_new_list_entries(day_key: str) -> list[tuple[str, int, object]]:
     return entries
 
 
-def build_reminder_list_text() -> str:
+def _v177_legacy_0124_build_reminder_list_text() -> str:
     if not reminder_ui_new_enabled():
         return _BUILD_REMINDER_LIST_TEXT_V141()
     rows = _reminder_items()
@@ -1371,9 +1407,12 @@ def build_reminder_list_text() -> str:
         "Настройка идёт по шагам: текст → чаты → период → расписание → проверка.\n"
         "Если в одном чате несколько напоминалок, бот объединяет их в одно сообщение каждые 2 часа."
     )
+try: _v177_legacy_0124_build_reminder_list_text.__name__ = 'build_reminder_list_text'
+except Exception: pass
+build_reminder_list_text = _v177_legacy_0124_build_reminder_list_text
 
 
-def build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
+def _v177_legacy_0126_build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
     if not reminder_ui_new_enabled():
         return _BUILD_REMINDER_LIST_KEYBOARD_V141(day_key, page)
     day_key = str(day_key or today_key())
@@ -1405,6 +1444,9 @@ def build_reminder_list_keyboard(day_key: str | None = None, page: int = 0):
     kb.row(IB(f"✅ Завершённые ({len(_reminder_completed_items())})", callback_data="rem:completed:0:0"))
     kb.row(IB("⬅️ Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
+try: _v177_legacy_0126_build_reminder_list_keyboard.__name__ = 'build_reminder_list_keyboard'
+except Exception: pass
+build_reminder_list_keyboard = _v177_legacy_0126_build_reminder_list_keyboard
 
 
 def _reminder_step_state(cfg: dict) -> list[str]:
@@ -1416,7 +1458,7 @@ def _reminder_step_state(cfg: dict) -> list[str]:
     ]
 
 
-def build_reminder_menu_text(reminder_id: int) -> str:
+def _v177_legacy_0128_build_reminder_menu_text(reminder_id: int) -> str:
     if not reminder_ui_new_enabled():
         return _BUILD_REMINDER_MENU_TEXT_V141(reminder_id)
     cfg = _reminder_cfg(reminder_id)
@@ -1438,9 +1480,12 @@ def build_reminder_menu_text(reminder_id: int) -> str:
         f"{int(cfg.get('start_hour',8)):02d}:00–{int(cfg.get('end_hour',22)):02d}:59\n\n"
         f"Состояние: {state}\nСледующая: {_reminder_fmt_dt(cfg.get('next_run_at'))}"
     )
+try: _v177_legacy_0128_build_reminder_menu_text.__name__ = 'build_reminder_menu_text'
+except Exception: pass
+build_reminder_menu_text = _v177_legacy_0128_build_reminder_menu_text
 
 
-def build_reminder_menu_keyboard(reminder_id: int, day_key: str | None = None, page: int = 0, viewer_chat_id: int | None = None):
+def _v177_legacy_0130_build_reminder_menu_keyboard(reminder_id: int, day_key: str | None = None, page: int = 0, viewer_chat_id: int | None = None):
     if not reminder_ui_new_enabled():
         return _BUILD_REMINDER_MENU_KEYBOARD_V141(reminder_id, day_key, page, viewer_chat_id)
     day_key = str(day_key or today_key())
@@ -1465,6 +1510,9 @@ def build_reminder_menu_keyboard(reminder_id: int, day_key: str | None = None, p
     )
     kb.row(IB("⬅️ К напоминалкам", callback_data=_reminder_return_callback(page, day_key)))
     return kb
+try: _v177_legacy_0130_build_reminder_menu_keyboard.__name__ = 'build_reminder_menu_keyboard'
+except Exception: pass
+build_reminder_menu_keyboard = _v177_legacy_0130_build_reminder_menu_keyboard
 
 
 def reminder_schedule_text(reminder_id: int) -> str:
@@ -1658,16 +1706,19 @@ def _reminder_group_next_time(now_dt: datetime, members: list[tuple[int, dict]])
     return None
 
 
-def _reminder_group_delete_message(target_chat_id: int, message_id: int) -> None:
+def _v177_legacy_0134_reminder_group_delete_message(target_chat_id: int, message_id: int) -> None:
     if not message_id:
         return
     try:
         bot.delete_message(int(target_chat_id), int(message_id))
     except Exception:
         pass
+try: _v177_legacy_0134_reminder_group_delete_message.__name__ = '_reminder_group_delete_message'
+except Exception: pass
+_reminder_group_delete_message = _v177_legacy_0134_reminder_group_delete_message
 
 
-def _reminder_group_send_job(target_chat_id: int, day_key: str, force: bool = False) -> None:
+def _v177_legacy_0135_reminder_group_send_job(target_chat_id: int, day_key: str, force: bool = False) -> None:
     target_chat_id = int(target_chat_id)
     day_key = str(day_key or today_key())
     now_dt = now_local()
@@ -1727,6 +1778,9 @@ def _reminder_group_send_job(target_chat_id: int, day_key: str, force: bool = Fa
         bot_journal("reminder_group_sent", target_chat_id, f"members={[rid for rid,_ in snapshot]} message_id={sent.message_id}")
     except Exception:
         pass
+try: _v177_legacy_0135_reminder_group_send_job.__name__ = '_reminder_group_send_job'
+except Exception: pass
+_reminder_group_send_job = _v177_legacy_0135_reminder_group_send_job
 
 
 def _reminder_finance_priority_busy() -> bool:
@@ -1754,7 +1808,7 @@ def _reminder_cleanup_stale_groups(active_keys: set[str]) -> None:
                 pool.submit_unique(f"reminder-group-clean:{cid}:{mid}", _reminder_group_delete_message, cid, mid)
 
 
-def _reminder_tick() -> None:
+def _v177_legacy_0133_reminder_tick() -> None:
     """Old mode sends every reminder individually; new mode groups only reminders due now.
 
     A configured same-day group no longer suppresses a single reminder whose partner is not
@@ -1835,5 +1889,8 @@ def _reminder_tick() -> None:
             pass
     if completed_changed:
         _reminder_save("reminder_completed_tick")
+try: _v177_legacy_0133_reminder_tick.__name__ = '_reminder_tick'
+except Exception: pass
+_reminder_tick = _v177_legacy_0133_reminder_tick
 
-# v143_audit_stability_exact_wait_reminders_memory
+# v178_global_performance_final

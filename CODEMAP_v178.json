@@ -1,0 +1,1492 @@
+{
+  "version": "bot_v178_global_performance_final",
+  "architecture": {
+    "runtime_parts": 46,
+    "source_lines": 65761,
+    "duplicate_top_level_definitions": 0,
+    "legacy_compat_implementations": 995,
+    "rule": "One top-level def/class name appears once. Performance/UI fixes apply to owner, first circle and second circle whenever the function is available."
+  },
+  "hot_paths": {
+    "Main day open/prev/next/today ALL CONTOURS": {
+      "active": "on_callback",
+      "file": "80_callback_router.py",
+      "note": "one shared render + safe_edit path; no owner-only synchronous branch"
+    },
+    "Telegram UI edit/retry": {
+      "active": "_v161_edit_retry",
+      "file": "123_v178_global_performance_final.py",
+      "note": "one synchronous edit; optional retry deferred"
+    },
+    "safe_edit": {
+      "active": "safe_edit",
+      "file": "111_v161_button_window_stability.py",
+      "note": "common callback editor for every contour"
+    },
+    "Keyboard-only callback updates": {
+      "active": "v178_edit_reply_markup_async",
+      "file": "70_fast_ui.py",
+      "note": "non-blocking callback markup updates"
+    },
+    "MEGA command priority": {
+      "active": "_v178_mega_gate_enter",
+      "file": "10_mega_runtime.py",
+      "note": "business durability before diagnostics/maintenance"
+    },
+    "MEGA login cache": {
+      "active": "mega_login_if_needed",
+      "file": "10_mega_runtime.py",
+      "note": "whoami cached for runtime TTL"
+    },
+    "MEGA directory cache": {
+      "active": "_v178_mega_ensure_cached_path",
+      "file": "10_mega_runtime.py",
+      "note": "mkdir each remote path once per process"
+    },
+    "Runtime remote heartbeat": {
+      "active": "_runtime_heartbeat_job",
+      "file": "123_v178_global_performance_final.py",
+      "note": "default 180 sec; critical runtime events remain immediate"
+    },
+    "Memory guard": {
+      "active": "memory_guard_tick",
+      "file": "17_memory_runtime.py",
+      "note": "critical uses trim cooldown; emergency can force"
+    },
+    "Failed task deep scan": {
+      "active": "refresh_failed_task_diagnostics",
+      "file": "123_v178_global_performance_final.py",
+      "note": "off by default; failed records retained and manual diagnostics available"
+    },
+    "Task dispatcher callback": {
+      "active": "_v174_callback",
+      "file": "121_v174_simplified_task_dispatcher.py",
+      "note": "fallback uses fast UI, all enabled chats"
+    },
+    "Tenant reminders callback": {
+      "active": "_v149_callback",
+      "file": "94_v149_tenant_google_merged_reminders.py",
+      "note": "completion UI uses safe_edit"
+    }
+  },
+  "callbacks": [
+    "secret_cancel",
+    "d:{store.get(",
+    "itmr_pick:{key}",
+    "itmr_back_info",
+    "d:{day}:back_main",
+    "info_close",
+    "itmr_unit:m",
+    "itmr_unit:s",
+    "itmr_digit:{value}",
+    "itmr_backspace",
+    "itmr_clear",
+    "itmr_apply",
+    "internal_timers",
+    "excel_style_toggle",
+    "journal_back",
+    "fw_probe_one:{cid}",
+    "none",
+    "fw_probe_all",
+    "fw_back_src",
+    "aux_close",
+    "fv:{target_chat_id}:{start}:open:{owner_day_key}",
+    "dzv:{cid}",
+    "d:{get_chat_store(chat_id).get(",
+    "dzv:close",
+    "bp:open",
+    "expense_inbox_open",
+    "expense_shortcut_test",
+    "expense_evening_done",
+    "expense_draft_dismiss:{int(draft_id)}",
+    "expense_draft_open:{row.get(",
+    "expense_evening_toggle",
+    "expense_evening_now",
+    "d:{day}:info",
+    "expense_draft_resolved:{int(draft_id)}",
+    "d:{today_key()}:back_main",
+    "secmclose",
+    "secmwait",
+    "secdelt:{target_chat_id}:{day_key}:{mode}",
+    "secdelgo:{target_chat_id}:{day_key}",
+    "secchatcal:{target_chat_id}:{day_key[:7]}",
+    "secclose",
+    "secview:{target_chat_id}:{prev_day}",
+    "secview:{target_chat_id}:{today_key()}",
+    "secview:{target_chat_id}:{next_day}",
+    "secmedia:{target_chat_id}:{day_key}",
+    "secedit:{target_chat_id}:{day_key}",
+    "secbacklist",
+    "secedfull:{target_chat_id}:{day_key}:{record_id}",
+    "secedtoggle:{target_chat_id}:{day_key}:{record_id}",
+    "secedselected:{target_chat_id}:{day_key}",
+    "secview:{target_chat_id}:{day_key}",
+    "seclist:{cid}",
+    "sectoggle:{cid}",
+    "secchatcal:{cid}",
+    "secchatcal:{target_chat_id}:{month_key}",
+    "secdel:{target_chat_id}:{month_key}-01",
+    "secday:{target_chat_id}:{day_key}",
+    "secmon:{target_chat_id}:{prev}",
+    "secmon:{target_chat_id}:{nxt}",
+    "secmonthlist:{target_chat_id}:{month_key}",
+    "secdel:{target_chat_id}:{anchor_day}",
+    "addown:{cid}",
+    "v168:owners_circle:{other}",
+    "rem:completed_select:{rid}:{page}",
+    "rem:completed_open:{rid}:{page}",
+    "rem:completed:{page-1}:{1 if delete_mode else 0}",
+    "rem:completed:{page+1}:{1 if delete_mode else 0}",
+    "rem:completed_delete_selected:{page}",
+    "rem:completed_cancel_select:{page}",
+    "rem:completed_select_mode:{page}",
+    "rem:list:0:{today_key()}",
+    "rem:add:{page}:{day_key}",
+    "rem:open:{rid}:{page}:{day_key}",
+    "rem:list:{page-1}:{day_key}",
+    "rem:list:{page+1}:{day_key}",
+    "rem:completed:0:0",
+    "d:{day_key}:back_main",
+    "rem:chats:{reminder_id}:0:{page}:{day_key}",
+    "rem:dates:{reminder_id}:{page}:{day_key}",
+    "rem:interval:{reminder_id}:{page}:{day_key}",
+    "rem:hours:start:{reminder_id}:{page}:{day_key}",
+    "rem:hours:end:{reminder_id}:{page}:{day_key}",
+    "rem:toggle:{reminder_id}:{page}:{day_key}",
+    "rem:editmenu:{reminder_id}:{page}:{day_key}",
+    "rem:delete_confirm:{reminder_id}:{page}:{day_key}",
+    "rem:open:{reminder_id}:{page}:{day_key}",
+    "rem:calendar:start:{now_ym}:{reminder_id}:{page}:{day_key}",
+    "rem:calendar:end:{now_ym}:{reminder_id}:{page}:{day_key}",
+    "rem:noend:{reminder_id}:{page}:{day_key}",
+    "rem:date:{which}:{date_key}:{reminder_id}:{page}:{day_key}",
+    "rem:calendar:{which}:{prev_year:04d}-{prev_month:02d}:{reminder_id}:{page}:{day_key}",
+    "rem:calendar:{which}:{next_year:04d}-{next_month:02d}:{reminder_id}:{page}:{day_key}",
+    "rem:intset:{minutes}:{reminder_id}:{page}:{day_key}",
+    "rem:hourset:{which}:{hour}:{reminder_id}:{page}:{day_key}",
+    "rem:chat:{cid}:{reminder_id}:{chat_page}:{list_page}:{day_key}",
+    "rem:chats:{reminder_id}:{chat_page-1}:{list_page}:{day_key}",
+    "rem:chats:{reminder_id}:{chat_page+1}:{list_page}:{day_key}",
+    "rem:open:{reminder_id}:{list_page}:{day_key}",
+    "rem:delete:{rid}:{page}:{day_key}",
+    "rem:group_open:{int(cid)}:{page}:{day_key}",
+    "rem:schedule:{reminder_id}:{page}:{day_key}",
+    "rem:preview:{reminder_id}:{page}:{day_key}",
+    "rem:group_toggle:{int(target_chat_id)}:{page}:{day_key}",
+    "rem:group_set2h:{int(target_chat_id)}:{page}:{day_key}",
+    "rem:group_sync:{int(target_chat_id)}:{page}:{day_key}",
+    "rem:group_test:{int(target_chat_id)}:{page}:{day_key}",
+    "rem:list:{page}:{day_key}",
+    "fwdcopy_edit",
+    "fwdcopy_edit_cancel",
+    "currency_select:{mode}",
+    "currency_back",
+    "gomonk_toggle:{currency}",
+    "gomonk_back:{currency}",
+    "d:{day_key}:value_rec_{rid}",
+    "remaining_open:{prev_key}",
+    "remaining_open:{today_key()}",
+    "remaining_open:{next_key}",
+    "remaining_toggle:{day_key}",
+    "d:{prev_dt.strftime(",
+    "d:{today_key()}:usd_month",
+    "d:{next_dt.strftime(",
+    "d:{str(day_key)[:10]}:back_main",
+    "d:{day_key}:backup_mass_{target}",
+    "d:{day_key}:backup_toggle_channel_{cid}",
+    "d:{day_key}:backup_toggle_mega_{cid}",
+    "d:{day_key}:prev",
+    "d:{day_key}:today",
+    "d:{day_key}:next",
+    "d:{day_key}:calendar",
+    "d:{day_key}:report",
+    "d:{day_key}:total",
+    "d:{day_key}:edit_list",
+    "d:{day_key}:csv_all",
+    "d:{day_key}:usd_month",
+    "d:{day_key}:usd_tx_toggle",
+    "d:{day_key}:info",
+    "remaining_open:{day_key}",
+    "d:{day_key}:forward_menu",
+    "d:{day_key}:forward_finmode_menu",
+    "rem:list:0:{day_key}",
+    "d:{day_key}:backup_menu",
+    "v160:export_tz",
+    "main_close:{day_key}",
+    "rep:{prev_month.strftime(",
+    "rep_today",
+    "rep:{next_month.strftime(",
+    "rep_close",
+    "d:{key}:open",
+    "c:{prev_month.strftime(",
+    "c:{next_month.strftime(",
+    "c:{prev_year.strftime(",
+    "c:{next_year.strftime(",
+    "c:{now_local().strftime(",
+    "d:{today_key()}:open",
+    "d:{back_day_key}:back_main",
+    "d:{return_day_key}:csv_all",
+    "d:{owner_day_key}:back_main",
+    "d:{return_day_key}:back_main",
+    "d:{day_key}:edit_menu",
+    "d:{day_key}:cancel_edit",
+    "fv:{target_chat_id}:{day_key}:cancel_edit:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:open:{owner_day_key}",
+    "chat_desc_open:{origin}:{int(cid)}",
+    "chat_desc_page:{origin}:{target_chat_id}:{page - 1}",
+    "chat_desc_page:{origin}:{target_chat_id}:{page + 1}",
+    "chat_desc_open:{origin}:{target_chat_id}",
+    "chat_desc_menu:{origin}",
+    "fw_src:{cid}",
+    "fw_src:{owner_item[0]}",
+    "chat_desc_menu:forward",
+    "fw_removed_list",
+    "fw_back_root",
+    "fw_tgt:{src_id}:{int_cid}",
+    "fw_tgt:{src_id}:{owner_item[0]}",
+    "fw_new_src:{A}",
+    "fw_new_pair:{A}:{B}",
+    "fw_new_mode:{A}:{B}:from",
+    "fw_new_mode:{A}:{B}:to",
+    "fw_new_mode:{A}:{B}:two",
+    "fw_new_fin:{A}:{B}:ba",
+    "fw_new_fin:{A}:{B}:ab",
+    "fw_new_clear:{A}:{B}",
+    "fw_new_back_src",
+    "fw_new_tgt:{A}:{int(cid)}",
+    "fw_new_src:{cid}",
+    "d:{day_key}:fw_finmode_pick_{int_cid}",
+    "chat_desc_menu:finmode",
+    "d:{day_key}:qb_cfg_{int_cid}",
+    "d:{day_key}:qb_cfg_{owner_item[0]}",
+    "d:{day_key}:fin_mode_toggle_{target_chat_id}",
+    "d:{day_key}:qb_mode_normal_{target_chat_id}",
+    "d:{day_key}:qb_mode_open_{target_chat_id}",
+    "d:{day_key}:qb_mode_first_{target_chat_id}",
+    "d:{day_key}:qb_hidden_toggle_{target_chat_id}",
+    "d:{day_key}:qb_finwin_open_{target_chat_id}",
+    "d:{day_key}:hf_pick_{int_cid}",
+    "fv:{chat_id}:{day_key}:del_selected:{owner_day_key or today_key()}",
+    "d:{day_key}:del_selected",
+    "fv:{chat_id}:{day_key}:clear_delete_back:{owner_day_key or today_key()}",
+    "d:{day_key}:finwin_open_{cid}",
+    "fv:{target_chat_id}:{prev_day}:open:{owner_day_key}",
+    "fv:{target_chat_id}:{today_key()}:open:{owner_day_key}",
+    "fv:{target_chat_id}:{next_day}:open:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:edit_list:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:csv_menu:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:calendar:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:report:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:total:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:usd_month:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:reset:{owner_day_key}",
+    "fv:{target_chat_id}:{day_key}:info:{owner_day_key}",
+    "d:{owner_day_key}:fin_windows_menu",
+    "fv:{target_chat_id}:{prev_dt.strftime(",
+    "fv:{target_chat_id}:{today_key()}:usd_month:{owner_day_key}",
+    "fv:{target_chat_id}:{next_dt.strftime(",
+    "fv:{target_chat_id}:{ref}:open:{owner_day_key}",
+    "fv:{target_chat_id}:{key}:open:{owner_day_key}",
+    "fc:{target_chat_id}:{prev_month.strftime(",
+    "fc:{target_chat_id}:{next_month.strftime(",
+    "fc:{target_chat_id}:{prev_year.strftime(",
+    "fc:{target_chat_id}:{next_year.strftime(",
+    "fc:{target_chat_id}:{today_key()}:{owner_day_key}",
+    "fv:{target_chat_id}:{store.get(",
+    "fw_mode:{A}:{B}:to",
+    "fw_mode:{A}:{B}:from",
+    "fw_mode:{A}:{B}:two",
+    "fw_finpair:{A}:{B}:ab",
+    "fw_finpair:{A}:{B}:ba",
+    "fw_mode:{A}:{B}:del",
+    "fw_back_tgt:{A}",
+    "nav_prev",
+    "cat_page:prev",
+    "cat_page:next",
+    "info_queues",
+    "journal_chat_toggle:{cid}:{page}",
+    "journal_chats_open:{page - 1}",
+    "journal_chats_open:{page + 1}",
+    "journal_chats_back",
+    "expense_shortcut_pick",
+    "expense_shortcut_send_url",
+    "expense_quick_buttons_toggle",
+    "expense_shortcut_regenerate",
+    "expense_shortcut_target:{cid}",
+    "expense_shortcut_info",
+    "journal_open",
+    "journal_toggle",
+    "journal_chats_open",
+    "journal_chat_toggle:{chat_id}:0",
+    "buttons_current_toggle",
+    "info_finance_off",
+    "forward_copy_edit_mode_toggle",
+    "forward_menu_style_toggle",
+    "icon_buttons_toggle",
+    "restore_guard_toggle",
+    "mega_manual_restore",
+    "total_secret_mask_toggle",
+    "finance_day5_toggle",
+    "mega_priority_toggle",
+    "main_financial_values_toggle",
+    "gomonk_open:{_gomonk_currency(chat_id)}",
+    "currency_menu",
+    "usd_display_toggle",
+    "main_articles_toggle",
+    "keepalive_status",
+    "v169:gmenu:{int(chat_id)}",
+    "reminder_ui_mode_toggle",
+    "process_center",
+    "safety_profile_toggle",
+    "problem_tasks",
+    "integrity_status",
+    "excel_style_menu",
+    "info_instruction",
+    "runtime_watcher",
+    "info_delta_status",
+    "additional_owners",
+    "security_roles:0",
+    "security_role_user:{uid}:{page}",
+    "security_roles:{page-1}",
+    "security_roles:{page+1}",
+    "safety_profile_open",
+    "security_role_set:{uid}:{role}:{int(page)}",
+    "security_roles:{int(page)}",
+    "journal_file",
+    "journal_current_file",
+    "journal_bot_source",
+    "runtime_events",
+    "runtime_snapshot_now",
+    "runtime_export",
+    "mega_tasks_check",
+    "mega_tasks_recover",
+    "mega_tasks_retry_failed",
+    "ncb:{chat_id}:yes",
+    "ncb:{chat_id}:no",
+    "ojr:{key}:yes",
+    "ojr:{key}:no",
+    "sp:open:{tid}",
+    "sp:chats:{current_tid}",
+    "sp:users:{current_tid}",
+    "sp:chatlink:{current_tid}",
+    "sp:userlink:{current_tid}:operator",
+    "sp:chats:{tid}",
+    "sp:users:{tid}",
+    "sp:chatlink:{tid}",
+    "sp:userlink:{tid}:operator",
+    "sp:userlink:{tid}:viewer",
+    "sp:list:x",
+    "d:{day_key}:finwin_open_{int(cid)}",
+    "sp:dashboard",
+    "v149:google:connect",
+    "v149:google:sheet",
+    "v149:google:folder",
+    "v149:google:owner_email",
+    "v149:google:toggle_sheet",
+    "v149:google:toggle_drive",
+    "v149:google:create_sheet",
+    "v149:google:test",
+    "v149:google:history",
+    "v149:google:errors",
+    "v149:google:disconnect_confirm",
+    "v149:rem:merge:{page}:{day_key}",
+    "v149:rem:command:{page}:{day_key}",
+    "v149:rem:history",
+    "v149:rem:done:{int(rid)}:{int(chat_id)}",
+    "v149:google:disconnect",
+    "v149:google:status",
+    "v152:r:g:0",
+    "v152:r:t:{tid}:0",
+    "v152:r:c:{int(cid)}:0",
+    "v152:r:l:{page - 1}",
+    "v152:r:l:{page + 1}",
+    "v152:r:i:{int(target)}:{int(page)}",
+    "v152:r:p:{scope[0]}:{target}:{preset}:{int(page)}",
+    "v152:r:x:{scope[0]}:{target}:{idx}:{int(page)}",
+    "v152:r:l:{int(page)}",
+    "v152:r:l:0",
+    "v153:file:{token}",
+    "v153:restore:{token}:replace",
+    "v153:restore:{token}:merge",
+    "v153:restore:{token}:cancel",
+    "v153:json:global",
+    "v153:json:tenant:{tid}",
+    "v153:json:menu",
+    "v156:process_visual_toggle",
+    "v157:process_owner_toggle",
+    "v157:process_others_toggle",
+    "v157:process_menu",
+    "v160:marker_capture",
+    "v160:tz_capture",
+    "v160:export_markers",
+    "v164:space_circle:1",
+    "v164:space_circle:2",
+    "sp:chatlink:{tenant_id_for_chat(cid, create=True, actor_user_id=uid)}",
+    "sp:users:{tenant_id_for_chat(cid, create=True, actor_user_id=uid)}",
+    "sp:dashboard:x",
+    "v164:circle:{kind}:{other}{suffix}",
+    "d:{day_key}:fw_finmode_pick_{cid}",
+    "v164:finback:{level}:{day_key}",
+    "d:{day_key}:fw_finmode_pick_{oid}",
+    "chat_desc_open:{origin}:{owner_item[0]}",
+    "chat_desc_open:{origin}:{cid}",
+    "v167:gtoggle:{target}",
+    "v167:gtime:{target}:0001",
+    "v167:gtime:{target}:0501",
+    "v167:gnow:{target}",
+    "v169:gmode:{target_chat_id}:{value}",
+    "v169:gnow:{target_chat_id}",
+    "v167:export_tz_archive",
+    "v171:desc",
+    "v171:desc_close",
+    "v172:task:st:{uid}:{code}",
+    "v172:task:prio:{uid}",
+    "v172:task:input:{uid}:deadline",
+    "v172:task:take:{uid}",
+    "v172:task:input:{uid}:assign",
+    "v172:task:input:{uid}:object",
+    "v172:task:input:{uid}:text",
+    "v172:task:input:{uid}:cost",
+    "v172:task:input:{uid}:comment",
+    "v172:task:hist:{uid}",
+    "v172:task:source:{uid}",
+    "v172:task:del:{uid}",
+    "v172:task:new:task",
+    "v172:task:new:purchase",
+    "v172:task:list:active:0",
+    "v172:task:list:mine:0",
+    "v172:task:list:urgent:0",
+    "v172:task:list:overdue:0",
+    "v172:task:list:work:0",
+    "v172:task:list:wait:0",
+    "v172:task:list:deferred:0",
+    "v172:task:list:purchase:0",
+    "v172:task:groups:object:0",
+    "v172:task:groups:assignee:0",
+    "v172:task:list:done:0",
+    "v172:task:search",
+    "v172:task:open:{task.get(",
+    "v172:task:list:{filt}:{prevp}",
+    "v172:task:list:{filt}:{nextp}",
+    "v172:task:groupopen:{kind}:{token}:0",
+    "v172:task:groups:{kind}:{(page-1)%pages}",
+    "v172:task:groups:{kind}:{(page+1)%pages}",
+    "v172:task:toggle:{cid}:{page}",
+    "v172:task:admin:{(page-1)%pages}",
+    "v172:task:admin:{(page+1)%pages}",
+    "v172:task:groupopen:{kind}:{token}:{(page-1)%pages}",
+    "v172:task:groupopen:{kind}:{token}:{(page+1)%pages}",
+    "v172:task:delok:{uid}",
+    "v172:task:open:{uid}",
+    "v172:task:admin:0",
+    "v174:td:admin:1:0",
+    "v174:td:admin:2:0",
+    "v174:td:toggle:{cid}:{level}:{page}",
+    "v174:td:admin:{level}:{(page - 1) % pages}",
+    "v174:td:admin:{level}:{(page + 1) % pages}",
+    "v174:td:new:task",
+    "v174:td:new:purchase",
+    "v174:td:list:active:0",
+    "v174:td:list:mine:0",
+    "v174:td:list:urgent:0",
+    "v174:td:list:deferred:0",
+    "v174:td:list:done:0",
+    "v174:td:list:cancelled:0",
+    "v174:td:keywords",
+    "v174:td:status:{uid}:ordered",
+    "v174:td:status:{uid}:received",
+    "v174:td:status:{uid}:work",
+    "v174:td:status:{uid}:done",
+    "v174:td:status:{uid}:deferred",
+    "v174:td:status:{uid}:cancelled",
+    "v174:td:edit:{uid}",
+    "v174:td:history:{uid}",
+    "v174:td:input:{uid}:text",
+    "v174:td:input:{uid}:deadline",
+    "v174:td:priority:{uid}",
+    "v174:td:take:{uid}",
+    "v174:td:input:{uid}:object",
+    "v174:td:input:{uid}:comment",
+    "v174:td:open:{task.get(",
+    "v174:td:list:{filt}:{(page - 1) % pages}",
+    "v174:td:list:{filt}:{(page + 1) % pages}",
+    "v174:td:auto",
+    "v174:td:kw:task",
+    "v174:td:kw:purchase",
+    "v174:td:kw:done",
+    "v174:td:kw:work",
+    "v174:td:kw:deferred",
+    "v174:td:kw:cancelled",
+    "v174:td:kwreset:all",
+    "v174:td:kwedit:{kind}",
+    "v174:td:kwreset:{kind}",
+    "v174:td:menu",
+    "v175:heavy_toggle",
+    "v176:p:{p}",
+    "v176:t:{code}",
+    "v176:profile:fast",
+    "v176:profile:all",
+    "v176:profile:minimal",
+    "v176:speed",
+    "v176:back_info",
+    "v176:speed_clear",
+    "v176:menu"
+  ],
+  "window_markers": {
+    "П1": [
+      "00_core.py"
+    ],
+    "П2": [
+      "00_core.py"
+    ],
+    "П3": [
+      "00_core.py"
+    ],
+    "П4": [
+      "00_core.py"
+    ],
+    "П5": [
+      "00_core.py"
+    ],
+    "П6": [
+      "00_core.py"
+    ],
+    "П7": [
+      "00_core.py"
+    ],
+    "П8": [
+      "00_core.py"
+    ],
+    "П9": [
+      "00_core.py"
+    ],
+    "П10": [
+      "00_core.py"
+    ],
+    "П11": [
+      "00_core.py"
+    ],
+    "П12": [
+      "00_core.py"
+    ],
+    "П13": [
+      "00_core.py"
+    ],
+    "П14": [
+      "00_core.py"
+    ],
+    "П15": [
+      "00_core.py"
+    ],
+    "П16": [
+      "00_core.py"
+    ],
+    "П17": [
+      "00_core.py"
+    ],
+    "П18": [
+      "00_core.py"
+    ],
+    "П19": [
+      "00_core.py"
+    ],
+    "П20": [
+      "00_core.py"
+    ],
+    "П21": [
+      "00_core.py"
+    ],
+    "П22": [
+      "00_core.py"
+    ],
+    "П23": [
+      "00_core.py"
+    ],
+    "П24": [
+      "00_core.py"
+    ],
+    "П25": [
+      "00_core.py"
+    ],
+    "П26": [
+      "00_core.py"
+    ],
+    "П27": [
+      "00_core.py"
+    ],
+    "П28": [
+      "00_core.py"
+    ],
+    "П29": [
+      "00_core.py"
+    ],
+    "П30": [
+      "00_core.py"
+    ],
+    "П31": [
+      "00_core.py"
+    ],
+    "С1": [
+      "00_core.py"
+    ],
+    "С2": [
+      "00_core.py"
+    ],
+    "С3": [
+      "00_core.py"
+    ],
+    "С4": [
+      "00_core.py"
+    ],
+    "С5": [
+      "00_core.py"
+    ],
+    "С6": [
+      "00_core.py"
+    ],
+    "С7": [
+      "00_core.py"
+    ],
+    "С8": [
+      "00_core.py"
+    ],
+    "С9": [
+      "00_core.py"
+    ],
+    "С10": [
+      "00_core.py"
+    ],
+    "С11": [
+      "00_core.py"
+    ],
+    "С12": [
+      "00_core.py"
+    ],
+    "С13": [
+      "00_core.py"
+    ],
+    "С14": [
+      "00_core.py"
+    ],
+    "С15": [
+      "00_core.py"
+    ],
+    "С16": [
+      "00_core.py"
+    ],
+    "С17": [
+      "00_core.py"
+    ],
+    "С18": [
+      "00_core.py"
+    ],
+    "С19": [
+      "00_core.py"
+    ],
+    "С20": [
+      "00_core.py"
+    ],
+    "Ф1": [
+      "00_core.py",
+      "80_callback_router.py"
+    ],
+    "Ф2": [
+      "00_core.py",
+      "117_v167_excel_formulas_thuwed_google_tz.py",
+      "80_callback_router.py"
+    ],
+    "Ф3": [
+      "00_core.py"
+    ],
+    "Ф4": [
+      "00_core.py"
+    ],
+    "Ф5": [
+      "00_core.py"
+    ],
+    "Ф6": [
+      "00_core.py"
+    ],
+    "Ф7": [
+      "00_core.py"
+    ],
+    "Ф8": [
+      "00_core.py"
+    ],
+    "Ф9": [
+      "00_core.py",
+      "106_v156_process_status_usd_excel.py"
+    ],
+    "Ф10": [
+      "00_core.py"
+    ],
+    "Ф11": [
+      "00_core.py"
+    ],
+    "Ф12": [
+      "00_core.py"
+    ],
+    "Ф13": [
+      "00_core.py"
+    ],
+    "Ф14": [
+      "00_core.py"
+    ],
+    "Ф15": [
+      "00_core.py"
+    ],
+    "Ф16": [
+      "00_core.py"
+    ],
+    "Ф17": [
+      "00_core.py"
+    ],
+    "Ф18": [
+      "00_core.py"
+    ],
+    "Ф19": [
+      "00_core.py"
+    ],
+    "Ф20": [
+      "00_core.py"
+    ],
+    "Ф21": [
+      "00_core.py"
+    ],
+    "Ф22": [
+      "00_core.py"
+    ],
+    "Ф23": [
+      "00_core.py"
+    ],
+    "Ф24": [
+      "00_core.py"
+    ],
+    "Ф25": [
+      "00_core.py"
+    ],
+    "Ф26": [
+      "00_core.py"
+    ],
+    "Ф27": [
+      "00_core.py"
+    ],
+    "Ф28": [
+      "00_core.py"
+    ],
+    "Ф29": [
+      "00_core.py"
+    ],
+    "Ф30": [
+      "00_core.py"
+    ],
+    "Ф31": [
+      "00_core.py"
+    ],
+    "Ф32": [
+      "00_core.py"
+    ],
+    "Ф33": [
+      "00_core.py"
+    ],
+    "Ф34": [
+      "00_core.py"
+    ],
+    "Ф35": [
+      "00_core.py"
+    ],
+    "Ф36": [
+      "00_core.py"
+    ],
+    "Ф37": [
+      "00_core.py"
+    ],
+    "Ф38": [
+      "00_core.py"
+    ],
+    "Ф39": [
+      "00_core.py"
+    ],
+    "Ф40": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф41": [
+      "00_core.py"
+    ],
+    "Ф42": [
+      "00_core.py"
+    ],
+    "Ф43": [
+      "00_core.py"
+    ],
+    "Ф44": [
+      "00_core.py"
+    ],
+    "Ф45": [
+      "00_core.py"
+    ],
+    "Ф46": [
+      "00_core.py"
+    ],
+    "Ф47": [
+      "00_core.py",
+      "117_v167_excel_formulas_thuwed_google_tz.py"
+    ],
+    "Ф48": [
+      "00_core.py"
+    ],
+    "Ф49": [
+      "00_core.py"
+    ],
+    "Ф50": [
+      "00_core.py"
+    ],
+    "Ф51": [
+      "00_core.py"
+    ],
+    "Ф52": [
+      "00_core.py",
+      "114_v164_circle_hierarchy_spaces.py"
+    ],
+    "Ф53": [
+      "00_core.py",
+      "114_v164_circle_hierarchy_spaces.py"
+    ],
+    "Ф54": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py",
+      "111_v161_button_window_stability.py",
+      "118_v171_all_tz_reliability.py"
+    ],
+    "Ф55": [
+      "00_core.py"
+    ],
+    "Ф56": [
+      "00_core.py"
+    ],
+    "Ф57": [
+      "00_core.py"
+    ],
+    "Ф59": [
+      "00_core.py"
+    ],
+    "Ф177": [
+      "00_core.py"
+    ],
+    "Ф60": [
+      "00_core.py"
+    ],
+    "Ф61": [
+      "00_core.py"
+    ],
+    "Ф62": [
+      "00_core.py"
+    ],
+    "Ф63": [
+      "00_core.py"
+    ],
+    "Ф64": [
+      "00_core.py"
+    ],
+    "Ф65": [
+      "00_core.py"
+    ],
+    "Ф66": [
+      "00_core.py"
+    ],
+    "Ф67": [
+      "00_core.py"
+    ],
+    "Ф68": [
+      "00_core.py"
+    ],
+    "Ф69": [
+      "00_core.py"
+    ],
+    "Ф70": [
+      "00_core.py"
+    ],
+    "Ф71": [
+      "00_core.py"
+    ],
+    "Ф72": [
+      "00_core.py"
+    ],
+    "Ф73": [
+      "00_core.py"
+    ],
+    "Ф74": [
+      "00_core.py"
+    ],
+    "Ф75": [
+      "00_core.py"
+    ],
+    "Ф76": [
+      "00_core.py"
+    ],
+    "Ф77": [
+      "00_core.py"
+    ],
+    "Ф78": [
+      "00_core.py"
+    ],
+    "Ф79": [
+      "00_core.py"
+    ],
+    "Ф178": [
+      "00_core.py"
+    ],
+    "Ф80": [
+      "00_core.py"
+    ],
+    "Ф81": [
+      "00_core.py"
+    ],
+    "Ф82": [
+      "00_core.py"
+    ],
+    "Ф83": [
+      "00_core.py"
+    ],
+    "Ф84": [
+      "00_core.py"
+    ],
+    "Ф165": [
+      "00_core.py"
+    ],
+    "Ф166": [
+      "00_core.py"
+    ],
+    "Ф167": [
+      "00_core.py"
+    ],
+    "Ф168": [
+      "00_core.py"
+    ],
+    "Ф169": [
+      "00_core.py"
+    ],
+    "Ф170": [
+      "00_core.py"
+    ],
+    "Ф171": [
+      "00_core.py"
+    ],
+    "Ф172": [
+      "00_core.py"
+    ],
+    "Ф85": [
+      "00_core.py"
+    ],
+    "Ф86": [
+      "00_core.py"
+    ],
+    "Ф87": [
+      "00_core.py"
+    ],
+    "Ф88": [
+      "00_core.py"
+    ],
+    "Ф173": [
+      "00_core.py"
+    ],
+    "Ф174": [
+      "00_core.py"
+    ],
+    "Ф175": [
+      "00_core.py"
+    ],
+    "Ф176": [
+      "00_core.py"
+    ],
+    "Ф89": [
+      "00_core.py",
+      "110_v160_stability_parallel_windows_annotations.py",
+      "117_v167_excel_formulas_thuwed_google_tz.py"
+    ],
+    "Ф90": [
+      "00_core.py"
+    ],
+    "Ф91": [
+      "00_core.py",
+      "107_v157_process_menu_navigation_repair.py",
+      "109_v159_internal_timers_helper_windows.py",
+      "111_v161_button_window_stability.py",
+      "116_v166_fast_parallel_forward_pairs.py",
+      "117_v167_excel_formulas_thuwed_google_tz.py",
+      "118_v171_all_tz_reliability.py",
+      "92_v147_diagnostic_hardening.py"
+    ],
+    "Ф92": [
+      "00_core.py"
+    ],
+    "Ф93": [
+      "00_core.py"
+    ],
+    "Ф94": [
+      "00_core.py"
+    ],
+    "Ф95": [
+      "00_core.py"
+    ],
+    "Ф96": [
+      "00_core.py"
+    ],
+    "Ф97": [
+      "00_core.py"
+    ],
+    "Ф98": [
+      "00_core.py"
+    ],
+    "Ф99": [
+      "00_core.py"
+    ],
+    "Ф100": [
+      "00_core.py"
+    ],
+    "Ф101": [
+      "00_core.py"
+    ],
+    "Ф102": [
+      "00_core.py"
+    ],
+    "Ф103": [
+      "00_core.py"
+    ],
+    "Ф104": [
+      "00_core.py"
+    ],
+    "Ф105": [
+      "00_core.py"
+    ],
+    "Ф106": [
+      "00_core.py"
+    ],
+    "Ф107": [
+      "00_core.py"
+    ],
+    "Ф110": [
+      "00_core.py"
+    ],
+    "Ф109": [
+      "00_core.py"
+    ],
+    "Ф149": [
+      "00_core.py"
+    ],
+    "Ф111": [
+      "00_core.py"
+    ],
+    "Ф112": [
+      "00_core.py"
+    ],
+    "Ф113": [
+      "00_core.py"
+    ],
+    "Ф114": [
+      "00_core.py"
+    ],
+    "Ф115": [
+      "00_core.py"
+    ],
+    "Ф116": [
+      "00_core.py",
+      "113_v163_audit_hardening.py"
+    ],
+    "Ф179": [
+      "00_core.py",
+      "104_v154_excel_usd_isolation_date_marks.py",
+      "92_v147_diagnostic_hardening.py"
+    ],
+    "Ф180": [
+      "00_core.py",
+      "92_v147_diagnostic_hardening.py"
+    ],
+    "Ф181": [
+      "00_core.py"
+    ],
+    "Ф182": [
+      "00_core.py"
+    ],
+    "Ф183": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф184": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф185": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф186": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф187": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф188": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф189": [
+      "00_core.py",
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф190": [
+      "00_core.py"
+    ],
+    "Ф117": [
+      "00_core.py"
+    ],
+    "Ф118": [
+      "00_core.py"
+    ],
+    "Ф119": [
+      "00_core.py"
+    ],
+    "Ф120": [
+      "00_core.py"
+    ],
+    "Ф121": [
+      "00_core.py"
+    ],
+    "Ф122": [
+      "00_core.py"
+    ],
+    "Ф123": [
+      "00_core.py"
+    ],
+    "Ф124": [
+      "00_core.py"
+    ],
+    "Ф125": [
+      "00_core.py"
+    ],
+    "Ф126": [
+      "00_core.py"
+    ],
+    "Ф127": [
+      "00_core.py"
+    ],
+    "Ф128": [
+      "00_core.py"
+    ],
+    "Ф129": [
+      "00_core.py"
+    ],
+    "Ф130": [
+      "00_core.py"
+    ],
+    "Ф131": [
+      "00_core.py"
+    ],
+    "Ф132": [
+      "00_core.py"
+    ],
+    "Ф133": [
+      "00_core.py"
+    ],
+    "Ф134": [
+      "00_core.py"
+    ],
+    "Ф135": [
+      "00_core.py"
+    ],
+    "Ф136": [
+      "00_core.py"
+    ],
+    "Ф137": [
+      "00_core.py"
+    ],
+    "Ф138": [
+      "00_core.py"
+    ],
+    "Ф139": [
+      "00_core.py"
+    ],
+    "Ф140": [
+      "00_core.py"
+    ],
+    "Ф141": [
+      "00_core.py"
+    ],
+    "Ф142": [
+      "00_core.py"
+    ],
+    "Ф143": [
+      "00_core.py"
+    ],
+    "Ф144": [
+      "00_core.py"
+    ],
+    "Ф145": [
+      "00_core.py"
+    ],
+    "Ф146": [
+      "00_core.py"
+    ],
+    "Ф147": [
+      "00_core.py"
+    ],
+    "Ф148": [
+      "00_core.py"
+    ],
+    "Ф150": [
+      "00_core.py"
+    ],
+    "Ф151": [
+      "00_core.py"
+    ],
+    "Ф152": [
+      "00_core.py"
+    ],
+    "Ф153": [
+      "00_core.py"
+    ],
+    "Ф154": [
+      "00_core.py"
+    ],
+    "Ф155": [
+      "00_core.py"
+    ],
+    "Ф156": [
+      "00_core.py"
+    ],
+    "Ф157": [
+      "00_core.py"
+    ],
+    "Ф158": [
+      "00_core.py"
+    ],
+    "Ф159": [
+      "00_core.py"
+    ],
+    "Ф160": [
+      "00_core.py"
+    ],
+    "Ф161": [
+      "00_core.py"
+    ],
+    "Ф162": [
+      "00_core.py"
+    ],
+    "Ф163": [
+      "00_core.py"
+    ],
+    "Ф164": [
+      "00_core.py"
+    ],
+    "Ф191": [
+      "00_core.py",
+      "110_v160_stability_parallel_windows_annotations.py",
+      "111_v161_button_window_stability.py",
+      "118_v171_all_tz_reliability.py"
+    ],
+    "Ф192": [
+      "00_core.py"
+    ],
+    "Ф193": [
+      "00_core.py"
+    ],
+    "Ф194": [
+      "00_core.py"
+    ],
+    "Ф195": [
+      "00_core.py"
+    ],
+    "Ф196": [
+      "00_core.py"
+    ],
+    "Ф197": [
+      "00_core.py"
+    ],
+    "Ф198": [
+      "00_core.py"
+    ],
+    "Ф199": [
+      "00_core.py"
+    ],
+    "Ф200": [
+      "00_core.py"
+    ],
+    "Ф201": [
+      "00_core.py"
+    ],
+    "Ф202": [
+      "00_core.py"
+    ],
+    "Ф203": [
+      "00_core.py"
+    ],
+    "Ф204": [
+      "00_core.py"
+    ],
+    "Ф205": [
+      "00_core.py"
+    ],
+    "Ф206": [
+      "00_core.py"
+    ],
+    "Ф207": [
+      "00_core.py"
+    ],
+    "Ф208": [
+      "00_core.py"
+    ],
+    "Ф209": [
+      "00_core.py"
+    ],
+    "Ф210": [
+      "00_core.py"
+    ],
+    "Ф211": [
+      "00_core.py"
+    ],
+    "Ф212": [
+      "00_core.py"
+    ],
+    "Ф213": [
+      "00_core.py"
+    ],
+    "Ф214": [
+      "00_core.py"
+    ],
+    "Ф215": [
+      "00_core.py"
+    ],
+    "Ф216": [
+      "00_core.py"
+    ],
+    "С9998": [
+      "00_core.py",
+      "105_v155_button_navigation_audit.py"
+    ],
+    "Ф9998": [
+      "00_core.py",
+      "105_v155_button_navigation_audit.py"
+    ],
+    "П9998": [
+      "00_core.py",
+      "105_v155_button_navigation_audit.py"
+    ],
+    "Ф217": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф218": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф219": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф220": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф221": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф222": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф223": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф224": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф225": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф226": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф227": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф228": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф229": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф230": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф231": [
+      "107_v157_process_menu_navigation_repair.py"
+    ],
+    "Ф232": [
+      "109_v159_internal_timers_helper_windows.py",
+      "110_v160_stability_parallel_windows_annotations.py",
+      "111_v161_button_window_stability.py"
+    ],
+    "Ф233": [
+      "109_v159_internal_timers_helper_windows.py",
+      "110_v160_stability_parallel_windows_annotations.py",
+      "111_v161_button_window_stability.py",
+      "113_v163_audit_hardening.py",
+      "118_v171_all_tz_reliability.py"
+    ],
+    "Ф234": [
+      "109_v159_internal_timers_helper_windows.py"
+    ],
+    "Ф235": [
+      "110_v160_stability_parallel_windows_annotations.py",
+      "111_v161_button_window_stability.py"
+    ],
+    "Ф236": [
+      "110_v160_stability_parallel_windows_annotations.py",
+      "111_v161_button_window_stability.py"
+    ],
+    "Ф237": [
+      "110_v160_stability_parallel_windows_annotations.py",
+      "111_v161_button_window_stability.py"
+    ],
+    "Ф238": [
+      "110_v160_stability_parallel_windows_annotations.py",
+      "111_v161_button_window_stability.py"
+    ],
+    "Ф239": [
+      "114_v164_circle_hierarchy_spaces.py",
+      "117_v167_excel_formulas_thuwed_google_tz.py"
+    ],
+    "Ф240": [
+      "117_v167_excel_formulas_thuwed_google_tz.py"
+    ],
+    "Ф241": [
+      "118_v171_all_tz_reliability.py"
+    ],
+    "Ф242": [
+      "119_v172_task_dispatcher.py"
+    ],
+    "Ф243": [
+      "119_v172_task_dispatcher.py"
+    ],
+    "Ф244": [
+      "119_v172_task_dispatcher.py"
+    ],
+    "Ф245": [
+      "119_v172_task_dispatcher.py"
+    ],
+    "Ф246": [
+      "119_v172_task_dispatcher.py"
+    ],
+    "Ф247": [
+      "121_v174_simplified_task_dispatcher.py"
+    ],
+    "Ф248": [
+      "121_v174_simplified_task_dispatcher.py"
+    ],
+    "Ф249": [
+      "121_v174_simplified_task_dispatcher.py"
+    ],
+    "Ф250": [
+      "121_v174_simplified_task_dispatcher.py"
+    ]
+  },
+  "active_definitions_file": "ACTIVE_DEFINITIONS_v178.json"
+}

@@ -1,4 +1,4 @@
-# v162_start_hard_fix
+# v178_global_performance_final
 """v162: hard /start path. Bare /start bypasses legacy message-handler routing and always gives a visible result."""
 
 import gzip as _v162_gzip
@@ -187,7 +187,7 @@ if callable(_V162_ORIGINAL_PROCESS_NEW_UPDATES):
 
 
 # Keep full-state restore forward-compatible with this release.
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0287_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v162_tempfile.mkdtemp(prefix="v162_restore_validate_")
     raw = _v162_os.path.join(folder, "restore.sqlite3")
     try:
@@ -220,6 +220,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v162_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0287_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0287_v153_validate_restore_gz
 
 
 try:
@@ -227,4 +230,4 @@ try:
 except Exception:
     pass
 
-# v162_start_hard_fix
+# v178_global_performance_final

@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -227,7 +227,7 @@ def _v150_cell_value(value) -> float:
     return _v150_float(value)
 
 
-def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
+def _v177_legacy_0175_build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
     rows = _V150_BASE_CATEGORY_ROWS(target_chat_id, start_key, start_rid, end_key, end_rid)
     closing = 0.0
     for row in reversed(rows or []):
@@ -240,9 +240,12 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
     except Exception:
         products_total = 0.0
     return _v150_append_summary_rows(rows, int(target_chat_id), closing, products_total, "wide")
+try: _v177_legacy_0175_build_exact_category_stats_xlsx_rows.__name__ = 'build_exact_category_stats_xlsx_rows'
+except Exception: pass
+build_exact_category_stats_xlsx_rows = _v177_legacy_0175_build_exact_category_stats_xlsx_rows
 
 
-def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None = None) -> list[list]:
+def _v177_legacy_0091_xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None = None) -> list[list]:
     base = _V150_BASE_SIMPLE_ROWS(rows, opening_balance, target_chat_id) if _V150_BASE_SIMPLE_ROWS.__code__.co_argcount >= 3 else _V150_BASE_SIMPLE_ROWS(rows, opening_balance)
     closing = 0.0
     for row in reversed(base or []):
@@ -263,9 +266,12 @@ def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, ta
             if _v150_is_products_category(category):
                 products_total += expense
     return _v150_append_summary_rows(base, target_chat_id, closing, products_total, "wide")
+try: _v177_legacy_0091_xlsx_simple_rows_with_balances.__name__ = '_xlsx_simple_rows_with_balances'
+except Exception: pass
+_xlsx_simple_rows_with_balances = _v177_legacy_0091_xlsx_simple_rows_with_balances
 
 
-def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
+def _v177_legacy_0094_compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
     if _V150_BASE_COMPACT_ROWS.__code__.co_argcount >= 3:
         base, notes = _V150_BASE_COMPACT_ROWS(raw_rows, opening_balance, target_chat_id)
     else:
@@ -287,6 +293,9 @@ def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_ba
             if _v150_is_products_category(category):
                 products_total += abs(amount)
     return _v150_append_summary_rows(base, target_chat_id, closing, products_total, "compact"), notes
+try: _v177_legacy_0094_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
+except Exception: pass
+_compact_simple_excel_rows_and_annotations = _v177_legacy_0094_compact_simple_excel_rows_and_annotations
 
 
 # ─────────────────────────────────────────────────────────────
@@ -390,7 +399,7 @@ def _v150_prepare_intent(chat_id: int, currency: str, source_msg, amount: float,
     return key
 
 
-def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str = "", usd_only: bool = False, source_finance_text: str = ""):
+def _v177_legacy_0228_add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str = "", usd_only: bool = False, source_finance_text: str = ""):
     _v150_prepare_intent(int(chat_id), "ars", source_msg, amount, note)
     if usd_amount is not None:
         _v150_prepare_intent(int(chat_id), "usd", source_msg, usd_amount, usd_note or note)
@@ -400,9 +409,12 @@ def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, sourc
         if usd_amount is not None:
             _v150_apply_reserve_cover(int(chat_id), "usd", rec)
     return rec
+try: _v177_legacy_0228_add_record_to_chat.__name__ = 'add_record_to_chat'
+except Exception: pass
+add_record_to_chat = _v177_legacy_0228_add_record_to_chat
 
 
-def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, note: str, owner: int, source_msg=None, day_key: str | None = None):
+def _v177_legacy_0137_add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, note: str, owner: int, source_msg=None, day_key: str | None = None):
     ledger = "usd" if str(ledger).lower() == "usd" else "ars"
     _v150_prepare_intent(int(chat_id), ledger, source_msg, amount, note)
     store = get_chat_store(int(chat_id))
@@ -421,6 +433,9 @@ def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, not
     if isinstance(rec, dict):
         _v150_apply_reserve_cover(int(chat_id), ledger, rec)
     return rec
+try: _v177_legacy_0137_add_record_to_currency_ledger.__name__ = '_add_record_to_currency_ledger'
+except Exception: pass
+_add_record_to_currency_ledger = _v177_legacy_0137_add_record_to_currency_ledger
 
 
 def _v150_repair_pending_rebalances() -> int:
@@ -649,7 +664,7 @@ def _v150_status_line(chat_id: int) -> str:
     return f"{label}" + (f" · {reason[:90]}" if reason else "")
 
 
-def tenant_chats_text(tenant_id: str) -> str:
+def _v177_legacy_0259_tenant_chats_text(tenant_id: str) -> str:
     row = tenant_get(tenant_id) or {}
     lines = [f"💬 ЧАТЫ · {row.get('name')}", ""]
     for cid in row.get("chat_ids") or []:
@@ -660,6 +675,9 @@ def tenant_chats_text(tenant_id: str) -> str:
     if len(lines) == 2:
         lines.append("Нет подключённых чатов.")
     return "\n".join(lines)[:3900]
+try: _v177_legacy_0259_tenant_chats_text.__name__ = 'tenant_chats_text'
+except Exception: pass
+tenant_chats_text = _v177_legacy_0259_tenant_chats_text
 
 
 def _v150_chat_access(user_id: int, chat_id: int) -> bool:
@@ -868,10 +886,13 @@ def _v150_store_receipt(payload: dict):
     save_data(data, chat_ids=[chat_id] if chat_id is not None else None)
 
 
-def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str = "other"):
+def _v177_legacy_0073_execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str = "other"):
     result = _V150_BASE_EXECUTE_PAYLOAD(payload, update_id=update_id, update_chat_id=update_chat_id, update_type=update_type)
     _v150_store_receipt(payload)
     return result
+try: _v177_legacy_0073_execute_telegram_payload.__name__ = '_execute_telegram_payload'
+except Exception: pass
+_execute_telegram_payload = _v177_legacy_0073_execute_telegram_payload
 
 
 def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
@@ -1018,7 +1039,7 @@ def _v150_migrate_chat_lifecycle() -> int:
     return count
 
 
-def set_webhook():
+def _v177_legacy_0270_set_webhook():
     global restore_mode
     try:
         _saved_restore_chat = data.get("_restore_mode_chat_v150")
@@ -1033,5 +1054,8 @@ def set_webhook():
     result = _V150_BASE_SET_WEBHOOK()
     _v150_register_commands()
     return result
+try: _v177_legacy_0270_set_webhook.__name__ = 'set_webhook'
+except Exception: pass
+set_webhook = _v177_legacy_0270_set_webhook
 
-# v168_clean_core_record_identity
+# v178_global_performance_final

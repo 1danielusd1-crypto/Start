@@ -1,4 +1,4 @@
-# v171_all_tz_reliability
+# v178_global_performance_final
 """v171: implement all open v169 window TZ items and reliability fixes.
 
 The patch is intentionally loaded last.  It repairs active runtime hooks instead of
@@ -157,7 +157,7 @@ def forward_copy_edit_mode_label(chat_id: int) -> str:
 _V171_PREV_REMINDER_CHAT_ALLOWED = globals().get("_v149_reminder_chat_allowed")
 
 
-def _v149_reminder_chat_allowed(cfg: dict, chat_id: int) -> bool:
+def _v177_legacy_0265_v149_reminder_chat_allowed(cfg: dict, chat_id: int) -> bool:
     cid = int(chat_id)
     try:
         selected = {int(x) for x in ((cfg or {}).get("chat_ids") or [])}
@@ -180,6 +180,9 @@ def _v149_reminder_chat_allowed(cfg: dict, chat_id: int) -> bool:
         return bool(_v149_chat_belongs_to_tenant(cid, tid))
     except Exception:
         return bool(_V171_PREV_REMINDER_CHAT_ALLOWED(cfg, cid)) if callable(_V171_PREV_REMINDER_CHAT_ALLOWED) else False
+try: _v177_legacy_0265_v149_reminder_chat_allowed.__name__ = '_v149_reminder_chat_allowed'
+except Exception: pass
+_v149_reminder_chat_allowed = _v177_legacy_0265_v149_reminder_chat_allowed
 
 
 V171_REMINDER_MERGE_MODES = ("off", "smart", "single")
@@ -543,7 +546,7 @@ def _v171_info_group(row) -> str:
     return "other"
 
 
-def build_info_keyboard(chat_id: int):
+def _v177_legacy_0221_build_info_keyboard(chat_id: int):
     kb = _V171_PREV_BUILD_INFO_KEYBOARD(int(chat_id)) if callable(_V171_PREV_BUILD_INFO_KEYBOARD) else types.InlineKeyboardMarkup()
     rows = _v171_kb_rows(kb)
     if not rows or not is_owner_chat(int(chat_id)):
@@ -565,6 +568,9 @@ def build_info_keyboard(chat_id: int):
         out.extend(block)
         first = False
     return _v171_set_kb_rows(kb, out)
+try: _v177_legacy_0221_build_info_keyboard.__name__ = 'build_info_keyboard'
+except Exception: pass
+build_info_keyboard = _v177_legacy_0221_build_info_keyboard
 
 
 # ---------------------------------------------------------------------------
@@ -867,7 +873,7 @@ def _v171_mark_all_v169_tz_fixed() -> int:
 _V171_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
 
 
-def _v153_validate_restore_gz(gz_path: str):
+def _v177_legacy_0288_v153_validate_restore_gz(gz_path: str):
     if callable(_V171_PREV_RESTORE_VALIDATOR):
         try:
             return _V171_PREV_RESTORE_VALIDATOR(gz_path)
@@ -903,6 +909,9 @@ def _v153_validate_restore_gz(gz_path: str):
     except Exception:
         _v171_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0288_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0288_v153_validate_restore_gz
 
 
 # ---------------------------------------------------------------------------
@@ -937,4 +946,4 @@ try:
     )
 except Exception:
     pass
-# v171_all_tz_reliability
+# v178_global_performance_final

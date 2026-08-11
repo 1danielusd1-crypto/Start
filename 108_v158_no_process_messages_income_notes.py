@@ -1,4 +1,4 @@
-# v158_no_process_messages_income_notes
+# v178_global_performance_final
 """v158: remove auxiliary process messages and add income annotations to every annotated Excel layout."""
 
 VERSION = "bot_v158_no_process_messages_income_notes"
@@ -9,23 +9,35 @@ VERSION = "bot_v158_no_process_messages_income_notes"
 #    messages such as "Операция выполняется / telegram_update" are suppressed.
 # ---------------------------------------------------------------------------
 
-def process_visual_status_enabled(chat_id: int) -> bool:
+def _v177_legacy_0298_process_visual_status_enabled(chat_id: int) -> bool:
     return False
+try: _v177_legacy_0298_process_visual_status_enabled.__name__ = 'process_visual_status_enabled'
+except Exception: pass
+process_visual_status_enabled = _v177_legacy_0298_process_visual_status_enabled
 
 
-def _v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
+def _v177_legacy_0306_v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
     return None
+try: _v177_legacy_0306_v156_process_status_arm.__name__ = '_v156_process_status_arm'
+except Exception: pass
+_v156_process_status_arm = _v177_legacy_0306_v156_process_status_arm
 
 
-def _v156_process_status_schedule(chat_id: int, delay: float) -> None:
+def _v177_legacy_0302_v156_process_status_schedule(chat_id: int, delay: float) -> None:
     return None
+try: _v177_legacy_0302_v156_process_status_schedule.__name__ = '_v156_process_status_schedule'
+except Exception: pass
+_v156_process_status_schedule = _v177_legacy_0302_v156_process_status_schedule
 
 
-def _v156_process_status_tick(chat_id: int) -> None:
+def _v177_legacy_0311_v156_process_status_tick(chat_id: int) -> None:
     try:
         _v156_process_status_clear(int(chat_id), delete=True)
     except Exception:
         pass
+try: _v177_legacy_0311_v156_process_status_tick.__name__ = '_v156_process_status_tick'
+except Exception: pass
+_v156_process_status_tick = _v177_legacy_0311_v156_process_status_tick
 
 
 # If this module is ever hot-loaded into a running process, remove any process
@@ -49,7 +61,7 @@ _V158_PREV_BUILD_INFO_TEXT = globals().get("build_info_text")
 _V158_PREV_BUILD_INFO_KEYBOARD = globals().get("build_info_keyboard")
 
 
-def build_info_text(chat_id: int, *args, **kwargs) -> str:
+def _v177_legacy_0057_build_info_text(chat_id: int, *args, **kwargs) -> str:
     text = ""
     if callable(_V158_PREV_BUILD_INFO_TEXT):
         try:
@@ -67,6 +79,9 @@ def build_info_text(chat_id: int, *args, **kwargs) -> str:
             continue
         cleaned.append(row)
     return "\n".join(cleaned)[:3900]
+try: _v177_legacy_0057_build_info_text.__name__ = 'build_info_text'
+except Exception: pass
+build_info_text = _v177_legacy_0057_build_info_text
 
 
 def _v158_button_cb(btn) -> str:
@@ -81,7 +96,7 @@ def _v158_button_text(btn) -> str:
     return str(getattr(btn, "text", "") or "")
 
 
-def build_info_keyboard(chat_id: int):
+def _v177_legacy_0220_build_info_keyboard(chat_id: int):
     kb = _V158_PREV_BUILD_INFO_KEYBOARD(int(chat_id)) if callable(_V158_PREV_BUILD_INFO_KEYBOARD) else types.InlineKeyboardMarkup()
     rows = list(getattr(kb, "keyboard", None) or getattr(kb, "inline_keyboard", None) or [])
     blocked = {
@@ -109,6 +124,9 @@ def build_info_keyboard(chat_id: int):
         except Exception:
             pass
     return kb
+try: _v177_legacy_0220_build_info_keyboard.__name__ = 'build_info_keyboard'
+except Exception: pass
+build_info_keyboard = _v177_legacy_0220_build_info_keyboard
 
 
 # Old INFO messages can still contain process-menu buttons after deploy. Their
@@ -295,7 +313,7 @@ except Exception:
     pass
 
 
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0283_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v158_tempfile.mkdtemp(prefix="v158_restore_validate_")
     raw = _v158_os.path.join(folder, "restore.sqlite3")
     try:
@@ -326,6 +344,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v158_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0283_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0283_v153_validate_restore_gz
 
 
 try:
@@ -337,4 +358,4 @@ try:
 except Exception:
     pass
 
-# v158_no_process_messages_income_notes
+# v178_global_performance_final

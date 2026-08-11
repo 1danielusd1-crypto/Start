@@ -1,10 +1,10 @@
-# v140_iphone_expense_chat_info_markers_backnav
+# v178_global_performance_final
 def build_forward_root_menu(day_key: str):
     """Корневое меню пересылки: старый режим или новый визуальный режим пары A/B."""
     if forward_menu_new_style_enabled():
         return build_forward_new_menu(day_key)
     return build_forward_source_menu(day_key)
-def _collect_forward_picker_items(include_owner: bool = True, include_removed: bool = False):
+def _v177_legacy_0180_collect_forward_picker_items(include_owner: bool = True, include_removed: bool = False):
     known = collect_forward_menu_chats()
     items = []
     owner_item = None
@@ -32,6 +32,9 @@ def _collect_forward_picker_items(include_owner: bool = True, include_removed: b
             owner_item = None
 
     return items, owner_item
+try: _v177_legacy_0180_collect_forward_picker_items.__name__ = '_collect_forward_picker_items'
+except Exception: pass
+_collect_forward_picker_items = _v177_legacy_0180_collect_forward_picker_items
 
 
 
@@ -39,7 +42,7 @@ def _chat_description_origin_back(origin: str, day_key: str) -> str:
     return f"d:{day_key}:forward_finmode_menu" if str(origin) == "finmode" else f"d:{day_key}:forward_menu"
 
 
-def build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
+def _v177_legacy_0183_build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
     buttons = []
     for cid in collect_all_known_chat_ids(include_owner=True):
@@ -53,6 +56,9 @@ def build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
     kb.row(IB("🔙 Назад", callback_data=_chat_description_origin_back(origin, day_key)))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
     return kb
+try: _v177_legacy_0183_build_chat_description_menu.__name__ = 'build_chat_description_menu'
+except Exception: pass
+build_chat_description_menu = _v177_legacy_0183_build_chat_description_menu
 
 
 def build_chat_description_menu_text() -> str:
@@ -247,7 +253,7 @@ def build_chat_description_detail_keyboard(viewer_chat_id: int, origin: str, day
     return kb
 
 
-def build_forward_source_menu(day_key: str | None = None):
+def _v177_legacy_0185_build_forward_source_menu(day_key: str | None = None):
     if forward_menu_new_style_enabled():
         return build_forward_new_menu(day_key)
     kb = types.InlineKeyboardMarkup(row_width=3)
@@ -275,7 +281,10 @@ def build_forward_source_menu(day_key: str | None = None):
     else:
         kb.row(IB("🔙 Назад", callback_data="fw_back_root"))
     return kb
-def build_forward_target_menu(src_id: int):
+try: _v177_legacy_0185_build_forward_source_menu.__name__ = 'build_forward_source_menu'
+except Exception: pass
+build_forward_source_menu = _v177_legacy_0185_build_forward_source_menu
+def _v177_legacy_0186_build_forward_target_menu(src_id: int):
     kb = types.InlineKeyboardMarkup()
     if not OWNER_ID:
         return kb
@@ -295,6 +304,9 @@ def build_forward_target_menu(src_id: int):
 
     kb.row(IB("🔙 Назад", callback_data="fw_back_src"))
     return kb
+try: _v177_legacy_0186_build_forward_target_menu.__name__ = 'build_forward_target_menu'
+except Exception: pass
+build_forward_target_menu = _v177_legacy_0186_build_forward_target_menu
 
 
 
@@ -309,7 +321,7 @@ def _forward_pair_undirected_key(A: int, B: int) -> tuple[int, int]:
     return (A, B) if A <= B else (B, A)
 
 
-def _remember_forward_pair(A: int, B: int):
+def _v177_legacy_0187_remember_forward_pair(A: int, B: int):
     """Сохраняет порядок создания пар для нового В22. Старую логику пересылки не трогает."""
     try:
         A, B = int(A), int(B)
@@ -326,9 +338,12 @@ def _remember_forward_pair(A: int, B: int):
             save_data(data)
     except Exception as e:
         log_error(f"_remember_forward_pair({A},{B}): {e}")
+try: _v177_legacy_0187_remember_forward_pair.__name__ = '_remember_forward_pair'
+except Exception: pass
+_remember_forward_pair = _v177_legacy_0187_remember_forward_pair
 
 
-def _forget_forward_pair_if_empty(A: int, B: int):
+def _v177_legacy_0188_forget_forward_pair_if_empty(A: int, B: int):
     """Убирает пару из порядка, только если уже нет ни пересылки, ни 💰 финучёта в обе стороны."""
     try:
         A, B = int(A), int(B)
@@ -343,6 +358,9 @@ def _forget_forward_pair_if_empty(A: int, B: int):
             save_data(data)
     except Exception as e:
         log_error(f"_forget_forward_pair_if_empty({A},{B}): {e}")
+try: _v177_legacy_0188_forget_forward_pair_if_empty.__name__ = '_forget_forward_pair_if_empty'
+except Exception: pass
+_forget_forward_pair_if_empty = _v177_legacy_0188_forget_forward_pair_if_empty
 
 
 def _forward_pair_sort_key(pair):
@@ -368,7 +386,7 @@ def _sorted_forward_pair(a: int, b: int):
     return (a, b) if ka <= kb else (b, a)
 
 
-def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
+def _v177_legacy_0189_collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
     """Все пары, где есть пересылка или 💰 финучёт пересылки. Порядок пары берём из создания/первого обнаружения."""
     relation_pairs = []
     seen = set()
@@ -429,6 +447,9 @@ def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
         pass
 
     return sorted(relation_pairs, key=_forward_pair_sort_key)
+try: _v177_legacy_0189_collect_forward_pairs_for_menu.__name__ = 'collect_forward_pairs_for_menu'
+except Exception: pass
+collect_forward_pairs_for_menu = _v177_legacy_0189_collect_forward_pairs_for_menu
 
 
 def _forward_pair_icons(A: int, B: int):
@@ -492,7 +513,7 @@ def build_forward_new_text(A: int | None = None, B: int | None = None) -> str:
     return "\n".join(lines)
 
 
-def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: int | None = None):
+def _v177_legacy_0193_build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: int | None = None):
     """
     Новый В22 по уточнённому ТЗ:
     • старт: пары сверху по 2 кнопки (A слева, B справа), потом пустой разделитель, потом свободные чаты по 2 кнопки;
@@ -579,14 +600,20 @@ def build_forward_new_menu(day_key: str | None = None, A: int | None = None, B: 
     else:
         kb.row(IB("🔙 Назад", callback_data="fw_back_root"))
     return kb
+try: _v177_legacy_0193_build_forward_new_menu.__name__ = 'build_forward_new_menu'
+except Exception: pass
+build_forward_new_menu = _v177_legacy_0193_build_forward_new_menu
 
-def build_forward_menu_text_for_current_mode(title: str | None = None, A: int | None = None, B: int | None = None) -> str:
+def _v177_legacy_0194_build_forward_menu_text_for_current_mode(title: str | None = None, A: int | None = None, B: int | None = None) -> str:
     if forward_menu_new_style_enabled():
         return build_forward_new_text(A, B)
     return build_forward_status_text(title or "Пересылка:\nВыберите чат A:")
+try: _v177_legacy_0194_build_forward_menu_text_for_current_mode.__name__ = 'build_forward_menu_text_for_current_mode'
+except Exception: pass
+build_forward_menu_text_for_current_mode = _v177_legacy_0194_build_forward_menu_text_for_current_mode
 
 
-def build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: int | None = None, B: int | None = None):
+def _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: int | None = None, B: int | None = None):
     if forward_menu_new_style_enabled():
         return build_forward_new_menu(day_key, A, B)
     if A and B:
@@ -594,4 +621,7 @@ def build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: 
     if A:
         return build_forward_target_menu(A)
     return build_forward_source_menu(day_key)
-# v140_iphone_expense_chat_info_markers_backnav
+try: _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode.__name__ = 'build_forward_menu_keyboard_for_current_mode'
+except Exception: pass
+build_forward_menu_keyboard_for_current_mode = _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode
+# v178_global_performance_final

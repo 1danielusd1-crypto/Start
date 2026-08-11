@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 def finance_mode_compact_icon(chat_id: int) -> str:
     """v108: hidden finance and visible auto-window mode are shown independently."""
     try:
@@ -35,7 +35,7 @@ def finance_mode_state_lines(chat_id: int) -> list[str]:
     ]
 
 
-def build_finance_toggle_chat_menu(day_key: str):
+def _v177_legacy_0196_build_finance_toggle_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
     known = collect_forward_menu_chats()
 
@@ -68,6 +68,9 @@ def build_finance_toggle_chat_menu(day_key: str):
     kb.row(IB("ℹ️ Описание чатов", callback_data="chat_desc_menu:finmode"))
     kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
+try: _v177_legacy_0196_build_finance_toggle_chat_menu.__name__ = 'build_finance_toggle_chat_menu'
+except Exception: pass
+build_finance_toggle_chat_menu = _v177_legacy_0196_build_finance_toggle_chat_menu
 
 def build_quick_balance_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
@@ -114,7 +117,7 @@ def build_quick_balance_chat_menu(day_key: str):
     kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
 
-def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
+def _v177_legacy_0198_build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
     fin_on = is_finance_mode(target_chat_id)
     hidden_on = bool(fin_on and is_hidden_finance_mode(target_chat_id))
@@ -138,10 +141,16 @@ def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
     )
     kb.row(IB("🔙 Назад к чатам", callback_data=f"d:{day_key}:forward_finmode_menu"))
     return kb
+try: _v177_legacy_0198_build_quick_balance_mode_menu.__name__ = 'build_quick_balance_mode_menu'
+except Exception: pass
+build_quick_balance_mode_menu = _v177_legacy_0198_build_quick_balance_mode_menu
 
-def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
+def _v177_legacy_0199_build_finance_mode_config_menu(day_key: str, target_chat_id: int):
     """Подменю после: Фин режим → выбор чата. Объединяет финрежим и старый быстрый остаток."""
     return build_quick_balance_mode_menu(day_key, target_chat_id)
+try: _v177_legacy_0199_build_finance_mode_config_menu.__name__ = 'build_finance_mode_config_menu'
+except Exception: pass
+build_finance_mode_config_menu = _v177_legacy_0199_build_finance_mode_config_menu
 
 
 def build_finance_mode_config_text(target_chat_id: int) -> str:
@@ -533,7 +542,7 @@ def delete_selected_records(chat_id: int, day_key: str) -> int:
         return deleted
 
 
-def build_fin_windows_chat_menu(day_key: str):
+def _v177_legacy_0200_build_fin_windows_chat_menu(day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=2)
     items = []
 
@@ -560,6 +569,9 @@ def build_fin_windows_chat_menu(day_key: str):
 
     kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
+try: _v177_legacy_0200_build_fin_windows_chat_menu.__name__ = 'build_fin_windows_chat_menu'
+except Exception: pass
+build_fin_windows_chat_menu = _v177_legacy_0200_build_fin_windows_chat_menu
 
 def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=3)
@@ -592,7 +604,7 @@ def build_fin_window_view_keyboard(target_chat_id: int, day_key: str, owner_day_
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{owner_day_key}:back_main"))
     return kb
 
-def build_fin_window_usd_month_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
+def _v177_legacy_0201_build_fin_window_usd_month_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
     try:
         dt = datetime.strptime(str(day_key)[:10], "%Y-%m-%d").replace(day=1)
     except Exception:
@@ -608,6 +620,9 @@ def build_fin_window_usd_month_keyboard(target_chat_id: int, day_key: str, owner
     kb.row(IB("🔙 Назад к чату", callback_data=f"fv:{target_chat_id}:{day_key}:open:{owner_day_key}"))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{owner_day_key}:back_main"))
     return kb
+try: _v177_legacy_0201_build_fin_window_usd_month_keyboard.__name__ = 'build_fin_window_usd_month_keyboard'
+except Exception: pass
+build_fin_window_usd_month_keyboard = _v177_legacy_0201_build_fin_window_usd_month_keyboard
 
 
 def build_fin_window_menu_keyboard(target_chat_id: int, day_key: str, owner_day_key: str):
@@ -622,7 +637,7 @@ def build_fin_window_csv_menu(target_chat_id: int, day_key: str, owner_day_key: 
     return kb
 
 
-def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str):
+def _v177_legacy_0202_send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str, day_key: str):
     """Отправляет CSV владельцу, но данные берёт из target_chat_id."""
     try:
         store = get_chat_store(target_chat_id)
@@ -689,11 +704,14 @@ def send_csv_for_chat_to(recipient_chat_id: int, target_chat_id: int, mode: str,
             pass
     except Exception as e:
         log_error(f"send_csv_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
+try: _v177_legacy_0202_send_csv_for_chat_to.__name__ = 'send_csv_for_chat_to'
+except Exception: pass
+send_csv_for_chat_to = _v177_legacy_0202_send_csv_for_chat_to
 
 
 
 
-def _period_export_rows(chat_id: int, mode: str, day_key: str):
+def _v177_legacy_0203_period_export_rows(chat_id: int, mode: str, day_key: str):
     """Rows for CSV/XLSX in the currently selected ARS or 💵 USD operations view."""
     store = get_chat_store(chat_id)
     if financial_view_is_usd(store):
@@ -741,4 +759,7 @@ def _period_export_rows(chat_id: int, mode: str, day_key: str):
     if financial_view_is_usd(store):
         label = "USD " + label
     return rows, label
-# v168_clean_core_record_identity
+try: _v177_legacy_0203_period_export_rows.__name__ = '_period_export_rows'
+except Exception: pass
+_period_export_rows = _v177_legacy_0203_period_export_rows
+# v178_global_performance_final

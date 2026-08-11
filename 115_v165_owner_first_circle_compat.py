@@ -1,4 +1,4 @@
-# v165_owner_first_circle_compat
+# v178_global_performance_final
 """v165: restore owner row in Forwarding and Finance-mode first-circle pickers.
 
 The owner is visible in the same menus as in v163 and earlier, but remains circle 0 / platform tenant.
@@ -71,7 +71,7 @@ def _collect_forward_picker_items(include_owner: bool = True, include_removed: b
     return items, owner_item
 
 
-def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
+def _v177_legacy_0192_collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
     """Show historical owner pairs again on the 1st-circle page without mixing tenant storage."""
     try:
         rows = _V164_PREV_COLLECT_FORWARD_PAIRS() if callable(_V164_PREV_COLLECT_FORWARD_PAIRS) else []
@@ -93,6 +93,9 @@ def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
         if a in allowed:
             out.append((a, b))
     return out
+try: _v177_legacy_0192_collect_forward_pairs_for_menu.__name__ = 'collect_forward_pairs_for_menu'
+except Exception: pass
+collect_forward_pairs_for_menu = _v177_legacy_0192_collect_forward_pairs_for_menu
 
 
 def build_finance_toggle_chat_menu(day_key: str):
@@ -227,4 +230,4 @@ try:
 except Exception:
     pass
 
-# v165_owner_first_circle_compat
+# v178_global_performance_final

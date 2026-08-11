@@ -1,4 +1,4 @@
-# v147_diagnostic_hardening
+# v178_global_performance_final
 # ─────────────────────────────────────────────────────────────
 # v144: полная трассировка жизненного цикла Telegram-окон.
 # Записывает только метаданные, хеши и короткий заголовок — полный текст окна,
@@ -249,7 +249,7 @@ def _window_diag_is_candidate(chat_id, message_id, text=None, reply_markup=None)
         return False
 
 
-def _window_diag_duplicate_marker(chat_id: int, message_id: int, marker: str) -> dict:
+def _v177_legacy_0113_window_diag_duplicate_marker(chat_id: int, message_id: int, marker: str) -> dict:
     if not marker:
         return {}
     with _WINDOW_DIAG_LOCK:
@@ -258,9 +258,12 @@ def _window_diag_duplicate_marker(chat_id: int, message_id: int, marker: str) ->
         return {}
     rows.sort(key=lambda x: int(x.get("seq") or 0), reverse=True)
     return rows[0]
+try: _v177_legacy_0113_window_diag_duplicate_marker.__name__ = '_window_diag_duplicate_marker'
+except Exception: pass
+_window_diag_duplicate_marker = _v177_legacy_0113_window_diag_duplicate_marker
 
 
-def window_diag_prepare_fast_ui_payload(payload: dict) -> dict:
+def _v177_legacy_0114_window_diag_prepare_fast_ui_payload(payload: dict) -> dict:
     if not WINDOW_DIAGNOSTICS_ENABLED or not isinstance(payload, dict):
         return payload
     chat_id = int(payload.get("chat_id"))
@@ -271,6 +274,9 @@ def window_diag_prepare_fast_ui_payload(payload: dict) -> dict:
     payload["_window_diag_expected_seq"] = int(current.get("seq") or 0)
     payload["_window_diag_snapshot"] = snap
     return payload
+try: _v177_legacy_0114_window_diag_prepare_fast_ui_payload.__name__ = 'window_diag_prepare_fast_ui_payload'
+except Exception: pass
+window_diag_prepare_fast_ui_payload = _v177_legacy_0114_window_diag_prepare_fast_ui_payload
 
 
 def window_diag_fast_ui_scheduled(payload: dict, wait_seconds: float, replaced_payload: dict | None = None):
@@ -295,7 +301,7 @@ def window_diag_fast_ui_scheduled(payload: dict, wait_seconds: float, replaced_p
     _window_diag_emit(action, payload.get("chat_id"), payload.get("message_id"), detail, "INFO")
 
 
-def window_diag_fast_ui_apply(payload: dict, delayed: bool = False):
+def _v177_legacy_0115_window_diag_fast_ui_apply(payload: dict, delayed: bool = False):
     if not WINDOW_DIAGNOSTICS_ENABLED or not isinstance(payload, dict):
         return
     chat_id = int(payload.get("chat_id"))
@@ -317,6 +323,9 @@ def window_diag_fast_ui_apply(payload: dict, delayed: bool = False):
         _window_diag_emit("window_stale_edit_apply", chat_id, message_id, detail, "ERROR")
     else:
         _window_diag_emit("window_ui_edit_apply", chat_id, message_id, detail, "INFO")
+try: _v177_legacy_0115_window_diag_fast_ui_apply.__name__ = 'window_diag_fast_ui_apply'
+except Exception: pass
+window_diag_fast_ui_apply = _v177_legacy_0115_window_diag_fast_ui_apply
 
 
 def window_diag_note_recreate(chat_id: int, message_id: int, reason: str, purpose: str = ""):
@@ -656,4 +665,4 @@ def window_diagnostic_stats() -> dict:
 
 
 _install_window_transport_diagnostics()
-# v147_diagnostic_hardening
+# v178_global_performance_final

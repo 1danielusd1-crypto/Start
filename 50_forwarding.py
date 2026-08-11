@@ -1,4 +1,4 @@
-# v169_fast_tz_forward_reminder_google
+# v178_global_performance_final
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -61,7 +61,7 @@ def persist_forward_rules_to_owner():
     except Exception as e:
         log_error(f"persist_forward_rules_to_owner: {e}")
         
-def resolve_forward_targets(source_chat_id: int):
+def _v177_legacy_0140_resolve_forward_targets(source_chat_id: int):
     with data_lock:
         fr = data.get("forward_rules", {})
         ff = data.get("forward_finance", {})
@@ -82,7 +82,10 @@ def resolve_forward_targets(source_chat_id: int):
                 continue
 
         return out
-def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
+try: _v177_legacy_0140_resolve_forward_targets.__name__ = 'resolve_forward_targets'
+except Exception: pass
+resolve_forward_targets = _v177_legacy_0140_resolve_forward_targets
+def _v177_legacy_0141_add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     fr = data.setdefault("forward_rules", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
@@ -92,8 +95,11 @@ def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     persist_forward_rules_to_owner()
     save_data(data)
     schedule_config_backup_for_chats(src_chat_id, dst_chat_id)
+try: _v177_legacy_0141_add_forward_link.__name__ = 'add_forward_link'
+except Exception: pass
+add_forward_link = _v177_legacy_0141_add_forward_link
 
-def remove_forward_link(src_chat_id: int, dst_chat_id: int):
+def _v177_legacy_0144_remove_forward_link(src_chat_id: int, dst_chat_id: int):
     fr = data.get("forward_rules", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
@@ -107,13 +113,19 @@ def remove_forward_link(src_chat_id: int, dst_chat_id: int):
     persist_forward_rules_to_owner()
     save_data(data)
     schedule_config_backup_for_chats(src_chat_id, dst_chat_id)
-def clear_forward_all():
+try: _v177_legacy_0144_remove_forward_link.__name__ = 'remove_forward_link'
+except Exception: pass
+remove_forward_link = _v177_legacy_0144_remove_forward_link
+def _v177_legacy_0145_clear_forward_all():
     """Полностью отключает всю пересылку."""
     data["forward_rules"] = {}
     data["forward_finance"] = {}
     persist_forward_rules_to_owner()
     save_data(data)
     schedule_config_backup_for_chats()
+try: _v177_legacy_0145_clear_forward_all.__name__ = 'clear_forward_all'
+except Exception: pass
+clear_forward_all = _v177_legacy_0145_clear_forward_all
 
 def get_forward_finance(src_chat_id: int, dst_chat_id: int) -> bool:
     ff = data.setdefault("forward_finance", {})
@@ -121,7 +133,7 @@ def get_forward_finance(src_chat_id: int, dst_chat_id: int) -> bool:
 
 
 FORWARD_COPY_EDIT_MODES = ("normal", "button", "slash")
-def forward_copy_edit_mode(chat_id: int | None = None) -> str:
+def _v177_legacy_0146_forward_copy_edit_mode(chat_id: int | None = None) -> str:
     """One GLOBAL 💰Перес mode for every chat/copy.
 
     v92-v123 stored this in owner/chat scopes. v124 imports that legacy value once and then
@@ -154,9 +166,12 @@ def forward_copy_edit_mode(chat_id: int | None = None) -> str:
     if mode not in FORWARD_COPY_EDIT_MODES or not version_mode_feature("forward_copy_edit"):
         return "normal"
     return mode
+try: _v177_legacy_0146_forward_copy_edit_mode.__name__ = 'forward_copy_edit_mode'
+except Exception: pass
+forward_copy_edit_mode = _v177_legacy_0146_forward_copy_edit_mode
 
 
-def set_forward_copy_edit_mode(chat_id: int, mode: str):
+def _v177_legacy_0148_set_forward_copy_edit_mode(chat_id: int, mode: str):
     mode = str(mode or "normal").strip().lower()
     if mode not in FORWARD_COPY_EDIT_MODES:
         mode = "normal"
@@ -181,24 +196,33 @@ def set_forward_copy_edit_mode(chat_id: int, mode: str):
     save_data(data, chat_ids=scope_ids or None, root_only=not bool(scope_ids))
     schedule_config_backup_for_chats(*(scope_ids or []), delay=1.0)
     return mode
+try: _v177_legacy_0148_set_forward_copy_edit_mode.__name__ = 'set_forward_copy_edit_mode'
+except Exception: pass
+set_forward_copy_edit_mode = _v177_legacy_0148_set_forward_copy_edit_mode
 
 
-def cycle_forward_copy_edit_mode(chat_id: int) -> str:
+def _v177_legacy_0150_cycle_forward_copy_edit_mode(chat_id: int) -> str:
     current = forward_copy_edit_mode(int(chat_id))
     try:
         idx = FORWARD_COPY_EDIT_MODES.index(current)
     except ValueError:
         idx = 0
     return set_forward_copy_edit_mode(int(chat_id), FORWARD_COPY_EDIT_MODES[(idx + 1) % len(FORWARD_COPY_EDIT_MODES)])
+try: _v177_legacy_0150_cycle_forward_copy_edit_mode.__name__ = 'cycle_forward_copy_edit_mode'
+except Exception: pass
+cycle_forward_copy_edit_mode = _v177_legacy_0150_cycle_forward_copy_edit_mode
 
 
-def forward_copy_edit_mode_label(chat_id: int) -> str:
+def _v177_legacy_0151_forward_copy_edit_mode_label(chat_id: int) -> str:
     mode = forward_copy_edit_mode(int(chat_id))
     return {
         "normal": "💰Перес: обычно",
         "button": "💰Перес: кнопка",
         "slash": "💰Перес: слеш",
     }.get(mode, "💰Перес: обычно")
+try: _v177_legacy_0151_forward_copy_edit_mode_label.__name__ = 'forward_copy_edit_mode_label'
+except Exception: pass
+forward_copy_edit_mode_label = _v177_legacy_0151_forward_copy_edit_mode_label
 
 
 try:
@@ -1003,7 +1027,7 @@ def _has_visible_fin_mode_selected(chat_id: int) -> bool:
         return False
 
 
-def ensure_hidden_finance_for_forward_dst(dst_chat_id: int):
+def _v177_legacy_0152_ensure_hidden_finance_for_forward_dst(dst_chat_id: int):
     """💰 forwarding enables hidden accounting without touching an already selected visible window mode."""
     try:
         dst_chat_id = int(dst_chat_id)
@@ -1017,9 +1041,12 @@ def ensure_hidden_finance_for_forward_dst(dst_chat_id: int):
         bot_journal("forward_finance_auto_hidden", dst_chat_id, "💰 учёт пересылки включил скрытые финансы; оконный режим сохранён")
     except Exception as e:
         log_error(f"ensure_hidden_finance_for_forward_dst({dst_chat_id}): {e}")
+try: _v177_legacy_0152_ensure_hidden_finance_for_forward_dst.__name__ = 'ensure_hidden_finance_for_forward_dst'
+except Exception: pass
+ensure_hidden_finance_for_forward_dst = _v177_legacy_0152_ensure_hidden_finance_for_forward_dst
 
 
-def set_forward_finance(src_chat_id: int, dst_chat_id: int, enabled: bool):
+def _v177_legacy_0153_set_forward_finance(src_chat_id: int, dst_chat_id: int, enabled: bool):
     ff = data.setdefault("forward_finance", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
@@ -1034,8 +1061,11 @@ def set_forward_finance(src_chat_id: int, dst_chat_id: int, enabled: bool):
     persist_forward_rules_to_owner()
     save_data(data)
     schedule_config_backup_for_chats(src_chat_id, dst_chat_id)
+try: _v177_legacy_0153_set_forward_finance.__name__ = 'set_forward_finance'
+except Exception: pass
+set_forward_finance = _v177_legacy_0153_set_forward_finance
 
-def remove_forward_finance(src_chat_id: int, dst_chat_id: int):
+def _v177_legacy_0154_remove_forward_finance(src_chat_id: int, dst_chat_id: int):
     ff = data.setdefault("forward_finance", {})
     src = str(src_chat_id)
     dst = str(dst_chat_id)
@@ -1048,6 +1078,9 @@ def remove_forward_finance(src_chat_id: int, dst_chat_id: int):
     persist_forward_rules_to_owner()
     save_data(data)
     schedule_config_backup_for_chats(src_chat_id, dst_chat_id)
+try: _v177_legacy_0154_remove_forward_finance.__name__ = 'remove_forward_finance'
+except Exception: pass
+remove_forward_finance = _v177_legacy_0154_remove_forward_finance
 
 
 def _forward_key(src_chat_id: int, src_msg_id: int) -> str:
@@ -1123,7 +1156,7 @@ def _store_forward_link(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst
     _schedule_persist_forward_state()
 
 
-def _persist_forward_finance_delivery_now(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst_msg_id: int, rec: dict | None = None):
+def _v177_legacy_0155_persist_forward_finance_delivery_now(src_chat_id: int, src_msg_id: int, dst_chat_id: int, dst_msg_id: int, rec: dict | None = None):
     """Сразу фиксирует Telegram-копию + финансовую запись в SQLite и forward_index."""
     try:
         if isinstance(rec, dict):
@@ -1161,6 +1194,9 @@ def _persist_forward_finance_delivery_now(src_chat_id: int, src_msg_id: int, dst
     except Exception as e:
         log_error(f"[FWD FINANCE DURABLE ERROR] {src_chat_id}:{src_msg_id} -> {dst_chat_id}:{dst_msg_id}: {e}")
         return False
+try: _v177_legacy_0155_persist_forward_finance_delivery_now.__name__ = '_persist_forward_finance_delivery_now'
+except Exception: pass
+_persist_forward_finance_delivery_now = _v177_legacy_0155_persist_forward_finance_delivery_now
 
 
 def _rebuild_forward_index_from_finance_records(d: dict) -> int:
@@ -1530,7 +1566,7 @@ def _merge_chat_store_for_migration(old_id: int, new_id: int):
     chats.pop(old_key, None)
 
 
-def migrate_chat_id_everywhere(old_chat_id: int, new_chat_id: int, reason: str = "telegram supergroup migration") -> bool:
+def _v177_legacy_0156_migrate_chat_id_everywhere(old_chat_id: int, new_chat_id: int, reason: str = "telegram supergroup migration") -> bool:
     """Атомарно переносит известный chat_id старой group на новый supergroup chat_id."""
     old_chat_id, new_chat_id = int(old_chat_id), int(new_chat_id)
     if old_chat_id == new_chat_id:
@@ -1667,6 +1703,9 @@ def migrate_chat_id_everywhere(old_chat_id: int, new_chat_id: int, reason: str =
     except Exception as e:
         log_error(f"migrate_chat_id_everywhere({old_chat_id}->{new_chat_id}): {e}")
         return False
+try: _v177_legacy_0156_migrate_chat_id_everywhere.__name__ = 'migrate_chat_id_everywhere'
+except Exception: pass
+migrate_chat_id_everywhere = _v177_legacy_0156_migrate_chat_id_everywhere
 
 
 def _handle_supergroup_migration_error(old_chat_id: int, err: Exception):
@@ -2137,7 +2176,7 @@ _FIN_FORWARD_BATCHES = {}
 def _fin_forward_batch_id(source_chat_id: int, source_msg_id: int) -> str:
     return f"{int(source_chat_id)}:{int(source_msg_id)}"
 
-def _fin_forward_batch_finish_target(batch_id: str, dst_chat_id: int, ok: bool, elapsed: float, error: str = "") -> None:
+def _v177_legacy_0157_fin_forward_batch_finish_target(batch_id: str, dst_chat_id: int, ok: bool, elapsed: float, error: str = "") -> None:
     follow = None
     with _FIN_FORWARD_BATCH_LOCK:
         row = _FIN_FORWARD_BATCHES.get(str(batch_id))
@@ -2175,6 +2214,9 @@ def _fin_forward_batch_finish_target(batch_id: str, dst_chat_id: int, ok: bool, 
                     f"batch={batch_id} targets={len(target_rows)} failed={failed} elapsed={time.monotonic()-started:.3f}s")
     except Exception:
         pass
+try: _v177_legacy_0157_fin_forward_batch_finish_target.__name__ = '_fin_forward_batch_finish_target'
+except Exception: pass
+_fin_forward_batch_finish_target = _v177_legacy_0157_fin_forward_batch_finish_target
 
 def _fin_forward_target_job(batch_id: str, source_chat_id: int, msg, dst_chat_id: int, finance_enabled: bool) -> None:
     started = time.monotonic(); ok = False; err = ""
@@ -2309,4 +2351,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v169_fast_tz_forward_reminder_google
+# v178_global_performance_final

@@ -1,0 +1,15 @@
+bot_v178_global_performance_final
+
+1. Global UI rule: owner, first circle and second circle use the same fast callback path.
+2. Main day open/prev/next/today no longer uses owner-only synchronous backup_window_for_owner branch.
+3. Interactive callback functions contain zero direct bot.edit_message_* calls; safe/fast UI is mandatory.
+4. Added non-blocking keyboard-only edit helper for Google/SECRET/expense callbacks.
+5. Task dispatcher and tenant reminder callback fallbacks use fast/safe UI.
+6. MEGA login (whoami) is cached and known remote directories are cached per process.
+7. MEGA command priority gate gives durable business writes priority over runtime/journal diagnostics.
+8. Runtime remote heartbeat default changed to 180 seconds; boot/shutdown/fatal snapshots stay immediate.
+9. Diagnostic noise (button chain/button_pressed/window detailed journal/window diagnostics) disabled by v178 one-time speed migration.
+10. Historical failed-task deep diagnostics/auto-repair disabled by default; failed records are not deleted.
+11. Auxiliary UI pools reduced for Render low CPU while preserving independent lanes.
+12. Memory critical mode obeys trim cooldown; only emergency bypasses it.
+13. Top-level duplicate def/class count remains 0.

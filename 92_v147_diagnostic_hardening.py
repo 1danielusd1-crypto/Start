@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 # ─────────────────────────────────────────────────────────────
 # v147: защита диагностических секретов, точные reminder-witness и безопасный back-main,
 # один durable delta на финансовую партию, подробные failed-задачи,
@@ -19,7 +19,7 @@ _V146_FAILED_TASK_DETAILS_AT = 0.0
 _V146_FAILED_TASK_RUNTIME_ERRORS = {}
 _V146_FAILED_TASK_LOAD_LOCK = threading.Lock()
 _V146_LAST_MALLOC_TRIM_MONO = 0.0
-_V146_MALLOC_TRIM_COOLDOWN = max(30.0, min(600.0, float(os.getenv("MALLOC_TRIM_COOLDOWN_SECONDS", "90") or "90")))
+_V146_MALLOC_TRIM_COOLDOWN = max(30.0, min(600.0, float(os.getenv("MALLOC_TRIM_COOLDOWN_SECONDS", "180") or "180")))
 _V146_MALLOC_TRIM_MIN_MB = max(128.0, min(2048.0, float(os.getenv("MALLOC_TRIM_MIN_MB", "220") or "220")))
 
 # Полный backup объединяем за 5 минут; быстрый immutable delta остаётся немедленным.
@@ -241,7 +241,7 @@ def mark_registered_financial_windows_dirty(changed_chat_id: int, keep_message_i
     return changed
 
 
-def cleanup_open_window_registry(reason: str = "manual") -> dict:
+def _v177_legacy_0245_cleanup_open_window_registry(reason: str = "manual") -> dict:
     now_dt = now_local()
     cutoff = now_dt - timedelta(days=_V146_WINDOW_REGISTRY_KEEP_DAYS)
     removed = 0; duplicates = 0; f91_removed = 0; normalized = 0
@@ -308,6 +308,9 @@ def cleanup_open_window_registry(reason: str = "manual") -> dict:
     except Exception:
         pass
     return result
+try: _v177_legacy_0245_cleanup_open_window_registry.__name__ = 'cleanup_open_window_registry'
+except Exception: pass
+cleanup_open_window_registry = _v177_legacy_0245_cleanup_open_window_registry
 
 
 def _v146_refresh_primary_windows(chat_id: int, day_key: str, reason: str = "finance_changed") -> dict:
@@ -355,7 +358,7 @@ def _v146_refresh_primary_windows(chat_id: int, day_key: str, reason: str = "fin
     return result
 
 
-def schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, reason: str = "finance_changed", delay: float = 0.15):
+def _v177_legacy_0246_schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, reason: str = "finance_changed", delay: float = 0.15):
     chat_id = int(chat_id)
     day_key = str(day_key or get_chat_store(chat_id).get("current_view_day") or today_key())[:10]
     scheduler_key = f"v146-fin-window:{chat_id}"
@@ -368,12 +371,18 @@ def schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, 
         bot_journal("finance_window_refresh_detached", chat_id, f"day={day_key} reason={reason} delay={delay}")
     except Exception:
         pass
+try: _v177_legacy_0246_schedule_financial_window_refresh.__name__ = 'schedule_financial_window_refresh'
+except Exception: pass
+schedule_financial_window_refresh = _v177_legacy_0246_schedule_financial_window_refresh
 
 
-def refresh_registered_financial_windows(chat_id: int):
+def _v177_legacy_0045_refresh_registered_financial_windows(chat_id: int):
     """v146 compatibility: no mass Telegram edits; schedule only primary windows and mark the rest dirty."""
     schedule_financial_window_refresh(int(chat_id), reason="registry_refresh")
     return True
+try: _v177_legacy_0045_refresh_registered_financial_windows.__name__ = 'refresh_registered_financial_windows'
+except Exception: pass
+refresh_registered_financial_windows = _v177_legacy_0045_refresh_registered_financial_windows
 
 
 def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str = "change"):
@@ -689,7 +698,7 @@ def refresh_failed_task_diagnostics(force: bool = False) -> list[dict]:
         _V146_FAILED_TASK_LOAD_LOCK.release()
 
 
-def mega_task_registry_stats() -> dict:
+def _v177_legacy_0065_mega_task_registry_stats() -> dict:
     base = _V146_ORIG_MEGA_TASK_STATS() if callable(_V146_ORIG_MEGA_TASK_STATS) else {}
     try:
         with _MEGA_TASK_LOCK:
@@ -715,6 +724,9 @@ def mega_task_registry_stats() -> dict:
     base["failed_details_at"] = _V146_FAILED_TASK_DETAILS_AT
     base["failed_details_pending"] = bool(current_set and mismatch)
     return base
+try: _v177_legacy_0065_mega_task_registry_stats.__name__ = 'mega_task_registry_stats'
+except Exception: pass
+mega_task_registry_stats = _v177_legacy_0065_mega_task_registry_stats
 
 
 # ── malloc_trim: no more four calls per minute while RAM is already low. ──
@@ -784,17 +796,26 @@ def _reminder_group_delete_message(chat_id: int, message_id: int):
 _V146_ORIG_RUNTIME_MARK_READY = globals().get("runtime_mark_ready")
 
 
-def runtime_mark_ready(detail: str = ""):
+def _v177_legacy_0083_runtime_mark_ready(detail: str = ""):
     result = _V146_ORIG_RUNTIME_MARK_READY(detail) if callable(_V146_ORIG_RUNTIME_MARK_READY) else None
     try:
         DELAYED_SCHEDULER.schedule("v146-window-registry-cleanup", 2.0, cleanup_open_window_registry, "startup")
     except Exception:
         pass
     try:
-        DELAYED_SCHEDULER.schedule("v146-failed-task-diagnostics", 8.0, refresh_failed_task_diagnostics, True)
+        def _v178_start_failed_diagnostics_if_enabled():
+            enabled_fn = globals().get("v176_process_enabled")
+            if callable(enabled_fn) and not bool(enabled_fn("failed_diag")):
+                return []
+            fn = globals().get("refresh_failed_task_diagnostics")
+            return fn(True) if callable(fn) else []
+        DELAYED_SCHEDULER.schedule("v146-failed-task-diagnostics", 8.0, _v178_start_failed_diagnostics_if_enabled)
     except Exception:
         pass
     return result
+try: _v177_legacy_0083_runtime_mark_ready.__name__ = 'runtime_mark_ready'
+except Exception: pass
+runtime_mark_ready = _v177_legacy_0083_runtime_mark_ready
 
 
 # Marker aliases for callbacks whose full payload has many dynamic segments.
@@ -804,4 +825,4 @@ try:
 except Exception:
     pass
 
-# v168_clean_core_record_identity
+# v178_global_performance_final

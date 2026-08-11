@@ -1,4 +1,4 @@
-# v169_fast_tz_forward_reminder_google
+# v178_global_performance_final
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ def toggle_gomonk_enabled(chat_id: int, currency: str | None = None) -> bool:
     schedule_config_backup_for_chats(int(chat_id))
     return bool(settings[enabled_key])
 
-def parse_gomonk_entries(text: str) -> list[dict]:
+def _v177_legacy_0158_parse_gomonk_entries(text: str) -> list[dict]:
     raw = sanitize_telegram_inserted_text(str(text or ""))
     raw = re.sub(r"(?is)^\s*\(?\s*GOMONKI\s*\)?\s*[:|\-]*\s*", "", raw).strip()
     parts = [p.strip() for p in raw.split(":") if p.strip()]
@@ -123,6 +123,9 @@ def parse_gomonk_entries(text: str) -> list[dict]:
         if amount:
             result.append({"name": name[:80], "amount": amount})
     return result
+try: _v177_legacy_0158_parse_gomonk_entries.__name__ = 'parse_gomonk_entries'
+except Exception: pass
+parse_gomonk_entries = _v177_legacy_0158_parse_gomonk_entries
 
 
 def set_gomonk_entries(chat_id: int, entries: list[dict], currency: str | None = None):
@@ -397,7 +400,7 @@ def gomonk_summary_lines(chat_id: int, currency: str | None = None) -> list[str]
     ]
 
 
-def build_gomonk_menu_text(chat_id: int, currency: str | None = None) -> str:
+def _v177_legacy_0159_build_gomonk_menu_text(chat_id: int, currency: str | None = None) -> str:
     currency = _gomonk_currency(chat_id, currency)
     entries = gomonk_entries(chat_id, currency)
     currency_label = currency.upper()
@@ -419,9 +422,12 @@ def build_gomonk_menu_text(chat_id: int, currency: str | None = None) -> str:
     else:
         lines.append("Сохранённых сумм пока нет.")
     return wm_common("\n".join(lines), 9)
+try: _v177_legacy_0159_build_gomonk_menu_text.__name__ = 'build_gomonk_menu_text'
+except Exception: pass
+build_gomonk_menu_text = _v177_legacy_0159_build_gomonk_menu_text
 
 
-def build_gomonk_menu_keyboard(chat_id: int, currency: str | None = None):
+def _v177_legacy_0160_build_gomonk_menu_keyboard(chat_id: int, currency: str | None = None):
     currency = _gomonk_currency(chat_id, currency)
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.row(IB(gomonk_toggle_label(chat_id, currency), callback_data=f"gomonk_toggle:{currency}"))
@@ -429,9 +435,12 @@ def build_gomonk_menu_keyboard(chat_id: int, currency: str | None = None):
     kb.row(make_copy_or_inline_button("💰 Сумма", template, viewer_chat_id=chat_id))
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"gomonk_back:{currency}"))
     return kb
+try: _v177_legacy_0160_build_gomonk_menu_keyboard.__name__ = 'build_gomonk_menu_keyboard'
+except Exception: pass
+build_gomonk_menu_keyboard = _v177_legacy_0160_build_gomonk_menu_keyboard
 
 
-def handle_gomonk_insert_message(msg) -> bool:
+def _v177_legacy_0161_handle_gomonk_insert_message(msg) -> bool:
     if getattr(msg, "content_type", None) != "text" or not _v85_enabled("gomonk_wallets"):
         return False
     raw = str(getattr(msg, "text", "") or "")
@@ -465,6 +474,9 @@ def handle_gomonk_insert_message(msg) -> bool:
     except Exception:
         pass
     return True
+try: _v177_legacy_0161_handle_gomonk_insert_message.__name__ = 'handle_gomonk_insert_message'
+except Exception: pass
+handle_gomonk_insert_message = _v177_legacy_0161_handle_gomonk_insert_message
 
 
 def open_gomonk_window(chat_id: int, message_id: int | None = None, currency: str | None = None):
@@ -848,7 +860,7 @@ def render_usd_day_window(chat_id: int, day_key: str):
         visible = visible[1:]
 
 
-def render_usd_month_window(chat_id: int, day_key: str):
+def _v177_legacy_0163_render_usd_month_window(chat_id: int, day_key: str):
     month_key = str(day_key or today_key())[:7]
     try:
         month_dt = datetime.strptime(month_key + "-01", "%Y-%m-%d")
@@ -878,9 +890,12 @@ def render_usd_month_window(chat_id: int, day_key: str):
         f"🏦 USD остаток по чату: {('+' if usd_balance_for_chat(chat_id) >= 0 else '-')}${fmt_num_plain(abs(usd_balance_for_chat(chat_id)))}",
     ])
     return wm_common("\n".join(lines), 1, html_mode=True), income - expense
+try: _v177_legacy_0163_render_usd_month_window.__name__ = 'render_usd_month_window'
+except Exception: pass
+render_usd_month_window = _v177_legacy_0163_render_usd_month_window
 
 
-def build_usd_month_keyboard(day_key: str):
+def _v177_legacy_0164_build_usd_month_keyboard(day_key: str):
     try:
         dt = datetime.strptime(str(day_key)[:10], "%Y-%m-%d").replace(day=1)
     except Exception:
@@ -896,6 +911,9 @@ def build_usd_month_keyboard(day_key: str):
     kb.row(*nav)
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{str(day_key)[:10]}:back_main"))
     return kb
+try: _v177_legacy_0164_build_usd_month_keyboard.__name__ = 'build_usd_month_keyboard'
+except Exception: pass
+build_usd_month_keyboard = _v177_legacy_0164_build_usd_month_keyboard
 
 
 def render_day_window(chat_id: int, day_key: str):
@@ -1058,7 +1076,7 @@ def build_backup_owner_menu_text() -> str:
     ), 7)
 
 
-def build_main_keyboard(day_key: str, chat_id=None):
+def _v177_legacy_0165_build_main_keyboard(day_key: str, chat_id=None):
     """One identical finance shell for ARS and 💵 USD operations."""
     kb = types.InlineKeyboardMarkup(row_width=3)
     nav_row = [IB("⬅️ Вчера", callback_data=f"d:{day_key}:prev")]
@@ -1102,6 +1120,9 @@ def build_main_keyboard(day_key: str, chat_id=None):
         kb.row(IB("📝 Скачать ТЗ окон", callback_data="v160:export_tz"))
     kb.row(IB("❌ Закрыть", callback_data=f"main_close:{day_key}"))
     return kb
+try: _v177_legacy_0165_build_main_keyboard.__name__ = 'build_main_keyboard'
+except Exception: pass
+build_main_keyboard = _v177_legacy_0165_build_main_keyboard
 
 def start_record_edit_prompt(chat_id: int, day_key: str, rid: int) -> bool:
     try:
@@ -1290,7 +1311,7 @@ def _backup_toggle_label(chat_id: int, target: str, label: str) -> str:
     return f"{icon} {label}"
 
 
-def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | None = None, target_chat_id: int | None = None):
+def _v177_legacy_0167_add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | None = None, target_chat_id: int | None = None):
     """F47: period / CSV / Excel menu / Excel articles menu."""
     periods = [
         ("📅 День", "day"),
@@ -1316,9 +1337,12 @@ def _add_export_period_rows(kb, day_key: str, prefix: str, owner_day_key: str | 
             IB("Excel", callback_data=xlsx_cb),
             IB("Excel статьи", callback_data=xlsxstat_cb),
         )
+try: _v177_legacy_0167_add_export_period_rows.__name__ = '_add_export_period_rows'
+except Exception: pass
+_add_export_period_rows = _v177_legacy_0167_add_export_period_rows
 
 
-def _export_calendar_start_keyboard(view_year: int, view_month: int, return_day_key: str):
+def _v177_legacy_0168_export_calendar_start_keyboard(view_year: int, view_month: int, return_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=7)
     last_day = calendar.monthrange(int(view_year), int(view_month))[1]
     buttons = [
@@ -1341,6 +1365,9 @@ def _export_calendar_start_keyboard(view_year: int, view_month: int, return_day_
     )
     kb.row(IB("🔙 Назад в CSV / Excel", callback_data=f"d:{return_day_key}:csv_all"))
     return kb
+try: _v177_legacy_0168_export_calendar_start_keyboard.__name__ = '_export_calendar_start_keyboard'
+except Exception: pass
+_export_calendar_start_keyboard = _v177_legacy_0168_export_calendar_start_keyboard
 
 
 def _export_start_record_keyboard(chat_id: int, start_key: str, return_day_key: str):
@@ -1358,7 +1385,7 @@ def _export_start_record_keyboard(chat_id: int, start_key: str, return_day_key: 
     return kb
 
 
-def _export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int, view_month: int, return_day_key: str):
+def _v177_legacy_0170_export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int, view_month: int, return_day_key: str):
     kb = types.InlineKeyboardMarkup(row_width=7)
     last_day = calendar.monthrange(int(view_year), int(view_month))[1]
     buttons = []
@@ -1395,6 +1422,9 @@ def _export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int
         f"exp_pick_set_start:{datetime.strptime(start_key, '%Y-%m-%d').year}:{datetime.strptime(start_key, '%Y-%m-%d').month}:{datetime.strptime(start_key, '%Y-%m-%d').day}:{return_day_key}"
     )))
     return kb
+try: _v177_legacy_0170_export_end_calendar_keyboard.__name__ = '_export_end_calendar_keyboard'
+except Exception: pass
+_export_end_calendar_keyboard = _v177_legacy_0170_export_end_calendar_keyboard
 
 
 def _export_end_record_keyboard(chat_id: int, start_key: str, start_rid: int, end_key: str, return_day_key: str):
@@ -1436,7 +1466,7 @@ def _excel_checkbox(mark: bool, label: str) -> str:
     return f"{'✅' if mark else '⬜'} {label}"
 
 
-def _period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, file_type: str, day_key: str, owner_day_key: str):
+def _v177_legacy_0172_period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, file_type: str, day_key: str, owner_day_key: str):
     if excel_interface_mode(target_chat_id) == "new":
         opts = excel_new_export_options()
         kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1480,6 +1510,9 @@ def _period_excel_style_keyboard(scope: str, target_chat_id: int, mode: str, fil
     kb.row(IB("🔙 Назад в CSV / Excel", callback_data=back_cb))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{owner_day_key}:back_main"))
     return kb
+try: _v177_legacy_0172_period_excel_style_keyboard.__name__ = '_period_excel_style_keyboard'
+except Exception: pass
+_period_excel_style_keyboard = _v177_legacy_0172_period_excel_style_keyboard
 
 
 def _exact_excel_style_keyboard(start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, return_day_key: str):
@@ -1547,7 +1580,7 @@ def _export_format_keyboard(start_key: str, start_rid: int, end_key: str, end_ri
     return kb
 
 
-def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
+def _v177_legacy_0173_exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
     store = get_chat_store(chat_id)
     if financial_view_is_usd(store):
         ensure_usd_migration_for_chat(int(chat_id))
@@ -1555,8 +1588,11 @@ def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: st
     for day_key, rec in exact_record_range(store, start_key, start_rid, end_key, end_rid):
         rows.append((fmt_date_table(day_key), fmt_csv_amount(financial_view_amount(store, rec)), financial_view_note(store, rec)))
     return rows
+try: _v177_legacy_0173_exact_export_rows.__name__ = '_exact_export_rows'
+except Exception: pass
+_exact_export_rows = _v177_legacy_0173_exact_export_rows
 
-def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
+def _v177_legacy_0174_build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
     """Excel stat with formulas, opening balance and real closing balance."""
     store = get_chat_store(target_chat_id)
     records = exact_record_range(store, start_key, start_rid, end_key, end_rid)
@@ -1622,8 +1658,11 @@ def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, st
     closing = opening + income_total - expense_total
     rows.append(["", "Остаток на руках", {"formula": f"C2+C{income_row_num}-C{expense_row_num}", "value": closing}] + [""] * len(categories))
     return rows
+try: _v177_legacy_0174_build_exact_category_stats_xlsx_rows.__name__ = 'build_exact_category_stats_xlsx_rows'
+except Exception: pass
+build_exact_category_stats_xlsx_rows = _v177_legacy_0174_build_exact_category_stats_xlsx_rows
 
-def _category_rows_without_description(rows: list[list]) -> tuple[list[list], dict[tuple[int, int], str]]:
+def _v177_legacy_0177_category_rows_without_description(rows: list[list]) -> tuple[list[list], dict[tuple[int, int], str]]:
     """Удаляет столбец «Описание», переносит подписи итогов в A и кладёт описания в примечания сумм."""
     out = []
     annotations = {}
@@ -1651,9 +1690,12 @@ def _category_rows_without_description(rows: list[list]) -> tuple[list[list], di
                     pass
         out.append(row)
     return out, annotations
+try: _v177_legacy_0177_category_rows_without_description.__name__ = '_category_rows_without_description'
+except Exception: pass
+_category_rows_without_description = _v177_legacy_0177_category_rows_without_description
 
 
-def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, excel_style_override: str | None = None, excel_options_override: dict | None = None, delivery: str = "chat"):
+def _v177_legacy_0179_send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int, file_type: str, excel_style_override: str | None = None, excel_options_override: dict | None = None, delivery: str = "chat"):
 
     """Фоновый экспорт между двумя точными границами включительно."""
     tmp_name = None
@@ -1792,6 +1834,9 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
                 os.remove(tmp_name)
             except Exception:
                 pass
+try: _v177_legacy_0179_send_exact_range_export.__name__ = 'send_exact_range_export'
+except Exception: pass
+send_exact_range_export = _v177_legacy_0179_send_exact_range_export
 
 
 def build_csv_menu(day_key: str, chat_id: int | None = None):
@@ -2103,4 +2148,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v169_fast_tz_forward_reminder_google
+# v178_global_performance_final

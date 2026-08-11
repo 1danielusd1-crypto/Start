@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -44,8 +44,47 @@ def _mega_memory_safe_args(cmd: str, args) -> list[str]:
     return out
 
 
-def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = True):
-    """Один MEGAcmd вызов за раз; в новом профиле — retry и circuit breaker."""
+_V178_MEGA_PRIORITY_CV = threading.Condition(threading.RLock())
+_V178_MEGA_PRIORITY_WAITING = {0: 0, 1: 0, 2: 0, 3: 0}
+_V178_MEGA_PRIORITY_ACTIVE = False
+
+
+def _v178_mega_priority(cmd: str, args) -> int:
+    text = " ".join(str(x or "") for x in (args or [])).casefold()
+    # 0 = business durability; 3 = diagnostics/maintenance.
+    if any(x in text for x in ("/deltas/", "/tasks/running", "/tasks/done", "/tasks/failed", "sqlite")):
+        return 0
+    if any(x in text for x in ("/chats/", "/global", "backup")):
+        return 1
+    if any(x in text for x in ("/runtime/journal", "/runtime", "journal_", "runtime_slot_")):
+        return 3
+    if str(cmd or "") in {"mega-find", "mega-whoami", "mega-mkdir"}:
+        return 2
+    return 1
+
+
+def _v178_mega_gate_enter(priority: int) -> None:
+    global _V178_MEGA_PRIORITY_ACTIVE
+    priority = max(0, min(3, int(priority)))
+    with _V178_MEGA_PRIORITY_CV:
+        _V178_MEGA_PRIORITY_WAITING[priority] += 1
+        try:
+            while _V178_MEGA_PRIORITY_ACTIVE or any(_V178_MEGA_PRIORITY_WAITING[p] > 0 for p in range(priority)):
+                _V178_MEGA_PRIORITY_CV.wait(timeout=0.5)
+            _V178_MEGA_PRIORITY_ACTIVE = True
+        finally:
+            _V178_MEGA_PRIORITY_WAITING[priority] = max(0, _V178_MEGA_PRIORITY_WAITING[priority] - 1)
+
+
+def _v178_mega_gate_exit() -> None:
+    global _V178_MEGA_PRIORITY_ACTIVE
+    with _V178_MEGA_PRIORITY_CV:
+        _V178_MEGA_PRIORITY_ACTIVE = False
+        _V178_MEGA_PRIORITY_CV.notify_all()
+
+
+def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = True):
+    """One MEGAcmd command at a time; v178 gives durable business writes priority over diagnostics."""
     args = list(args or [])
     exe = shutil.which(cmd)
     if not exe:
@@ -54,16 +93,21 @@ def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = Tru
     def _execute_once():
         mem_ctx = globals().get("memory_operation")
         def _run_command():
-            with MEGA_COMMAND_LOCK:
-                try:
-                    return subprocess.run(
-                        [exe] + args,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout or MEGA_TIMEOUT,
-                    )
-                except subprocess.TimeoutExpired:
-                    raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
+            priority = _v178_mega_priority(cmd, args)
+            _v178_mega_gate_enter(priority)
+            try:
+                with MEGA_COMMAND_LOCK:
+                    try:
+                        return subprocess.run(
+                            [exe] + args,
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout or MEGA_TIMEOUT,
+                        )
+                    except subprocess.TimeoutExpired:
+                        raise RuntimeError(f"{cmd} timeout after {timeout or MEGA_TIMEOUT}s")
+            finally:
+                _v178_mega_gate_exit()
         if callable(mem_ctx):
             safe_args = _mega_memory_safe_args(cmd, args)
             with mem_ctx(f"mega:{cmd}", {"args": safe_args}, heavy=cmd in {"mega-find", "mega-get", "mega-put"}, quiet=True):
@@ -82,11 +126,26 @@ def _mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = Tru
     if callable(guard):
         return guard(f"mega:{cmd}", _execute_once, attempts=2, base_delay=0.6)
     return _execute_once()
+try: _v177_legacy_0063_mega_run.__name__ = '_mega_run'
+except Exception: pass
+_mega_run = _v177_legacy_0063_mega_run
+
+
+_V178_MEGA_CACHE_LOCK = threading.RLock()
+_V178_MEGA_SESSION_OK_UNTIL = 0.0
+_V178_MEGA_SESSION_TTL_SECONDS = max(60.0, min(1800.0, float(os.getenv("MEGA_SESSION_CACHE_SECONDS", "300") or "300")))
+_V178_MEGA_KNOWN_DIRS = set()
 
 
 def mega_login_if_needed() -> bool:
+    """Check the MEGA session at most once per TTL instead of before every command chain."""
+    global _V178_MEGA_SESSION_OK_UNTIL
     if not mega_is_configured():
         return False
+    now_m = time.monotonic()
+    with _V178_MEGA_CACHE_LOCK:
+        if now_m < float(_V178_MEGA_SESSION_OK_UNTIL or 0.0):
+            return True
     missing = mega_missing_commands()
     if missing:
         raise RuntimeError("MEGAcmd не установлен или команды не в PATH: " + ", ".join(missing))
@@ -95,6 +154,8 @@ def mega_login_if_needed() -> bool:
         res = _mega_run("mega-whoami", [], check=False, timeout=30)
         text = ((res.stdout or "") + "\n" + (res.stderr or "")).lower()
         if res.returncode == 0 and (MEGA_EMAIL.lower() in text or "account e-mail" in text or "email" in text):
+            with _V178_MEGA_CACHE_LOCK:
+                _V178_MEGA_SESSION_OK_UNTIL = time.monotonic() + _V178_MEGA_SESSION_TTL_SECONDS
             return True
     except Exception:
         pass
@@ -104,23 +165,12 @@ def mega_login_if_needed() -> bool:
     if res.returncode != 0:
         msg = ((res.stderr or "") or (res.stdout or "") or "login failed")[:500]
         raise RuntimeError(f"mega-login failed: {msg}")
+    with _V178_MEGA_CACHE_LOCK:
+        _V178_MEGA_SESSION_OK_UNTIL = time.monotonic() + _V178_MEGA_SESSION_TTL_SECONDS
     return True
 
 
-def mega_ensure_remote_dir() -> bool:
-    if not mega_login_if_needed():
-        return False
-    parts = [p for p in MEGA_BACKUP_DIR.strip("/").split("/") if p]
-    current = ""
-    for part in parts:
-        current += "/" + part
-        # Если папка уже есть, mega-mkdir может вернуть ошибку — это нормально.
-        _mega_run("mega-mkdir", [current], check=False, timeout=30)
-    return True
-
-
-def mega_ensure_remote_path(remote_dir: str) -> bool:
-    """Создаёт любую папку в MEGA по полному пути /base/sub/sub2."""
+def _v178_mega_ensure_cached_path(remote_dir: str) -> bool:
     if not mega_login_if_needed():
         return False
     remote_dir = (remote_dir or MEGA_BACKUP_DIR).strip() or MEGA_BACKUP_DIR
@@ -128,8 +178,24 @@ def mega_ensure_remote_path(remote_dir: str) -> bool:
     current = ""
     for part in parts:
         current += "/" + part
+        with _V178_MEGA_CACHE_LOCK:
+            if current in _V178_MEGA_KNOWN_DIRS:
+                continue
+        # Folder existence is durable in MEGA. A successful or already-exists mkdir
+        # is enough to remember it for this process lifetime.
         _mega_run("mega-mkdir", [current], check=False, timeout=30)
+        with _V178_MEGA_CACHE_LOCK:
+            _V178_MEGA_KNOWN_DIRS.add(current)
     return True
+
+
+def mega_ensure_remote_dir() -> bool:
+    return _v178_mega_ensure_cached_path(MEGA_BACKUP_DIR)
+
+
+def mega_ensure_remote_path(remote_dir: str) -> bool:
+    """Создаёт путь один раз за runtime; повторные backup/delta не делают mkdir заново."""
+    return _v178_mega_ensure_cached_path(remote_dir)
 
 
 def mega_safe_name(value, fallback: str = "chat") -> str:
@@ -430,7 +496,7 @@ def mega_task_known_state(update_id) -> str:
         return str((_mega_task_registry.get(key) or {}).get("state") or "")
 
 
-def mega_task_registry_stats() -> dict:
+def _v177_legacy_0064_mega_task_registry_stats() -> dict:
     with _MEGA_TASK_LOCK:
         states = defaultdict(int)
         for row in _mega_task_registry.values():
@@ -449,6 +515,9 @@ def mega_task_registry_stats() -> dict:
         "last_error": last_error,
         **counters,
     }
+try: _v177_legacy_0064_mega_task_registry_stats.__name__ = 'mega_task_registry_stats'
+except Exception: pass
+mega_task_registry_stats = _v177_legacy_0064_mega_task_registry_stats
 
 
 
@@ -872,7 +941,7 @@ def _durable_extract_edit_expectations(payload: dict, source_chat_id: int, sourc
     return result
 
 
-def _durable_expected_effects(payload: dict) -> dict:
+def _v177_legacy_0066_durable_expected_effects(payload: dict) -> dict:
     """Snapshot the effects that this Telegram update is actually expected to create.
 
     v109 rule: the witness must never infer a financial effect merely because a message
@@ -979,9 +1048,12 @@ def _durable_expected_effects(payload: dict) -> dict:
             "secret_expected": dst_secret,
         })
     return out
+try: _v177_legacy_0066_durable_expected_effects.__name__ = '_durable_expected_effects'
+except Exception: pass
+_durable_expected_effects = _v177_legacy_0066_durable_expected_effects
 
 
-def _durable_normalize_expected_for_route(payload: dict, expected: dict | None) -> dict:
+def _v177_legacy_0067_durable_normalize_expected_for_route(payload: dict, expected: dict | None) -> dict:
     """Remove impossible witnesses implied by an older durable task schema.
 
     Older v115/v116 tasks could persist both source_secret=True and source_finance=True
@@ -1048,6 +1120,9 @@ def _durable_normalize_expected_for_route(payload: dict, expected: dict | None) 
             adjusted["forward_targets"] = []
             adjusted["forward_suppressed_by_worker_skip"] = sender_skip_reason or "edited_source"
     return adjusted
+try: _v177_legacy_0067_durable_normalize_expected_for_route.__name__ = '_durable_normalize_expected_for_route'
+except Exception: pass
+_durable_normalize_expected_for_route = _v177_legacy_0067_durable_normalize_expected_for_route
 
 
 def _durable_expected_from_task_or_payload(task: dict | None, payload: dict) -> dict:
@@ -1175,7 +1250,7 @@ def _durable_find_record_for_witness(chat_id: int, rid: int, witness: dict):
     return None
 
 
-def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
+def _v177_legacy_0068_durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
     """Return explicit effect status. No repairs, no replay, no side effects."""
     expected = _durable_normalize_expected_for_route(
         payload,
@@ -1303,6 +1378,9 @@ def _durable_effect_report(payload: dict, expected: dict | None = None) -> dict:
             report["complete"] = False
             report["missing"].append(f"reminder_edit:invalid:{witness}")
     return report
+try: _v177_legacy_0068_durable_effect_report.__name__ = '_durable_effect_report'
+except Exception: pass
+_durable_effect_report = _v177_legacy_0068_durable_effect_report
 
 def _durable_forward_effect_complete(payload: dict, expected: dict | None = None) -> bool:
     """Verify only forwarding effects explicitly expected for this task."""
@@ -1415,7 +1493,7 @@ def _repair_missing_durable_forward(payload: dict) -> bool:
     return bool(all_ok and _durable_forward_effect_complete(payload))
 
 
-def wait_durable_subtasks(chat_id, timeout: float = 20.0, wait_forward: bool = True, payload: dict | None = None, expected: dict | None = None, update_id=None) -> bool:
+def _v177_legacy_0069_wait_durable_subtasks(chat_id, timeout: float = 20.0, wait_forward: bool = True, payload: dict | None = None, expected: dict | None = None, update_id=None) -> bool:
     """Wait for this exact source message, never for an entire chat queue.
 
     Consecutive finance messages may share the same source chat key. Waiting for key-idle
@@ -1472,6 +1550,9 @@ def wait_durable_subtasks(chat_id, timeout: float = 20.0, wait_forward: bool = T
             )
             return False
         time.sleep(0.05)
+try: _v177_legacy_0069_wait_durable_subtasks.__name__ = 'wait_durable_subtasks'
+except Exception: pass
+wait_durable_subtasks = _v177_legacy_0069_wait_durable_subtasks
 
 
 def finalize_durable_task_after_business(update_id, chat_id, update_type: str = "other", payload: dict | None = None, expected_effects: dict | None = None) -> bool:
@@ -2006,7 +2087,7 @@ def _durable_callback_target_chat(payload: dict) -> int | None:
         return None
 
 
-def durable_task_required(payload: dict) -> tuple[bool, str]:
+def _v177_legacy_0070_durable_task_required(payload: dict) -> tuple[bool, str]:
     """Hybrid persistence policy.
 
     Only state-changing/content-bearing message updates are persisted: finance, forwarding,
@@ -2102,6 +2183,9 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
             return True, f"callback:critical_finance_window:{target_chat}"
         return False, "callback:webhook_retry_only"
     return False, "noncritical_update"
+try: _v177_legacy_0070_durable_task_required.__name__ = 'durable_task_required'
+except Exception: pass
+durable_task_required = _v177_legacy_0070_durable_task_required
 
 
 def _build_mega_task_payload(update_id, payload: dict, chat_id=None, update_type: str = "other", reason: str = "") -> dict:
@@ -2321,7 +2405,7 @@ def _mega_task_prune_done_async():
     BACKUP_TASK_POOL.submit("mega-task-prune", _job)
 
 
-def mega_task_finish(update_id, success: bool, error: str = "") -> bool:
+def _v177_legacy_0071_mega_task_finish(update_id, success: bool, error: str = "") -> bool:
     global _mega_task_last_error
     _timing_started = time.monotonic()
     key = _mega_task_id(update_id)
@@ -2364,6 +2448,9 @@ def mega_task_finish(update_id, success: bool, error: str = "") -> bool:
         log_error(f"operation ledger finish update={key}: {_op_exc}")
     bot_journal("mega_task_timing", None, f"phase=finish update={key} target={target} ok={ok} elapsed={time.monotonic()-_timing_started:.3f}s")
     return ok
+try: _v177_legacy_0071_mega_task_finish.__name__ = 'mega_task_finish'
+except Exception: pass
+mega_task_finish = _v177_legacy_0071_mega_task_finish
 
 
 def mega_task_refresh_registry() -> dict:
@@ -2535,7 +2622,7 @@ def _repair_safe_missing_finance_effects(payload: dict, expected_effects: dict |
             log_error(f"DURABLE SAFE FORWARD FINANCE REPAIR {source_chat_id}:{source_msg_id}->{dst}:{dst_msg_id}: {e}")
     return bool(_durable_effect_report(payload, expected).get("complete"))
 
-def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str = "other"):
+def _v177_legacy_0072_execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None, update_type: str = "other"):
     """Single execution path used by live webhook and MEGA startup recovery."""
     update = telebot.types.Update.de_json(payload)
     if update_chat_id is None:
@@ -2592,6 +2679,9 @@ def _execute_telegram_payload(payload: dict, update_id=None, update_chat_id=None
         else:
             _TELEGRAM_UPDATE_CONTEXT.value = previous_ctx
     return execution_ctx
+try: _v177_legacy_0072_execute_telegram_payload.__name__ = '_execute_telegram_payload'
+except Exception: pass
+_execute_telegram_payload = _v177_legacy_0072_execute_telegram_payload
 
 
 def _mega_task_recover_one(update_id, state: str, remote_path: str):
@@ -2896,12 +2986,15 @@ def current_month_key() -> str:
     return now_local().strftime("%Y-%m")
 
 
-def _record_day_key(rec: dict) -> str:
+def _v177_legacy_0075_record_day_key(rec: dict) -> str:
     dk = str((rec or {}).get("day_key") or "").strip()
     if dk:
         return dk[:10]
     ts = str((rec or {}).get("timestamp") or "")
     return ts[:10] if len(ts) >= 10 else today_key()
+try: _v177_legacy_0075_record_day_key.__name__ = '_record_day_key'
+except Exception: pass
+_record_day_key = _v177_legacy_0075_record_day_key
 
 
 def calc_opening_balance_for_month(store: dict, month_key: str) -> float:
@@ -3466,7 +3559,7 @@ def _commit_delta_baseline(baseline: dict):
         if "root_sigs" in baseline:
             _delta_root_baseline = dict(baseline.get("root_sigs") or {})
 
-def _delta_upload_payload(payload: dict) -> tuple[bool, str]:
+def _v177_legacy_0076_delta_upload_payload(payload: dict) -> tuple[bool, str]:
     if not payload or not mega_is_configured():
         return False, ""
     # Защита от регрессии: обычная delta не должна внезапно содержать мегабайты истории.
@@ -3498,6 +3591,9 @@ def _delta_upload_payload(payload: dict) -> tuple[bool, str]:
                 os.remove(local_path)
         except Exception:
             pass
+try: _v177_legacy_0076_delta_upload_payload.__name__ = '_delta_upload_payload'
+except Exception: pass
+_delta_upload_payload = _v177_legacy_0076_delta_upload_payload
 
 
 def _mark_global_snapshot_pending():
@@ -3730,17 +3826,24 @@ def merge_global_snapshot_with_mega_deltas(local_global_path: str) -> tuple[str,
     created_at = str((base.get("_universal_backup") or {}).get("created_at") or (base.get("_backup_meta") or {}).get("created_at") or "")
     remote_rows = _delta_remote_candidates_after(created_at)
     applied = 0
-    for remote_path in remote_rows:
-        local_delta = _mega_download_remote_path(remote_path)
-        if not local_delta:
-            continue
-        delta = _load_json(local_delta, {}) or {}
-        if delta.get("kind") != "telegram_finance_bot_delta":
-            continue
-        if _parse_iso_timestamp(delta.get("created_at")) <= _parse_iso_timestamp(created_at):
-            continue
-        _apply_delta_payload_to_state(base, delta)
-        applied += 1
+    local_map = {}; cleanup_dirs = []
+    try:
+        local_map, cleanup_dirs = _v177_download_remote_json_batch(remote_rows)
+        for remote_path in remote_rows:
+            local_delta = local_map.get(remote_path)
+            if not local_delta:
+                continue
+            delta = _load_json(local_delta, {}) or {}
+            if delta.get("kind") != "telegram_finance_bot_delta":
+                continue
+            if _parse_iso_timestamp(delta.get("created_at")) <= _parse_iso_timestamp(created_at):
+                continue
+            _apply_delta_payload_to_state(base, delta)
+            applied += 1
+    finally:
+        for folder in sorted(set(cleanup_dirs), key=len, reverse=True):
+            try: shutil.rmtree(folder, ignore_errors=True)
+            except Exception: pass
     if not applied:
         return local_global_path, 0
     merged = os.path.join(MEGA_LOCAL_TMP_DIR, f"merged_global_with_{applied}_deltas.json")
@@ -3788,7 +3891,7 @@ def _snapshot_runtime_state_for_backup(payload: dict) -> dict:
     }
 
 
-def make_global_backup_payload() -> dict:
+def _v177_legacy_0077_make_global_backup_payload() -> dict:
     """Универсальный полный JSON: данные, настройки и индекс старых пересланных сообщений."""
     with data_lock:
         # Важно снять актуальный forward_map ДО копирования. Иначе свежие связи старых/новых
@@ -3832,6 +3935,9 @@ def make_global_backup_payload() -> dict:
         "note": "Универсальный полный JSON: все чаты, записи, настройки, секреты, пересылка и индекс сообщений.",
     }
     return payload
+try: _v177_legacy_0077_make_global_backup_payload.__name__ = 'make_global_backup_payload'
+except Exception: pass
+make_global_backup_payload = _v177_legacy_0077_make_global_backup_payload
 
 
 def save_global_backup_snapshot(path: str) -> str:
@@ -4510,12 +4616,17 @@ def _runtime_snapshot_sort_ts(snap: dict) -> float:
 
 
 def _runtime_load_remote_snapshot(remote_path: str) -> dict:
+    """Read runtime diagnostics quietly; corrupt historical breadcrumbs must not slow/noise boot."""
     local = None
     try:
         local = _mega_download_remote_path(remote_path)
         if not local:
             return {}
-        snap = _load_json(local, {})
+        try:
+            with open(local, "r", encoding="utf-8") as fh:
+                snap = json.load(fh)
+        except Exception:
+            return {}
         return snap if isinstance(snap, dict) else {}
     except Exception:
         return {}
@@ -4593,7 +4704,7 @@ def runtime_load_previous_snapshot() -> dict:
 
         events_dir = runtime_remote_dir().rstrip("/") + "/events"
         try:
-            for remote in _mega_find_remote_files(events_dir, "runtime_*.json", limit=8):
+            for remote in _mega_find_remote_files(events_dir, "runtime_*.json", limit=3):
                 remote_candidates.append(("event", remote))
         except Exception:
             pass
@@ -4602,9 +4713,9 @@ def runtime_load_previous_snapshot() -> dict:
         # MEGA promote/rename failed.  They may be NEWER than the last immutable event, so
         # always consider the newest few instead of looking at them only when no event exists.
         try:
-            for remote in _mega_find_remote_files(runtime_remote_dir(), "candidate_runtime_latest_*.json", limit=8):
+            for remote in _mega_find_remote_files(runtime_remote_dir(), "candidate_runtime_latest_*.json", limit=2):
                 remote_candidates.append(("legacy_candidate", remote))
-            for remote in _mega_find_remote_files(runtime_remote_dir(), "runtime_latest__*.json", limit=4):
+            for remote in _mega_find_remote_files(runtime_remote_dir(), "runtime_latest__*.json", limit=1):
                 remote_candidates.append(("legacy_staged", remote))
         except Exception:
             pass
@@ -4675,7 +4786,7 @@ def _runtime_seconds_between(a, b):
         return None
 
 
-def runtime_classify_previous(prev: dict) -> str:
+def _v177_legacy_0078_runtime_classify_previous(prev: dict) -> str:
     """Best-effort diagnosis. It deliberately says *probable* when Render provides no exact reason."""
     if not isinstance(prev, dict) or not prev:
         return "first_seen"
@@ -4726,6 +4837,9 @@ def runtime_classify_previous(prev: dict) -> str:
             return "probable_render_idle_spin_down_or_idle_restart"
         return "new_instance_same_commit_crash_restart_or_maintenance"
     return "process_restart_or_unknown"
+try: _v177_legacy_0078_runtime_classify_previous.__name__ = 'runtime_classify_previous'
+except Exception: pass
+runtime_classify_previous = _v177_legacy_0078_runtime_classify_previous
 
 
 
@@ -4774,7 +4888,7 @@ def _runtime_export_parse_range(text: str):
     return start, end
 
 
-def _runtime_export_select_paths(start_dt=None, end_dt=None, max_downloads: int = 360):
+def _v177_legacy_0079_runtime_export_select_paths(start_dt=None, end_dt=None, max_downloads: int = 360):
     """Return complete index + bounded actual-download set. Never deletes or mutates MEGA."""
     root = runtime_remote_dir()
     events_dir = root.rstrip("/") + "/events"
@@ -4827,6 +4941,9 @@ def _runtime_export_select_paths(start_dt=None, end_dt=None, max_downloads: int 
                 chosen.add(int(idx))
             selected.extend(variable[i] for i in sorted(chosen))
     return indexed, selected[:budget]
+try: _v177_legacy_0079_runtime_export_select_paths.__name__ = '_runtime_export_select_paths'
+except Exception: pass
+_runtime_export_select_paths = _v177_legacy_0079_runtime_export_select_paths
 
 
 def _runtime_export_arcname(kind: str, remote_path: str) -> str:
@@ -4840,7 +4957,7 @@ def _runtime_export_arcname(kind: str, remote_path: str) -> str:
     return f"{folder}/{os.path.basename(str(remote_path))}"
 
 
-def send_runtime_export_zip(recipient_chat_id: int, start_dt=None, end_dt=None):
+def _v177_legacy_0080_send_runtime_export_zip(recipient_chat_id: int, start_dt=None, end_dt=None):
     """Background owner export of runtime breadcrumbs. Complete MEGA index + sampled actual JSONs in one ZIP."""
     recipient_chat_id = int(recipient_chat_id)
     workdir = tempfile.mkdtemp(prefix="runtime_export_")
@@ -4931,9 +5048,12 @@ def send_runtime_export_zip(recipient_chat_id: int, start_dt=None, end_dt=None):
                 os.remove(zip_path)
             except Exception:
                 pass
+try: _v177_legacy_0080_send_runtime_export_zip.__name__ = 'send_runtime_export_zip'
+except Exception: pass
+send_runtime_export_zip = _v177_legacy_0080_send_runtime_export_zip
 
 
-def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = True) -> bool:
+def _v177_legacy_0081_runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = True) -> bool:
     if not mega_is_configured():
         return False
     heartbeat = str(event) == "heartbeat"
@@ -5034,6 +5154,9 @@ def runtime_upload_snapshot(event: str = "snapshot", immutable_event: bool = Tru
             _RUNTIME_UPLOAD_LOCK.release()
         except Exception:
             pass
+try: _v177_legacy_0081_runtime_upload_snapshot.__name__ = 'runtime_upload_snapshot'
+except Exception: pass
+runtime_upload_snapshot = _v177_legacy_0081_runtime_upload_snapshot
 
 def runtime_mark_webhook(payload: dict | None = None, blocked: str = ""):
     with _RUNTIME_LOCK:
@@ -5154,7 +5277,7 @@ def _runtime_heartbeat_job():
             pass
 
 
-def runtime_mark_ready(detail: str = ""):
+def _v177_legacy_0082_runtime_mark_ready(detail: str = ""):
     with _RUNTIME_LOCK:
         if _RUNTIME_STATE.get("ready"):
             return
@@ -5188,6 +5311,9 @@ def runtime_mark_ready(detail: str = ""):
         DELAYED_SCHEDULER.schedule("lowram-idle-sweep", 45.0, _lowram_idle_sweep_job)
     except Exception:
         pass
+try: _v177_legacy_0082_runtime_mark_ready.__name__ = 'runtime_mark_ready'
+except Exception: pass
+runtime_mark_ready = _v177_legacy_0082_runtime_mark_ready
 
 
 def _runtime_pending_recovery_rows() -> list[tuple[str, str, str]]:
@@ -5601,7 +5727,7 @@ def mega_upload_latest_database_backup(force: bool = False) -> bool:
                 import gc; gc.collect()
             except Exception: pass
 
-def mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, str]:
+def _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, str]:
     """Restore the disposable Render working DB from MEGA before load_data()."""
     global _LOWRAM_DB_RESTORED_THIS_BOOT, _LOWRAM_DB_RESTORE_DETAIL
     if not (LOWRAM_ENABLED and mega_is_configured()): return False, "LOWRAM/MEGA unavailable"
@@ -5660,6 +5786,9 @@ def mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, str]:
         return False, str(e)[:300]
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+try: _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud.__name__ = 'mega_restore_sqlite_snapshot_from_cloud'
+except Exception: pass
+mega_restore_sqlite_snapshot_from_cloud = _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud
 
 def _lowram_apply_delta_to_live_state(delta: dict):
     """Apply one compact delta to metadata + SQLite cold finance history without global materialization."""
@@ -5708,22 +5837,71 @@ def _lowram_apply_delta_to_live_state(delta: dict):
         records = current = None
     SQLITE.save_root(_sqlite_pack_root(data))
 
+def _v177_download_remote_json_batch(remote_paths: list[str], batch_threshold: int = 6) -> tuple[dict, list[str]]:
+    """Download many MEGA files by parent directory instead of one mega-get per delta.
+
+    Returns {remote_path: local_path} plus temporary directories to remove.  Small groups
+    and failed folder downloads fall back to the old exact-file path.
+    """
+    paths = [str(x) for x in (remote_paths or []) if str(x or "").strip()]
+    mapping = {}
+    cleanup_dirs = []
+    grouped = defaultdict(list)
+    for remote in paths:
+        parent = remote.rsplit("/", 1)[0] if "/" in remote else remote
+        grouped[parent].append(remote)
+    for parent, group in grouped.items():
+        if len(group) >= int(batch_threshold):
+            workdir = tempfile.mkdtemp(prefix="v177_mega_batch_")
+            cleanup_dirs.append(workdir)
+            try:
+                _mega_run("mega-get", [parent, workdir], check=True, timeout=max(float(MEGA_TIMEOUT), 180.0))
+                found = {}
+                for base, _dirs, files in os.walk(workdir):
+                    for name in files:
+                        found.setdefault(name, os.path.join(base, name))
+                for remote in group:
+                    local = found.get(os.path.basename(remote))
+                    if local and os.path.isfile(local):
+                        mapping[remote] = local
+            except Exception as exc:
+                try: log_error(f"[MEGA BATCH RESTORE] folder fallback {parent}: {str(exc)[:240]}")
+                except Exception: pass
+        for remote in group:
+            if remote in mapping:
+                continue
+            local = _mega_download_remote_path(remote)
+            if local:
+                mapping[remote] = local
+                cleanup_dirs.append(os.path.dirname(local))
+    return mapping, cleanup_dirs
+
+
 def lowram_apply_deltas_after_db_snapshot() -> int:
     if not _LOWRAM_DB_RESTORED_THIS_BOOT: return 0
     meta = SQLITE.get_meta("db_snapshot", "main", {}) or {}
     created_at = str(meta.get("created_at") or "")
     if not created_at: return 0
+    remote_rows = _delta_remote_candidates_after(created_at)
     applied = 0
-    for remote_path in _delta_remote_candidates_after(created_at):
-        local = _mega_download_remote_path(remote_path)
-        if not local: continue
-        delta = _load_json(local, {}) or {}
-        if delta.get("kind") != "telegram_finance_bot_delta": continue
-        if _parse_iso_timestamp(delta.get("created_at")) <= _parse_iso_timestamp(created_at): continue
-        _lowram_apply_delta_to_live_state(delta); applied += 1
+    local_map = {}; cleanup_dirs = []
+    started = time.monotonic()
+    try:
+        local_map, cleanup_dirs = _v177_download_remote_json_batch(remote_rows)
+        for remote_path in remote_rows:
+            local = local_map.get(remote_path)
+            if not local: continue
+            delta = _load_json(local, {}) or {}
+            if delta.get("kind") != "telegram_finance_bot_delta": continue
+            if _parse_iso_timestamp(delta.get("created_at")) <= _parse_iso_timestamp(created_at): continue
+            _lowram_apply_delta_to_live_state(delta); applied += 1
+    finally:
+        for folder in sorted(set(cleanup_dirs), key=len, reverse=True):
+            try: shutil.rmtree(folder, ignore_errors=True)
+            except Exception: pass
     if applied:
         _load_forward_index_from_data(data)
-        log_info(f"[MEGA DB RESTORE] applied {applied} compact deltas after SQLite snapshot")
+        log_info(f"[MEGA DB RESTORE] applied {applied} compact deltas after SQLite snapshot in {time.monotonic()-started:.1f}s")
     return applied
 
 def mega_upload_latest_global_backup(force: bool = False) -> bool:
@@ -5973,7 +6151,7 @@ def _mega_select_best_global_candidate_with_retry(limit: int = 80) -> tuple[str 
     return last
 
 
-def mega_restore_full_from_cloud(force: bool = False) -> tuple[bool, str]:
+def _v177_legacy_0086_mega_restore_full_from_cloud(force: bool = False) -> tuple[bool, str]:
     """Полное восстановление из лучшего global snapshot + всех последующих delta.
 
     Восстанавливает весь state целиком: chats, records, settings, owners, forwarding,
@@ -6033,6 +6211,9 @@ def mega_restore_full_from_cloud(force: bool = False) -> tuple[bool, str]:
         if local_empty:
             _set_restore_guard("MEGA full restore failed: " + str(e)[:500])
         return False, "Ошибка полного восстановления: " + str(e)[:500]
+try: _v177_legacy_0086_mega_restore_full_from_cloud.__name__ = 'mega_restore_full_from_cloud'
+except Exception: pass
+mega_restore_full_from_cloud = _v177_legacy_0086_mega_restore_full_from_cloud
 
 
 def mega_autorestore_if_needed() -> bool:
@@ -6365,7 +6546,7 @@ def _compact_button_label(text) -> str:
 def IB(text, *args, **kwargs):
     return _ORIGINAL_INLINE_KEYBOARD_BUTTON(_compact_button_label(text), *args, **kwargs)
 
-def load_data():
+def _v177_legacy_0087_load_data():
     _import_legacy_global_json_to_db(DATA_FILE, force=False)
 
     root = SQLITE.load_root()
@@ -6412,6 +6593,9 @@ def load_data():
         log_error(f"load_data forward_index: {e}")
 
     return d
+try: _v177_legacy_0087_load_data.__name__ = 'load_data'
+except Exception: pass
+load_data = _v177_legacy_0087_load_data
 
 def save_data(d, chat_ids=None, full: bool = False, root_only: bool = False):
     """Потокобезопасное сохранение.
@@ -6640,7 +6824,7 @@ def normalize_known_chats_for_owner() -> int:
         log_error(f"normalize_known_chats_for_owner: {e}")
         return 0
 
-def collect_forward_menu_chats() -> dict:
+def _v177_legacy_0088_collect_forward_menu_chats() -> dict:
     """
     Собирает список чатов для меню пересылки:
     1) из known_chats владельца
@@ -6689,6 +6873,9 @@ def collect_forward_menu_chats() -> dict:
         seen.add(key)
         deduped[str(cid)] = info
     return deduped
+try: _v177_legacy_0088_collect_forward_menu_chats.__name__ = 'collect_forward_menu_chats'
+except Exception: pass
+collect_forward_menu_chats = _v177_legacy_0088_collect_forward_menu_chats
 
 
 def _xlsx_col_name(n: int) -> str:
@@ -6729,7 +6916,7 @@ def _xlsx_cell_xml(row_idx: int, col_idx: int, value, style: int | None = None) 
         return f'<c r="{ref}"{s_attr}><v>{value}</v></c>'
     return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(value)}</t></is></c>'
 
-def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данные") -> None:
+def _v177_legacy_0089_write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данные") -> None:
     """Минимальный XLSX; sheet XML пишется потоково во временный файл."""
     rows = rows or [["date", "amount", "note"]]
     workbook_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -6791,6 +6978,9 @@ def _write_simple_xlsx(path: str, rows: list[list], sheet_name: str = "Данн�
                 os.remove(sheet_tmp)
         except Exception:
             pass
+try: _v177_legacy_0089_write_simple_xlsx.__name__ = '_write_simple_xlsx'
+except Exception: pass
+_write_simple_xlsx = _v177_legacy_0089_write_simple_xlsx
 
 
 def _xlsx_income_expense_values(amount):
@@ -6838,7 +7028,7 @@ def _opening_balance_before_exact(store: dict, start_day: str, start_rid: int | 
         total += financial_view_amount(store, rec)
     return float(total)
 
-def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None = None) -> list[list]:
+def _v177_legacy_0090_xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, target_chat_id: int | None = None) -> list[list]:
     """Add opening balance, period totals and real closing cash balance to 4-column XLSX."""
     src = [list(r or []) for r in (rows or [])]
     if not src:
@@ -6873,9 +7063,12 @@ def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, ta
     closing = opening + income_total - expense_total
     out.append(["", "Остаток на руках", {"formula": f"C2+C{income_row}-D{expense_row}", "value": closing}, ""])
     return out
+try: _v177_legacy_0090_xlsx_simple_rows_with_balances.__name__ = '_xlsx_simple_rows_with_balances'
+except Exception: pass
+_xlsx_simple_rows_with_balances = _v177_legacy_0090_xlsx_simple_rows_with_balances
 
 
-def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
+def _v177_legacy_0093_compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
     """3-column Excel: Date / Income / Expense; description lives only in Comment/Note."""
     opening = float(opening_balance or 0.0)
     rows = [["Дата", "Приход", "Расход"], ["Остаток с прошлого раза", opening, ""], []]
@@ -6914,9 +7107,12 @@ def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_ba
     closing = opening + income_total - expense_total
     rows.append(["Остаток на руках", {"formula": f"B2+B{income_row}-C{expense_row}", "value": closing}, ""])
     return rows, annotations
+try: _v177_legacy_0093_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
+except Exception: pass
+_compact_simple_excel_rows_and_annotations = _v177_legacy_0093_compact_simple_excel_rows_and_annotations
 
 
-def _period_export_bounds(store: dict, mode: str, day_key: str) -> tuple[str, str]:
+def _v177_legacy_0097_period_export_bounds(store: dict, mode: str, day_key: str) -> tuple[str, str]:
     mode = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
     if mode == "all_real":
         mode = "all"
@@ -6936,6 +7132,9 @@ def _period_export_bounds(store: dict, mode: str, day_key: str) -> tuple[str, st
     if keys:
         return keys[0], keys[-1]
     return day_key, day_key
+try: _v177_legacy_0097_period_export_bounds.__name__ = '_period_export_bounds'
+except Exception: pass
+_period_export_bounds = _v177_legacy_0097_period_export_bounds
 
 
 
@@ -7018,7 +7217,7 @@ def _xlsx_cell_xml2(row_idx: int, col_idx: int, value, style: int = 0) -> str:
     return f'<c r="{ref}" t="inlineStr"{s_attr}><is><t>{_xlsx_xml_escape(text)}</t></is></c>'
 
 
-def _write_tabl_lsx_xlsx(
+def _v177_legacy_0098_write_tabl_lsx_xlsx(
     path: str,
     rows: list[list],
     styles: list[list],
@@ -7198,6 +7397,9 @@ def _write_tabl_lsx_xlsx(
                 os.remove(sheet_tmp)
         except Exception:
             pass
+try: _v177_legacy_0098_write_tabl_lsx_xlsx.__name__ = '_write_tabl_lsx_xlsx'
+except Exception: pass
+_write_tabl_lsx_xlsx = _v177_legacy_0098_write_tabl_lsx_xlsx
 
 
 def _validate_xlsx_annotation_package(path: str, annotation_mode: str | None) -> None:
@@ -7244,7 +7446,7 @@ def _excel_category_color_index(note: str) -> int:
     except Exception:
         return 0
 
-def _modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
+def _v177_legacy_0099_modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
     """Modern 4-column/backup Excel: colored amounts + annotations on expenses."""
     max_cols = max((len(r) for r in rows), default=4)
     styles = []
@@ -7287,8 +7489,11 @@ def _modern_simple_excel_styles_comments(rows: list[list]) -> tuple[list[list], 
         styles.append(st)
     widths = [13, 38, 15, 15] + [14] * max(0, max_cols - 4)
     return styles, comments, header_row, widths
+try: _v177_legacy_0099_modern_simple_excel_styles_comments.__name__ = '_modern_simple_excel_styles_comments'
+except Exception: pass
+_modern_simple_excel_styles_comments = _v177_legacy_0099_modern_simple_excel_styles_comments
 
-def _modern_compact_excel_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
+def _v177_legacy_0100_modern_compact_excel_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
     """Modern 3-column Excel without Description column; annotations are on amount cells."""
     max_cols = max((len(r) for r in rows), default=3)
     styles = []
@@ -7316,9 +7521,12 @@ def _modern_compact_excel_styles_comments(rows: list[list], annotations: dict[tu
             st[2] = 19 + _excel_category_color_index(note)
         styles.append(st)
     return styles, dict(annotations or {}), 1, [22, 16, 16]
+try: _v177_legacy_0100_modern_compact_excel_styles_comments.__name__ = '_modern_compact_excel_styles_comments'
+except Exception: pass
+_modern_compact_excel_styles_comments = _v177_legacy_0100_modern_compact_excel_styles_comments
 
 
-def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
+def _v177_legacy_0101_modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list], dict, int, list[float]]:
     """Modern category/stat Excel: each expense column gets its own fill and annotation."""
     max_cols = max((len(r) for r in rows), default=4)
     styles = []
@@ -7359,8 +7567,11 @@ def _modern_category_excel_styles_comments(rows: list[list]) -> tuple[list[list]
         styles.append(st)
     widths = [13, 36, 15] + [18] * max(0, max_cols - 3)
     return styles, comments, header_row, widths
+try: _v177_legacy_0101_modern_category_excel_styles_comments.__name__ = '_modern_category_excel_styles_comments'
+except Exception: pass
+_modern_category_excel_styles_comments = _v177_legacy_0101_modern_category_excel_styles_comments
 
-def _modern_category_no_description_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
+def _v177_legacy_0103_modern_category_no_description_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]) -> tuple[list[list], dict, int, list[float]]:
     """Category report without Description column: Date / Income / article columns."""
     max_cols = max((len(r) for r in rows), default=3)
     styles = []
@@ -7385,9 +7596,12 @@ def _modern_category_no_description_styles_comments(rows: list[list], annotation
                 st[c] = 19 + ((c - 2) % len(TABL_LSX_CATEGORIES))
         styles.append(st)
     return styles, dict(annotations or {}), 1, [22, 15] + [18] * max(0, max_cols - 2)
+try: _v177_legacy_0103_modern_category_no_description_styles_comments.__name__ = '_modern_category_no_description_styles_comments'
+except Exception: pass
+_modern_category_no_description_styles_comments = _v177_legacy_0103_modern_category_no_description_styles_comments
 
 
-def _category_excel_expected_annotations(rows: list[list]) -> dict[tuple[int, int], str]:
+def _v177_legacy_0104_category_excel_expected_annotations(rows: list[list]) -> dict[tuple[int, int], str]:
     """Return the exact expense cells that must carry an annotation in category Excel.
 
     This mirrors _modern_category_excel_styles_comments(). Summary / balance rows
@@ -7418,6 +7632,9 @@ def _category_excel_expected_annotations(rows: list[list]) -> dict[tuple[int, in
             if _excel_nonempty(row[c]):
                 expected[(r_idx, c + 1)] = note_text
     return expected
+try: _v177_legacy_0104_category_excel_expected_annotations.__name__ = '_category_excel_expected_annotations'
+except Exception: pass
+_category_excel_expected_annotations = _v177_legacy_0104_category_excel_expected_annotations
 
 
 def _validate_xlsx_expected_notes(path: str, expected: dict[tuple[int, int], str]) -> None:
@@ -8873,4 +9090,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v168_clean_core_record_identity
+# v178_global_performance_final

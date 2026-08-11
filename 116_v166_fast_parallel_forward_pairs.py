@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 """v166: restore forwarding pairs, fast callbacks, parallel per-window UI and fast finance refresh.
 
 Safety rule: actual finance mutations remain chat-serialized. Independent window UI, forwarding-pair
@@ -22,17 +22,17 @@ VERSION = "bot_v166_fast_parallel_forward_pairs"
 # ---------------------------------------------------------------------------
 V166_WINDOW_UI_TASK_POOL = KeyedTaskPool(
     "window-fast",
-    _env_int("V166_WINDOW_UI_WORKERS", 6, 2, 10),
+    _env_int("V166_WINDOW_UI_WORKERS", 3, 2, 6),
     _env_int("V166_WINDOW_UI_MAX_PENDING", 900, 100, 4000),
 )
 V166_FORWARD_CONFIG_TASK_POOL = KeyedTaskPool(
     "forward-config",
-    _env_int("V166_FORWARD_CONFIG_WORKERS", 2, 1, 4),
+    _env_int("V166_FORWARD_CONFIG_WORKERS", 1, 1, 3),
     _env_int("V166_FORWARD_CONFIG_MAX_PENDING", 300, 50, 1500),
 )
 V166_FINANCE_UI_TASK_POOL = KeyedTaskPool(
     "finance-ui",
-    _env_int("V166_FINANCE_UI_WORKERS", 4, 2, 8),
+    _env_int("V166_FINANCE_UI_WORKERS", 2, 2, 4),
     _env_int("V166_FINANCE_UI_MAX_PENDING", 700, 100, 3000),
 )
 V166_CONFIG_IO_TASK_POOL = KeyedTaskPool(
@@ -45,7 +45,7 @@ V166_CONFIG_IO_TASK_POOL = KeyedTaskPool(
 V166_CONFIG_IO_SCHEDULER = DelayedTaskScheduler(V166_CONFIG_IO_TASK_POOL)
 V166_FINANCE_DEBOUNCE_TASK_POOL = KeyedTaskPool(
     "finance-debounce",
-    _env_int("V166_FINANCE_DEBOUNCE_WORKERS", 2, 1, 4),
+    _env_int("V166_FINANCE_DEBOUNCE_WORKERS", 1, 1, 3),
     _env_int("V166_FINANCE_DEBOUNCE_MAX_PENDING", 300, 50, 1200),
 )
 V166_FINANCE_DEBOUNCE_SCHEDULER = DelayedTaskScheduler(V166_FINANCE_DEBOUNCE_TASK_POOL)
@@ -754,7 +754,7 @@ def refresh_registered_financial_windows(chat_id: int):
     return True
 
 
-def schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, reason: str = "finance_changed", delay: float = 0.0):
+def _v177_legacy_0247_schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, reason: str = "finance_changed", delay: float = 0.0):
     """v166: post-commit UI refresh is dispatched immediately to independent per-message lanes.
 
     finance_changed() already debounces/serializes the business commit. Adding another 120-150 ms
@@ -788,6 +788,9 @@ def schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, 
     except Exception:
         _fire_visual()
         return True
+try: _v177_legacy_0247_schedule_financial_window_refresh.__name__ = 'schedule_financial_window_refresh'
+except Exception: pass
+schedule_financial_window_refresh = _v177_legacy_0247_schedule_financial_window_refresh
 
 
 # Faster finance finalization debounce. Actual finance writes still go through FINANCE_TASK_POOL per chat.
@@ -886,4 +889,4 @@ try:
 except Exception:
     pass
 
-# v168_clean_core_record_identity
+# v178_global_performance_final

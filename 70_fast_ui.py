@@ -1,4 +1,4 @@
-# v169_fast_tz_forward_reminder_google
+# v178_global_performance_final
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ def _perform_fast_ui_edit(payload: dict) -> str:
                 pass
             return "failed"
 
-def _run_pending_ui_edit(key):
+def _v177_legacy_0210_run_pending_ui_edit(key):
     with _ui_edit_lock:
         payload = _ui_edit_pending.pop(key, None)
         _ui_edit_timers.pop(key, None)
@@ -107,9 +107,12 @@ def _run_pending_ui_edit(key):
     except Exception:
         pass
     _perform_fast_ui_edit(payload)
+try: _v177_legacy_0210_run_pending_ui_edit.__name__ = '_run_pending_ui_edit'
+except Exception: pass
+_run_pending_ui_edit = _v177_legacy_0210_run_pending_ui_edit
 
 
-def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "fast_ui") -> str:
+def _v177_legacy_0211_fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_markup=None, parse_mode=None, purpose: str = "fast_ui") -> str:
     try:
         if "secret" not in str(purpose or "").lower():
             reply_markup = ensure_previous_back_nav_keyboard(reply_markup, int(chat_id), int(message_id))
@@ -165,6 +168,61 @@ def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_ma
     except Exception:
         pass
     return _perform_fast_ui_edit(payload)
+try: _v177_legacy_0211_fast_ui_edit_message_text.__name__ = 'fast_ui_edit_message_text'
+except Exception: pass
+fast_ui_edit_message_text = _v177_legacy_0211_fast_ui_edit_message_text
+
+
+def v178_edit_reply_markup_async(chat_id: int, message_id: int, reply_markup=None, purpose: str = "ui_markup") -> bool:
+    """Non-blocking keyboard-only update for callback handlers in every contour."""
+    cid = int(chat_id); mid = int(message_id)
+    def _job():
+        started = time.monotonic()
+        try:
+            _tg_call_retry(
+                bot.edit_message_reply_markup, cid, mid, reply_markup=reply_markup,
+                attempts=1, purpose=str(purpose or "ui_markup") + "_async",
+            )
+        except Exception:
+            pass
+        finally:
+            try:
+                stage = globals().get("v177_perf_stage")
+                if callable(stage): stage("telegram_reply_markup_async", time.monotonic() - started)
+            except Exception:
+                pass
+    try:
+        return bool(UI_TASK_POOL.submit_unique(f"v178-markup:{cid}:{mid}", _job))
+    except Exception:
+        return False
+
+
+def v177_delete_message_async(chat_id: int, message_id: int, purpose: str = "ui_close") -> bool:
+    """Delete an obsolete UI message without making the callback wait for Telegram."""
+    cid = int(chat_id); mid = int(message_id)
+    def _job():
+        started = time.monotonic()
+        try:
+            _tg_call_retry(bot.delete_message, cid, mid, attempts=1, purpose=str(purpose or "ui_close") + "_async")
+        except Exception:
+            pass
+        finally:
+            try:
+                stage = globals().get("v177_perf_stage")
+                if callable(stage): stage("telegram_delete_async", time.monotonic() - started)
+            except Exception:
+                pass
+    try:
+        pool = globals().get("GENERAL_TASK_POOL")
+        if pool is not None:
+            return bool(pool.submit_unique(f"v177-ui-delete:{cid}:{mid}", _job))
+    except Exception:
+        pass
+    try:
+        threading.Thread(target=_job, daemon=True, name=f"v177-ui-delete-{mid}").start()
+        return True
+    except Exception:
+        return False
 
 
 def cancel_fast_ui_edit(chat_id: int, message_id: int):
@@ -288,7 +346,7 @@ def ensure_previous_back_nav_keyboard(reply_markup, chat_id: int, message_id: in
     return reply_markup
 
 
-def restore_previous_window(call) -> bool:
+def _v177_legacy_0212_restore_previous_window(call) -> bool:
     chat_id = int(call.message.chat.id)
     message_id = int(call.message.message_id)
     key = _window_nav_key(chat_id, message_id)
@@ -314,6 +372,9 @@ def restore_previous_window(call) -> bool:
         parse_mode=snap.get("parse_mode"), purpose="nav_prev_restore",
     )
     return result in {"ok", "scheduled", "rate_limited"}
+try: _v177_legacy_0212_restore_previous_window.__name__ = 'restore_previous_window'
+except Exception: pass
+restore_previous_window = _v177_legacy_0212_restore_previous_window
 
 
 def _suggest_window_marker(group: str) -> str:
@@ -364,7 +425,7 @@ def _ensure_window_marker_for_render(text: str, reply_markup, chat_id: int, mess
         journal_missing_window_marker(key, chat_id, message_id, body, reply_markup, purpose)
     return window_mark(body, code)
 
-def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
+def _v177_legacy_0214_safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
     """Быстрое обновление окна с маркером, историей и безопасным fallback."""
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
@@ -442,9 +503,12 @@ def safe_edit(bot, call, text, reply_markup=None, parse_mode=None):
     except Exception as e:
         if not is_telegram_429(e):
             log_error(f"safe_edit fallback send {chat_id}: {e}")
+try: _v177_legacy_0214_safe_edit.__name__ = 'safe_edit'
+except Exception: pass
+safe_edit = _v177_legacy_0214_safe_edit
 
 
-def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
+def _v177_legacy_0215_safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
     """Редактирует только текущее окно, без создания нового."""
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
@@ -482,6 +546,9 @@ def safe_edit_current_only(bot, call, text, reply_markup=None, parse_mode=None):
     except Exception:
         pass
     return result in {"ok", "scheduled", "rate_limited"}
+try: _v177_legacy_0215_safe_edit_current_only.__name__ = 'safe_edit_current_only'
+except Exception: pass
+safe_edit_current_only = _v177_legacy_0215_safe_edit_current_only
 
 
 CATEGORY_PAGE_SAFE_CHARS = 3300
@@ -609,14 +676,15 @@ def _show_category_page(chat_id: int, message_id: int, requested) -> bool:
     text = _category_page_text(state, idx)
     kb = _category_paged_keyboard(state, idx)
     try:
-        bot.edit_message_text(
-            text, chat_id=int(chat_id), message_id=int(message_id), reply_markup=kb,
-            parse_mode=(state.get("parse_mode") or None),
+        result = fast_ui_edit_message_text(
+            int(chat_id), int(message_id), text, reply_markup=kb,
+            parse_mode=(state.get("parse_mode") or None), purpose="category_page_v178",
         )
-    except Exception as exc:
-        if "message is not modified" not in str(exc).lower():
-            log_error(f"category page edit failed {chat_id}:{message_id}: {exc}")
+        if str(result or "") not in {"ok", "scheduled"}:
             return False
+    except Exception as exc:
+        log_error(f"category page edit failed {chat_id}:{message_id}: {exc}")
+        return False
     store["categories_msg_id"] = int(message_id)
     save_data(data, chat_ids=[int(chat_id)])
     return True
@@ -674,22 +742,23 @@ def send_or_edit_categories_window(chat_id, text, reply_markup=None, parse_mode=
 
     for target_id in candidates:
         try:
-            bot.edit_message_text(text, chat_id=chat_id, message_id=target_id, reply_markup=reply_markup, parse_mode=parse_mode)
-            store["categories_msg_id"] = target_id
-            register_open_window(chat_id, target_id, "categories", code=marker_action or "")
-            save_data(data, chat_ids=[int(chat_id)])
-            return target_id
-        except Exception as e:
-            if "message is not modified" in str(e).lower():
+            result = fast_ui_edit_message_text(
+                chat_id, target_id, text, reply_markup=reply_markup, parse_mode=parse_mode,
+                purpose="categories_window_v178",
+            )
+            if str(result or "") in {"ok", "scheduled"}:
                 store["categories_msg_id"] = target_id
                 register_open_window(chat_id, target_id, "categories", code=marker_action or "")
                 save_data(data, chat_ids=[int(chat_id)])
                 return target_id
-            log_error(f"send_or_edit_categories_window edit failed {chat_id}:{target_id}: {e}")
+            if str(result or "") != "not_found":
+                continue
             if store.get("categories_msg_id") == target_id:
                 unregister_open_window(chat_id, target_id)
                 store["categories_msg_id"] = None
                 save_data(data, chat_ids=[int(chat_id)])
+        except Exception as e:
+            log_error(f"send_or_edit_categories_window edit failed {chat_id}:{target_id}: {e}")
 
     sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
     store["categories_msg_id"] = sent.message_id
@@ -1156,7 +1225,7 @@ def build_expense_shortcut_chat_menu(chat_id: int):
     return kb
 
 
-def build_info_keyboard(chat_id: int):
+def _v177_legacy_0216_build_info_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
     layout = version_mode_layout()
     if is_owner_chat(chat_id):
@@ -1268,6 +1337,9 @@ def build_info_keyboard(chat_id: int):
         IB("❌ Закрыть", callback_data="info_close"),
     )
     return kb
+try: _v177_legacy_0216_build_info_keyboard.__name__ = 'build_info_keyboard'
+except Exception: pass
+build_info_keyboard = _v177_legacy_0216_build_info_keyboard
 
 
 def open_info_window(chat_id: int):
@@ -1941,11 +2013,12 @@ def handle_categories_callback(call, data_str: str) -> bool:
         text = build_category_layout_text(store, context)
         kb = build_category_layout_keyboard(store, context, params, chat_id=chat_id)
         final_text = window_mark(strip_window_mark(text), _window_marker_code(marker_action, "Ф"))
-        try:
-            bot.edit_message_text(final_text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=kb)
-        except Exception as exc:
-            if "message is not modified" not in str(exc).lower():
-                raise
+        result = fast_ui_edit_message_text(
+            chat_id, call.message.message_id, final_text, reply_markup=kb,
+            purpose="category_layout_v178",
+        )
+        if str(result or "") not in {"ok", "scheduled"}:
+            raise RuntimeError(f"category layout edit failed: {result}")
         store["categories_msg_id"] = int(call.message.message_id)
         register_open_window(chat_id, int(call.message.message_id), "categories", code=marker_action)
         save_data(data, chat_ids=[int(chat_id)])
@@ -2395,7 +2468,7 @@ def handle_categories_callback(call, data_str: str) -> bool:
 _callback_debounce_state = {}
 
 
-def _callback_should_debounce(call, data_str: str, min_interval: float = 0.12) -> bool:
+def _v177_legacy_0223_callback_should_debounce(call, data_str: str, min_interval: float = 0.12) -> bool:
     """Защита от частых кликов: Telegram уже получил answer_callback_query, поэтому «Загрузка» не висит."""
     try:
         chat_id = int(call.message.chat.id)
@@ -2428,6 +2501,9 @@ def _callback_should_debounce(call, data_str: str, min_interval: float = 0.12) -
         return skipped
     except Exception:
         return False
+try: _v177_legacy_0223_callback_should_debounce.__name__ = '_callback_should_debounce'
+except Exception: pass
+_callback_should_debounce = _v177_legacy_0223_callback_should_debounce
 
 
 # Debounce перерисовки галочек в секретном редактировании:
@@ -2568,7 +2644,7 @@ def answer_callback_query_background(callback_id: str):
             pass
 
 
-def schedule_callback_receipt_ack(callback_id: str, chat_id=None, delay: float | None = None):
+def _v177_legacy_0224_schedule_callback_receipt_ack(callback_id: str, chat_id=None, delay: float | None = None):
     """Fallback ACK scheduled as soon as Flask receives callback_query."""
     callback_id = str(callback_id or "")
     if not callback_id:
@@ -2587,6 +2663,9 @@ def schedule_callback_receipt_ack(callback_id: str, chat_id=None, delay: float |
         callback_id,
         chat_id,
     )
+try: _v177_legacy_0224_schedule_callback_receipt_ack.__name__ = 'schedule_callback_receipt_ack'
+except Exception: pass
+schedule_callback_receipt_ack = _v177_legacy_0224_schedule_callback_receipt_ack
 
 
 def build_process_center_keyboard(chat_id: int):
@@ -2608,13 +2687,16 @@ def build_problem_tasks_keyboard(chat_id: int):
     return kb
 
 
-def build_safety_profile_keyboard(chat_id: int):
+def _v177_legacy_0225_build_safety_profile_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.row(IB(safety_profile_label(), callback_data="safety_profile_toggle"))
     kb.row(IB("👥 Права пользователей", callback_data="security_roles:0"))
     day = get_chat_store(chat_id).get("current_view_day") or today_key()
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
+try: _v177_legacy_0225_build_safety_profile_keyboard.__name__ = 'build_safety_profile_keyboard'
+except Exception: pass
+build_safety_profile_keyboard = _v177_legacy_0225_build_safety_profile_keyboard
 
 
 def build_security_roles_text(page: int = 0) -> str:
@@ -2684,4 +2766,4 @@ def build_integrity_keyboard(chat_id: int):
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
 
-# v169_fast_tz_forward_reminder_google
+# v178_global_performance_final

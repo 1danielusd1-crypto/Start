@@ -1,4 +1,4 @@
-# v163_audit_hardening
+# v178_global_performance_final
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -395,7 +395,7 @@ def telegram_webhook():
         log_error(f"WEBHOOK: enqueue/update dispatcher error: {e}")
         return "ERROR", 500
         
-def set_webhook():
+def _v177_legacy_0269_set_webhook():
     global WEBHOOK_HEADER_SECRET_ENABLED
     if not WEBHOOK_URL:
         log_info("WEBHOOK_URL / APP_URL / RENDER_EXTERNAL_URL не указаны — webhook не установлен.")
@@ -436,10 +436,23 @@ def set_webhook():
         f"Webhook установлен: /tg/<secret> (max_connections={webhook_connections}; "
         f"force_reset={force_reset}; secret_header={WEBHOOK_HEADER_SECRET_ENABLED})"
     )
+try: _v177_legacy_0269_set_webhook.__name__ = 'set_webhook'
+except Exception: pass
+set_webhook = _v177_legacy_0269_set_webhook
+
+def _v177_start_web_server_early():
+    """Bind Render's HTTP port immediately; webhook stays BOOT-gated until runtime_ready."""
+    def _serve():
+        app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
+    thread = threading.Thread(target=_serve, name="v177-web-early", daemon=True)
+    thread.start()
+    return thread
+
 
 def main():
     global data
     runtime_install_signal_handlers()
+    _v177_web_thread = _v177_start_web_server_early()
     runtime_set_phase("boot_local_load", "восстанавливаю рабочую SQLite из MEGA / локального диска")
     restored = False
     db_restored = False
@@ -702,11 +715,14 @@ def main():
             except Exception as e:
                 log_error(f"notify owner on start: {e}")
     try:
-        app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
+        # Flask is already bound from the beginning of boot. Keep the main thread alive
+        # for signal handling while the web server serves health checks/webhook.
+        while _v177_web_thread.is_alive():
+            _v177_web_thread.join(timeout=3600.0)
     finally:
         # Covers a normal Flask/process exit. SIGTERM/SIGINT already run the same routine first.
         try:
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v163_audit_hardening
+# v178_global_performance_final

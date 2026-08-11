@@ -1,4 +1,4 @@
-# v153_remaining_fixes_11_16
+# v178_global_performance_final
 """v153: remaining fixes 11-16.
 
 - deep command/button/runtime audit;
@@ -162,9 +162,12 @@ def log_info(message):
         return _V153_ORIG_LOG_INFO(v153_redact_text(message))
 
 
-def bot_journal(action, chat_id=None, detail="", level="INFO"):
+def _v177_legacy_0007_bot_journal(action, chat_id=None, detail="", level="INFO"):
     if callable(_V153_ORIG_BOT_JOURNAL):
         return _V153_ORIG_BOT_JOURNAL(str(action), chat_id, v153_sanitize(detail), str(level))
+try: _v177_legacy_0007_bot_journal.__name__ = 'bot_journal'
+except Exception: pass
+bot_journal = _v177_legacy_0007_bot_journal
 
 
 def _atomic_json_dump(path: str, payload) -> None:
@@ -338,7 +341,7 @@ def _v153_release_waiters(ok: bool, error_text: str = "") -> None:
             pass
 
 
-def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
+def _v177_legacy_0013_interactive_file_job_runner(job_meta: dict, func, args, kwargs):
     state = {"ok": False, "error": ""}
     def _target(*a, **k):
         try:
@@ -356,9 +359,12 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
         result = _target(*args, **kwargs)
     _v153_release_waiters(bool(state["ok"]), state["error"])
     return result
+try: _v177_legacy_0013_interactive_file_job_runner.__name__ = '_interactive_file_job_runner'
+except Exception: pass
+_interactive_file_job_runner = _v177_legacy_0013_interactive_file_job_runner
 
 
-def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs):
+def _v177_legacy_0017_submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs):
     busy = _file_job_busy_info() if "_file_job_busy_info" in globals() else {}
     if busy:
         _v153_register_wait(int(chat_id), str(kind), str(label), func, args, kwargs, busy)
@@ -366,6 +372,9 @@ def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args
     if callable(_V153_ORIG_FILE_SUBMIT):
         return _V153_ORIG_FILE_SUBMIT(chat_id, kind, label, func, *args, **kwargs)
     return False, "Экспорт недоступен"
+try: _v177_legacy_0017_submit_interactive_file_job.__name__ = 'submit_interactive_file_job'
+except Exception: pass
+submit_interactive_file_job = _v177_legacy_0017_submit_interactive_file_job
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1006,7 +1015,7 @@ def _v153_send_full_export(chat_id: int, scope: str, tenant_id: str | None):
         _v153_shutil.rmtree(_v153_os.path.dirname(path), ignore_errors=True)
 
 
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0278_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v153_tempfile.mkdtemp(prefix="v153_restore_validate_")
     raw = _v153_os.path.join(folder, "restore.sqlite3")
     try:
@@ -1037,6 +1046,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v153_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0278_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0278_v153_validate_restore_gz
 
 
 def _v153_restore_keyboard(token: str, scope: str):
@@ -1584,7 +1596,7 @@ def _v153_callback_once(call, key: str) -> bool:
 
 
 _V153_ORIG_EXTENSION_CALLBACK = globals().get("v149_extension_callback")
-def v149_extension_callback(call, data_str: str) -> bool:
+def _v177_legacy_0268_v149_extension_callback(call, data_str: str) -> bool:
     data_str = str(data_str or "")
     if data_str == "runtime_watcher":
         uid = _v153_actor_id(call); chat_id = int(call.message.chat.id)
@@ -1663,6 +1675,9 @@ def v149_extension_callback(call, data_str: str) -> bool:
     if callable(_V153_ORIG_EXTENSION_CALLBACK):
         return bool(_V153_ORIG_EXTENSION_CALLBACK(call, data_str))
     return False
+try: _v177_legacy_0268_v149_extension_callback.__name__ = 'v149_extension_callback'
+except Exception: pass
+v149_extension_callback = _v177_legacy_0268_v149_extension_callback
 
 
 def _v153_prune_restore_pending() -> None:
@@ -1747,7 +1762,7 @@ except Exception:
     pass
 
 
-def runtime_mark_ready(detail: str = ""):
+def _v177_legacy_0084_runtime_mark_ready(detail: str = ""):
     result = _V153_ORIG_RUNTIME_MARK_READY(detail) if callable(_V153_ORIG_RUNTIME_MARK_READY) else None
     try:
         DELAYED_SCHEDULER.schedule("v153-instance-lease", 1.0, lambda: GENERAL_TASK_POOL.submit_unique("v153-instance-lease", _v153_instance_lease_check))
@@ -1769,6 +1784,9 @@ def runtime_mark_ready(detail: str = ""):
     except Exception:
         pass
     return result
+try: _v177_legacy_0084_runtime_mark_ready.__name__ = 'runtime_mark_ready'
+except Exception: pass
+runtime_mark_ready = _v177_legacy_0084_runtime_mark_ready
 
 
 try:
@@ -1776,4 +1794,4 @@ try:
 except Exception:
     pass
 
-# v153_remaining_fixes_11_16
+# v178_global_performance_final

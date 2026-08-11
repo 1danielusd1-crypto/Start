@@ -1,4 +1,4 @@
-# v164_circle_hierarchy_spaces
+# v178_global_performance_final
 """v164: explicit owner / first-circle / second-circle hierarchy with isolated tenants.
 
 Rules:
@@ -564,7 +564,7 @@ def tenant_same_space(chat_a: int, chat_b: int) -> bool:
     return bool(ta and ta == tb)
 
 
-def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
+def _v177_legacy_0143_add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     src, dst = int(src_chat_id), int(dst_chat_id)
     actor = 0
     try:
@@ -589,6 +589,9 @@ def add_forward_link(src_chat_id: int, dst_chat_id: int, mode: str):
     if callable(_V164_PREV_ADD_FORWARD_LINK):
         return _V164_PREV_ADD_FORWARD_LINK(src, dst, mode)
     raise RuntimeError("add_forward_link is unavailable")
+try: _v177_legacy_0143_add_forward_link.__name__ = 'add_forward_link'
+except Exception: pass
+add_forward_link = _v177_legacy_0143_add_forward_link
 
 
 def tenant_create_invite(tenant_id: str, kind: str, role: str, created_by: int, max_uses: int = 1, ttl_hours: int = 72) -> str:
@@ -929,7 +932,7 @@ def _v164_scoped_picker_ids(kind: str, level: int | None = None) -> list[int]:
     return _v164_scope_ids(int(level), current_state_chat_id())
 
 
-def _collect_forward_picker_items(include_owner: bool = True, include_removed: bool = False):
+def _v177_legacy_0182_collect_forward_picker_items(include_owner: bool = True, include_removed: bool = False):
     level = _v164_current_window_circle("forward", 1)
     items = []
     for cid in _v164_scoped_picker_ids("forward", level):
@@ -941,9 +944,12 @@ def _collect_forward_picker_items(include_owner: bool = True, include_removed: b
         items.append((int(cid), get_chat_display_name(int(cid)) or f"Чат {cid}"))
     # OWNER_ID is intentionally not mixed into first/second-circle pickers anymore.
     return items, None
+try: _v177_legacy_0182_collect_forward_picker_items.__name__ = '_collect_forward_picker_items'
+except Exception: pass
+_collect_forward_picker_items = _v177_legacy_0182_collect_forward_picker_items
 
 
-def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
+def _v177_legacy_0191_collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
     rows = _V164_PREV_COLLECT_FORWARD_PAIRS() if callable(_V164_PREV_COLLECT_FORWARD_PAIRS) else []
     allowed = set(_v164_scoped_picker_ids("forward"))
     # Keep pairs whose source belongs to the displayed circle. Target may be the paired parent/child.
@@ -956,6 +962,9 @@ def collect_forward_pairs_for_menu() -> list[tuple[int, int]]:
         if a in allowed:
             out.append((a, b))
     return out
+try: _v177_legacy_0191_collect_forward_pairs_for_menu.__name__ = 'collect_forward_pairs_for_menu'
+except Exception: pass
+collect_forward_pairs_for_menu = _v177_legacy_0191_collect_forward_pairs_for_menu
 
 
 def _v164_insert_before_nav(kb, button) -> None:
@@ -1021,7 +1030,7 @@ def build_forward_menu_keyboard_for_current_mode(day_key: str | None = None, A: 
     return build_forward_source_menu(day_key)
 
 
-def build_finance_toggle_chat_menu(day_key: str):
+def _v177_legacy_0197_build_finance_toggle_chat_menu(day_key: str):
     level = _v164_current_window_circle("finmode", 1)
     kb = types.InlineKeyboardMarkup(row_width=2)
     buttons = []
@@ -1040,6 +1049,9 @@ def build_finance_toggle_chat_menu(day_key: str):
     kb.row(IB("ℹ️ Описание чатов", callback_data="chat_desc_menu:finmode"))
     kb.row(IB("🔙 Назад", callback_data=f"d:{day_key}:back_main"))
     return kb
+try: _v177_legacy_0197_build_finance_toggle_chat_menu.__name__ = 'build_finance_toggle_chat_menu'
+except Exception: pass
+build_finance_toggle_chat_menu = _v177_legacy_0197_build_finance_toggle_chat_menu
 
 
 def build_quick_balance_mode_menu(day_key: str, target_chat_id: int):
@@ -1060,7 +1072,7 @@ def build_finance_mode_config_menu(day_key: str, target_chat_id: int):
     return build_quick_balance_mode_menu(day_key, target_chat_id)
 
 
-def build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
+def _v177_legacy_0184_build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
     # For forwarding/finmode descriptions, use exactly the circle currently displayed.
     if str(origin) not in {"forward", "finmode"}:
         return _V164_PREV_BUILD_CHAT_DESCRIPTION_MENU(viewer_chat_id, origin, day_key)
@@ -1079,6 +1091,9 @@ def build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
     kb.row(IB("🔙 Назад", callback_data=_chat_description_origin_back(origin, day_key)))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
     return kb
+try: _v177_legacy_0184_build_chat_description_menu.__name__ = 'build_chat_description_menu'
+except Exception: pass
+build_chat_description_menu = _v177_legacy_0184_build_chat_description_menu
 
 
 def _v164_circle_callback_filter(call) -> bool:
@@ -1261,4 +1276,4 @@ try:
 except Exception:
     pass
 
-# v164_circle_hierarchy_spaces
+# v178_global_performance_final

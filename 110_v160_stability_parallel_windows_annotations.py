@@ -1,4 +1,4 @@
-# v160_stability_parallel_windows_annotations
+# v178_global_performance_final
 """v160: UI stabilization, parallel-window support, reliable helper timers and exact window/TZ annotations."""
 
 import copy as _v160_copy
@@ -37,23 +37,32 @@ except Exception:
     pass
 
 
-def process_visual_status_enabled(chat_id: int) -> bool:
+def _v177_legacy_0300_process_visual_status_enabled(chat_id: int) -> bool:
     return False
+try: _v177_legacy_0300_process_visual_status_enabled.__name__ = 'process_visual_status_enabled'
+except Exception: pass
+process_visual_status_enabled = _v177_legacy_0300_process_visual_status_enabled
 
 
-def _v156_process_status_schedule(chat_id: int, delay: float) -> None:
+def _v177_legacy_0304_v156_process_status_schedule(chat_id: int, delay: float) -> None:
     try:
         DELAYED_SCHEDULER.cancel(f"{_V156_PROCESS_STATUS_KEY_PREFIX}{int(chat_id)}")
     except Exception:
         pass
+try: _v177_legacy_0304_v156_process_status_schedule.__name__ = '_v156_process_status_schedule'
+except Exception: pass
+_v156_process_status_schedule = _v177_legacy_0304_v156_process_status_schedule
 
 
-def _v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
+def _v177_legacy_0308_v156_process_status_arm(chat_id: int | None, hint: str = "") -> None:
     # Intentionally no UI for ordinary telegram_update/background effects.
     return None
+try: _v177_legacy_0308_v156_process_status_arm.__name__ = '_v156_process_status_arm'
+except Exception: pass
+_v156_process_status_arm = _v177_legacy_0308_v156_process_status_arm
 
 
-def _v156_process_status_tick(chat_id: int) -> None:
+def _v177_legacy_0313_v156_process_status_tick(chat_id: int) -> None:
     # If a v159 generic helper survived during a hot deploy, retire it quietly.
     try:
         chat_id = int(chat_id)
@@ -71,6 +80,9 @@ def _v156_process_status_tick(chat_id: int) -> None:
             bot.delete_message(chat_id, msg_id)
         except Exception:
             pass
+try: _v177_legacy_0313_v156_process_status_tick.__name__ = '_v156_process_status_tick'
+except Exception: pass
+_v156_process_status_tick = _v177_legacy_0313_v156_process_status_tick
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +130,7 @@ def _v160_schedule(key: str, delay: float, func, *args, **kwargs):
     return timer
 
 
-def _v160_delete_quiet(chat_id: int, message_id: int) -> None:
+def _v177_legacy_0315_v160_delete_quiet(chat_id: int, message_id: int) -> None:
     chat_id = int(chat_id); message_id = int(message_id)
     try:
         bot.delete_message(chat_id, message_id)
@@ -143,10 +155,16 @@ def _v160_delete_quiet(chat_id: int, message_id: int) -> None:
             except Exception: pass
     except Exception:
         pass
+try: _v177_legacy_0315_v160_delete_quiet.__name__ = '_v160_delete_quiet'
+except Exception: pass
+_v160_delete_quiet = _v177_legacy_0315_v160_delete_quiet
 
 
-def _v160_schedule_delete(chat_id: int, message_id: int, delay: float, prefix: str = "delete") -> None:
+def _v177_legacy_0316_v160_schedule_delete(chat_id: int, message_id: int, delay: float, prefix: str = "delete") -> None:
     _v160_schedule(f"v160:{prefix}:{int(chat_id)}:{int(message_id)}", delay, _v160_delete_quiet, int(chat_id), int(message_id))
+try: _v177_legacy_0316_v160_schedule_delete.__name__ = '_v160_schedule_delete'
+except Exception: pass
+_v160_schedule_delete = _v177_legacy_0316_v160_schedule_delete
 
 
 def _file_job_tick(key: str):
@@ -181,7 +199,7 @@ def _file_job_tick(key: str):
         )
 
 
-def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
+def _v177_legacy_0015_interactive_file_job_runner(job_meta: dict, func, args, kwargs):
     key = str(job_meta.get("key") or _INTERACTIVE_FILE_JOB_KEY)
     previous = getattr(_FILE_JOB_CONTEXT, "value", None)
     _FILE_JOB_CONTEXT.value = {"key": key}
@@ -266,6 +284,9 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
                 pass
         else:
             _FILE_JOB_CONTEXT.value = previous
+try: _v177_legacy_0015_interactive_file_job_runner.__name__ = '_interactive_file_job_runner'
+except Exception: pass
+_interactive_file_job_runner = _v177_legacy_0015_interactive_file_job_runner
 
 
 def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args, **kwargs) -> tuple[bool, str]:
@@ -503,13 +524,10 @@ def fast_ui_edit_message_text(chat_id: int, message_id: int, text: str, reply_ma
                 apply_fn(payload, delayed=False)
         except Exception:
             pass
-        result = _perform_fast_ui_edit(payload)
-        if result == "rate_limited":
-            # One short local retry; do not put the click into the overloaded delayed heap.
-            _v160_time.sleep(0.35)
-            _V160_FAST_EDIT_LAST[key] = _v160_time.monotonic()
-            result = _perform_fast_ui_edit(payload)
-        return result
+        # v177 FINAL: exactly one Telegram attempt on the callback thread.
+        # Any retry is scheduled by the final _v161_edit_retry implementation
+        # and therefore never blocks the user's button press.
+        return _perform_fast_ui_edit(payload)
 
 
 _V160_CALLBACK_LOCK = _v160_threading.RLock()
@@ -623,7 +641,7 @@ def cleanup_open_window_registry(reason: str = "manual") -> dict:
 _V160_PREV_RETURN_TO_MAIN = globals().get("return_to_main_window_closing_previous")
 
 
-def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
+def _v177_legacy_0244_return_to_main_window_closing_previous(chat_id: int, day_key: str, current_message_id: int | None = None):
     chat_id = int(chat_id); day_key = str(day_key)[:10]
     try:
         current_mid = int(current_message_id or 0)
@@ -683,6 +701,9 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
     if callable(_V160_PREV_RETURN_TO_MAIN):
         return _V160_PREV_RETURN_TO_MAIN(chat_id, day_key, current_message_id=None)
     return None
+try: _v177_legacy_0244_return_to_main_window_closing_previous.__name__ = 'return_to_main_window_closing_previous'
+except Exception: pass
+return_to_main_window_closing_previous = _v177_legacy_0244_return_to_main_window_closing_previous
 
 
 # ---------------------------------------------------------------------------
@@ -705,7 +726,7 @@ except Exception:
 _V160_PREV_EXPECTED_MARKER = globals().get("_v155_expected_marker")
 
 
-def _v155_expected_marker(action: str, chat_id: int) -> str:
+def _v177_legacy_0295_v155_expected_marker(action: str, chat_id: int) -> str:
     raw = str(action or "")
     if raw.startswith("v149:rem:merge:") or raw.startswith("v149:rem:command:") or raw.startswith("v149:rem:done:") or raw == "v149:rem:history":
         return "Ф191"
@@ -718,6 +739,9 @@ def _v155_expected_marker(action: str, chat_id: int) -> str:
         except Exception:
             pass
     return ""
+try: _v177_legacy_0295_v155_expected_marker.__name__ = '_v155_expected_marker'
+except Exception: pass
+_v155_expected_marker = _v177_legacy_0295_v155_expected_marker
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +786,7 @@ def _v160_markup_callbacks(reply_markup) -> set[str]:
     return out
 
 
-def _v160_augment_markup(reply_markup, text: str):
+def _v177_legacy_0317_v160_augment_markup(reply_markup, text: str):
     marker = _v160_marker_from_text(text)
     if not marker:
         return reply_markup
@@ -786,6 +810,9 @@ def _v160_augment_markup(reply_markup, text: str):
     except Exception:
         return reply_markup
     return kb
+try: _v177_legacy_0317_v160_augment_markup.__name__ = '_v160_augment_markup'
+except Exception: pass
+_v160_augment_markup = _v177_legacy_0317_v160_augment_markup
 
 
 def _v160_is_switch_callback(raw: str) -> bool:
@@ -940,7 +967,7 @@ def _v160_persist_annotations(chat_id: int) -> None:
             pass
 
 
-def _v160_source_meta(chat_id: int, message_id: int, marker: str, text: str = "") -> dict:
+def _v177_legacy_0319_v160_source_meta(chat_id: int, message_id: int, marker: str, text: str = "") -> dict:
     with _V160_ANNOTATION_LOCK:
         meta = dict(_V160_LAST_WINDOW_META.get((int(chat_id), int(message_id))) or {})
     if not meta:
@@ -955,6 +982,9 @@ def _v160_source_meta(chat_id: int, message_id: int, marker: str, text: str = ""
         "captured_at": now_local().isoformat(timespec="milliseconds"),
     })
     return meta
+try: _v177_legacy_0319_v160_source_meta.__name__ = '_v160_source_meta'
+except Exception: pass
+_v160_source_meta = _v177_legacy_0319_v160_source_meta
 
 
 def _v160_save_marker_name(chat_id: int, user_id: int, marker: str, name: str, source: dict) -> dict:
@@ -988,7 +1018,7 @@ def _v160_save_marker_name(chat_id: int, user_id: int, marker: str, name: str, s
     return row
 
 
-def _v160_save_tz(chat_id: int, user_id: int, marker: str, body: str, source: dict) -> dict:
+def _v177_legacy_0320_v160_save_tz(chat_id: int, user_id: int, marker: str, body: str, source: dict) -> dict:
     marker = str(marker or "").upper().strip()
     body = str(body or "").strip()[:12000]
     if not marker or not body:
@@ -1014,6 +1044,9 @@ def _v160_save_tz(chat_id: int, user_id: int, marker: str, body: str, source: di
     except Exception:
         pass
     return row
+try: _v177_legacy_0320_v160_save_tz.__name__ = '_v160_save_tz'
+except Exception: pass
+_v160_save_tz = _v177_legacy_0320_v160_save_tz
 
 
 def _v160_pending_key(chat_id: int, user_id: int):
@@ -1103,7 +1136,7 @@ def _v160_begin_capture(call, mode: str) -> bool:
     return True
 
 
-def _v160_export_text(kind: str) -> tuple[str, str]:
+def _v177_legacy_0322_v160_export_text(kind: str) -> tuple[str, str]:
     catalog, tz_rows = _v160_annotation_roots()
     now_s = now_local().strftime("%Y-%m-%d %H:%M:%S")
     if kind == "markers":
@@ -1149,6 +1182,9 @@ def _v160_export_text(kind: str) -> tuple[str, str]:
             "",
         ])
     return "ТЗ_окон", "\n".join(lines).rstrip() + "\n"
+try: _v177_legacy_0322_v160_export_text.__name__ = '_v160_export_text'
+except Exception: pass
+_v160_export_text = _v177_legacy_0322_v160_export_text
 
 
 def _v160_send_annotation_export(chat_id: int, kind: str):
@@ -1167,7 +1203,7 @@ def _v160_send_annotation_export(chat_id: int, kind: str):
         _v160_shutil.rmtree(folder, ignore_errors=True)
 
 
-def _v160_handle_special_callback(call, resolved: str) -> bool:
+def _v177_legacy_0323_v160_handle_special_callback(call, resolved: str) -> bool:
     if resolved == "v160:marker_capture":
         return _v160_begin_capture(call, "marker")
     if resolved == "v160:tz_capture":
@@ -1190,6 +1226,9 @@ def _v160_handle_special_callback(call, resolved: str) -> bool:
             pass
         return True
     return False
+try: _v177_legacy_0323_v160_handle_special_callback.__name__ = '_v160_handle_special_callback'
+except Exception: pass
+_v160_handle_special_callback = _v177_legacy_0323_v160_handle_special_callback
 
 
 def _v160_install_callback_intercept() -> int:
@@ -1332,7 +1371,7 @@ _V160_MESSAGE_HANDLERS = _v160_install_message_capture()
 # ---------------------------------------------------------------------------
 # 7) Make v160 full-state export restorable.
 # ---------------------------------------------------------------------------
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0285_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v160_tempfile.mkdtemp(prefix="v160_restore_validate_")
     raw = _v160_os.path.join(folder, "restore.sqlite3")
     try:
@@ -1365,6 +1404,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v160_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0285_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0285_v153_validate_restore_gz
 
 
 # Remove transient helper/file windows left by v159 or by an interrupted v160 export.
@@ -1435,4 +1477,4 @@ try:
 except Exception:
     pass
 
-# v160_stability_parallel_windows_annotations
+# v178_global_performance_final

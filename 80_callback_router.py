@@ -1,4 +1,4 @@
-# v168_clean_core_record_identity
+# v178_global_performance_final
 
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
@@ -323,7 +323,7 @@ def on_callback(call):
                 safe_edit(bot, call, expense_inbox_text(), reply_markup=build_expense_inbox_keyboard(chat_id))
             else:
                 try:
-                    bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+                    v178_edit_reply_markup_async(chat_id, call.message.message_id, None, "expense_close_v178")
                 except Exception:
                     pass
             return
@@ -353,7 +353,7 @@ def on_callback(call):
             if not is_owner_chat(chat_id):
                 return
             try:
-                bot.edit_message_text("✅ Вечерняя сверка завершена. Все расходы внесены.", chat_id=chat_id, message_id=call.message.message_id)
+                safe_edit(bot, call, "✅ Вечерняя сверка завершена. Все расходы внесены.")
             except Exception:
                 pass
             return
@@ -556,10 +556,9 @@ def on_callback(call):
         if data_str == "secmwait":
             schedule_secret_media_close(chat_id, call.message.message_id)
             try:
-                bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    reply_markup=build_secret_media_timer_keyboard(),
+                v178_edit_reply_markup_async(
+                    chat_id, call.message.message_id, build_secret_media_timer_keyboard(),
+                    "secret_media_wait_v178",
                 )
                 bot.answer_callback_query(call.id, "Продлено на 1 мин 30 сек")
             except Exception:
@@ -1054,10 +1053,7 @@ def on_callback(call):
 
         if data_str in {"aux_close", "info_close"}:
             cancel_pending_window_commands(chat_id, delete_prompt=False)
-            try:
-                bot.delete_message(chat_id, call.message.message_id)
-            except Exception:
-                pass
+            v177_delete_message_async(chat_id, call.message.message_id, purpose=data_str)
             unregister_open_window(chat_id, call.message.message_id)
             return
     
@@ -1964,10 +1960,7 @@ def on_callback(call):
             return
 
         if data_str == "info_close":
-            try:
-                bot.delete_message(chat_id, call.message.message_id)
-            except Exception as e:
-                log_error(f"info_close delete failed: {e}")
+            v177_delete_message_async(chat_id, call.message.message_id, purpose="info_close")
             _clear_stored_window(chat_id, "info_msg_id", call.message.message_id)
             return
         if data_str.startswith("fv:"):
@@ -2542,57 +2535,31 @@ def on_callback(call):
                 return
             answer_removed_chat(call, removed_chat_id)
             return
-        if cmd == "open":
-            clear_edit_delete_selection(chat_id, day_key)
-            store["current_view_day"] = day_key
-            if is_owner_chat(chat_id):
-                backup_window_for_owner(chat_id, day_key, call.message.message_id)
+        if cmd in {"open", "prev", "next", "today"}:
+            # v178 GLOBAL UI RULE: owner / 1st circle / 2nd circle use the same fast
+            # callback path. No contour is allowed to fall back to the old synchronous
+            # owner-only window editor. Business data and permissions remain unchanged.
+            if cmd == "open":
+                nd = day_key
+                clear_edit_delete_selection(chat_id, day_key)
+            elif cmd == "today":
+                nd = today_key()
             else:
-                txt, _ = render_day_window(chat_id, day_key)
-                kb = build_main_keyboard(day_key, chat_id)
-                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
-                set_active_window_id(chat_id, day_key, call.message.message_id)
-                schedule_balance_panel_refresh(chat_id, 0.1)
-            return
-        if cmd == "prev":
-            base_day_key = store.get("current_view_day") or day_key
-            d = datetime.strptime(base_day_key, "%Y-%m-%d") - timedelta(days=1)
-            nd = d.strftime("%Y-%m-%d")
+                base_day_key = store.get("current_view_day") or day_key
+                shift = -1 if cmd == "prev" else 1
+                nd = (datetime.strptime(base_day_key, "%Y-%m-%d") + timedelta(days=shift)).strftime("%Y-%m-%d")
             store["current_view_day"] = nd
-            if is_owner_chat(chat_id):
-                backup_window_for_owner(chat_id, nd, call.message.message_id)
-            else:
-                txt, _ = render_day_window(chat_id, nd)
-                kb = build_main_keyboard(nd, chat_id)
-                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
-                set_active_window_id(chat_id, nd, call.message.message_id)
-                schedule_balance_panel_refresh(chat_id, 0.1)
-            return
-        if cmd == "next":
-            base_day_key = store.get("current_view_day") or day_key
-            d = datetime.strptime(base_day_key, "%Y-%m-%d") + timedelta(days=1)
-            nd = d.strftime("%Y-%m-%d")
-            store["current_view_day"] = nd
-            if is_owner_chat(chat_id):
-                backup_window_for_owner(chat_id, nd, call.message.message_id)
-            else:
-                txt, _ = render_day_window(chat_id, nd)
-                kb = build_main_keyboard(nd, chat_id)
-                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
-                set_active_window_id(chat_id, nd, call.message.message_id)
-                schedule_balance_panel_refresh(chat_id, 0.1)
-            return
-        if cmd == "today":
-            nd = today_key()
-            store["current_view_day"] = nd
-            if is_owner_chat(chat_id):
-                backup_window_for_owner(chat_id, nd, call.message.message_id)
-            else:
-                txt, _ = render_day_window(chat_id, nd)
-                kb = build_main_keyboard(nd, chat_id)
-                safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
-                set_active_window_id(chat_id, nd, call.message.message_id)
-                schedule_balance_panel_refresh(chat_id, 0.1)
+            render_started = time.monotonic()
+            txt, _ = render_day_window(chat_id, nd)
+            kb = build_main_keyboard(nd, chat_id)
+            try:
+                stage = globals().get("v177_perf_stage")
+                if callable(stage): stage("main_day_render", time.monotonic() - render_started)
+            except Exception:
+                pass
+            safe_edit(bot, call, txt, reply_markup=kb, parse_mode="HTML")
+            set_active_window_id(chat_id, nd, call.message.message_id)
+            schedule_balance_panel_refresh(chat_id, 0.1)
             return
         if cmd == "usd_tx_toggle":
             try:
@@ -3188,4 +3155,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v168_clean_core_record_identity
+# v178_global_performance_final

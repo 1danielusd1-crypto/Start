@@ -1,4 +1,4 @@
-# v154_excel_usd_isolation_date_marks
+# v178_global_performance_final
 """v154: expense marks in F111/F114 and strict ARS/USD Excel isolation."""
 
 import calendar as _v154_calendar
@@ -76,7 +76,7 @@ def _v154_day_has_expense(chat_id: int | None, day_key: str) -> bool:
         return False
 
 
-def _export_calendar_start_keyboard(view_year: int, view_month: int, return_day_key: str, chat_id: int | None = None):
+def _v177_legacy_0169_export_calendar_start_keyboard(view_year: int, view_month: int, return_day_key: str, chat_id: int | None = None):
     """F111. Mark a date with 📝 only when that day actually has an expense."""
     kb = types.InlineKeyboardMarkup(row_width=7)
     last_day = _v154_calendar.monthrange(int(view_year), int(view_month))[1]
@@ -103,9 +103,12 @@ def _export_calendar_start_keyboard(view_year: int, view_month: int, return_day_
     )
     kb.row(IB("🔙 Назад в CSV / Excel", callback_data=f"d:{return_day_key}:csv_all"))
     return kb
+try: _v177_legacy_0169_export_calendar_start_keyboard.__name__ = '_export_calendar_start_keyboard'
+except Exception: pass
+_export_calendar_start_keyboard = _v177_legacy_0169_export_calendar_start_keyboard
 
 
-def _export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int, view_month: int, return_day_key: str, chat_id: int | None = None):
+def _v177_legacy_0171_export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int, view_month: int, return_day_key: str, chat_id: int | None = None):
     """F114. Mark selectable dates that contain expenses, without changing range rules."""
     kb = types.InlineKeyboardMarkup(row_width=7)
     last_day = _v154_calendar.monthrange(int(view_year), int(view_month))[1]
@@ -145,11 +148,14 @@ def _export_end_calendar_keyboard(start_key: str, start_rid: int, view_year: int
         f"exp_pick_set_start:{start_dt.year}:{start_dt.month}:{start_dt.day}:{return_day_key}"
     )))
     return kb
+try: _v177_legacy_0171_export_end_calendar_keyboard.__name__ = '_export_end_calendar_keyboard'
+except Exception: pass
+_export_end_calendar_keyboard = _v177_legacy_0171_export_end_calendar_keyboard
 
 
 # Strict ledger isolation. v151 additionally read embedded usd_amount from ARS records;
 # that caused ARS values to leak into / duplicate the USD export table.
-def _v151_usd_records(chat_id: int) -> list[dict]:
+def _v177_legacy_0272_v151_usd_records(chat_id: int) -> list[dict]:
     store = get_chat_store(int(chat_id))
     active = _v151_sync_currency_snapshots(store)
     source = store.get("records", []) if active == "usd" else store.get("usd_records", [])
@@ -173,6 +179,9 @@ def _v151_usd_records(chat_id: int) -> list[dict]:
         return sorted(rows, key=record_sort_key)
     except Exception:
         return rows
+try: _v177_legacy_0272_v151_usd_records.__name__ = '_v151_usd_records'
+except Exception: pass
+_v151_usd_records = _v177_legacy_0272_v151_usd_records
 
 
 def _v154_join_ars_usd(ars_rows: list[list], usd_rows: list[list], chat_id: int) -> list[list]:
@@ -208,7 +217,7 @@ def _xlsx_simple_rows_with_balances(rows: list[list], opening_balance: float, ta
     return _v154_join_ars_usd(ars_rows, usd_rows, int(target_chat_id))
 
 
-def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
+def _v177_legacy_0096_compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_balance: float, target_chat_id: int | None = None) -> tuple[list[list], dict[tuple[int, int], str]]:
     if target_chat_id is None:
         base = globals().get("_V150_BASE_COMPACT_ROWS")
         return base(raw_rows, opening_balance, target_chat_id) if callable(base) else ([], {})
@@ -218,9 +227,12 @@ def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_ba
     # USD must retain Description, so even compact ARS exports append the four-column USD table.
     usd_rows, _ = _v151_simple_table(int(target_chat_id), "usd", compact=False)
     return ars_rows + [[], []] + usd_rows, dict(ars_notes)
+try: _v177_legacy_0096_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
+except Exception: pass
+_compact_simple_excel_rows_and_annotations = _v177_legacy_0096_compact_simple_excel_rows_and_annotations
 
 
-def _category_rows_without_description(rows: list[list]) -> tuple[list[list], dict[tuple[int, int], str]]:
+def _v177_legacy_0178_category_rows_without_description(rows: list[list]) -> tuple[list[list], dict[tuple[int, int], str]]:
     """Compact only the ARS category section; never remove Description from the USD section."""
     usd_index = None
     for idx, row in enumerate(rows or []):
@@ -236,6 +248,9 @@ def _category_rows_without_description(rows: list[list]) -> tuple[list[list], di
     usd_part = list(rows[usd_index:])
     compact_ars, annotations = _V154_BASE_CATEGORY_COMPACT(ars_part)
     return compact_ars + usd_part, annotations
+try: _v177_legacy_0178_category_rows_without_description.__name__ = '_category_rows_without_description'
+except Exception: pass
+_category_rows_without_description = _v177_legacy_0178_category_rows_without_description
 
 
 
@@ -277,12 +292,15 @@ def _modern_compact_excel_styles_comments(rows: list[list], annotations: dict[tu
     return _v154_merge_styles(prefix, suffix, p, s, keep_suffix_comments=False)
 
 
-def _modern_category_excel_styles_comments(rows: list[list]):
+def _v177_legacy_0102_modern_category_excel_styles_comments(rows: list[list]):
     idx = _v154_find_usd_section(rows)
     if idx is None or not callable(_V154_BASE_MODERN_CATEGORY) or not callable(_V154_BASE_MODERN_SIMPLE):
         return _V154_BASE_MODERN_CATEGORY(rows)
     prefix, suffix = list(rows[:idx]), list(rows[idx:])
     return _v154_merge_styles(prefix, suffix, _V154_BASE_MODERN_CATEGORY(prefix), _V154_BASE_MODERN_SIMPLE(suffix), keep_suffix_comments=True)
+try: _v177_legacy_0102_modern_category_excel_styles_comments.__name__ = '_modern_category_excel_styles_comments'
+except Exception: pass
+_modern_category_excel_styles_comments = _v177_legacy_0102_modern_category_excel_styles_comments
 
 
 def _modern_category_no_description_styles_comments(rows: list[list], annotations: dict[tuple[int, int], str]):
@@ -296,7 +314,7 @@ def _modern_category_no_description_styles_comments(rows: list[list], annotation
 
 
 # v153 restore must accept snapshots generated by this v154 release too.
-def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
+def _v177_legacy_0279_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     folder = _v153_tempfile.mkdtemp(prefix="v154_restore_validate_")
     raw = _v154_os.path.join(folder, "restore.sqlite3")
     try:
@@ -327,6 +345,9 @@ def _v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
     except Exception:
         _v154_shutil.rmtree(folder, ignore_errors=True)
         raise
+try: _v177_legacy_0279_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0279_v153_validate_restore_gz
 
 
 try:
@@ -339,4 +360,4 @@ try:
 except Exception:
     pass
 
-# v154_excel_usd_isolation_date_marks
+# v178_global_performance_final
