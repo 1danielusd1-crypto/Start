@@ -1,4 +1,4 @@
-# v180_total_final_diagnostics
+# v181_recovery_readonly
 # ---- integrated from 113_v163_audit_hardening.py ----
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
@@ -617,6 +617,7 @@ _V164_PREV_BUILD_FORWARD_SOURCE_MENU = globals().get("build_forward_source_menu"
 _V164_PREV_BUILD_FORWARD_TARGET_MENU = globals().get("build_forward_target_menu")
 _V164_PREV_BUILD_QUICK_BALANCE_MODE_MENU = globals().get("build_quick_balance_mode_menu")
 _V164_PREV_BUILD_CHAT_DESCRIPTION_MENU = globals().get("build_chat_description_menu")
+_V164_PREV_RESTORE_VALIDATE = globals().get("_v153_validate_restore_gz")
 
 
 def _v164_owner_id() -> int:
@@ -1737,7 +1738,11 @@ def _v164_circle_callback(call):
         except Exception: pass
 
 
-# v180 retired callback registration removed: _v164_install_callback_handler
+def _v164_install_callback_handler() -> int:
+    return 0  # v179: registration/wrapper retired; final router owns callbacks
+
+
+# A direct command gets a clear answer instead of an uncaught PermissionError from the old handler.
 def _v164_space_chat_link_handler(msg):
     try:
         uid, cid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0), int(msg.chat.id)
@@ -1816,6 +1821,7 @@ import tempfile as _v165_tempfile
 
 VERSION = "bot_v165_owner_first_circle_compat"
 
+_V165_PREV_RESTORE_VALIDATE = globals().get("_v153_validate_restore_gz")
 
 
 def _v165_is_platform_owner_context() -> bool:
@@ -2030,6 +2036,7 @@ _V166_FORWARD_DIRTY_CHATS = set()
 _V166_PREV_ACK = globals().get("schedule_callback_receipt_ack")
 _V166_PREV_REFRESH_BALANCE = globals().get("refresh_balance_panel_now")
 _V166_PREV_REFRESH_TOTAL = globals().get("refresh_total_message_if_any")
+_V166_PREV_RESTORE_VALIDATE = globals().get("_v153_validate_restore_gz")
 
 
 def _v166_callback_raw_parts(payload: dict):
@@ -3801,7 +3808,8 @@ def _v167_schedule_callback(call):
         except Exception: pass
 
 
-_V167_INSTALL_SCHEDULE_CALLBACK_RETIRED = 0  # v180: retired registration path; FINAL router owns dispatch
+def _v167_install_schedule_callback():
+    return 0  # v179: registration/wrapper retired; final router owns callbacks
 
 
 # Diagnostics/window map for the new INFO Google settings window.
@@ -4560,7 +4568,10 @@ def _v171_special_callback(call):
     return False
 
 
-# v180 retired callback registration removed: _v171_register_special_callback
+def _v171_register_special_callback() -> int:
+    return 0  # v179: registration/wrapper retired; final router owns callbacks
+
+
 # ---------------------------------------------------------------------------
 # 8) F54 logical sections. Existing rows/buttons are never split or reshaped;
 # only whole rows are grouped and visually separated by a blank-looking row.
@@ -4635,7 +4646,10 @@ def _v171_contour_preack_allowed(call, raw: str) -> bool:
         return False
 
 
-# v180 retired callback registration removed: _v171_install_button_chain
+def _v171_install_button_chain() -> int:
+    return 0  # v179: registration/wrapper retired; final router owns callbacks
+
+
 # ---------------------------------------------------------------------------
 # Journal audit: serialize refresh attempts for the same Telegram window and
 # re-check the registry after the first missing-message failure unregisters it.
@@ -4856,9 +4870,48 @@ def _v171_mark_all_v169_tz_fixed() -> int:
 # ---------------------------------------------------------------------------
 # v171 restore compatibility.
 # ---------------------------------------------------------------------------
+_V171_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
 
 
-# v180 historical restore validator removed: _v177_legacy_0288_v153_validate_restore_gz; one FINAL validator lives in 85_runtime_control.py
+def _v177_legacy_0288_v153_validate_restore_gz(gz_path: str):
+    if callable(_V171_PREV_RESTORE_VALIDATOR):
+        try:
+            return _V171_PREV_RESTORE_VALIDATOR(gz_path)
+        except Exception as exc:
+            if "unsupported bot version" not in str(exc):
+                raise
+    folder = _v171_tempfile.mkdtemp(prefix="v171_restore_validate_")
+    raw = _v171_os.path.join(folder, "restore.sqlite3")
+    try:
+        with _v171_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
+            _v171_shutil.copyfileobj(fin, fout, 1024 * 1024)
+        conn = _v171_sqlite3.connect(raw)
+        try:
+            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+            if integrity.lower() != "ok":
+                raise RuntimeError(f"SQLite integrity_check: {integrity}")
+            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
+            if not row:
+                raise RuntimeError("manifest v153 not found")
+            manifest = _v171_json.loads(row[0])
+        finally:
+            conn.close()
+        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
+            raise RuntimeError("unknown export kind")
+        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
+            raise RuntimeError("unsupported export schema")
+        export_version = str(manifest.get("bot_version") or "")
+        if not export_version.startswith(tuple(f"bot_v{i}_" for i in range(153, 172))):
+            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
+        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""):
+            raise RuntimeError("checksum mismatch")
+        return manifest, raw
+    except Exception:
+        _v171_shutil.rmtree(folder, ignore_errors=True)
+        raise
+try: _v177_legacy_0288_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0288_v153_validate_restore_gz
 
 
 # ---------------------------------------------------------------------------
@@ -4893,4 +4946,4 @@ try:
     )
 except Exception:
     pass
-# v180_total_final_diagnostics
+# v181_recovery_readonly

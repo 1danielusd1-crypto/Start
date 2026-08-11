@@ -1,4 +1,4 @@
-# v178_global_performance_final
+# v181_recovery_readonly
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -559,7 +559,7 @@ def main():
     except Exception as e:
         log_error(f"audit_window_marker_registry: {e}")
     try:
-        threading.Thread(target=_usd_rate_refresh_loop, name="usd-rate-refresh", daemon=True).start()
+        DELAYED_SCHEDULER.schedule("usd-rate-refresh", 2.0, _usd_rate_refresh_tick)
     except Exception as e:
         log_error(f"usd rate refresh start: {e}")
     for cid in list((data.get("chats", {}) or {}).keys()):
@@ -658,7 +658,10 @@ def main():
 
     if boot_recovery_remaining > 0:
         runtime_set_phase("boot_recovery_background", f"осталось {boot_recovery_remaining}; webhook временно 503")
-        threading.Thread(target=runtime_continue_boot_recovery_background, name="boot-task-recovery", daemon=True).start()
+        try:
+            RECOVERY_TASK_POOL.submit_unique("boot-task-recovery", runtime_continue_boot_recovery_background)
+        except Exception:
+            runtime_continue_boot_recovery_background()
     else:
         runtime_mark_ready("SQLite/global + delta восстановлены; pending/running durable tasks проверены")
         try:
@@ -680,7 +683,10 @@ def main():
                 mega_upload_latest_database_backup(force=True)
             except Exception as exc:
                 log_error(f"LOWRAM initial DB snapshot: {exc}")
-        threading.Thread(target=_seed_primary_db_snapshot, name="lowram-db-seed", daemon=True).start()
+        try:
+            MAINTENANCE_TASK_POOL.submit_unique("lowram-db-seed", _seed_primary_db_snapshot)
+        except Exception:
+            pass
     # Never replay failed business work automatically. Heal only metadata-only/reclassified-safe gaps.
     try:
         schedule_safe_failed_task_repairs(8.0, 20)
@@ -725,4 +731,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v178_global_performance_final
+# v181_recovery_readonly

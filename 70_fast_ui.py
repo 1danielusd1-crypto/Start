@@ -1,4 +1,4 @@
-# v178_global_performance_final
+# v181_recovery_readonly
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -218,11 +218,7 @@ def v177_delete_message_async(chat_id: int, message_id: int, purpose: str = "ui_
             return bool(pool.submit_unique(f"v177-ui-delete:{cid}:{mid}", _job))
     except Exception:
         pass
-    try:
-        threading.Thread(target=_job, daemon=True, name=f"v177-ui-delete-{mid}").start()
-        return True
-    except Exception:
-        return False
+    return False
 
 
 def cancel_fast_ui_edit(chat_id: int, message_id: int):
@@ -2765,5 +2761,4 @@ def build_integrity_keyboard(chat_id: int):
     day = get_chat_store(chat_id).get("current_view_day") or today_key()
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
-
-# v178_global_performance_final
+# v181_recovery_readonly

@@ -1,5 +1,4 @@
-# v178_global_performance_final
-
+# v181_recovery_readonly
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
 _EXPENSE_INBOX_LOCK = threading.RLock()
@@ -944,17 +943,22 @@ def send_evening_reconciliation(force: bool = False) -> bool:
         return False
 
 
+def _evening_reconciliation_tick():
+    try:
+        if runtime_is_ready() and evening_reconciliation_enabled():
+            root = _expense_inbox_root(); now_dt = now_local()
+            if now_dt.hour >= int(root.get("evening_hour", 21)):
+                send_evening_reconciliation(False)
+    except Exception as exc:
+        try: log_error(f"evening reconciliation: {exc}")
+        except Exception: pass
+    finally:
+        try: DELAYED_SCHEDULER.schedule("expense-evening-reconcile", 45.0, _evening_reconciliation_tick)
+        except Exception: pass
+
 def _evening_reconciliation_loop():
-    while True:
-        try:
-            if runtime_is_ready() and evening_reconciliation_enabled():
-                root = _expense_inbox_root(); now_dt = now_local()
-                if now_dt.hour >= int(root.get("evening_hour", 21)):
-                    send_evening_reconciliation(False)
-        except Exception as exc:
-            try: log_error(f"evening reconciliation loop: {exc}")
-            except Exception: pass
-        time.sleep(45)
+    # Compatibility entry point; executes one tick only.
+    return _evening_reconciliation_tick()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1168,7 +1172,7 @@ def start_safety_schedulers():
             )
         except Exception:
             pass
-        threading.Thread(target=_evening_reconciliation_loop, name="expense-evening-reconcile", daemon=True).start()
+        DELAYED_SCHEDULER.schedule("expense-evening-reconcile", 5.0, _evening_reconciliation_tick)
 
 
 def expense_draft_insert_value(draft_id: int) -> str:
@@ -1280,5 +1284,4 @@ def expense_draft_input_message(msg):
         raise
     finally:
         msg.text = original_text
-
-# v178_global_performance_final
+# v181_recovery_readonly

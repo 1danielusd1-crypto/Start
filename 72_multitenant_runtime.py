@@ -1,4 +1,4 @@
-# v180_total_final_diagnostics
+# v181_recovery_readonly
 # ---- integrated from 92_v147_diagnostic_hardening.py ----
 # ─────────────────────────────────────────────────────────────
 # v147: защита диагностических секретов, точные reminder-witness и безопасный back-main,
@@ -3937,4 +3937,4 @@ def _v177_legacy_0266_v149_extension_callback(call, data_str: str) -> bool:
 try: _v177_legacy_0266_v149_extension_callback.__name__ = 'v149_extension_callback'
 except Exception: pass
 v149_extension_callback = _v177_legacy_0266_v149_extension_callback
-# v180_total_final_diagnostics
+# v181_recovery_readonly

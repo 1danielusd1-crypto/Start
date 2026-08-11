@@ -1,4 +1,4 @@
-# v179_clean_final
+# v181_recovery_readonly
 from pathlib import Path
 import ast,hashlib,json,py_compile,sys
 R=Path(__file__).resolve().parent
@@ -27,4 +27,4 @@ if forbidden: errs.append(f"forbidden Start root={forbidden}")
 print(f"v179 FAST_TEST: {'PASS' if not errs else 'FAIL'} | parts={len(P)} | callback={cb} | validators={validators} | duplicates={len(dups)}")
 if errs:
     print("\n".join(errs)); raise SystemExit(1)
-# v179_clean_final
+# v181_recovery_readonly

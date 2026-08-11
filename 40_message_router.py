@@ -1,6 +1,4 @@
-# v178_global_performance_final
-
-
+# v181_recovery_readonly
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -984,4 +982,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v178_global_performance_final
+# v181_recovery_readonly

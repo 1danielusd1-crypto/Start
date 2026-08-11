@@ -1,4 +1,4 @@
-# v178_global_performance_final
+# v181_recovery_readonly
 import os
 import io
 import json
@@ -387,27 +387,23 @@ EXPORT_TASK_POOL = KeyedTaskPool(
     _env_int("EXPORT_WORKERS", 1, 1, 2),
     _env_int("EXPORT_MAX_PENDING", 40, 5, 200),
 )
-GENERAL_TASK_POOL = KeyedTaskPool(
-    "general",
-    _env_int("GENERAL_WORKERS", 1, 1, 6),
-    _env_int("GENERAL_MAX_PENDING", 250, 20, 1000),
-)
 # v117: slow cosmetic retro-updates must never block business callbacks/general work.
 # One low-priority worker is intentionally isolated from finance/forward/webhook/export.
-MAINTENANCE_TASK_POOL = KeyedTaskPool(
-    "maintenance",
-    _env_int("MAINTENANCE_WORKERS", 1, 1, 1),
-    _env_int("MAINTENANCE_MAX_PENDING", 100, 10, 500),
+# v179 CLEAN: service/journal/config work shares one background lane.
+# UI, finance, forwarding, recovery, backup/delta and callback ACK stay isolated.
+BACKGROUND_TASK_POOL = KeyedTaskPool(
+    "background",
+    _env_int("BACKGROUND_WORKERS", 2, 1, 4),
+    _env_int("BACKGROUND_MAX_PENDING", 1600, 100, 6000),
 )
-JOURNAL_TASK_POOL = KeyedTaskPool(
-    "journal",
-    _env_int("JOURNAL_WORKERS", 1, 1, 2),
-    _env_int("JOURNAL_MAX_PENDING", 800, 100, 4000),
-)
+MAINTENANCE_TASK_POOL = BACKGROUND_TASK_POOL
+JOURNAL_TASK_POOL = BACKGROUND_TASK_POOL
+GENERAL_TASK_POOL = BACKGROUND_TASK_POOL
+# One small scheduler execution lane replaces several scheduler-specific worker pools.
 DELAYED_TASK_POOL = KeyedTaskPool(
-    "delayed",
-    _env_int("DELAYED_WORKERS", 1, 1, 6),
-    _env_int("DELAYED_MAX_PENDING", 500, 50, 2000),
+    "scheduler",
+    _env_int("SCHEDULER_WORKERS", 1, 1, 2),
+    _env_int("SCHEDULER_MAX_PENDING", 1200, 100, 5000),
 )
 DOZVON_TASK_POOL = KeyedTaskPool(
     "dozvon",
@@ -846,7 +842,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v148_multitenant_spaces"
+VERSION = "bot_v181_recovery_readonly"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -900,7 +896,7 @@ MEGA_AUTORESTORE = _env_bool("MEGA_AUTORESTORE", "1")
 MEGA_EMAIL = os.getenv("MEGA_EMAIL", "").strip()
 MEGA_PASSWORD = os.getenv("MEGA_PASSWORD", "").strip()
 MEGA_LEGACY_BACKUP_DIR = "/TelegramBotBackups"
-MEGA_TARGET_BACKUP_DIR = "/TelegramBotBackupsStart"
+MEGA_TARGET_BACKUP_DIR = "/TelegramBotBackups"
 MEGA_BACKUP_DIR = os.getenv("MEGA_BACKUP_DIR", MEGA_LEGACY_BACKUP_DIR).strip() or MEGA_LEGACY_BACKUP_DIR
 try:
     MEGA_TIMEOUT = int(os.getenv("MEGA_TIMEOUT", "120"))
@@ -2658,18 +2654,20 @@ def journal_flush_to_mega(force: bool = False) -> bool:
             pass
 
 
-def _journal_durable_loop():
-    # Периодический flush только когда есть строки. Никаких MEGA вызовов в простое.
-    while True:
+def _journal_durable_tick():
+    # v179: common scheduler instead of a permanent journal thread.
+    try:
+        with _JOURNAL_DURABLE_LOCK:
+            has_rows = bool(_JOURNAL_DURABLE_BUFFER)
+        if has_rows:
+            JOURNAL_TASK_POOL.submit_unique("journal-mega-flush", journal_flush_to_mega, True)
+    except Exception as e:
+        _JOURNAL_DURABLE_STATS["last_error"] = str(e)[:500]
+    finally:
         try:
-            time.sleep(BOT_JOURNAL_DURABLE_FLUSH_SECONDS)
-            with _JOURNAL_DURABLE_LOCK:
-                has_rows = bool(_JOURNAL_DURABLE_BUFFER)
-            if has_rows:
-                journal_flush_to_mega(True)
-        except Exception as e:
-            _JOURNAL_DURABLE_STATS["last_error"] = str(e)[:500]
-            time.sleep(5.0)
+            DELAYED_SCHEDULER.schedule("journal-durable-tick", BOT_JOURNAL_DURABLE_FLUSH_SECONDS, _journal_durable_tick)
+        except Exception:
+            pass
 
 
 def journal_start_durable_loop():
@@ -2677,7 +2675,10 @@ def journal_start_durable_loop():
     if not BOT_JOURNAL_DURABLE_ENABLED or _JOURNAL_DURABLE_THREAD_STARTED:
         return
     _JOURNAL_DURABLE_THREAD_STARTED = True
-    threading.Thread(target=_journal_durable_loop, name="journal-mega-spool", daemon=True).start()
+    try:
+        DELAYED_SCHEDULER.schedule("journal-durable-tick", BOT_JOURNAL_DURABLE_FLUSH_SECONDS, _journal_durable_tick)
+    except Exception:
+        pass
 
 
 def _journal_read_mega_rows(limit: int = 20000) -> list[dict]:
@@ -7860,4 +7861,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v178_global_performance_final
+# v181_recovery_readonly

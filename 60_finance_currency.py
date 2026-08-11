@@ -1,4 +1,4 @@
-# v178_global_performance_final
+# v181_recovery_readonly
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -635,13 +635,18 @@ def usd_rate_cached(force: bool = False) -> dict | None:
         return cache if cache.get("rate") else None
 
 
+def _usd_rate_refresh_tick():
+    try:
+        usd_rate_cached(force=True)
+    except Exception:
+        pass
+    finally:
+        try: DELAYED_SCHEDULER.schedule("usd-rate-refresh", USD_RATE_CACHE_SECONDS, _usd_rate_refresh_tick)
+        except Exception: pass
+
 def _usd_rate_refresh_loop():
-    while True:
-        try:
-            usd_rate_cached(force=True)
-        except Exception:
-            pass
-        time.sleep(USD_RATE_CACHE_SECONDS)
+    # Compatibility entry point; v179 uses the common scheduler.
+    return _usd_rate_refresh_tick()
 
 
 def fmt_usd_from_ars(amount: float, rate_info: dict | None) -> str:
@@ -2148,4 +2153,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v178_global_performance_final
+# v181_recovery_readonly

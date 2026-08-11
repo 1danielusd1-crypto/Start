@@ -1,4 +1,4 @@
-# v180_total_final_diagnostics
+# v181_recovery_readonly
 # ---- integrated from 119_v172_task_dispatcher.py ----
 """v172: Telegram-native task / purchase dispatcher.
 
@@ -823,7 +823,25 @@ def _v172_task_message_input(msg) -> bool:
 
 # Wrap the already-registered generic non-command message handler so task input wins
 # before finance parsing / forwarding.
-# v180 retired function removed: _v172_install_message_input_wrapper
+def _v172_install_message_input_wrapper() -> int:
+    for row in list(getattr(bot, "message_handlers", []) or []):
+        if not isinstance(row, dict): continue
+        fn = row.get("function")
+        if not callable(fn) or getattr(fn, "_v172_task_input", False): continue
+        if getattr(fn, "__name__", "") != "on_any_message": continue
+        def _wrapped(msg, _original=fn):
+            try:
+                if _v172_task_message_input(msg): return
+            except Exception as exc:
+                try: log_error(f"v172 task input: {exc}")
+                except Exception: pass
+            return _original(msg)
+        _wrapped._v172_task_input = True
+        row["function"] = _wrapped
+        return 1
+    return 0
+
+
 def _v172_command_text(msg) -> str:
     raw = str(getattr(msg, "text", "") or "")
     parts = raw.split(None, 1)
@@ -1071,7 +1089,11 @@ def _v172_callback(call):
     return True
 
 
-# v180 retired function removed: _v172_register_callback
+def _v172_register_callback() -> int:
+    return 0  # v179: registration/wrapper retired; final router owns callbacks
+
+
+# Add dispatcher buttons to the active main keyboard without editing historical modules.
 _V172_PREV_BUILD_MAIN_KEYBOARD = globals().get("build_main_keyboard")
 
 def _v177_legacy_0166_build_main_keyboard(day_key: str, chat_id=None):
@@ -1106,7 +1128,38 @@ build_main_keyboard = _v177_legacy_0166_build_main_keyboard
 
 
 # Restore validator accepts v172 backups too.
-# v180 historical restore validator removed: _v177_legacy_0289_v153_validate_restore_gz; one FINAL validator lives in 85_runtime_control.py
+_V172_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
+def _v177_legacy_0289_v153_validate_restore_gz(gz_path: str):
+    try:
+        return _V172_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V172_PREV_RESTORE_VALIDATOR) else (None, None)
+    except Exception as exc:
+        if "unsupported bot version" not in str(exc):
+            raise
+    # v171 validator only rejected the version; validate by temporarily accepting v172
+    # with the same v153 schema/checksum contract.
+    import gzip, os, shutil, sqlite3, tempfile, json
+    folder = tempfile.mkdtemp(prefix="v172_restore_validate_"); raw = os.path.join(folder, "restore.sqlite3")
+    try:
+        with gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout: shutil.copyfileobj(fin, fout, 1024*1024)
+        conn = sqlite3.connect(raw)
+        try:
+            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+            if integrity.lower() != "ok": raise RuntimeError(f"SQLite integrity_check: {integrity}")
+            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
+            if not row: raise RuntimeError("manifest v153 not found")
+            manifest = json.loads(row[0])
+        finally: conn.close()
+        if str(manifest.get("kind")) != "telegram_bot_full_state_v153": raise RuntimeError("unknown export kind")
+        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA): raise RuntimeError("unsupported export schema")
+        export_version = str(manifest.get("bot_version") or "")
+        if not export_version.startswith(tuple(f"bot_v{i}_" for i in range(153,173))): raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
+        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
+        return manifest, raw
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True); raise
+try: _v177_legacy_0289_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0289_v153_validate_restore_gz
 
 
 # READY-time migration after MEGA restore.
@@ -1122,7 +1175,7 @@ if callable(_V172_PREV_RUNTIME_MARK_READY):
         return result
 
 
-_V172_MESSAGE_WRAPPERS = 0  # v180: merged into canonical on_any_message
+_V172_MESSAGE_WRAPPERS = _v172_install_message_input_wrapper()
 _V172_CALLBACK_HANDLERS = 0  # v179 merged task dispatcher
 try:
     bot_journal("v172_installed", int(OWNER_ID or 0), f"task_dispatcher=1; callback={_V172_CALLBACK_HANDLERS}; message_wrap={_V172_MESSAGE_WRAPPERS}; root_delta_maps=3")
@@ -1353,8 +1406,48 @@ def v152_human_download_name(recipient_chat_id: int, document, caption: str = ""
 # ---------------------------------------------------------------------------
 # 3) Restore compatibility for v173 snapshots.
 # ---------------------------------------------------------------------------
+_V173_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
 
-# v180 historical restore validator removed: _v177_legacy_0290_v153_validate_restore_gz; one FINAL validator lives in 85_runtime_control.py
+def _v177_legacy_0290_v153_validate_restore_gz(gz_path: str):
+    try:
+        return _V173_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V173_PREV_RESTORE_VALIDATOR) else (None, None)
+    except Exception as exc:
+        if "unsupported bot version" not in str(exc):
+            raise
+
+    import gzip, shutil, sqlite3, tempfile, json
+    folder = tempfile.mkdtemp(prefix="v173_restore_validate_")
+    raw = _v173_os.path.join(folder, "restore.sqlite3")
+    try:
+        with gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
+            shutil.copyfileobj(fin, fout, 1024 * 1024)
+        conn = sqlite3.connect(raw)
+        try:
+            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+            if integrity.lower() != "ok":
+                raise RuntimeError(f"SQLite integrity_check: {integrity}")
+            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
+            if not row:
+                raise RuntimeError("manifest v153 not found")
+            manifest = json.loads(row[0])
+        finally:
+            conn.close()
+        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
+            raise RuntimeError("unknown export kind")
+        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
+            raise RuntimeError("unsupported export schema")
+        export_version = str(manifest.get("bot_version") or "")
+        if not export_version.startswith(tuple(f"bot_v{i}_" for i in range(153, 174))):
+            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
+        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""):
+            raise RuntimeError("checksum mismatch")
+        return manifest, raw
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+try: _v177_legacy_0290_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0290_v153_validate_restore_gz
 
 
 try:
@@ -2002,7 +2095,32 @@ def _v174_handle_own_input(msg) -> bool:
     return True
 
 
-# v180 retired function removed: _v174_install_message_wrapper
+def _v174_install_message_wrapper() -> int:
+    for row in list(getattr(bot, "message_handlers", []) or []):
+        if not isinstance(row, dict): continue
+        fn = row.get("function")
+        if not callable(fn) or getattr(fn, "_v174_task_auto", False): continue
+        if not (getattr(fn, "_v172_task_input", False) or getattr(fn, "__name__", "") == "on_any_message"):
+            continue
+        def _wrapped_v174(msg, _original=fn):
+            try:
+                if _v174_handle_own_input(msg): return
+            except Exception as exc:
+                try: log_error(f"v174 keyword input: {exc}")
+                except Exception: pass
+            try: _v174_auto_process(msg)
+            except Exception as exc:
+                try: log_error(f"v174 auto process: {exc}")
+                except Exception: pass
+            return _original(msg)
+        _wrapped_v174._v174_task_auto = True
+        # Preserve the v172 marker so a future layer can still find the catch-all.
+        _wrapped_v174._v172_task_input = True
+        row["function"] = _wrapped_v174
+        return 1
+    return 0
+
+
 def _v174_command_tasks(msg):
     cid = int(msg.chat.id); uid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
     if cid == int(OWNER_ID or 0):
@@ -2163,7 +2281,10 @@ def _v174_callback(call):
     return True
 
 
-# v180 retired function removed: _v174_register_callback
+def _v174_register_callback() -> int:
+    return 0  # v179: registration/wrapper retired; final router owns callbacks
+
+
 def _v174_legacy_filter(call):
     raw = str(getattr(call, "data", "") or "")
     return any(raw.startswith(prefix) for prefix in (
@@ -2204,7 +2325,10 @@ def _v174_legacy_callback(call):
     text, kb = _v174_list_text_kb(cid, filt, 0, uid_user); _v174_edit_call(call, text, kb)
 
 
-# v180 retired function removed: _v174_register_legacy_callback
+def _v174_register_legacy_callback() -> int:
+    return 0  # v179: registration/wrapper retired; final router owns callbacks
+
+
 # Replace the two v172 buttons after the old builder has already added them.
 _V174_PREV_BUILD_MAIN_KEYBOARD = globals().get("build_main_keyboard")
 def build_main_keyboard(day_key: str, chat_id=None):
@@ -2241,10 +2365,38 @@ def build_main_keyboard(day_key: str, chat_id=None):
 
 
 # Restore validator accepts v174 snapshots.
-# v180 historical restore validator removed: _v177_legacy_0291_v153_validate_restore_gz; one FINAL validator lives in 85_runtime_control.py
+_V174_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
+def _v177_legacy_0291_v153_validate_restore_gz(gz_path: str):
+    try:
+        return _V174_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V174_PREV_RESTORE_VALIDATOR) else (None, None)
+    except Exception as exc:
+        if "unsupported bot version" not in str(exc): raise
+    import gzip, os, shutil, sqlite3, tempfile, json
+    folder = tempfile.mkdtemp(prefix="v174_restore_validate_"); raw = os.path.join(folder, "restore.sqlite3")
+    try:
+        with gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout: shutil.copyfileobj(fin, fout, 1024 * 1024)
+        conn = sqlite3.connect(raw)
+        try:
+            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+            if integrity.lower() != "ok": raise RuntimeError(f"SQLite integrity_check: {integrity}")
+            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
+            if not row: raise RuntimeError("manifest v153 not found")
+            manifest = json.loads(row[0])
+        finally: conn.close()
+        if str(manifest.get("kind")) != "telegram_bot_full_state_v153": raise RuntimeError("unknown export kind")
+        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA): raise RuntimeError("unsupported export schema")
+        export_version = str(manifest.get("bot_version") or "")
+        if not export_version.startswith(tuple(f"bot_v{i}_" for i in range(153, 175))): raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
+        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
+        return manifest, raw
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True); raise
+try: _v177_legacy_0291_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
+except Exception: pass
+_v153_validate_restore_gz = _v177_legacy_0291_v153_validate_restore_gz
 
 
-_V174_MESSAGE_WRAP = 0  # v180: merged into canonical on_any_message
+_V174_MESSAGE_WRAP = _v174_install_message_wrapper()
 _V174_COMMAND_REPLACED = _v174_replace_command_handlers()
 _V174_CALLBACK = 0  # v179 final callback router
 _V174_LEGACY_CALLBACK = 0  # v179 final callback router
@@ -2268,4 +2420,4 @@ def task_dispatcher_callback_final(call) -> bool:
         # Rare old detail/status callbacks still map to the durable v172 engine.
         _v172_callback(call); return True
     return False
-# v180_total_final_diagnostics
+# v181_recovery_readonly
