@@ -1,4 +1,4 @@
-# v181_recovery_readonly
+# v182_restore_unified
 # ---- integrated from 119_v172_task_dispatcher.py ----
 """v172: Telegram-native task / purchase dispatcher.
 
@@ -2420,4 +2420,4 @@ def task_dispatcher_callback_final(call) -> bool:
         # Rare old detail/status callbacks still map to the durable v172 engine.
         _v172_callback(call); return True
     return False
-# v181_recovery_readonly
+# v182_restore_unified

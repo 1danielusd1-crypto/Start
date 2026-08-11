@@ -1,0 +1,21 @@
+{
+  "version": "bot_v182_restore_unified",
+  "runtime_parts": 26,
+  "duplicate_top_level_names": 0,
+  "restore_accepts": [
+    "GZ",
+    "JSON",
+    "ISON",
+    "CSV"
+  ],
+  "gz_formats": [
+    "full_state_export",
+    "working_sqlite"
+  ],
+  "pre_restore_before_manual_restore": true,
+  "compile": "PASS",
+  "validator_unit_tests": [
+    "working_sqlite PASS",
+    "full_state_export PASS"
+  ]
+}

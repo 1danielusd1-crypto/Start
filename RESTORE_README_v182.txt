@@ -1,0 +1,5 @@
+version=bot_v182_restore_unified
+runtime_parts=26
+restore_accepts=GZ,JSON,ISON,CSV
+gz_formats=full_state_export,working_sqlite
+pre_restore_before_manual_restore=yes

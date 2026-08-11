@@ -1,0 +1,9 @@
+bot_v182_restore_unified
+MEGA durable root: /TelegramBotBackups (or MEGA_BACKUP_DIR from Render secrets).
+Never use /TelegramBotBackupsStart.
+RAM active only; SQLite working state; MEGA durable state.
+Finance priority over forwarding.
+Performance/UI fixes apply to owner, circle1 and circle2.
+Fast/Minimum profiles must not automatically disable diagnostics.
+Every runtime source file first/last line is the release marker.
+Manual restore must create pre_restore protection before replacing current state.

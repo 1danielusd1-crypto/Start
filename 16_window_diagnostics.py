@@ -1,4 +1,4 @@
-# v181_recovery_readonly
+# v182_restore_unified
 # ─────────────────────────────────────────────────────────────
 # v144: полная трассировка жизненного цикла Telegram-окон.
 # Записывает только метаданные, хеши и короткий заголовок — полный текст окна,
@@ -665,4 +665,4 @@ def window_diagnostic_stats() -> dict:
 
 
 _install_window_transport_diagnostics()
-# v181_recovery_readonly
+# v182_restore_unified

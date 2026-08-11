@@ -1,4 +1,4 @@
-# v181_recovery_readonly
+# v182_restore_unified
 import os
 import io
 import json
@@ -842,7 +842,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v181_recovery_readonly"
+VERSION = "bot_v148_multitenant_spaces"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -6973,7 +6973,7 @@ def _v177_legacy_0053_build_help_text(chat_id: int) -> str:
         "/json — JSON этого чата",
         "/reset — обнулить данные чата (с подтверждением)",
         "/ping — проверка, жив ли бот",
-        "/restore / /restore_off — режим восстановления JSON/CSV",
+        "/restore / /restore_off — восстановление GZ / JSON / ISON / CSV",
         "/dozvon — окно дозвона по связанным чатам",
         "/ost — слово «ост:» в Ф91 ВКЛ/ВЫКЛ",
     ]
@@ -7053,7 +7053,7 @@ def _v177_legacy_0054_build_info_text(chat_id: int) -> str:
         "/tabl_lsx — Excel-таблица по периоду Чт–Ср",
         "/json — JSON текущего чата",
         "/ost — включить/выключить подпись «ост:»",
-        "/restore — включить режим восстановления",
+        "/restore — включить восстановление GZ / JSON / ISON / CSV",
         "/restore_off — выключить режим восстановления",
         "/dozvon — открыть дозвон по связанным чатам",
         "/reset — обнулить данные чата с подтверждением",
@@ -7861,4 +7861,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v181_recovery_readonly
+# v182_restore_unified

@@ -1,4 +1,4 @@
-# v181_recovery_readonly
+# v182_restore_unified
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -1076,8 +1076,9 @@ def _v153_reconcile_windows():
 
 # One restore validator. No v153→v154→... exception chain.
 def _v153_validate_restore_gz(gz_path: str):
+    """FINAL restore validator: accepts both full-state exports and raw working SQLite .gz snapshots."""
     import gzip as _gz, shutil as _shutil, sqlite3 as _sqlite3, tempfile as _tempfile, json as _json, os as _os
-    folder = _tempfile.mkdtemp(prefix="v179_restore_validate_")
+    folder = _tempfile.mkdtemp(prefix="v182_restore_validate_")
     raw = _os.path.join(folder, "restore.sqlite3")
     try:
         with _gz.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
@@ -1085,22 +1086,220 @@ def _v153_validate_restore_gz(gz_path: str):
         conn = _sqlite3.connect(raw)
         try:
             integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok": raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row: raise RuntimeError("manifest v153 not found")
-            manifest = _json.loads(row[0])
+            if integrity.lower() != "ok":
+                raise RuntimeError(f"SQLite integrity_check: {integrity}")
+            tables = {str(r[0]) for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            # Format A: v153+ full-state export with embedded manifest/checksum.
+            row = None
+            if "meta" in tables:
+                try:
+                    row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
+                except Exception:
+                    row = None
+            if row:
+                manifest = _json.loads(row[0])
+                if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
+                    raise RuntimeError("unknown export kind")
+                if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
+                    raise RuntimeError("unsupported export schema")
+                export_version = str(manifest.get("bot_version") or "")
+                allowed = tuple(f"bot_v{i}_" for i in range(153, 183))
+                if export_version and not export_version.startswith(allowed):
+                    raise RuntimeError(f"unsupported bot version: {export_version}")
+                if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""):
+                    raise RuntimeError("checksum mismatch")
+                manifest = dict(manifest)
+                manifest["snapshot_format"] = "full_state_export"
+                return manifest, raw
+
+            # Format B: normal LOW-RAM working SQLite snapshot stored in MEGA /database/.
+            required = {"kv", "chats", "meta"}
+            if not required.issubset(tables):
+                raise RuntimeError("SQLite не похож на рабочий snapshot бота (нет kv/chats/meta)")
+            created_at = ""
+            bot_version = ""
+            try:
+                mrow = conn.execute("SELECT v FROM meta WHERE kind='db_snapshot' AND k='main'").fetchone()
+                if mrow:
+                    meta = _json.loads(mrow[0]) or {}
+                    created_at = str(meta.get("created_at") or "")
+                    bot_version = str(meta.get("bot_version") or "")
+            except Exception:
+                pass
+            chat_ids = []
+            try:
+                chat_ids = [int(r[0]) for r in conn.execute("SELECT chat_id FROM chats ORDER BY chat_id").fetchall()]
+            except Exception:
+                chat_ids = []
+            record_count = 0
+            if "cold_fields" in tables:
+                try:
+                    for (value,) in conn.execute("SELECT v FROM cold_fields WHERE k='records'").fetchall():
+                        try:
+                            rows = _json.loads(value) if value else []
+                            if isinstance(rows, list): record_count += len(rows)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            if not record_count:
+                try:
+                    for (value,) in conn.execute("SELECT v FROM chats").fetchall():
+                        try:
+                            payload = _json.loads(value) if value else {}
+                            rows = payload.get("records") if isinstance(payload, dict) else []
+                            if isinstance(rows, list): record_count += len(rows)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            manifest = {
+                "kind": "telegram_bot_working_sqlite_snapshot",
+                "schema_version": 1,
+                "bot_version": bot_version or "working_snapshot",
+                "created_at": created_at,
+                "scope": "global",
+                "tenant_id": "",
+                "chat_ids": chat_ids,
+                "chat_count": len(chat_ids),
+                "record_count": int(record_count),
+                "failed_tasks": 0,
+                "checksum": "",
+                "snapshot_format": "working_sqlite",
+            }
+            return manifest, raw
         finally:
             conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153": raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA): raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        allowed = tuple(f"bot_v{i}_" for i in range(153, 180))
-        if not export_version.startswith(allowed): raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
-        return manifest, raw
     except Exception:
         _shutil.rmtree(folder, ignore_errors=True)
         raise
+
+
+def _v182_download_restore_document(document) -> tuple[str, str]:
+    import os as _os, tempfile as _tempfile
+    name = str(getattr(document, "file_name", "") or "backup.sqlite3.gz")
+    folder = _tempfile.mkdtemp(prefix="v182_restore_upload_")
+    safe_name = _os.path.basename(name).replace("/", "_").replace("\\", "_") or "backup.sqlite3.gz"
+    path = _os.path.join(folder, safe_name)
+    info = bot.get_file(document.file_id)
+    stream_fn = globals().get("telegram_download_to_file")
+    if callable(stream_fn):
+        max_restore = max(1024 * 1024, int(os.getenv("RESTORE_FILE_MAX_BYTES", str(250 * 1024 * 1024)) or str(250 * 1024 * 1024)))
+        stream_fn(info.file_path, path, max_bytes=max_restore)
+    else:
+        raw = bot.download_file(info.file_path)
+        with open(path, "wb") as fh: fh.write(raw)
+    return path, folder
+
+
+def v182_prepare_gz_restore_document(msg, document=None) -> bool:
+    """Prepare a .gz restore from a document sent after /restore or replied to by /restore."""
+    uid = _v153_actor_id(msg); chat_id = int(msg.chat.id)
+    document = document or getattr(getattr(msg, "reply_to_message", None), "document", None)
+    if not document:
+        raise RuntimeError("Не найден GZ-файл")
+    name = str(getattr(document, "file_name", "") or "").lower()
+    if not name.endswith(".gz"):
+        raise RuntimeError("Нужен файл .gz (обычно .sqlite3.gz)")
+    gz = folder = raw = None
+    try:
+        gz, folder = _v182_download_restore_document(document)
+        manifest, raw = _v153_validate_restore_gz(gz)
+        scope = str(manifest.get("scope") or "global")
+        tenant_id = str(manifest.get("tenant_id") or _v153_tenant_for_chat(chat_id))
+        if scope == "global" and not _v153_platform_owner(uid):
+            raise RuntimeError("Глобальное восстановление доступно только владельцу платформы")
+        if scope == "tenant" and not _v153_can_manage_tenant(uid, tenant_id):
+            current = _v153_tenant_for_chat(chat_id)
+            if not _v153_can_manage_tenant(uid, current):
+                raise RuntimeError("Нельзя восстановить чужое пространство")
+            tenant_id = current
+        token = _v153_hashlib.sha256(f"v182:{uid}:{chat_id}:{_v153_time.time_ns()}".encode()).hexdigest()[:16]
+        with _V153_LOCK:
+            _V153_RESTORE_PENDING[token] = {
+                "uid": uid, "chat_id": chat_id, "gz": gz, "raw": raw, "manifest": manifest,
+                "tenant_id": tenant_id, "created": _v153_time.time(), "upload_folder": folder,
+            }
+        fmt = str(manifest.get("snapshot_format") or "sqlite")
+        text = (
+            "🧪 GZ-файл проверен.\n\n"
+            f"Формат: {fmt}\n"
+            f"Версия: {manifest.get('bot_version') or 'не указана'}\n"
+            f"Область: {'весь бот' if scope == 'global' else 'пространство'}\n"
+            f"Чатов: {manifest.get('chat_count', 0)}\n"
+            f"Финансовых записей: {manifest.get('record_count', 'см. snapshot')}\n"
+            f"Создан: {manifest.get('created_at') or 'не указано'}\n\n"
+            "Перед применением будет создан pre_restore backup текущей базы."
+        )
+        bot.reply_to(msg, text, reply_markup=_v153_restore_keyboard(token, scope))
+        # Restore mode is one-file-at-a-time, like the historical workflow.
+        global restore_mode
+        restore_mode = None
+        data.pop("_restore_mode_chat_v150", None)
+        try: save_data(data, chat_ids=[chat_id])
+        except Exception: pass
+        return True
+    except Exception:
+        # _v153_validate_restore_gz owns its extracted raw temp folder on validation errors.
+        if folder and (not raw):
+            try: _v176_shutil.rmtree(folder, ignore_errors=True)
+            except Exception: pass
+        raise
+
+
+def v182_cmd_restore(msg):
+    """Unified historical /restore: reply to GZ, or enter upload mode for GZ/JSON/ISON/CSV."""
+    try:
+        update_chat_info_from_message(msg)
+    except Exception:
+        pass
+    try: schedule_command_delete(msg)
+    except Exception: pass
+    uid = _v153_actor_id(msg); chat_id = int(msg.chat.id)
+    if not (_v153_platform_owner(uid) or _v153_can_manage_tenant(uid, _v153_tenant_for_chat(chat_id))):
+        bot.reply_to(msg, "⛔ Недостаточно прав для восстановления.")
+        return
+    replied_doc = getattr(getattr(msg, "reply_to_message", None), "document", None)
+    if replied_doc is not None and str(getattr(replied_doc, "file_name", "") or "").lower().endswith(".gz"):
+        try:
+            v182_prepare_gz_restore_document(msg, replied_doc)
+        except Exception as exc:
+            bot.reply_to(msg, f"❌ GZ не подготовлен к восстановлению:\n{v153_redact_text(exc)[:700]}")
+        return
+    global restore_mode
+    restore_mode = chat_id
+    data["_restore_mode_chat_v150"] = chat_id
+    try: save_data(data, chat_ids=[chat_id])
+    except Exception: pass
+    try: cleanup_forward_links(chat_id)
+    except Exception: pass
+    send_and_auto_delete(
+        chat_id,
+        "📥 Режим восстановления включён.\n\n"
+        "Теперь отправьте ОДИН файл:\n"
+        "• *.sqlite3.gz / *.gz — полный SQLite snapshot\n"
+        "• *.json / *.ison — JSON backup\n"
+        "• *.csv — CSV чата\n\n"
+        "Для следующего файла снова отправьте /restore.\n"
+        "Отмена: /restore_off",
+        30,
+    )
+
+
+def _v182_install_restore_handler() -> int:
+    replaced = 0
+    for handler in list(getattr(bot, "message_handlers", []) or []):
+        if not isinstance(handler, dict): continue
+        filters = handler.get("filters") or {}
+        commands = [str(x).lower() for x in (filters.get("commands") or [])]
+        if "restore" in commands:
+            handler["function"] = v182_cmd_restore; replaced += 1
+    if not replaced:
+        try: bot.message_handler(commands=["restore"])(v182_cmd_restore); replaced = 1
+        except Exception: pass
+    return replaced
+
+_V182_RESTORE_HANDLER_COUNT = _v182_install_restore_handler()
 
 # Lazy registry hooks: cleanup at most once/10 min when UI actually touches the registry.
 _V179_BASE_REGISTER_OPEN_WINDOW = globals().get("_v179_base_register_open_window") or globals().get("register_open_window")
@@ -1173,5 +1372,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v179 authoritative runtime version after integrated historical modules.
-VERSION = "bot_v179_clean_final"
-# v181_recovery_readonly
+VERSION = "bot_v182_restore_unified"
+# v182_restore_unified

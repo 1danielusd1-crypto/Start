@@ -1,4 +1,4 @@
-# v181_recovery_readonly
+# v182_restore_unified
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -2351,4 +2351,4 @@ def forward_any_message(source_chat_id: int, msg):
         log_error(f"forward_any_message fatal: {e}")
 
     
-# v181_recovery_readonly
+# v182_restore_unified

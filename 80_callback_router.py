@@ -1,4 +1,4 @@
-# v181_recovery_readonly
+# v182_restore_unified
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
@@ -3152,4 +3152,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v181_recovery_readonly
+# v182_restore_unified

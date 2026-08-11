@@ -1,0 +1,10 @@
+bot_v182_restore_unified
+
+- /restore снова включает привычный режим загрузки файла.
+- Принимаются GZ / JSON / ISON / CSV.
+- /restore ответом на GZ также работает сразу.
+- GZ поддерживает оба формата: полный export с manifest и рабочий SQLite snapshot из MEGA /database.
+- Любой GZ проверяется SQLite integrity_check до применения.
+- Перед ручным GZ/JSON/CSV restore создаётся pre_restore текущей SQLite.
+- Для GZ требуется подтверждение кнопкой после показа версии, даты, числа чатов/записей.
+- MEGA root остаётся /TelegramBotBackups / MEGA_BACKUP_DIR.

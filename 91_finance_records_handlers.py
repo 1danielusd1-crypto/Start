@@ -1,4 +1,4 @@
-# v181_recovery_readonly
+# v182_restore_unified
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -728,11 +728,21 @@ def handle_document(msg):
 
     if restore_mode is not None and restore_mode == chat_id:
 
-        if not (fname.endswith(".json") or fname.endswith(".csv")):
+        if not (fname.endswith(".json") or fname.endswith(".ison") or fname.endswith(".csv") or fname.endswith(".gz")):
             send_and_auto_delete(
                 chat_id,
-                "⚠️ В режиме восстановления принимаются только JSON / CSV."
+                "⚠️ В режиме восстановления принимаются GZ / JSON / ISON / CSV."
             )
+            return
+
+        if fname.endswith(".gz"):
+            try:
+                prep = globals().get("v182_prepare_gz_restore_document")
+                if not callable(prep):
+                    raise RuntimeError("GZ restore helper не загружен")
+                prep(msg, file)
+            except Exception as e:
+                send_and_auto_delete(chat_id, f"❌ GZ не подготовлен: {e}", 15)
             return
 
         tmp_path = f"restore_{chat_id}_{fname}"
@@ -755,8 +765,16 @@ def handle_document(msg):
             send_and_auto_delete(chat_id, f"❌ Ошибка скачивания: {e}")
             return
 
+        backup_dir = ""
         try:
-            if fname == "data.json":
+            backup_fn = globals().get("_v153_backup_before_restore")
+            if callable(backup_fn):
+                backup_dir = backup_fn()
+        except Exception as e:
+            log_error(f"pre_restore backup before file restore: {e}")
+
+        try:
+            if fname in {"data.json", "data.ison"}:
                 os.replace(tmp_path, DATA_FILE)
                 _import_legacy_global_json_to_db(DATA_FILE, force=True)
                 data = load_data()
@@ -771,17 +789,21 @@ def handle_document(msg):
                             pass
 
                 restore_mode = None
-                send_and_auto_delete(chat_id, "🟢 Глобальный data.json импортирован в SQLite!")
+                data.pop("_restore_mode_chat_v150", None)
+                save_data(data, chat_ids=[chat_id])
+                send_and_auto_delete(chat_id, "🟢 Глобальный JSON импортирован в SQLite!")
                 return
 
             if fname == "csv_meta.json":
                 os.replace(tmp_path, CSV_META_FILE)
                 _save_csv_meta(_load_json(CSV_META_FILE, {}) or {})
                 restore_mode = None
+                data.pop("_restore_mode_chat_v150", None)
+                save_data(data, chat_ids=[chat_id])
                 send_and_auto_delete(chat_id, "🟢 csv_meta.json импортирован в SQLite")
                 return
 
-            if fname.endswith(".json"):
+            if fname.endswith((".json", ".ison")):
                 payload = _load_json(tmp_path, None)
                 if not isinstance(payload, dict):
                     raise RuntimeError("JSON не является объектом")
@@ -792,7 +814,9 @@ def handle_document(msg):
                     data.clear()
                     data.update(load_data())
                     restore_mode = None
-                    send_and_auto_delete(chat_id, "🟢 Глобальный data.json импортирован в SQLite")
+                    data.pop("_restore_mode_chat_v150", None)
+                    save_data(data, chat_ids=[chat_id])
+                    send_and_auto_delete(chat_id, "🟢 Глобальный JSON импортирован в SQLite")
                     return
 
                 inner_chat_id = payload.get("chat_id")
@@ -813,6 +837,8 @@ def handle_document(msg):
                 finance_changed(chat_id, day_key, reason="restore_json", delay=0.1)
 
                 restore_mode = None
+                data.pop("_restore_mode_chat_v150", None)
+                save_data(data, chat_ids=[chat_id])
                 send_and_auto_delete(
                     chat_id,
                     f"🟢 JSON чата {get_chat_display_name(chat_id)} восстановлен"
@@ -829,6 +855,8 @@ def handle_document(msg):
                 finance_changed(chat_id, day_key, reason="restore_csv", delay=0.1)
 
                 restore_mode = None
+                data.pop("_restore_mode_chat_v150", None)
+                save_data(data, chat_ids=[chat_id])
                 send_and_auto_delete(
                     chat_id,
                     f"🟢 CSV чата восстановлен ({fname})"
@@ -843,6 +871,11 @@ def handle_document(msg):
         finally:
             try:
                 os.remove(tmp_path)
+            except Exception:
+                pass
+            try:
+                if backup_dir:
+                    shutil.rmtree(backup_dir, ignore_errors=True)
             except Exception:
                 pass
 
@@ -1513,4 +1546,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v181_recovery_readonly
+# v182_restore_unified
