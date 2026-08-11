@@ -1,0 +1,12 @@
+v179 CLEAN FINAL
+- 10-point cleanup applied globally to owner, circle 1, circle 2, and all users with feature access.
+- Canonical MEGA root: /TelegramBotBackups (or explicit MEGA_BACKUP_DIR); /TelegramBotBackupsStart removed.
+- Old per-version runtime patch files removed; runtime manifest collapsed from 46 to 26 modules.
+- Exactly one final Telegram callback handler.
+- v172/v174 task callbacks merged behind one dispatcher.
+- v175 light-mode runtime removed; v178 process center remains.
+- Instance lease merged into runtime heartbeat/watcher; no independent 30-second lease loop.
+- Noncritical worker pools and recurring loops consolidated.
+- Window reconciliation is lazy/on-demand, not a permanent 600-second loop.
+- One final restore validator for compatible v153-v179 exports.
+- Old MEGA root migration retired permanently.

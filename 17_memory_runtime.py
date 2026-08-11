@@ -1,4 +1,4 @@
-# v178_global_performance_final
+# v179_clean_final
 # ─────────────────────────────────────────────────────────────
 # v145: adaptive RAM protection and memory forensics for Render 512 MB.
 # Business state is never discarded. Only caches, diagnostics and allocator
@@ -683,5 +683,4 @@ def start_memory_runtime_schedulers():
     })
     DELAYED_SCHEDULER.schedule("memory-guard", 5.0, memory_guard_tick)
     return True
-
-# v178_global_performance_final
+# v179_clean_final

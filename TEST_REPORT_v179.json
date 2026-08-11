@@ -1,0 +1,82 @@
+{
+  "version": "bot_v179_clean_final",
+  "runtime_parts": 26,
+  "compile_errors": [],
+  "top_level_duplicate_names": 0,
+  "callback_registration_count": 1,
+  "callback_registration_lines": [
+    [
+      "89_callback_final.py",
+      111,
+      "bot.callback_query_handler(func=lambda c: True)(final_callback_router)"
+    ]
+  ],
+  "restore_validator_count": 1,
+  "restore_validators": [
+    [
+      "85_runtime_control.py",
+      1078
+    ]
+  ],
+  "mega_start_refs": [],
+  "legacy_lease_or_reconcile_schedule_refs": [],
+  "migration_schedule_refs": [],
+  "thread_constructor_lines": [
+    [
+      "00_core.py",
+      77,
+      "t = threading.Thread(target=self._worker, name=f\"{self.name}-{idx+1}\", daemon=True)"
+    ],
+    [
+      "00_core.py",
+      219,
+      "threading.Thread(target=self._worker, name=f\"{self.executor_pool.name}-scheduler\", daemon=True).start()"
+    ],
+    [
+      "00_core.py",
+      458,
+      "threading.Thread(target=self._watchdog, name=\"update-dispatcher-watchdog\", daemon=True).start()"
+    ],
+    [
+      "91_finance_records_handlers.py",
+      1513,
+      "_keep_alive_thread = threading.Thread(target=keep_alive_task, name=\"keep-alive-watchdog\", daemon=True)"
+    ],
+    [
+      "99_web_runtime.py",
+      447,
+      "thread = threading.Thread(target=_serve, name=\"v177-web-early\", daemon=True)"
+    ]
+  ],
+  "last_active_VERSION": [
+    "85_runtime_control.py",
+    1176,
+    "bot_v179_clean_final"
+  ],
+  "manifest_ok": true,
+  "hash_bad": [],
+  "marker_bad": [],
+  "removed_validator_blocks": [
+    [
+      559,
+      601
+    ],
+    [
+      1834,
+      1868
+    ],
+    [
+      2067,
+      2105
+    ],
+    [
+      2935,
+      2974
+    ],
+    [
+      4220,
+      4258
+    ]
+  ],
+  "canonical_mega_root": "/TelegramBotBackups"
+}

@@ -1,4 +1,4 @@
-# v178_global_performance_final
+# v179_clean_final
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -5260,7 +5260,7 @@ def _lowram_idle_sweep_job():
             pass
 
 
-def _runtime_heartbeat_job():
+def _v179_base_runtime_heartbeat_job():
     if runtime_is_shutting_down():
         return
     next_delay = RUNTIME_WATCHER_HEARTBEAT_SECONDS
@@ -5275,6 +5275,7 @@ def _runtime_heartbeat_job():
             DELAYED_SCHEDULER.schedule("runtime-heartbeat", next_delay, _runtime_heartbeat_job)
         except Exception:
             pass
+_runtime_heartbeat_job = _v179_base_runtime_heartbeat_job  # v179 compatibility alias; one implementation
 
 
 def _v177_legacy_0082_runtime_mark_ready(detail: str = ""):
@@ -9090,4 +9091,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v178_global_performance_final
+# v179_clean_final

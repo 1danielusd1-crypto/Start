@@ -1,5 +1,4 @@
-# v178_global_performance_final
-
+# v179_clean_final
 _REMINDER_THREAD_STARTED = False
 _REMINDER_THREAD_LOCK = threading.RLock()
 _REMINDER_CONFIG_LOCK = threading.RLock()
@@ -781,7 +780,10 @@ def _reminder_delete_last_messages(cfg: dict) -> None:
             return
     except Exception:
         pass
-    threading.Thread(target=_reminder_delete_message_map, args=(last_map,), name="reminder-cleanup", daemon=True).start()
+    try:
+        _reminder_delete_message_map(last_map)
+    except Exception:
+        pass
 
 
 
@@ -942,14 +944,16 @@ except Exception: pass
 _reminder_tick = _v177_legacy_0132_reminder_tick
 
 
-def _reminder_scheduler_loop() -> None:
-    while True:
-        try:
-            if runtime_is_ready():
-                _reminder_tick()
-        except Exception as exc:
-            log_error(f"reminder scheduler: {exc}")
-        time.sleep(_REMINDER_CHECK_SECONDS)
+def _reminder_scheduler_tick() -> None:
+    # v179: common delayed scheduler, no dedicated reminder thread.
+    try:
+        if runtime_is_ready():
+            _reminder_tick()
+    except Exception as exc:
+        log_error(f"reminder scheduler: {exc}")
+    finally:
+        try: DELAYED_SCHEDULER.schedule("reminder-scheduler", _REMINDER_CHECK_SECONDS, _reminder_scheduler_tick)
+        except Exception: pass
 
 
 def start_reminder_scheduler() -> None:
@@ -958,12 +962,13 @@ def start_reminder_scheduler() -> None:
         if _REMINDER_THREAD_STARTED:
             return
         _REMINDER_THREAD_STARTED = True
-        _reminders_root()  # миграция до первого tick
+        _reminders_root()
         try:
-            save_data(data, root_only=True)  # миграция v134 должна пережить restart даже до первого send
+            save_data(data, root_only=True)
         except Exception as exc:
             log_error(f"reminder migration save: {exc}")
-        threading.Thread(target=_reminder_scheduler_loop, name="reminder-scheduler", daemon=True).start()
+        try: DELAYED_SCHEDULER.schedule("reminder-scheduler", 1.0, _reminder_scheduler_tick)
+        except Exception: pass
 
 
 def _reminder_direct_input_predicate(msg) -> bool:
@@ -1064,7 +1069,6 @@ def reminder_direct_input_message(msg):
     _reminder_refresh_bound_editor(rid)
 
 
-@bot.callback_query_handler(func=lambda c: str(getattr(c, "data", "") or "").startswith("rem:"))
 def reminder_callback(call):
     chat_id = int(call.message.chat.id)
     if not is_owner_chat(chat_id):
@@ -1892,5 +1896,4 @@ def _v177_legacy_0133_reminder_tick() -> None:
 try: _v177_legacy_0133_reminder_tick.__name__ = '_reminder_tick'
 except Exception: pass
 _reminder_tick = _v177_legacy_0133_reminder_tick
-
-# v178_global_performance_final
+# v179_clean_final

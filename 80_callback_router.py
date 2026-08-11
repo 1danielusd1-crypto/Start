@@ -1,5 +1,4 @@
-# v178_global_performance_final
-
+# v179_clean_final
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
@@ -69,8 +68,6 @@ def _chat_description_background(viewer_chat_id: int, message_id: int, target_ch
         except Exception:
             pass
 
-
-@bot.callback_query_handler(func=lambda c: True)
 
 def on_callback(call):
     # v138: receipt-level ACK already runs in a reserved lane. Do not send a blank ACK here:
@@ -3155,4 +3152,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v178_global_performance_final
+# v179_clean_final
