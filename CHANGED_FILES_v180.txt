@@ -1,0 +1,13 @@
+v180 functional runtime changes compared with v179:
+00_core.py
+10_mega_runtime.py
+40_message_router.py
+99_web_runtime.py
+73_state_export_runtime.py
+74_ui_reliability_runtime.py
+75_platform_features_runtime.py
+76_tasks_runtime.py
+85_runtime_control.py
+89_callback_final.py
+
+Use FULL PACKAGE for deployment because all runtime source markers and manifest hashes belong to one release.

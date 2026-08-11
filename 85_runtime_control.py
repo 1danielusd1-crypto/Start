@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -12,8 +12,8 @@ import statistics as _v176_statistics
 import threading as _v176_threading
 import time as _v176_time
 
-VERSION = "bot_v178_global_performance_final"
-V176_FILE_MARKER = "v178_global_performance_final"
+VERSION = "bot_v180_total_final_diagnostics"
+V176_FILE_MARKER = "v180_total_final_diagnostics"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
 _V176_PERF = _v176_collections.deque(maxlen=240)
@@ -44,12 +44,13 @@ _V176_MIGRATED_HEAVY = True
 # code, page, label, default, risk, description
 _V176_PROCESS_DEFS = {
     "ui_retry": ("ui", "🔁 Повторы edit Telegram", True, "hot", "Внешние повторы safe_edit при 429/ошибке. Кандидат на задержку кнопок."),
-    "win_diag": ("ui", "🩺 Диагностика окон", False, "hot", "Маркировка/диагностика жизненного цикла окон."),
+    "win_diag": ("diag", "🩺 Диагностика окон", True, "hot", "Маркировка/диагностика жизненного цикла окон."),
     "win_reg": ("ui", "🗂 Реестр окон → SQLite/MEGA", _V176_MIGRATED_HEAVY, "hot", "Фоновое сохранение реестра открытых окон."),
     "win_rec": ("ui", "🔄 Reconcile окон", _V176_MIGRATED_HEAVY, "hot", "Сверка реестра окон, включая цикл v153 каждые 600 сек."),
-    "btn_chain": ("ui", "🧾 Трассировка press/result", False, "hot", "Две дополнительные записи на обработанный callback."),
-    "btn_press": ("ui", "📝 Журнал button_pressed", False, "hot", "Запись исходной кнопки в общий журнал."),
-    "win_journal": ("ui", "📐 Window-журнал", False, "hot", "Подробные window_* события, которые раньше писались принудительно."),
+    "btn_chain": ("diag", "🧾 Трассировка press/result", True, "hot", "Две дополнительные записи на обработанный callback."),
+    "btn_press": ("diag", "📝 Журнал button_pressed", True, "hot", "Запись исходной кнопки в общий журнал."),
+    "win_journal": ("diag", "📐 Window-журнал", True, "hot", "Подробные window_* события, которые раньше писались принудительно."),
+    "tg_verbose": ("diag", "🌐 Telegram API timing", True, "hot", "Записывает успешные Telegram API вызовы и retry для поиска сетевых задержек."),
     "fin_refresh": ("ui", "💹 Автообновление фин. окон", True, "medium", "Автоперерисовка зарегистрированных финансовых окон после изменений."),
     "win_cleanup": ("ui", "🧹 Очистка реестра окон", _V176_MIGRATED_HEAVY, "medium", "Скан/очистка устаревших окон."),
 
@@ -79,6 +80,7 @@ _V176_PAGE_TITLES = {
     "auto": "🔄 АВТОМАТИКА",
     "system": "🧠 СИСТЕМА",
     "core": "🔒 ОСНОВА БОТА",
+    "diag": "🧪 ДИАГНОСТИКА / ТРАССИРОВКА",
 }
 
 _V176_LOCKED_CORE = [
@@ -152,7 +154,7 @@ def heavy_processes_label_v175() -> str:
 
 def heavy_processes_status_v175() -> str:
     off = sum(1 for code in _V176_PROCESS_DEFS if not v176_process_enabled(code))
-    return f"⚙️ Центр процессов v179: отключено {off} из {len(_V176_PROCESS_DEFS)} управляемых процессов."
+    return f"⚙️ Центр процессов v180: отключено {off} из {len(_V176_PROCESS_DEFS)} управляемых процессов."
 
 
 # Capture the current active implementations (including v175 compatibility wrappers).
@@ -542,12 +544,15 @@ def v176_set_process(code: str, enabled: bool, actor: int = 0) -> bool:
     return bool(enabled)
 
 
+_V180_DIAGNOSTIC_CODES = {"win_diag", "btn_chain", "btn_press", "win_journal", "tg_verbose", "journal_mega", "runtime_upload"}
+
 _V176_FAST_PROFILE_OFF = {
     "ui_retry", "win_diag", "win_reg", "win_rec", "btn_chain", "btn_press", "win_journal",
     "fin_refresh", "win_cleanup", "full_chat", "journal_mega", "runtime_upload", "source_archive",
     "failed_repair", "failed_diag", "mega_maint", "google_auto",
 }
-_V176_MIN_PROFILE_OFF = _V176_FAST_PROFILE_OFF | {"delta_auto", "full_global", "mega_recover", "expense_ping", "lowram"}
+_V176_FAST_PROFILE_OFF = set(_V176_FAST_PROFILE_OFF) - set(_V180_DIAGNOSTIC_CODES)
+_V176_MIN_PROFILE_OFF = (_V176_FAST_PROFILE_OFF | {"delta_auto", "full_global", "mega_recover", "expense_ping", "lowram"}) - set(_V180_DIAGNOSTIC_CODES)
 
 
 def v176_apply_profile(profile: str, actor: int = 0) -> None:
@@ -555,7 +560,11 @@ def v176_apply_profile(profile: str, actor: int = 0) -> None:
     root = _v176_root()
     with _V176_LOCK:
         for code in _V176_PROCESS_DEFS:
-            if profile == "all":
+            if code in _V180_DIAGNOSTIC_CODES and profile in {"fast", "minimal"}:
+                # v180: diagnostic switches are never changed by ready-made speed profiles.
+                # Owner may disable them only manually.
+                value = bool(root.get(code, _V176_PROCESS_DEFS[code][2]))
+            elif profile == "all":
                 value = True
             elif profile == "fast":
                 value = code not in _V176_FAST_PROFILE_OFF
@@ -597,11 +606,25 @@ def _v176_perf_summary() -> dict:
     for row in rows:
         action = str(row.get("action") or "?")[:80]
         by.setdefault(action, []).append(float(row.get("elapsed", 0.0)))
-    top = sorted(((sum(v) / len(v), max(v), len(v), k) for k, v in by.items()), reverse=True)[:6]
+    top = sorted(((sum(v) / len(v), max(v), len(v), k) for k, v in by.items()), reverse=True)[:8]
+    by_contour = {}
+    by_chat = {}
+    for row in rows:
+        ev = float(row.get("elapsed", 0.0))
+        contour = str(row.get("contour") or "unknown")
+        by_contour.setdefault(contour, []).append(ev)
+        cid = str(row.get("chat_id") or "")
+        if cid: by_chat.setdefault(cid, []).append(ev)
+    def _mini(group):
+        out = {}
+        for key, arr in group.items():
+            ss = sorted(arr); nn = len(ss)
+            out[key] = {"n": nn, "avg": sum(ss)/nn, "p50": ss[nn//2], "p90": ss[min(nn-1,max(0,int((nn-1)*0.90)))], "max": ss[-1]}
+        return out
     return {
         "count": n, "p50": p50, "p90": p90, "max": vals[-1],
         "slow05": sum(1 for x in vals if x >= 0.5), "slow10": sum(1 for x in vals if x >= 1.0),
-        "top": top,
+        "top": top, "contours": _mini(by_contour), "chats": _mini(by_chat),
     }
 
 
@@ -618,9 +641,9 @@ def _v176_pool_line(name: str) -> str:
 
 def _v176_speed_text() -> str:
     s = _v176_perf_summary()
-    lines = ["📊 СКОРОСТЬ КНОПОК v178 GLOBAL FINAL", "", "Полное время callback + отдельный замер тяжёлых внутренних этапов."]
+    lines = ["📊 СКОРОСТЬ КНОПОК v180 TOTAL", "", "Полное время callback + отдельный замер тяжёлых внутренних этапов по всем контурам."]
     if not s.get("count"):
-        lines += ["", "Пока нет замеров после очистки/запуска v177."]
+        lines += ["", "Пока нет замеров после очистки/запуска v180."]
     else:
         lines += [
             "",
@@ -632,6 +655,21 @@ def _v176_speed_text() -> str:
         ]
         for avg, mx, count, action in s.get("top", []):
             lines.append(f"• {action[:48]} — avg {avg:.3f} c / max {mx:.3f} c / n={count}")
+        contours = s.get("contours") or {}
+        if contours:
+            lines += ["", "По контурам:"]
+            for _name in ("owner", "circle1", "circle2", "other", "unknown"):
+                _r = contours.get(_name)
+                if not _r: continue
+                lines.append(f"• {_name}: n={_r['n']} · P50 {_r['p50']:.3f} · P90 {_r['p90']:.3f} · MAX {_r['max']:.3f} c")
+        chats = s.get("chats") or {}
+        if chats:
+            _slow_chats = sorted(((r.get("p90",0), r.get("max",0), cid, r) for cid,r in chats.items()), reverse=True)[:5]
+            lines += ["", "Самые медленные чаты:"]
+            for _p90,_mx,_cid,_r in _slow_chats:
+                try: _nm = get_chat_display_name(int(_cid))
+                except Exception: _nm = _cid
+                lines.append(f"• {_nm} ({_cid}) — P90 {_p90:.3f} / MAX {_mx:.3f} c / n={_r.get('n',0)}")
     pools = [x for x in (_v176_pool_line(n) for n in (
         "UI_TASK_POOL", "V166_WINDOW_UI_TASK_POOL", "FINANCE_TASK_POOL", "FORWARD_TASK_POOL",
         "GENERAL_TASK_POOL", "DELTA_TASK_POOL", "BACKUP_TASK_POOL", "JOURNAL_TASK_POOL",
@@ -655,7 +693,7 @@ def _v176_menu_text(page: str = "ui") -> str:
     page = page if page in _V176_PAGE_TITLES else "ui"
     enabled = sum(1 for c in _V176_PROCESS_DEFS if v176_process_enabled(c))
     lines = [
-        "⚙️ ЦЕНТР ПРОЦЕССОВ / СКОРОСТЬ v178 GLOBAL",
+        "⚙️ ЦЕНТР ПРОЦЕССОВ / СКОРОСТЬ v180 TOTAL",
         f"Управляемых процессов: {len(_V176_PROCESS_DEFS)} · ВКЛ {enabled} · ВЫКЛ {len(_V176_PROCESS_DEFS)-enabled}",
         "",
         _V176_PAGE_TITLES[page],
@@ -673,25 +711,31 @@ def _v176_menu_text(page: str = "ui") -> str:
         lines.append(f"\n{_v176_status_icon(code)} {label} {mark}\n{desc}")
     if page == "ui":
         lines += ["", "🔥 = особенно полезно проверить при медленных кнопках."]
+    if page == "diag":
+        lines += ["", "Диагностика v180 работает для всех чатов и контуров. Быстрый/Минимум эти переключатели не меняют — отключаются только вручную."]
     if page == "mega":
         lines += ["", "⚠️ Критические пункты можно отключить вручную для теста, но это снижает устойчивость к deploy/restart."]
     return "\n".join(lines)[:3900]
 
 
 def _v176_nav_row(page: str):
-    order = [("ui", "⚡ UI"), ("mega", "☁️ MEGA"), ("auto", "🔄 Авто"), ("system", "🧠 RAM"), ("core", "🔒 Ядро")]
+    order = [("ui", "⚡ UI"), ("diag", "🧪 Диаг"), ("mega", "☁️ MEGA"), ("auto", "🔄 Авто"), ("system", "🧠 RAM"), ("core", "🔒 Ядро")]
     return [IB(("• " if p == page else "") + label, callback_data=f"v176:p:{p}") for p, label in order]
 
 
 def _v176_menu_keyboard(page: str = "ui"):
     kb = types.InlineKeyboardMarkup()
-    kb.row(*_v176_nav_row(page))
+    _nav = _v176_nav_row(page)
+    kb.row(*_nav[:3])
+    kb.row(*_nav[3:])
     if page != "core":
         for code, (group, label, _default, _risk, _desc) in _V176_PROCESS_DEFS.items():
             if group == page:
                 kb.row(IB(f"{_v176_status_icon(code)} {label}", callback_data=f"v176:t:{code}"))
     kb.row(IB("⚡ Быстрый тест", callback_data="v176:profile:fast"), IB("🧱 Всё ВКЛ", callback_data="v176:profile:all"))
     kb.row(IB("🧪 Минимум", callback_data="v176:profile:minimal"), IB("📊 Скорость кнопок", callback_data="v176:speed"))
+    if page == "diag":
+        kb.row(IB("📓 Выгрузить полный журнал", callback_data="v176:diag_export"))
     kb.row(IB("⬅️ Назад в INFO", callback_data="v176:back_info"), IB("✖️ Закрыть", callback_data="info_close"))
     return kb
 
@@ -925,6 +969,14 @@ def _v176_callback(call):
         except Exception: pass
         safe_edit(bot, call, _v176_menu_text("ui"), reply_markup=_v176_menu_keyboard("ui"))
         return
+    if raw == "v176:diag_export":
+        try: bot.answer_callback_query(call.id, "Готовлю полный диагностический журнал")
+        except Exception: pass
+        try: send_journal_file_to_owner(chat_id, 12000)
+        except Exception as exc:
+            try: log_error(f"v180 diag export: {exc}")
+            except Exception: pass
+        return
     if raw == "v176:speed":
         try: bot.answer_callback_query(call.id)
         except Exception: pass
@@ -943,78 +995,39 @@ def _v176_callback(call):
         return
 
 
-def _v176_register_callback() -> int:
-    return 0  # v179: registration/wrapper retired; final router owns callbacks
-
-
-# Lightweight independent latency meter. It records every callback handler selected by TeleBot.
-def _v176_install_perf_wrappers() -> int:
-    return 0  # v179: registration/wrapper retired; final router owns callbacks
-
-
-
-# Restore compatibility: v175 validator accepted only through v175; extend the same schema to v176.
-_V176_PREV_RESTORE_VALIDATOR = globals().get("_v153_validate_restore_gz")
-def _v179_legacy_restore_validator_v178(gz_path: str):
-    try:
-        return _V176_PREV_RESTORE_VALIDATOR(gz_path) if callable(_V176_PREV_RESTORE_VALIDATOR) else (None, None)
-    except Exception as exc:
-        if "unsupported bot version" not in str(exc):
-            raise
-    import gzip as _gz, shutil as _shutil, sqlite3 as _sqlite3, tempfile as _tempfile, json as _json, os as _os
-    folder = _tempfile.mkdtemp(prefix="v177_restore_validate_")
-    raw = _os.path.join(folder, "restore.sqlite3")
-    try:
-        with _gz.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
-            _shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok":
-                raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row:
-                raise RuntimeError("manifest v153 not found")
-            manifest = _json.loads(row[0])
-        finally:
-            conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
-            raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
-            raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith(tuple(f"bot_v{i}_" for i in range(153, 179))):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""):
-            raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _shutil.rmtree(folder, ignore_errors=True)
-        raise
-
-def _v178_migrate_global_speed_defaults() -> bool:
-    """One-time v178 migration: disable diagnostic noise globally, keep business durability on."""
+# v180 retired callback registration removed: _v176_register_callback
+# v180 retired callback registration removed: _v176_install_perf_wrappers
+# v180: historical restore chain removed; one FINAL validator is defined below.
+def _v180_migrate_diagnostic_defaults() -> bool:
+    """One-time v180 migration: diagnostics ON globally; speed profiles never change them."""
     root = _v176_root()
-    if bool(root.get("v178_global_speed_defaults_migrated", False)):
+    if bool(root.get("v180_total_diagnostics_migrated", False)):
         return False
-    for code in ("win_diag", "btn_chain", "btn_press", "win_journal", "failed_repair", "failed_diag"):
-        root[code] = False
-    root["v178_global_speed_defaults_migrated"] = True
-    try: root["v178_migrated_at"] = now_local().isoformat(timespec="seconds")
-    except Exception: pass
+    for code in _V180_DIAGNOSTIC_CODES:
+        root[code] = True
+    root["v180_total_diagnostics_migrated"] = True
+    try:
+        data.setdefault("_global_settings", {})["bot_journal_enabled"] = True
+        data.setdefault("_global_settings", {})["bot_journal_verbose_telegram"] = True
+        root["v180_migrated_at"] = now_local().isoformat(timespec="seconds")
+    except Exception:
+        pass
     try: SQLITE.save_root(_sqlite_pack_root(data))
     except Exception: pass
     return True
 
 
-_V178_SPEED_MIGRATED = _v178_migrate_global_speed_defaults()
+_V178_SPEED_MIGRATED = _v180_migrate_diagnostic_defaults()
+if _V178_SPEED_MIGRATED:
+    try: _v176_persist("v180_total_diagnostics")
+    except Exception: pass
 _v176_root()
 _v176_apply_runtime_flags()
 _V176_CALLBACK = 0  # v179 final callback router
 _V176_PERF_WRAPPERS = 0  # v179 final callback router owns timing
 try:
     _V176_ORIG_BOT_JOURNAL(
-        "v179_clean_final_installed", int(OWNER_ID or 0) or None,
+        "v180_total_final_diagnostics_installed", int(OWNER_ID or 0) or None,
         f"managed={len(_V176_PROCESS_DEFS)} callback={_V176_CALLBACK} perf_wrappers={_V176_PERF_WRAPPERS} speed_defaults={int(_V178_SPEED_MIGRATED)}",
     )
 except Exception:
@@ -1094,7 +1107,7 @@ def _v153_validate_restore_gz(gz_path: str):
         if str(manifest.get("kind")) != "telegram_bot_full_state_v153": raise RuntimeError("unknown export kind")
         if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA): raise RuntimeError("unsupported export schema")
         export_version = str(manifest.get("bot_version") or "")
-        allowed = tuple(f"bot_v{i}_" for i in range(153, 180))
+        allowed = tuple(f"bot_v{i}_" for i in range(153, 181))
         if not export_version.startswith(allowed): raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
         if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
         return manifest, raw
@@ -1167,11 +1180,11 @@ def runtime_mark_ready(detail: str = ""):
         if OWNER_ID:
             _v167_google_schedule_cfg(int(OWNER_ID), create=True); _v167_persist_schedule(int(OWNER_ID))
     except Exception: pass
-    try: bot_journal("v179_ready", int(OWNER_ID or 0) or None, "single_ready_path=1; mega_root=/TelegramBotBackups")
+    try: bot_journal("v180_ready", int(OWNER_ID or 0) or None, "single_ready_path=1; mega_root=/TelegramBotBackups")
     except Exception: pass
-# v179_clean_final
+# v180_total_final_diagnostics
 
 
-# v179 authoritative runtime version after integrated historical modules.
-VERSION = "bot_v179_clean_final"
-# v179_clean_final
+# v180 authoritative runtime version after finalized integrated modules.
+VERSION = "bot_v180_total_final_diagnostics"
+# v180_total_final_diagnostics

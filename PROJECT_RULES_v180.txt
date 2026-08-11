@@ -1,0 +1,16 @@
+v180 TOTAL FINAL PROJECT RULES
+1. Render local disk is volatile. RAM=active, SQLite=working state, MEGA=durable state.
+2. Canonical MEGA root is /TelegramBotBackups (or MEGA_BACKUP_DIR if explicitly configured). Never use /TelegramBotBackupsStart or a separate Start root.
+3. Finance durability has priority over ordinary forwarding/background work.
+4. Performance/UI fixes apply globally to owner, circle 1, circle 2 and all users who have access to the feature.
+5. One final Telegram callback middleware; do not reintroduce callback wrapper chains.
+6. One final restore validator; compatibility is a version list, not validator wrappers.
+7. Task dispatcher is one runtime supporting current v174 and legacy v172 callback payloads.
+8. Window registry cleanup is lazy; no permanent reconcile loop.
+9. Do not reintroduce one patch file per version. Integrate changes into thematic modules.
+10. First and last line of every runtime .py contain only the release marker comment.
+11. Release two ZIPs: changed-only reference and full deploy package. FULL source is generated, never hand-edited.
+12. Fast Test and Minimal profiles must NEVER automatically disable diagnostic/tracing switches. Diagnostics are manual-only.
+13. TOTAL_DIAGNOSTICS is global across all chats/contours while enabled; every incoming Telegram update gets universal start/done telemetry.
+14. Diagnostic telemetry must be bounded in RAM and must not become durable source-of-truth state.
+15. Do not log every Python statement. Instrument user-visible hot paths, Telegram API, SQLite, MEGA, worker queues, memory/runtime, forwarding/finance/task/window critical events.

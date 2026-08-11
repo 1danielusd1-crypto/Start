@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -12,6 +12,35 @@
 )
 def on_any_message(msg):
     chat_id = msg.chat.id
+    try:
+        _uid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
+        v180_diag_set_context(chat_id=chat_id, user_id=_uid, message_id=int(getattr(msg, "message_id", 0) or 0), update_type="message", contour=v180_contour_for(chat_id, _uid))
+        bot_journal("message_route_start", chat_id, f"content={getattr(msg, 'content_type', '')}; user={_uid}; contour={v180_contour_for(chat_id, _uid)}")
+    except Exception:
+        pass
+
+    # v180 FINAL: task dispatcher input/auto logic is part of the canonical message router.
+    # No v172 -> v174 wrapper chain around on_any_message.
+    try:
+        _own = globals().get("_v174_handle_own_input")
+        if callable(_own) and _own(msg):
+            return
+    except Exception as exc:
+        try: log_error(f"task own input FINAL: {exc}")
+        except Exception: pass
+    try:
+        _auto = globals().get("_v174_auto_process")
+        if callable(_auto): _auto(msg)
+    except Exception as exc:
+        try: log_error(f"task auto FINAL: {exc}")
+        except Exception: pass
+    try:
+        _legacy_input = globals().get("_v172_task_message_input")
+        if callable(_legacy_input) and _legacy_input(msg):
+            return
+    except Exception as exc:
+        try: log_error(f"task input FINAL: {exc}")
+        except Exception: pass
 
     if is_owner_chat(chat_id):
         finance_active_chats.add(chat_id)
@@ -982,4 +1011,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v179_clean_final
+# v180_total_final_diagnostics

@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 # ---- integrated from 105_v155_button_navigation_audit.py ----
 """v155: full button/navigation audit hardening and live callback outcome diagnostics."""
 
@@ -289,49 +289,13 @@ if callable(_V155_ORIG_BUILD_EXPENSE_INBOX_KEYBOARD):
 
 
 # v155 full-state exports must be restorable by the same release.
-def _v177_legacy_0280_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
-    folder = _v155_tempfile.mkdtemp(prefix="v155_restore_validate_")
-    raw = _v155_os.path.join(folder, "restore.sqlite3")
-    try:
-        with _v155_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
-            _v155_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _v155_sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok":
-                raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row:
-                raise RuntimeError("manifest v153 not found")
-            manifest = _v155_json.loads(row[0])
-        finally:
-            conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
-            raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
-            raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_")):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        checksum = _v153_db_logical_checksum(raw)
-        if checksum != str(manifest.get("checksum") or ""):
-            raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _v155_shutil.rmtree(folder, ignore_errors=True)
-        raise
-try: _v177_legacy_0280_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
-except Exception: pass
-_v153_validate_restore_gz = _v177_legacy_0280_v153_validate_restore_gz
+# v180 historical restore validator removed: _v177_legacy_0280_v153_validate_restore_gz; FINAL validator in 85_runtime_control.py
 
 # ---------------------------------------------------------------------------
 # Runtime callback outcome audit. It wraps the already-registered handlers after
 # v153 dedupe, so it does not change handler ordering or execute any callback twice.
 # ---------------------------------------------------------------------------
-def _v155_install_callback_outcome_audit() -> int:
-    return 0  # v179: registration/wrapper retired; final router owns callbacks
-
-
+# v180 retired callback registration removed: _v155_install_callback_outcome_audit
 def _v155_button_audit_summary_text() -> str:
     rows = v155_button_audit_recent(120)
     counts = {}
@@ -782,16 +746,7 @@ def _v156_handle_process_toggle(call) -> bool:
         return True
 
 
-def _v156_install_callback_intercept() -> int:
-    return 0  # v179: registration/wrapper retired; final router owns callbacks
-
-
-try:
-    WINDOW_MARKER_CONSTANTS["v156:process_visual_toggle"] = "Ф9"
-except Exception:
-    pass
-
-
+# v180 retired callback registration removed: _v156_install_callback_intercept
 # ---------------------------------------------------------------------------
 # Strict USD Excel isolation for every XLSX row builder patched in v151/v154.
 # Independent USD ledger + explicit USD component are allowed. ARS descriptions
@@ -977,40 +932,7 @@ if callable(_V156_ORIG_LOAD_LEDGER):
 
 
 # v156 full-state exports must be restorable by the same release.
-def _v177_legacy_0281_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
-    folder = _v156_tempfile.mkdtemp(prefix="v156_restore_validate_")
-    raw = _v156_os.path.join(folder, "restore.sqlite3")
-    try:
-        with _v156_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
-            _v156_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _v156_sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok":
-                raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row:
-                raise RuntimeError("manifest v153 not found")
-            manifest = _v156_json.loads(row[0])
-        finally:
-            conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
-            raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
-            raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_")):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        checksum = _v153_db_logical_checksum(raw)
-        if checksum != str(manifest.get("checksum") or ""):
-            raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _v156_shutil.rmtree(folder, ignore_errors=True)
-        raise
-try: _v177_legacy_0281_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
-except Exception: pass
-_v153_validate_restore_gz = _v177_legacy_0281_v153_validate_restore_gz
+# v180 historical restore validator removed: _v177_legacy_0281_v153_validate_restore_gz; FINAL validator in 85_runtime_control.py
 
 
 _V156_CALLBACK_INTERCEPTS = 0  # v179 final callback router
@@ -1684,45 +1606,8 @@ except Exception: pass
 _v157_handle_callback = _v177_legacy_0314_v157_handle_callback
 
 
-def _v157_install_callback_intercept() -> int:
-    return 0  # v179: registration/wrapper retired; final router owns callbacks
-
-
-# v157 full-state exports must remain restorable by this release.
-def _v177_legacy_0282_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
-    folder = _v157_tempfile.mkdtemp(prefix="v157_restore_validate_")
-    raw = _v157_os.path.join(folder, "restore.sqlite3")
-    try:
-        with _v157_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
-            _v157_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _v157_sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok":
-                raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row:
-                raise RuntimeError("manifest v153 not found")
-            manifest = _v157_json.loads(row[0])
-        finally:
-            conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
-            raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
-            raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_")):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        checksum = _v153_db_logical_checksum(raw)
-        if checksum != str(manifest.get("checksum") or ""):
-            raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _v157_shutil.rmtree(folder, ignore_errors=True)
-        raise
-try: _v177_legacy_0282_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
-except Exception: pass
-_v153_validate_restore_gz = _v177_legacy_0282_v153_validate_restore_gz
+# v180 retired callback registration removed: _v157_install_callback_intercept
+# v180 historical restore validator removed: _v177_legacy_0282_v153_validate_restore_gz; FINAL validator in 85_runtime_control.py
 
 
 _V157_CALLBACK_INTERCEPTS = 0  # v179 final callback router
@@ -2038,7 +1923,6 @@ def _compact_simple_excel_rows_and_annotations(raw_rows: list[tuple], opening_ba
 
 
 # v153 restore validator must accept the new release's full-state snapshots.
-_V158_PREV_RESTORE_VALIDATE = globals().get("_v153_validate_restore_gz")
 try:
     import gzip as _v158_gzip
     import json as _v158_json
@@ -2050,40 +1934,7 @@ except Exception:
     pass
 
 
-def _v177_legacy_0283_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
-    folder = _v158_tempfile.mkdtemp(prefix="v158_restore_validate_")
-    raw = _v158_os.path.join(folder, "restore.sqlite3")
-    try:
-        with _v158_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
-            _v158_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _v158_sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok":
-                raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row:
-                raise RuntimeError("manifest v153 not found")
-            manifest = _v158_json.loads(row[0])
-        finally:
-            conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
-            raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
-            raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_", "bot_v158_")):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        checksum = _v153_db_logical_checksum(raw)
-        if checksum != str(manifest.get("checksum") or ""):
-            raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _v158_shutil.rmtree(folder, ignore_errors=True)
-        raise
-try: _v177_legacy_0283_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
-except Exception: pass
-_v153_validate_restore_gz = _v177_legacy_0283_v153_validate_restore_gz
+# v180 historical restore validator removed: _v177_legacy_0283_v153_validate_restore_gz; FINAL validator in 85_runtime_control.py
 
 
 try:
@@ -2652,42 +2503,7 @@ except Exception:
 
 
 # v153 restore validator: permit v159 full-state snapshots as well.
-def _v177_legacy_0284_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
-    folder = _v159_tempfile.mkdtemp(prefix="v159_restore_validate_")
-    raw = _v159_os.path.join(folder, "restore.sqlite3")
-    try:
-        with _v159_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
-            _v159_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _v159_sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok":
-                raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row:
-                raise RuntimeError("manifest v153 not found")
-            manifest = _v159_json.loads(row[0])
-        finally:
-            conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
-            raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
-            raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith((
-            "bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_", "bot_v158_", "bot_v159_",
-        )):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        checksum = _v153_db_logical_checksum(raw)
-        if checksum != str(manifest.get("checksum") or ""):
-            raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _v159_shutil.rmtree(folder, ignore_errors=True)
-        raise
-try: _v177_legacy_0284_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
-except Exception: pass
-_v153_validate_restore_gz = _v177_legacy_0284_v153_validate_restore_gz
+# v180 historical restore validator removed: _v177_legacy_0284_v153_validate_restore_gz; FINAL validator in 85_runtime_control.py
 
 
 try:
@@ -3250,28 +3066,6 @@ def _v160_exact_callback_duplicate(call) -> bool:
     return False
 
 
-def _v160_clear_legacy_same_button_suppression(call) -> None:
-    try:
-        store = globals().get("_V153_CALLBACK_SIGNATURES")
-        lock = globals().get("_V153_LOCK")
-        if not isinstance(store, dict):
-            return
-        actor_fn = globals().get("_v153_actor_id")
-        actor = int(actor_fn(call)) if callable(actor_fn) else int(getattr(getattr(call, "from_user", None), "id", 0) or 0)
-        message = getattr(call, "message", None)
-        signature = (
-            actor,
-            int(getattr(getattr(message, "chat", None), "id", 0) or 0),
-            int(getattr(message, "message_id", 0) or 0),
-            str(getattr(call, "data", "") or ""),
-        )
-        if lock is not None:
-            with lock:
-                store.pop(signature, None)
-        else:
-            store.pop(signature, None)
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -3932,10 +3726,7 @@ except Exception: pass
 _v160_handle_special_callback = _v177_legacy_0323_v160_handle_special_callback
 
 
-def _v160_install_callback_intercept() -> int:
-    return 0  # v179: registration/wrapper retired; final router owns callbacks
-
-
+# v180 retired callback registration removed: _v160_install_callback_intercept
 def _v160_capture_filter(msg) -> bool:
     try:
         text = str(getattr(msg, "text", "") or "").strip()
@@ -4041,42 +3832,7 @@ _V160_MESSAGE_HANDLERS = _v160_install_message_capture()
 # ---------------------------------------------------------------------------
 # 7) Make v160 full-state export restorable.
 # ---------------------------------------------------------------------------
-def _v177_legacy_0285_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
-    folder = _v160_tempfile.mkdtemp(prefix="v160_restore_validate_")
-    raw = _v160_os.path.join(folder, "restore.sqlite3")
-    try:
-        with _v160_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
-            _v160_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _v160_sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok":
-                raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row:
-                raise RuntimeError("manifest v153 not found")
-            manifest = _v160_json.loads(row[0])
-        finally:
-            conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
-            raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
-            raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith((
-            "bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_", "bot_v158_", "bot_v159_", "bot_v160_",
-        )):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        checksum = _v153_db_logical_checksum(raw)
-        if checksum != str(manifest.get("checksum") or ""):
-            raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _v160_shutil.rmtree(folder, ignore_errors=True)
-        raise
-try: _v177_legacy_0285_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
-except Exception: pass
-_v153_validate_restore_gz = _v177_legacy_0285_v153_validate_restore_gz
+# v180 historical restore validator removed: _v177_legacy_0285_v153_validate_restore_gz; FINAL validator in 85_runtime_control.py
 
 
 # Remove transient helper/file windows left by v159 or by an interrupted v160 export.
@@ -4773,11 +4529,7 @@ def _v161_extract_token(text: str) -> str:
     return str(m.group(1)).upper() if m else ""
 
 
-def _v161_install_callback_intercept() -> int:
-    return 0  # v179: registration/wrapper retired; final router owns callbacks
-
-
-# 8. Unique token per logical state; switches preserve it, normal transitions rotate it.
+# v180 retired callback registration removed: _v161_install_callback_intercept
 _V161_TOKEN_LOCK = _v161_threading.RLock()
 _V161_WINDOW_TOKENS = {}
 
@@ -4956,30 +4708,7 @@ def _v155_expected_marker(action: str, chat_id: int) -> str:
     return ""
 
 
-def _v177_legacy_0286_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
-    folder = _v161_tempfile.mkdtemp(prefix="v161_restore_validate_"); raw = _v161_os.path.join(folder, "restore.sqlite3")
-    try:
-        with _v161_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout: _v161_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _v161_sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok": raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row: raise RuntimeError("manifest v153 not found")
-            manifest = _v161_json.loads(row[0])
-        finally: conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153": raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA): raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith(("bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_", "bot_v158_", "bot_v159_", "bot_v160_", "bot_v161_")):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""): raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _v161_shutil.rmtree(folder, ignore_errors=True); raise
-try: _v177_legacy_0286_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
-except Exception: pass
-_v153_validate_restore_gz = _v177_legacy_0286_v153_validate_restore_gz
+# v180 historical restore validator removed: _v177_legacy_0286_v153_validate_restore_gz; FINAL validator in 85_runtime_control.py
 
 
 _V161_START_HANDLER = _v161_install_start_handler()
@@ -5181,46 +4910,11 @@ if callable(_V162_ORIGINAL_PROCESS_NEW_UPDATES):
 
 
 # Keep full-state restore forward-compatible with this release.
-def _v177_legacy_0287_v153_validate_restore_gz(gz_path: str) -> tuple[dict, str]:
-    folder = _v162_tempfile.mkdtemp(prefix="v162_restore_validate_")
-    raw = _v162_os.path.join(folder, "restore.sqlite3")
-    try:
-        with _v162_gzip.open(gz_path, "rb") as fin, open(raw, "wb") as fout:
-            _v162_shutil.copyfileobj(fin, fout, 1024 * 1024)
-        conn = _v162_sqlite3.connect(raw)
-        try:
-            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-            if integrity.lower() != "ok":
-                raise RuntimeError(f"SQLite integrity_check: {integrity}")
-            row = conn.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()
-            if not row:
-                raise RuntimeError("manifest v153 not found")
-            manifest = _v162_json.loads(row[0])
-        finally:
-            conn.close()
-        if str(manifest.get("kind")) != "telegram_bot_full_state_v153":
-            raise RuntimeError("unknown export kind")
-        if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
-            raise RuntimeError("unsupported export schema")
-        export_version = str(manifest.get("bot_version") or "")
-        if not export_version.startswith((
-            "bot_v153_", "bot_v154_", "bot_v155_", "bot_v156_", "bot_v157_",
-            "bot_v158_", "bot_v159_", "bot_v160_", "bot_v161_", "bot_v162_",
-        )):
-            raise RuntimeError(f"unsupported bot version: {export_version or 'missing'}")
-        if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""):
-            raise RuntimeError("checksum mismatch")
-        return manifest, raw
-    except Exception:
-        _v162_shutil.rmtree(folder, ignore_errors=True)
-        raise
-try: _v177_legacy_0287_v153_validate_restore_gz.__name__ = '_v153_validate_restore_gz'
-except Exception: pass
-_v153_validate_restore_gz = _v177_legacy_0287_v153_validate_restore_gz
+# v180 historical restore validator removed: _v177_legacy_0287_v153_validate_restore_gz; FINAL validator in 85_runtime_control.py
 
 
 try:
     bot_journal("v162_start_hard_fix_installed", int(OWNER_ID or 0), "process_new_updates_intercept=1; start_always_new_f91=1; silent_returns=0")
 except Exception:
     pass
-# v179_clean_final
+# v180_total_final_diagnostics

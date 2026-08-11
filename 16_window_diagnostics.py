@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 # ─────────────────────────────────────────────────────────────
 # v144: полная трассировка жизненного цикла Telegram-окон.
 # Записывает только метаданные, хеши и короткий заголовок — полный текст окна,
@@ -665,4 +665,4 @@ def window_diagnostic_stats() -> dict:
 
 
 _install_window_transport_diagnostics()
-# v179_clean_final
+# v180_total_final_diagnostics

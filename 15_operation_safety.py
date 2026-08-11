@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
 _EXPENSE_INBOX_LOCK = threading.RLock()
@@ -1284,4 +1284,4 @@ def expense_draft_input_message(msg):
         raise
     finally:
         msg.text = original_text
-# v179_clean_final
+# v180_total_final_diagnostics

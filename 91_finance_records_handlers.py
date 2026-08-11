@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -1513,4 +1513,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v179_clean_final
+# v180_total_final_diagnostics

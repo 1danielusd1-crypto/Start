@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 # ─────────────────────────────────────────────────────────────
 # Короткие callback-и для меню статей
 # Telegram ограничивает callback_data 64 байтами. В статьях есть даты,
@@ -625,4 +625,4 @@ def handle_category_edit_message(msg) -> bool:
     except Exception:
         send_and_auto_delete(chat_id, "❌ Не понял формат. Пример:\nРЕМОНТ: гипсокартон, шпаклевка, краска", 20)
         return True
-# v179_clean_final
+# v180_total_final_diagnostics

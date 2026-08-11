@@ -1,0 +1,4 @@
+v180 does not add a new patch runtime module.
+For deployment, replace the repository/runtime with the FULL PACKAGE rather than mixing files from v179 and v180.
+Do not keep obsolete generated FULL/CODEMAP/TEST artifacts from older releases in the deploy root.
+No /TelegramBotBackupsStart MEGA folder is used by v180; v180 does not automatically delete remote historical data.

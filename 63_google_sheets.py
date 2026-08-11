@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -849,4 +849,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v179_clean_final
+# v180_total_final_diagnostics

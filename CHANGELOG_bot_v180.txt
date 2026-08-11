@@ -1,0 +1,17 @@
+bot_v180_total_final_diagnostics
+
+TOTAL FINAL + MAX DIAGNOSTICS
+- Global diagnostic telemetry for every incoming Telegram update in all chats/contours.
+- Owner / circle1 / circle2 / other attribution in callback performance.
+- Callback timeline, Telegram API timings, worker pool wait/exec, SQLite timings, MEGA timings, queue and memory snapshots.
+- Full diagnostic export button added to Processes / Speed -> Diagnostics.
+- Fast Test and Minimal profiles no longer disable diagnostic switches; diagnostics are manual-only.
+- Task v172/v174 message wrapper chain merged into canonical on_any_message.
+- Historical callback registrars/interceptors removed from runtime path.
+- Historical restore-validator wrapper chain removed; one FINAL restore validator supports compatible v153-v180 backups.
+- One FINAL callback handler remains for the whole bot.
+- Dead legacy helper removed.
+- 0 duplicate top-level function/class definitions.
+- MEGA durable root remains /TelegramBotBackups (or MEGA_BACKUP_DIR); /TelegramBotBackupsStart is not used.
+
+IMPORTANT: total diagnostics traces every incoming Telegram update and instrumented critical subsystems; it deliberately does not trace every Python statement because that would itself become a major performance cost.

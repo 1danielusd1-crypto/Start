@@ -1,5 +1,5 @@
-# v179_clean_final
-"""v179 single callback middleware for owner, circle 1, circle 2 and all users with feature access."""
+# v180_total_final_diagnostics
+"""v180 single FINAL callback middleware + total diagnostics for owner/circle1/circle2/all users."""
 
 def _v179_resolve_callback(call):
     raw = str(getattr(call, "data", "") or "")
@@ -69,19 +69,28 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
 def final_callback_router(call):
     clock = globals().get("_v176_time") or globals().get("time")
     started = clock.monotonic()
+    t_resolve = started
     raw, resolved = _v179_resolve_callback(call)
+    try: v177_perf_stage("callback_resolve", clock.monotonic() - t_resolve)
+    except Exception: pass
     try: _V177_PERF_LOCAL.action = resolved[:120]
     except Exception: pass
-    cid = None; seq_before = 0; err = ""
+    cid = None; uid = None; mid = None; seq_before = 0; err = ""
+    try: _diag_prev_ctx = v180_diag_context()
+    except Exception: _diag_prev_ctx = {}
     try:
         cid = int(call.message.chat.id)
+        uid = int(getattr(getattr(call, "from_user", None), "id", 0) or 0)
+        mid = int(call.message.message_id)
         seq_before = int(globals().get("_WINDOW_DIAG_SEQ", 0) or 0)
+        v180_diag_set_context(chat_id=cid, user_id=uid, message_id=mid, update_type="callback_query", callback=resolved, contour=v180_contour_for(cid, uid))
     except Exception: pass
     if resolved != "none":
         try:
             if v176_process_enabled("btn_chain"):
-                bot_journal("button_chain_press", cid, f"action={resolved}")
+                bot_journal("button_chain_press", cid, f"action={resolved}; raw={raw}; user={uid}; contour={v180_contour_for(cid, uid)}")
         except Exception: pass
+    dispatch_started = clock.monotonic()
     try:
         return _v179_dispatch_callback(call, raw, resolved)
     except Exception as exc:
@@ -93,11 +102,13 @@ def final_callback_router(call):
         return None
     finally:
         try:
+            dispatch_elapsed = max(0.0, clock.monotonic() - dispatch_started)
+            v177_perf_stage("callback_dispatch", dispatch_elapsed)
             elapsed = max(0.0, clock.monotonic() - started)
             if raw != "v176:speed_clear":
-                _V176_PERF.append({"ts": clock.time(), "action": resolved[:120], "elapsed": elapsed})
+                _V176_PERF.append({"ts": clock.time(), "action": resolved[:120], "elapsed": elapsed, "chat_id": cid, "user_id": uid, "contour": v180_contour_for(cid, uid)})
             if resolved != "none" and v176_process_enabled("btn_chain"):
-                bot_journal("button_chain_result", cid, f"action={resolved}; ok={int(not bool(err))}; elapsed={elapsed:.3f}s")
+                bot_journal("button_chain_result", cid, f"action={resolved}; ok={int(not bool(err))}; elapsed={elapsed:.3f}s; dispatch={dispatch_elapsed:.3f}s; user={uid}; contour={v180_contour_for(cid, uid)}")
         except Exception: pass
         try:
             audit = globals().get("_v155_record_button_outcome")
@@ -106,8 +117,10 @@ def final_callback_router(call):
         except Exception: pass
         try: _V177_PERF_LOCAL.action = ""
         except Exception: pass
+        try: v180_diag_replace_context(_diag_prev_ctx)
+        except Exception: pass
 
 # Exactly one Telegram callback handler in the package.
 bot.callback_query_handler(func=lambda c: True)(final_callback_router)
 _V179_FINAL_CALLBACK_HANDLERS = 1
-# v179_clean_final
+# v180_total_final_diagnostics

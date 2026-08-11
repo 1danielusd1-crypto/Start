@@ -1,0 +1,39 @@
+{
+  "version": "bot_v180_total_final_diagnostics",
+  "checks": {
+    "runtime_parts_26": true,
+    "duplicate_callable_defs_zero": true,
+    "one_callback_registration": true,
+    "callback_is_final": true,
+    "one_restore_validator": true,
+    "no_start_backup_root": true,
+    "mega_root_present": true,
+    "total_diagnostics_default_on": true,
+    "global_journal_for_total_diagnostics": true,
+    "fast_min_preserve_diagnostics": true,
+    "diagnostic_export_button": true,
+    "task_message_wrappers_retired": true,
+    "task_logic_in_canonical_router": true,
+    "perf_pool_trace": true,
+    "perf_sqlite_trace": true,
+    "perf_mega_trace": true,
+    "telegram_timing_trace": true,
+    "all_markers": true
+  },
+  "pass": true,
+  "stats": {
+    "runtime_parts": 26,
+    "duplicate_callable_definitions": 0,
+    "callback_registrations": [
+      [
+        "89_callback_final.py",
+        124,
+        "bot.callback_query_handler(func=lambda c: True)(final_callback_router)"
+      ]
+    ],
+    "message_handler_registration_lines": 86,
+    "legacy_named_definitions": 313,
+    "callable_names_rebound_by_assignment_or_later_def": 226,
+    "note": "Rebound count includes compatibility alias/capture assignments; active callback/message hot paths are finalized separately."
+  }
+}

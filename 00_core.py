@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 import os
 import io
 import json
@@ -49,6 +49,10 @@ except Exception:
     _BOT_THREAD_STACK_KB = 0
 
 window_locks = defaultdict(threading.Lock)
+
+# v180 lightweight performance rings: diagnostic-only RAM, bounded and never authoritative state.
+_V180_POOL_PERF = deque(maxlen=1200)
+_V180_SQLITE_PERF = deque(maxlen=1200)
 
 # ─────────────────────────────────────────────────────────────
 # Ограниченные очереди с сохранением порядка внутри одного чата
@@ -141,6 +145,7 @@ class KeyedTaskPool:
             wait = max(0.0, time.time() - enqueued_at)
             with self._lock:
                 self._max_wait = max(self._max_wait, wait)
+            _exec_started = time.monotonic()
             try:
                 func(*args, **kwargs)
                 with self._lock:
@@ -154,6 +159,15 @@ class KeyedTaskPool:
                 except Exception:
                     logging.exception("POOL %s", self.name)
             finally:
+                try:
+                    if globals().get("TOTAL_DIAGNOSTICS_ENABLED", True):
+                        _V180_POOL_PERF.append({
+                            "ts": time.time(), "pool": self.name, "key": str(key)[:100],
+                            "func": str(getattr(func, "__name__", func) or "")[:120],
+                            "wait": round(wait, 6), "exec": round(max(0.0, time.monotonic()-_exec_started), 6),
+                        })
+                except Exception:
+                    pass
                 with self._lock:
                     self._pending = max(0, self._pending - 1)
                     self._active_workers = max(0, self._active_workers - 1)
@@ -1112,12 +1126,23 @@ class SQLiteState:
         except Exception:
             return default
 
+    def _diag_perf(self, op: str, started: float, chat_id=None):
+        try:
+            elapsed = max(0.0, time.monotonic() - float(started))
+            if globals().get("TOTAL_DIAGNOSTICS_ENABLED", True):
+                _V180_SQLITE_PERF.append({"ts": time.time(), "op": str(op), "chat_id": str(chat_id or ""), "elapsed": round(elapsed, 6)})
+            stage_fn = globals().get("v177_perf_stage")
+            if callable(stage_fn) and elapsed >= 0.001: stage_fn("sqlite", elapsed)
+        except Exception:
+            pass
+
     def get_kv(self, key: str, default=None):
         with self.lock:
             row = self.conn.execute("SELECT v FROM kv WHERE k=?", (key,)).fetchone()
         return self._load(row[0], default) if row else default
 
     def set_kv(self, key: str, obj):
+        _diag_started = time.monotonic()
         payload = self._dump(obj)
         with self.lock:
             self.conn.execute(
@@ -1125,6 +1150,7 @@ class SQLiteState:
                 (key, payload),
             )
             self.conn.commit()
+        self._diag_perf("set_kv:" + str(key), _diag_started)
 
     def load_root(self):
         return self.get_kv("root", None)
@@ -1157,12 +1183,14 @@ class SQLiteState:
 
     def save_chat(self, chat_id, payload: dict):
         """Точечно сохраняет только один изменившийся чат."""
+        _diag_started = time.monotonic()
         with self.lock:
             self.conn.execute(
                 "INSERT INTO chats(chat_id,v) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET v=excluded.v",
                 (str(chat_id), self._dump(payload or {})),
             )
             self.conn.commit()
+        self._diag_perf("save_chat", _diag_started, chat_id)
 
     def delete_chat(self, chat_id):
         with self.lock:
@@ -1187,14 +1215,18 @@ class SQLiteState:
 
     # v114 LOW-RAM cold storage -------------------------------------------------
     def get_cold(self, chat_id, key: str, default=None):
+        _diag_started = time.monotonic()
         with self.lock:
             row = self.conn.execute(
                 "SELECT v FROM cold_fields WHERE chat_id=? AND k=?",
                 (str(chat_id), str(key)),
             ).fetchone()
-        return self._load(row[0], default) if row else default
+        out = self._load(row[0], default) if row else default
+        self._diag_perf("get_cold:" + str(key), _diag_started, chat_id)
+        return out
 
     def set_cold(self, chat_id, key: str, obj):
+        _diag_started = time.monotonic()
         payload = self._dump(obj)
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self.lock:
@@ -1204,6 +1236,7 @@ class SQLiteState:
                 (str(chat_id), str(key), payload, stamp),
             )
             self.conn.commit()
+        self._diag_perf("set_cold:" + str(key), _diag_started, chat_id)
 
     def delete_cold(self, chat_id, key: str):
         with self.lock:
@@ -1633,6 +1666,43 @@ def _journal_ts() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
+# v180: total low-overhead diagnostics across every chat/contour.
+TOTAL_DIAGNOSTICS_ENABLED = str(os.getenv("TOTAL_DIAGNOSTICS_ENABLED", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
+_V180_DIAG_LOCAL = threading.local()
+
+def v180_diag_set_context(**kwargs):
+    try:
+        current = dict(getattr(_V180_DIAG_LOCAL, "ctx", {}) or {})
+        current.update({k: v for k, v in kwargs.items() if v is not None})
+        _V180_DIAG_LOCAL.ctx = current
+    except Exception:
+        pass
+
+def v180_diag_clear_context():
+    try: _V180_DIAG_LOCAL.ctx = {}
+    except Exception: pass
+
+def v180_diag_replace_context(ctx):
+    try: _V180_DIAG_LOCAL.ctx = dict(ctx or {})
+    except Exception: pass
+
+def v180_diag_context() -> dict:
+    try: return dict(getattr(_V180_DIAG_LOCAL, "ctx", {}) or {})
+    except Exception: return {}
+
+def v180_contour_for(chat_id=None, user_id=None) -> str:
+    try:
+        cid = int(chat_id or 0); uid = int(user_id or 0)
+        if cid and cid == int(OWNER_ID or 0): return "owner"
+        if uid and uid == int(OWNER_ID or 0): return "owner"
+        fn = globals().get("_v174_circle_ids")
+        if callable(fn):
+            if cid in set(fn(1) or []): return "circle1"
+            if cid in set(fn(2) or []): return "circle2"
+        return "other"
+    except Exception:
+        return "unknown"
+
 def is_journal_registration_enabled() -> bool:
     """Глобальный журнал. В v83 по умолчанию выключен."""
     try:
@@ -1695,6 +1765,8 @@ def chat_journal_toggle_label(chat_id: int, short: bool = False) -> str:
 
 
 def journal_should_record(chat_id=None) -> bool:
+    if TOTAL_DIAGNOSTICS_ENABLED:
+        return True
     if is_journal_registration_enabled():
         return True
     if chat_id is None:
@@ -2382,16 +2454,22 @@ def total_secret_mask_label(chat_id: int | None = None) -> str:
     return "🪷 Маска: ВКЛ" if total_secret_mask_enabled(chat_id) else "🪷 Маска: ВЫКЛ"
 
 def verbose_telegram_journal_enabled() -> bool:
-    """Успешные Telegram API-вызовы сильно раздувают журнал. Включать только для диагностики."""
+    """v180: successful Telegram API timing is a manual diagnostic switch."""
+    try:
+        proc = globals().get("v176_process_enabled")
+        if callable(proc) and "tg_verbose" in (globals().get("_V176_PROCESS_DEFS") or {}):
+            return bool(proc("tg_verbose"))
+    except Exception:
+        pass
     try:
         if _env_bool("BOT_JOURNAL_VERBOSE_TELEGRAM", "0"):
             return True
     except Exception:
         pass
     try:
-        return bool((data or {}).setdefault("_global_settings", {}).get("bot_journal_verbose_telegram", False))
+        return bool((data or {}).setdefault("_global_settings", {}).get("bot_journal_verbose_telegram", TOTAL_DIAGNOSTICS_ENABLED))
     except Exception:
-        return False
+        return bool(TOTAL_DIAGNOSTICS_ENABLED)
 
 
 def _journal_write_row(row: dict):
@@ -2443,6 +2521,16 @@ def _v177_legacy_0006_bot_journal(action: str, chat_id=None, detail: str = "", l
             "runtime_phase": str((globals().get("_RUNTIME_STATE") or {}).get("phase") or ""),
             "runtime_ready": bool((globals().get("_RUNTIME_STATE") or {}).get("ready", False)),
         }
+        try:
+            _ctx = v180_diag_context()
+            row["user_id"] = str(_ctx.get("user_id") or "")
+            row["message_id"] = str(_ctx.get("message_id") or "")
+            row["update_id"] = str(_ctx.get("update_id") or "")
+            row["update_type"] = str(_ctx.get("update_type") or "")
+            row["callback"] = str(_ctx.get("callback") or "")[:240]
+            row["contour"] = str(_ctx.get("contour") or v180_contour_for(chat_id, _ctx.get("user_id")))
+        except Exception:
+            pass
         try:
             if chat_id is not None:
                 row["chat_name"] = get_chat_display_name(int(chat_id))
@@ -2826,6 +2914,18 @@ def _journal_diagnostic_snapshot() -> dict:
         "mega_tasks": mega_task_registry_stats() if "mega_task_registry_stats" in globals() else {},
         "durable_journal": journal_durable_stats() if "journal_durable_stats" in globals() else {},
         "window_diagnostics": window_diagnostic_snapshot() if callable(globals().get("window_diagnostic_snapshot")) else {},
+        "total_diagnostics": {
+            "enabled": bool(globals().get("TOTAL_DIAGNOSTICS_ENABLED", False)),
+            "global_journal_enabled": bool(is_journal_registration_enabled()),
+            "callback_samples": len(list(globals().get("_V176_PERF") or [])),
+            "stage_samples": len(list(globals().get("_V177_PERF_STAGES") or [])),
+            "process_flags": {k: bool(globals().get("v176_process_enabled", lambda _k: True)(k)) for k in list((globals().get("_V176_PROCESS_DEFS") or {}).keys())},
+        },
+        "callback_performance": (globals().get("_v176_perf_summary")() if callable(globals().get("_v176_perf_summary")) else {}),
+        "callback_stage_tail": list(globals().get("_V177_PERF_STAGES") or [])[-120:],
+        "pool_performance_tail": list(globals().get("_V180_POOL_PERF") or [])[-200:],
+        "sqlite_performance_tail": list(globals().get("_V180_SQLITE_PERF") or [])[-200:],
+        "mega_performance": (globals().get("v180_mega_perf_snapshot")() if callable(globals().get("v180_mega_perf_snapshot")) else {}),
         "priority": {
             "order": ["finance", "forward", "other"],
             "forward_finance_priority_max_wait_seconds": globals().get("FORWARD_FINANCE_PRIORITY_MAX_WAIT_SECONDS"),
@@ -3237,6 +3337,36 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
                 json.dump(mem_fn(deep=True) if callable(mem_fn) else {"available": False}, fh, ensure_ascii=False, indent=2, default=str)
             except Exception as e:
                 fh.write(f"memory forensics unavailable: {e}")
+            fh.write("\n\n==================== WORKER POOL PERFORMANCE ====================\n")
+            try:
+                for _r in list(globals().get("_V180_POOL_PERF") or [])[-600:]:
+                    fh.write(json.dumps(_r, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
+            except Exception as e: fh.write(f"pool performance unavailable: {e}\n")
+            fh.write("\n==================== SQLITE PERFORMANCE ====================\n")
+            try:
+                for _r in list(globals().get("_V180_SQLITE_PERF") or [])[-600:]:
+                    fh.write(json.dumps(_r, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
+            except Exception as e: fh.write(f"sqlite performance unavailable: {e}\n")
+            fh.write("\n==================== MEGA PERFORMANCE ====================\n")
+            try:
+                json.dump(globals().get("v180_mega_perf_snapshot")() if callable(globals().get("v180_mega_perf_snapshot")) else {}, fh, ensure_ascii=False, indent=2, default=str)
+            except Exception as e: fh.write(f"mega performance unavailable: {e}\n")
+            fh.write("\n\n==================== CALLBACK PERFORMANCE ====================\n")
+            try:
+                json.dump(globals().get("_v176_perf_summary")() if callable(globals().get("_v176_perf_summary")) else {}, fh, ensure_ascii=False, indent=2, default=str)
+                fh.write("\nSTAGE TAIL\n")
+                for _r in list(globals().get("_V177_PERF_STAGES") or [])[-300:]:
+                    fh.write(json.dumps(_r, ensure_ascii=False, default=str, separators=(",", ":")) + "\n")
+            except Exception as e:
+                fh.write(f"callback performance unavailable: {e}\n")
+            fh.write("\n==================== PROCESS CONTROL STATE ====================\n")
+            try:
+                _defs = globals().get("_V176_PROCESS_DEFS") or {}
+                _enabled = globals().get("v176_process_enabled")
+                _state = {k: bool(_enabled(k)) for k in _defs} if callable(_enabled) else {}
+                json.dump(_state, fh, ensure_ascii=False, indent=2, default=str)
+            except Exception as e:
+                fh.write(f"process control unavailable: {e}\n")
             fh.write("\n\n==================== RUNTIME EVENTS ====================\n")
             try:
                 with _RUNTIME_LOCK:
@@ -7469,6 +7599,7 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
     """
     last_err = None
     for attempt in range(1, int(attempts) + 1):
+        _tg_attempt_started = time.monotonic()
         try:
             chat_id = _tg_first_chat_id(args, kwargs)
             _telegram_rate_limit_global()
@@ -7493,6 +7624,14 @@ def _tg_call_retry(func, *args, attempts: int = 7, purpose: str = "telegram", **
             except Exception:
                 pass
             _res = func(*args, **kwargs)
+            try:
+                _tg_elapsed = max(0.0, time.monotonic() - _tg_attempt_started)
+                stage_fn = globals().get("v177_perf_stage")
+                if callable(stage_fn): stage_fn("telegram_api", _tg_elapsed)
+                if verbose_telegram_journal_enabled():
+                    bot_journal("telegram_api_result", chat_id, f"{purpose}: {getattr(func, '__name__', str(func))} attempt={attempt}/{attempts} elapsed={_tg_elapsed:.3f}s ok=1")
+            except Exception:
+                pass
             try:
                 if chat_id is not None and is_chat_bot_removed(int(chat_id)):
                     set_chat_bot_removed(int(chat_id), False, "telegram api success")
@@ -7861,4 +8000,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v179_clean_final
+# v180_total_final_diagnostics

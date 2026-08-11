@@ -1,4 +1,5 @@
-# v179_clean_final
+# v180_total_final_diagnostics
+from collections import deque
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -83,6 +84,20 @@ def _v178_mega_gate_exit() -> None:
         _V178_MEGA_PRIORITY_CV.notify_all()
 
 
+_V180_MEGA_PERF = deque(maxlen=800)
+
+def v180_mega_perf_snapshot() -> dict:
+    rows = list(_V180_MEGA_PERF)
+    by = {}
+    for row in rows:
+        key = str(row.get("cmd") or "?")
+        by.setdefault(key, []).append(float(row.get("elapsed", 0.0)))
+    summary = {}
+    for key, vals in by.items():
+        vals = sorted(vals); n=len(vals)
+        summary[key] = {"n":n, "avg":sum(vals)/n, "p50":vals[n//2], "p90":vals[min(n-1,max(0,int((n-1)*.90)))], "max":vals[-1]}
+    return {"count": len(rows), "by_command": summary, "tail": rows[-200:]}
+
 def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None = None, check: bool = True):
     """One MEGAcmd command at a time; v178 gives durable business writes priority over diagnostics."""
     args = list(args or [])
@@ -91,10 +106,14 @@ def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None = None, 
         raise RuntimeError(f"MEGAcmd command not found: {cmd}")
 
     def _execute_once():
+        _mega_total_started = time.monotonic()
         mem_ctx = globals().get("memory_operation")
         def _run_command():
             priority = _v178_mega_priority(cmd, args)
+            _gate_started = time.monotonic()
             _v178_mega_gate_enter(priority)
+            _gate_wait = max(0.0, time.monotonic() - _gate_started)
+            _cmd_started = time.monotonic()
             try:
                 with MEGA_COMMAND_LOCK:
                     try:
@@ -120,6 +139,17 @@ def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None = None, 
             msg = (err or out or f"returncode={res.returncode}")[:800]
             # Не печатаем пароль/логин-команду в лог.
             raise RuntimeError(f"{cmd} failed: {msg}")
+        try:
+            _elapsed = max(0.0, time.monotonic() - _mega_total_started)
+            _V180_MEGA_PERF.append({
+                "ts": time.time(), "cmd": str(cmd), "elapsed": round(_elapsed,6),
+                "priority": int(_v178_mega_priority(cmd,args)), "thread": threading.current_thread().name,
+                "callback": str(getattr(globals().get("_V177_PERF_LOCAL"), "action", "") or "")[:100],
+            })
+            stage_fn = globals().get("v177_perf_stage")
+            if callable(stage_fn): stage_fn("mega_api", _elapsed)
+        except Exception:
+            pass
         return res
 
     guard = globals().get("guarded_external_call")
@@ -9091,4 +9121,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v179_clean_final
+# v180_total_final_diagnostics

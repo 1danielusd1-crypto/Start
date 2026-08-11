@@ -1,4 +1,4 @@
-# v179_clean_final
+# v180_total_final_diagnostics
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -257,7 +257,7 @@ def telegram_webhook():
                 log_info("WEBHOOK: получен update с callback_query")
             try:
                 upd_type = "edited_message" if "edited_message" in payload else "message" if "message" in payload else "callback_query" if "callback_query" in payload else "other"
-                bot_journal("webhook_update", _extract_update_chat_id(payload), upd_type)
+                bot_journal("webhook_update", _extract_update_chat_id(payload), f"type={upd_type}; update_id={(payload or {}).get('update_id','')}")
             except Exception:
                 pass
 
@@ -322,6 +322,13 @@ def telegram_webhook():
                 started = time.time()
                 wait = started - update_enqueued_at
                 UPDATE_DISPATCHER.mark_started(update_id)
+                try:
+                    _u = ((payload or {}).get("callback_query") or {}).get("from") or ((payload or {}).get("message") or {}).get("from") or ((payload or {}).get("edited_message") or {}).get("from") or {}
+                    _uid = int((_u or {}).get("id") or 0)
+                    _msg = (payload or {}).get("callback_query", {}).get("message") or (payload or {}).get("message") or (payload or {}).get("edited_message") or {}
+                    v180_diag_set_context(update_id=update_id, update_type=update_type, chat_id=update_chat_id, user_id=_uid, message_id=(_msg or {}).get("message_id"), contour=v180_contour_for(update_chat_id, _uid))
+                except Exception:
+                    pass
                 bot_journal("update_process_start", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s durable={durable_cloud}")
                 success = False
                 error_text = ""
@@ -360,6 +367,8 @@ def telegram_webhook():
                 finally:
                     UPDATE_DISPATCHER.finish(update_id, success, error_text)
                     bot_journal("update_process_done", update_chat_id, f"update_id={update_id} type={update_type} queue_wait={wait:.3f}s process={time.time()-started:.3f}s total={time.time()-update_enqueued_at:.3f}s success={success} durable={durable_cloud}")
+                    try: v180_diag_clear_context()
+                    except Exception: pass
                     # Non-durable updates can release cold history immediately. Durable background
                     # finalizer owns a delayed release after its witness check.
                     if not durable_cloud:
@@ -731,4 +740,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v179_clean_final
+# v180_total_final_diagnostics
