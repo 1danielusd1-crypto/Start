@@ -1,0 +1,10 @@
+bot_v176_process_control_center
+
+DEPLOY FROM v175:
+1. Prefer the FULL_PACKAGE_FLAT ZIP.
+2. If applying changed-only, replace bot.py and modules_manifest.json and add 123_v176_process_control_center.py plus map/diagnostic files.
+3. Do not mix modules_manifest.json from another release.
+
+OWNER TEST:
+INFO -> ⚙️ Процессы / скорость -> 📊 Скорость кнопок.
+First compare normal state, then use ⚡ Быстрый тест and repeat the same 10-20 button transitions.

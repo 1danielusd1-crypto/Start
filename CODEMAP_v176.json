@@ -1,0 +1,962 @@
+{
+  "version": "bot_v176_process_control_center",
+  "runtime_parts": [
+    "00_core.py",
+    "10_mega_runtime.py",
+    "15_operation_safety.py",
+    "16_window_diagnostics.py",
+    "17_memory_runtime.py",
+    "20_callback_tokens.py",
+    "30_secret.py",
+    "35_reminders.py",
+    "40_message_router.py",
+    "50_forwarding.py",
+    "60_finance_currency.py",
+    "61_forwarding_ui.py",
+    "62_finance_ui.py",
+    "63_google_sheets.py",
+    "70_fast_ui.py",
+    "80_callback_router.py",
+    "90_commands_exports.py",
+    "91_finance_records_handlers.py",
+    "92_v147_diagnostic_hardening.py",
+    "93_v148_multitenant_spaces.py",
+    "94_v149_tenant_google_merged_reminders.py",
+    "99_web_runtime.py",
+    "100_v150_excel_reserve_chat_lifecycle.py",
+    "101_v151_redo_fixes_5_6_7.py",
+    "102_v152_human_journals_chat_rights.py",
+    "103_v153_remaining_fixes_11_16.py",
+    "104_v154_excel_usd_isolation_date_marks.py",
+    "105_v155_button_navigation_audit.py",
+    "106_v156_process_status_usd_excel.py",
+    "107_v157_process_menu_navigation_repair.py",
+    "108_v158_no_process_messages_income_notes.py",
+    "109_v159_internal_timers_helper_windows.py",
+    "110_v160_stability_parallel_windows_annotations.py",
+    "111_v161_button_window_stability.py",
+    "112_v162_start_hard_fix.py",
+    "113_v163_audit_hardening.py",
+    "114_v164_circle_hierarchy_spaces.py",
+    "115_v165_owner_first_circle_compat.py",
+    "116_v166_fast_parallel_forward_pairs.py",
+    "117_v167_excel_formulas_thuwed_google_tz.py",
+    "118_v171_all_tz_reliability.py",
+    "119_v172_task_dispatcher.py",
+    "120_v173_reminder_crosschat_unique_journals.py",
+    "121_v174_simplified_task_dispatcher.py",
+    "122_v175_light_mode.py",
+    "123_v176_process_control_center.py"
+  ],
+  "runtime_module_count": 46,
+  "runtime_total_lines": 64296,
+  "top_level_definitions": 2568,
+  "unique_symbols": 2237,
+  "overridden_symbols": 227,
+  "features": {
+    "main_ui": {
+      "files": [
+        "70_fast_ui.py",
+        "80_callback_router.py",
+        "110_v160_stability_parallel_windows_annotations.py",
+        "111_v161_button_window_stability.py",
+        "123_v176_process_control_center.py"
+      ],
+      "active_functions": [
+        "safe_edit",
+        "fast_ui_edit_message_text",
+        "_v161_edit_retry",
+        "_callback_should_debounce",
+        "build_info_keyboard",
+        "build_info_text"
+      ],
+      "resolved": {
+        "safe_edit": {
+          "file": "111_v161_button_window_stability.py",
+          "line": 235,
+          "kind": "FunctionDef",
+          "order": 33
+        },
+        "fast_ui_edit_message_text": {
+          "file": "110_v160_stability_parallel_windows_annotations.py",
+          "line": 450,
+          "kind": "FunctionDef",
+          "order": 32
+        },
+        "_v161_edit_retry": {
+          "file": "123_v176_process_control_center.py",
+          "line": 188,
+          "kind": "FunctionDef",
+          "order": 45
+        },
+        "_callback_should_debounce": {
+          "file": "110_v160_stability_parallel_windows_annotations.py",
+          "line": 446,
+          "kind": "FunctionDef",
+          "order": 32
+        },
+        "build_info_keyboard": {
+          "file": "123_v176_process_control_center.py",
+          "line": 633,
+          "kind": "FunctionDef",
+          "order": 45
+        },
+        "build_info_text": {
+          "file": "123_v176_process_control_center.py",
+          "line": 620,
+          "kind": "FunctionDef",
+          "order": 45
+        }
+      }
+    },
+    "process_control": {
+      "files": [
+        "122_v175_light_mode.py",
+        "123_v176_process_control_center.py"
+      ],
+      "active_functions": [
+        "v176_process_enabled",
+        "v176_set_process",
+        "v176_apply_profile",
+        "_v176_menu_text",
+        "_v176_menu_keyboard",
+        "_v176_speed_text"
+      ],
+      "resolved": {
+        "v176_process_enabled": {
+          "file": "123_v176_process_control_center.py",
+          "line": 97,
+          "kind": "FunctionDef",
+          "order": 45
+        },
+        "v176_set_process": {
+          "file": "123_v176_process_control_center.py",
+          "line": 436,
+          "kind": "FunctionDef",
+          "order": 45
+        },
+        "v176_apply_profile": {
+          "file": "123_v176_process_control_center.py",
+          "line": 472,
+          "kind": "FunctionDef",
+          "order": 45
+        },
+        "_v176_menu_text": {
+          "file": "123_v176_process_control_center.py",
+          "line": 564,
+          "kind": "FunctionDef",
+          "order": 45
+        },
+        "_v176_menu_keyboard": {
+          "file": "123_v176_process_control_center.py",
+          "line": 596,
+          "kind": "FunctionDef",
+          "order": 45
+        },
+        "_v176_speed_text": {
+          "file": "123_v176_process_control_center.py",
+          "line": 538,
+          "kind": "FunctionDef",
+          "order": 45
+        }
+      }
+    },
+    "mega_backup": {
+      "files": [
+        "10_mega_runtime.py",
+        "92_v147_diagnostic_hardening.py",
+        "103_v153_remaining_fixes_11_16.py",
+        "118_v171_all_tz_reliability.py",
+        "122_v175_light_mode.py",
+        "123_v176_process_control_center.py"
+      ],
+      "active_functions": [
+        "schedule_delta_backup",
+        "persist_critical_delta_now",
+        "schedule_full_backup_only",
+        "_mark_global_snapshot_pending",
+        "runtime_upload_snapshot",
+        "schedule_mega_task_recovery"
+      ],
+      "resolved": {
+        "schedule_delta_backup": {
+          "file": "10_mega_runtime.py",
+          "line": 3585,
+          "kind": "FunctionDef",
+          "order": 1
+        },
+        "persist_critical_delta_now": {
+          "file": "10_mega_runtime.py",
+          "line": 3615,
+          "kind": "FunctionDef",
+          "order": 1
+        },
+        "schedule_full_backup_only": {
+          "file": "91_finance_records_handlers.py",
+          "line": 306,
+          "kind": "FunctionDef",
+          "order": 17
+        },
+        "_mark_global_snapshot_pending": {
+          "file": "10_mega_runtime.py",
+          "line": 3503,
+          "kind": "FunctionDef",
+          "order": 1
+        },
+        "runtime_upload_snapshot": {
+          "file": "103_v153_remaining_fixes_11_16.py",
+          "line": 604,
+          "kind": "FunctionDef",
+          "order": 25
+        },
+        "schedule_mega_task_recovery": {
+          "file": "10_mega_runtime.py",
+          "line": 2668,
+          "kind": "FunctionDef",
+          "order": 1
+        }
+      }
+    },
+    "finance": {
+      "files": [
+        "40_message_router.py",
+        "60_finance_currency.py",
+        "62_finance_ui.py",
+        "91_finance_records_handlers.py",
+        "101_v151_redo_fixes_5_6_7.py",
+        "117_v167_excel_formulas_thuwed_google_tz.py"
+      ],
+      "active_functions": [
+        "handle_finance_text",
+        "handle_finance_edit",
+        "add_record_to_chat",
+        "build_main_keyboard",
+        "schedule_financial_window_refresh"
+      ],
+      "resolved": {
+        "handle_finance_text": {
+          "file": "102_v152_human_journals_chat_rights.py",
+          "line": 635,
+          "kind": "FunctionDef",
+          "order": 24
+        },
+        "handle_finance_edit": {
+          "file": "102_v152_human_journals_chat_rights.py",
+          "line": 646,
+          "kind": "FunctionDef",
+          "order": 24
+        },
+        "add_record_to_chat": {
+          "file": "101_v151_redo_fixes_5_6_7.py",
+          "line": 671,
+          "kind": "FunctionDef",
+          "order": 23
+        },
+        "build_main_keyboard": {
+          "file": "121_v174_simplified_task_dispatcher.py",
+          "line": 882,
+          "kind": "FunctionDef",
+          "order": 43
+        },
+        "schedule_financial_window_refresh": {
+          "file": "117_v167_excel_formulas_thuwed_google_tz.py",
+          "line": 823,
+          "kind": "FunctionDef",
+          "order": 39
+        }
+      }
+    },
+    "forwarding": {
+      "files": [
+        "50_forwarding.py",
+        "61_forwarding_ui.py",
+        "92_v147_diagnostic_hardening.py",
+        "116_v166_fast_parallel_forward_pairs.py"
+      ],
+      "active_functions": [
+        "schedule_forward_any_message",
+        "forward_any_message",
+        "schedule_financial_forward_pipeline",
+        "resolve_forward_targets",
+        "collect_forward_pairs_for_menu"
+      ],
+      "resolved": {
+        "schedule_forward_any_message": {
+          "file": "102_v152_human_journals_chat_rights.py",
+          "line": 666,
+          "kind": "FunctionDef",
+          "order": 24
+        },
+        "forward_any_message": {
+          "file": "50_forwarding.py",
+          "line": 2275,
+          "kind": "FunctionDef",
+          "order": 9
+        },
+        "schedule_financial_forward_pipeline": {
+          "file": "50_forwarding.py",
+          "line": 2242,
+          "kind": "FunctionDef",
+          "order": 9
+        },
+        "resolve_forward_targets": {
+          "file": "93_v148_multitenant_spaces.py",
+          "line": 562,
+          "kind": "FunctionDef",
+          "order": 19
+        },
+        "collect_forward_pairs_for_menu": {
+          "file": "116_v166_fast_parallel_forward_pairs.py",
+          "line": 338,
+          "kind": "FunctionDef",
+          "order": 38
+        }
+      }
+    },
+    "reminders": {
+      "files": [
+        "35_reminders.py",
+        "94_v149_tenant_google_merged_reminders.py",
+        "120_v173_reminder_crosschat_unique_journals.py",
+        "123_v176_process_control_center.py"
+      ],
+      "active_functions": [
+        "_reminder_tick",
+        "build_reminder_menu_text",
+        "build_reminder_list_text"
+      ],
+      "resolved": {
+        "_reminder_tick": {
+          "file": "94_v149_tenant_google_merged_reminders.py",
+          "line": 1153,
+          "kind": "FunctionDef",
+          "order": 20
+        },
+        "build_reminder_menu_text": {
+          "file": "100_v150_excel_reserve_chat_lifecycle.py",
+          "line": 101,
+          "kind": "FunctionDef",
+          "order": 22
+        },
+        "build_reminder_list_text": {
+          "file": "94_v149_tenant_google_merged_reminders.py",
+          "line": 1172,
+          "kind": "FunctionDef",
+          "order": 20
+        }
+      }
+    },
+    "tasks": {
+      "files": [
+        "119_v172_task_dispatcher.py",
+        "121_v174_simplified_task_dispatcher.py"
+      ],
+      "active_functions": [
+        "build_main_keyboard"
+      ],
+      "resolved": {
+        "build_main_keyboard": {
+          "file": "121_v174_simplified_task_dispatcher.py",
+          "line": 882,
+          "kind": "FunctionDef",
+          "order": 43
+        }
+      }
+    },
+    "google": {
+      "files": [
+        "63_google_sheets.py",
+        "94_v149_tenant_google_merged_reminders.py",
+        "117_v167_excel_formulas_thuwed_google_tz.py",
+        "123_v176_process_control_center.py"
+      ],
+      "active_functions": [
+        "_v169_google_enqueue",
+        "_v169_schedule_google_after_change"
+      ],
+      "resolved": {
+        "_v169_google_enqueue": {
+          "file": "117_v167_excel_formulas_thuwed_google_tz.py",
+          "line": 765,
+          "kind": "FunctionDef",
+          "order": 39
+        },
+        "_v169_schedule_google_after_change": {
+          "file": "117_v167_excel_formulas_thuwed_google_tz.py",
+          "line": 803,
+          "kind": "FunctionDef",
+          "order": 39
+        }
+      }
+    },
+    "memory": {
+      "files": [
+        "17_memory_runtime.py",
+        "10_mega_runtime.py",
+        "123_v176_process_control_center.py"
+      ],
+      "active_functions": [
+        "memory_guard_tick",
+        "_lowram_idle_sweep_job"
+      ],
+      "resolved": {
+        "memory_guard_tick": {
+          "file": "17_memory_runtime.py",
+          "line": 632,
+          "kind": "FunctionDef",
+          "order": 4
+        },
+        "_lowram_idle_sweep_job": {
+          "file": "10_mega_runtime.py",
+          "line": 5099,
+          "kind": "FunctionDef",
+          "order": 1
+        }
+      }
+    }
+  },
+  "process_switches": [
+    {
+      "code": "ui_retry",
+      "page": "ui",
+      "label": "🔁 Повторы edit Telegram"
+    },
+    {
+      "code": "win_diag",
+      "page": "ui",
+      "label": "🩺 Диагностика окон"
+    },
+    {
+      "code": "win_reg",
+      "page": "ui",
+      "label": "🗂 Реестр окон → SQLite/MEGA"
+    },
+    {
+      "code": "win_rec",
+      "page": "ui",
+      "label": "🔄 Reconcile окон"
+    },
+    {
+      "code": "btn_chain",
+      "page": "ui",
+      "label": "🧾 Трассировка press/result"
+    },
+    {
+      "code": "btn_press",
+      "page": "ui",
+      "label": "📝 Журнал button_pressed"
+    },
+    {
+      "code": "win_journal",
+      "page": "ui",
+      "label": "📐 Window-журнал"
+    },
+    {
+      "code": "fin_refresh",
+      "page": "ui",
+      "label": "💹 Автообновление фин. окон"
+    },
+    {
+      "code": "win_cleanup",
+      "page": "ui",
+      "label": "🧹 Очистка реестра окон"
+    },
+    {
+      "code": "delta_auto",
+      "page": "mega",
+      "label": "☁️ MEGA delta авто"
+    },
+    {
+      "code": "delta_critical",
+      "page": "mega",
+      "label": "🛡 MEGA delta критическая"
+    },
+    {
+      "code": "full_chat",
+      "page": "mega",
+      "label": "📦 Full backup чата"
+    },
+    {
+      "code": "full_global",
+      "page": "mega",
+      "label": "🌐 Global full snapshot"
+    },
+    {
+      "code": "journal_mega",
+      "page": "mega",
+      "label": "📓 MEGA-журнал"
+    },
+    {
+      "code": "runtime_upload",
+      "page": "mega",
+      "label": "📡 Runtime watcher upload"
+    },
+    {
+      "code": "source_archive",
+      "page": "mega",
+      "label": "🗃 Архив исходника"
+    },
+    {
+      "code": "failed_repair",
+      "page": "mega",
+      "label": "🩹 Repair failed-задач"
+    },
+    {
+      "code": "failed_diag",
+      "page": "mega",
+      "label": "🔬 Диагностика failed-задач"
+    },
+    {
+      "code": "mega_maint",
+      "page": "mega",
+      "label": "🧰 MEGA migration/cleanup"
+    },
+    {
+      "code": "mega_recover",
+      "page": "mega",
+      "label": "♻️ Startup recovery MEGA-задач"
+    },
+    {
+      "code": "lease",
+      "page": "mega",
+      "label": "🔐 Instance lease"
+    },
+    {
+      "code": "google_auto",
+      "page": "auto",
+      "label": "📊 Google Sheets авто"
+    },
+    {
+      "code": "reminders",
+      "page": "auto",
+      "label": "⏰ Напоминалки"
+    },
+    {
+      "code": "expense_ping",
+      "page": "auto",
+      "label": "📲 Expense ping"
+    },
+    {
+      "code": "lowram",
+      "page": "system",
+      "label": "🧊 Low-RAM idle sweep"
+    },
+    {
+      "code": "memory_guard",
+      "page": "system",
+      "label": "🧠 Memory guard"
+    }
+  ],
+  "key_override_history": {
+    "schedule_forward_any_message": [
+      {
+        "file": "00_core.py",
+        "line": 779,
+        "kind": "FunctionDef",
+        "order": 0
+      },
+      {
+        "file": "102_v152_human_journals_chat_rights.py",
+        "line": 666,
+        "kind": "FunctionDef",
+        "order": 24
+      }
+    ],
+    "build_info_text": [
+      {
+        "file": "00_core.py",
+        "line": 6875,
+        "kind": "FunctionDef",
+        "order": 0
+      },
+      {
+        "file": "93_v148_multitenant_spaces.py",
+        "line": 1405,
+        "kind": "FunctionDef",
+        "order": 19
+      },
+      {
+        "file": "107_v157_process_menu_navigation_repair.py",
+        "line": 162,
+        "kind": "FunctionDef",
+        "order": 29
+      },
+      {
+        "file": "108_v158_no_process_messages_income_notes.py",
+        "line": 52,
+        "kind": "FunctionDef",
+        "order": 30
+      },
+      {
+        "file": "122_v175_light_mode.py",
+        "line": 352,
+        "kind": "FunctionDef",
+        "order": 44
+      },
+      {
+        "file": "123_v176_process_control_center.py",
+        "line": 620,
+        "kind": "FunctionDef",
+        "order": 45
+      }
+    ],
+    "runtime_upload_snapshot": [
+      {
+        "file": "10_mega_runtime.py",
+        "line": 4936,
+        "kind": "FunctionDef",
+        "order": 1
+      },
+      {
+        "file": "103_v153_remaining_fixes_11_16.py",
+        "line": 604,
+        "kind": "FunctionDef",
+        "order": 25
+      }
+    ],
+    "build_reminder_list_text": [
+      {
+        "file": "35_reminders.py",
+        "line": 469,
+        "kind": "FunctionDef",
+        "order": 7
+      },
+      {
+        "file": "35_reminders.py",
+        "line": 1360,
+        "kind": "FunctionDef",
+        "order": 7
+      },
+      {
+        "file": "94_v149_tenant_google_merged_reminders.py",
+        "line": 1172,
+        "kind": "FunctionDef",
+        "order": 20
+      }
+    ],
+    "build_reminder_menu_text": [
+      {
+        "file": "35_reminders.py",
+        "line": 516,
+        "kind": "FunctionDef",
+        "order": 7
+      },
+      {
+        "file": "35_reminders.py",
+        "line": 1419,
+        "kind": "FunctionDef",
+        "order": 7
+      },
+      {
+        "file": "100_v150_excel_reserve_chat_lifecycle.py",
+        "line": 101,
+        "kind": "FunctionDef",
+        "order": 22
+      }
+    ],
+    "_reminder_tick": [
+      {
+        "file": "35_reminders.py",
+        "line": 891,
+        "kind": "FunctionDef",
+        "order": 7
+      },
+      {
+        "file": "35_reminders.py",
+        "line": 1757,
+        "kind": "FunctionDef",
+        "order": 7
+      },
+      {
+        "file": "94_v149_tenant_google_merged_reminders.py",
+        "line": 1153,
+        "kind": "FunctionDef",
+        "order": 20
+      }
+    ],
+    "handle_finance_text": [
+      {
+        "file": "40_message_router.py",
+        "line": 462,
+        "kind": "FunctionDef",
+        "order": 8
+      },
+      {
+        "file": "102_v152_human_journals_chat_rights.py",
+        "line": 635,
+        "kind": "FunctionDef",
+        "order": 24
+      }
+    ],
+    "handle_finance_edit": [
+      {
+        "file": "40_message_router.py",
+        "line": 529,
+        "kind": "FunctionDef",
+        "order": 8
+      },
+      {
+        "file": "102_v152_human_journals_chat_rights.py",
+        "line": 646,
+        "kind": "FunctionDef",
+        "order": 24
+      }
+    ],
+    "resolve_forward_targets": [
+      {
+        "file": "50_forwarding.py",
+        "line": 64,
+        "kind": "FunctionDef",
+        "order": 9
+      },
+      {
+        "file": "93_v148_multitenant_spaces.py",
+        "line": 562,
+        "kind": "FunctionDef",
+        "order": 19
+      }
+    ],
+    "build_main_keyboard": [
+      {
+        "file": "60_finance_currency.py",
+        "line": 1061,
+        "kind": "FunctionDef",
+        "order": 10
+      },
+      {
+        "file": "119_v172_task_dispatcher.py",
+        "line": 1099,
+        "kind": "FunctionDef",
+        "order": 41
+      },
+      {
+        "file": "121_v174_simplified_task_dispatcher.py",
+        "line": 882,
+        "kind": "FunctionDef",
+        "order": 43
+      }
+    ],
+    "collect_forward_pairs_for_menu": [
+      {
+        "file": "61_forwarding_ui.py",
+        "line": 371,
+        "kind": "FunctionDef",
+        "order": 11
+      },
+      {
+        "file": "93_v148_multitenant_spaces.py",
+        "line": 606,
+        "kind": "FunctionDef",
+        "order": 19
+      },
+      {
+        "file": "114_v164_circle_hierarchy_spaces.py",
+        "line": 946,
+        "kind": "FunctionDef",
+        "order": 36
+      },
+      {
+        "file": "115_v165_owner_first_circle_compat.py",
+        "line": 74,
+        "kind": "FunctionDef",
+        "order": 37
+      },
+      {
+        "file": "116_v166_fast_parallel_forward_pairs.py",
+        "line": 338,
+        "kind": "FunctionDef",
+        "order": 38
+      }
+    ],
+    "fast_ui_edit_message_text": [
+      {
+        "file": "70_fast_ui.py",
+        "line": 112,
+        "kind": "FunctionDef",
+        "order": 14
+      },
+      {
+        "file": "110_v160_stability_parallel_windows_annotations.py",
+        "line": 450,
+        "kind": "FunctionDef",
+        "order": 32
+      }
+    ],
+    "safe_edit": [
+      {
+        "file": "70_fast_ui.py",
+        "line": 367,
+        "kind": "FunctionDef",
+        "order": 14
+      },
+      {
+        "file": "111_v161_button_window_stability.py",
+        "line": 235,
+        "kind": "FunctionDef",
+        "order": 33
+      }
+    ],
+    "build_info_keyboard": [
+      {
+        "file": "70_fast_ui.py",
+        "line": 1159,
+        "kind": "FunctionDef",
+        "order": 14
+      },
+      {
+        "file": "93_v148_multitenant_spaces.py",
+        "line": 1375,
+        "kind": "FunctionDef",
+        "order": 19
+      },
+      {
+        "file": "102_v152_human_journals_chat_rights.py",
+        "line": 407,
+        "kind": "FunctionDef",
+        "order": 24
+      },
+      {
+        "file": "107_v157_process_menu_navigation_repair.py",
+        "line": 209,
+        "kind": "FunctionDef",
+        "order": 29
+      },
+      {
+        "file": "108_v158_no_process_messages_income_notes.py",
+        "line": 84,
+        "kind": "FunctionDef",
+        "order": 30
+      },
+      {
+        "file": "118_v171_all_tz_reliability.py",
+        "line": 546,
+        "kind": "FunctionDef",
+        "order": 40
+      },
+      {
+        "file": "122_v175_light_mode.py",
+        "line": 368,
+        "kind": "FunctionDef",
+        "order": 44
+      },
+      {
+        "file": "123_v176_process_control_center.py",
+        "line": 633,
+        "kind": "FunctionDef",
+        "order": 45
+      }
+    ],
+    "_callback_should_debounce": [
+      {
+        "file": "70_fast_ui.py",
+        "line": 2398,
+        "kind": "FunctionDef",
+        "order": 14
+      },
+      {
+        "file": "110_v160_stability_parallel_windows_annotations.py",
+        "line": 446,
+        "kind": "FunctionDef",
+        "order": 32
+      }
+    ],
+    "add_record_to_chat": [
+      {
+        "file": "90_commands_exports.py",
+        "line": 135,
+        "kind": "FunctionDef",
+        "order": 16
+      },
+      {
+        "file": "100_v150_excel_reserve_chat_lifecycle.py",
+        "line": 393,
+        "kind": "FunctionDef",
+        "order": 22
+      },
+      {
+        "file": "101_v151_redo_fixes_5_6_7.py",
+        "line": 671,
+        "kind": "FunctionDef",
+        "order": 23
+      }
+    ],
+    "schedule_financial_window_refresh": [
+      {
+        "file": "92_v147_diagnostic_hardening.py",
+        "line": 358,
+        "kind": "FunctionDef",
+        "order": 18
+      },
+      {
+        "file": "116_v166_fast_parallel_forward_pairs.py",
+        "line": 757,
+        "kind": "FunctionDef",
+        "order": 38
+      },
+      {
+        "file": "117_v167_excel_formulas_thuwed_google_tz.py",
+        "line": 823,
+        "kind": "FunctionDef",
+        "order": 39
+      }
+    ],
+    "_v161_edit_retry": [
+      {
+        "file": "111_v161_button_window_stability.py",
+        "line": 220,
+        "kind": "FunctionDef",
+        "order": 33
+      },
+      {
+        "file": "123_v176_process_control_center.py",
+        "line": 188,
+        "kind": "FunctionDef",
+        "order": 45
+      }
+    ]
+  },
+  "performance_hotspots": [
+    {
+      "id": "ui_retry_stack",
+      "where": [
+        "110_v160_stability_parallel_windows_annotations.py: fast_ui_edit_message_text",
+        "111_v161_button_window_stability.py: _v161_edit_retry"
+      ],
+      "note": "v160 has a short 429 retry; v161 adds an outer three-attempt loop with sleeps. Under rate limits/errors a click can spend noticeable time retrying."
+    },
+    {
+      "id": "button_trace",
+      "where": [
+        "118_v171_all_tz_reliability.py: _v171_install_button_chain",
+        "80_callback_router.py: on_callback"
+      ],
+      "note": "callbacks can create button_chain_press/result plus button_pressed journal events."
+    },
+    {
+      "id": "window_diagnostics",
+      "where": [
+        "16_window_diagnostics.py",
+        "92_v147_diagnostic_hardening.py",
+        "110_v160_stability_parallel_windows_annotations.py"
+      ],
+      "note": "window diagnostics/registry hooks execute around UI edits and persist window state."
+    },
+    {
+      "id": "v175_incomplete_light_gate",
+      "where": [
+        "103_v153_remaining_fixes_11_16.py: runtime_mark_ready",
+        "122_v175_light_mode.py: _v175_cancel_heavy_timers"
+      ],
+      "note": "the old light switch did not gate v153 recurring window reconcile loop or MEGA migration/runtime cleanup."
+    },
+    {
+      "id": "many_worker_lanes",
+      "where": [
+        "00_core.py",
+        "113_v163_audit_hardening.py",
+        "116_v166_fast_parallel_forward_pairs.py"
+      ],
+      "note": "many dedicated worker pools improve isolation but add threads/context switching on small Render CPU."
+    }
+  ]
+}

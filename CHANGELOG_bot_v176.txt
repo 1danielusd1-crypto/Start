@@ -1,0 +1,12 @@
+bot_v176_process_control_center
+
+- v175 is the base; no old business modules were rewritten.
+- Replaced the owner INFO direct heavy-process toggle with a granular process-control center.
+- 26 individually controlled background/diagnostic processes grouped by UI, MEGA, automation and system.
+- Locked core page documents mission-critical functions that remain enabled.
+- Added profiles: Fast test, All ON, Minimal diagnostic.
+- Added live callback latency meter (P50/P90/MAX + slow actions + queue stats).
+- Added explicit gates for v153 window reconcile loop and MEGA migration/runtime cleanup, which v175 light mode did not stop.
+- Added switch for outer v161 UI edit retry loop to isolate Telegram retry latency.
+- Added CODEMAP_v176.json, ACTIVE_DEFINITIONS_v176.json and FAST_LOCATE_v176.py for fast future edits.
+- Restore validator extended through bot_v176_*.
