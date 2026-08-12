@@ -1,0 +1,8 @@
+PROJECT RULES v192
+- Canonical MEGA root: /TelegramBotBackups.
+- Strict /restore remains REPLACE FROM FILE with mandatory pre_restore.
+- DATA CONSTITUTION / v190 MEGA LIGHT storage contract remains unchanged.
+- Excel/Google financial exports: ARS and USD are independent currencies and must never be summed into each other.
+- Export formulas remain live and workbooks force recalculation on open.
+- Telegram file export is successful only after send_document is confirmed. Google/Drive export is successful only after an external delivery reference is confirmed.
+- Changed source files start/end with their release marker.

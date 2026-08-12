@@ -1,0 +1,12 @@
+v192 EXCEL ARS/USD DELIVERY FINAL
+
+1. Excel/Google exports calculate ARS and USD from separate canonical currency streams.
+2. Historical polluted USD ledgers (ARS clones) are rejected for export; explicit legacy usd_amount values remain valid USD components.
+3. Historical pure-USD rows that once carried a technical ARS amount are re-parsed from source_finance_text/source_text for export; pure USD is excluded from ARS while mixed ARS+USD keeps only its real ARS component.
+3. Monthly backup XLSX now appends a separate USD section for the same month.
+4. /tabl_lsx keeps the ARS 4-week table and appends a separate USD section for the identical Thu-Wed range.
+5. Excel Notes use one canonical annotation map and validate the generated OOXML package, fixing Notes map mismatch.
+6. Telegram export success now requires a confirmed document send; missing file objects become errors instead of false success.
+7. Google Sheets/Drive exports have their own confirmed external-delivery proof, so successful uploads are no longer reported as missing Telegram documents.
+8. Thu-Wed export filename labels use the same 7-day period as the active calculation.
+9. DATA CONSTITUTION / restore / MEGA LIGHT architecture unchanged.

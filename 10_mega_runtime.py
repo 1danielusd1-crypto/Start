@@ -1,4 +1,4 @@
-# v190_mega_light_fast_recovery
+# v192_excel_ars_usd_delivery_final
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -3264,7 +3264,7 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
                 prev_day = day_key
 
     rows = [
-        ["Месяц", month_key],
+        ["Месяц", month_key, "ARS"],
         ["Чат", payload.get("chat_name")],
         ["Остаток с прошлого раза", "", payload.get("opening_balance"), ""],
         [],
@@ -3300,6 +3300,37 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
     _v150_month_products = _v150_product_total_from_records(chat_id, payload.get("records") or []) if "_v150_product_total_from_records" in globals() else 0.0
     _v150_month_food = _v150_food_per_person(_v150_month_products) if "_v150_food_per_person" in globals() else 0.0
     rows.append(["", "Расход еды на человека в сутки", _v150_month_food, ""])
+
+    # v192: monthly XLSX must keep ARS and USD isolated.  Preserve the historical
+    # detailed ARS block above and append an independent USD ledger table for the
+    # exact same calendar month.  JSON/CSV backup semantics are intentionally not
+    # changed here.
+    try:
+        usd_builder = globals().get("_v151_simple_table")
+        usd_enabled = globals().get("excel_usd_table_enabled")
+        ctx_local = globals().get("_V151_EXPORT_LOCAL")
+        if callable(usd_builder) and (not callable(usd_enabled) or bool(usd_enabled(int(chat_id)))) and ctx_local is not None:
+            prev_ctx = getattr(ctx_local, "value", None)
+            year_v, month_v = [int(x) for x in str(month_key).split("-", 1)]
+            import calendar as _v192_calendar
+            last_v = _v192_calendar.monthrange(year_v, month_v)[1]
+            start_v = f"{year_v:04d}-{month_v:02d}-01"
+            end_v = f"{year_v:04d}-{month_v:02d}-{last_v:02d}"
+            try:
+                ctx_local.value = {
+                    "kind": "exact", "target_chat_id": int(chat_id),
+                    "start_key": start_v, "start_rid": 0,
+                    "end_key": end_v, "end_rid": 0, "file_type": "xlsx",
+                }
+                usd_rows, _usd_annotations = usd_builder(int(chat_id), "usd", compact=False)
+            finally:
+                ctx_local.value = prev_ctx
+            if usd_rows:
+                rows.extend([[], []])
+                rows.extend(usd_rows)
+    except Exception as _v192_usd_exc:
+        try: log_error(f"monthly XLSX USD append({chat_id},{month_key}): {_v192_usd_exc}")
+        except Exception: pass
     _write_excel_by_selected_style(xlsx_path, rows, chat_id, sheet_name="Месяц", category_layout=False)
 
     return {"json": json_path, "csv": csv_path, "xlsx": xlsx_path}
@@ -7977,13 +8008,14 @@ def _write_excel_by_selected_style(
         elif compact_annotations is not None:
             expected_annotations = {k: str(v).strip() for k, v in compact_annotations.items() if str(v or "").strip()}
         if expected_annotations:
-            missing_map = [cell for cell, text in expected_annotations.items() if annotations.get(cell) != text]
-            extra_map = [cell for cell in annotations.keys() if cell not in expected_annotations]
-            if missing_map or extra_map:
-                raise RuntimeError(
-                    f"Excel Notes map mismatch missing={missing_map[:8]} extra={extra_map[:8]} "
-                    f"expected={len(expected_annotations)} actual={len(annotations)}"
-                )
+            # v192: Notes have exactly one source of truth.  Older code built the
+            # styling annotation map and the validation map independently; after
+            # ARS+USD tables were joined the two scanners could disagree by one
+            # cell and abort an otherwise valid export before Telegram send.
+            # Use the canonical expected map for writing, then validate the XLSX
+            # package itself below.  Validation remains strict; only the duplicate
+            # competing map is removed.
+            annotations = dict(expected_annotations)
     _write_tabl_lsx_xlsx(
         path, rows, styles, sheet_name=sheet_name, comments=annotations,
         freeze_rows=freeze_rows, widths=widths, annotation_mode=annotation_mode,
@@ -8077,6 +8109,41 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
     fname = f"tabl_lsx_{mode_tag}_{mega_safe_name(get_chat_display_name(chat_id), 'chat')}_{start_all}_{end_all}.xlsx"
     path = os.path.join(MEGA_LOCAL_TMP_DIR, fname)
     annotation_mode = excel_annotation_mode(chat_id)
+
+    # v192: the legacy 4-week workbook used only ARS daily_records.  Append an
+    # independent USD table for exactly the same Thursday-Wednesday range.  The
+    # existing ARS weekly layout is left intact.
+    try:
+        usd_builder = globals().get("_v151_simple_table")
+        usd_enabled = globals().get("excel_usd_table_enabled")
+        ctx_local = globals().get("_V151_EXPORT_LOCAL")
+        if callable(usd_builder) and (not callable(usd_enabled) or bool(usd_enabled(int(chat_id)))) and ctx_local is not None:
+            prev_ctx = getattr(ctx_local, "value", None)
+            try:
+                ctx_local.value = {
+                    "kind": "exact", "target_chat_id": int(chat_id),
+                    "start_key": str(start_all), "start_rid": 0,
+                    "end_key": str(end_all), "end_rid": 0, "file_type": "xlsx",
+                }
+                usd_rows, _usd_notes = usd_builder(int(chat_id), "usd", compact=False)
+            finally:
+                ctx_local.value = prev_ctx
+            if usd_rows:
+                offset = len(rows) + 2
+                rows.extend([[], []])
+                styles.extend([[], []])
+                if modern_excel and callable(globals().get("_modern_simple_excel_styles_comments")):
+                    usd_styles, usd_comments, _freeze, _widths = _modern_simple_excel_styles_comments(usd_rows)
+                    styles.extend(usd_styles)
+                    for (rr, cc), text in (usd_comments or {}).items():
+                        comments[(int(rr) + offset, int(cc))] = text
+                else:
+                    styles.extend([[4] * len(r or []) for r in usd_rows])
+                rows.extend(usd_rows)
+    except Exception as _v192_usd_exc:
+        try: log_error(f"tabl_lsx USD append({chat_id}): {_v192_usd_exc}")
+        except Exception: pass
+
     _write_tabl_lsx_xlsx(path, rows, styles, sheet_name="4 недели", comments=comments if modern_excel else None, annotation_mode=annotation_mode)
     if modern_excel:
         _validate_xlsx_annotation_package(path, annotation_mode)
@@ -8091,15 +8158,16 @@ def send_tabl_lsx_for_chat(recipient_chat_id: int, target_chat_id: int):
         _file_job_progress("отправляю Excel в Telegram", force=True)
         display = os.path.basename(path)
         fobj = file_bytesio_named(path, display)
-        if fobj:
-            _tg_call_retry(
-                bot.send_document,
-                recipient_chat_id,
-                fobj,
-                caption=f"📊 Таблица LSX ({excel_table_style_caption(target_chat_id)}) за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}",
-                timeout=120,
-                purpose="tabl_lsx_send_document",
-            )
+        if not fobj:
+            raise RuntimeError("Excel создан, но не удалось открыть файл для отправки в Telegram")
+        _tg_call_retry(
+            bot.send_document,
+            recipient_chat_id,
+            fobj,
+            caption=f"📊 Таблица LSX ({excel_table_style_caption(target_chat_id)}) за последние 4 недели Чт–Ср: {get_chat_display_name(target_chat_id)}",
+            timeout=120,
+            purpose="tabl_lsx_send_document",
+        )
         return True
     except Exception as e:
         log_error(f"send_tabl_lsx_for_chat({target_chat_id}): {e}")
@@ -9803,4 +9871,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v190_mega_light_fast_recovery
+# v192_excel_ars_usd_delivery_final

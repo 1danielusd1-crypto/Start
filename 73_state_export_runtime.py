@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v192_excel_ars_usd_delivery_final
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -1155,16 +1155,40 @@ def _v151_sync_currency_snapshots(store: dict) -> str:
 
 
 def _v151_ars_records(chat_id: int) -> list[dict]:
+    """Canonical ARS projection, including legacy mixed ARS/USD records.
+
+    Modern records explicitly carry ``usd_only`` and an ARS amount of zero for a
+    pure USD movement.  Older backups may predate that contract and can contain
+    e.g. ``amount=-400`` + ``usd_amount=-400`` for the text ``400 usd ...``.
+    When the original finance text is available, re-run the current component
+    parser for export only: pure USD rows disappear from ARS, while mixed rows
+    keep only their true ARS component.  Stored backup data is never mutated.
+    """
     store = get_chat_store(int(chat_id))
     active = _v151_sync_currency_snapshots(store)
     source = store.get("records", []) if active == "ars" else store.get("ars_records", [])
     rows = []
+    parser = globals().get("parse_financial_components")
     for rec in source or []:
         if not isinstance(rec, dict) or bool(rec.get("usd_only", False)):
             continue
+        amount = _v151_float(rec.get("amount"))
+        note = str(rec.get("note") or "")
+        if abs(_v151_float(rec.get("usd_amount"))) > 1e-12 and callable(parser):
+            original = str(rec.get("source_finance_text") or rec.get("source_text") or "").strip()
+            if original:
+                try:
+                    comp = parser(original) or {}
+                    if bool(comp.get("usd_only", False)):
+                        continue
+                    if comp.get("amount") is not None:
+                        amount = _v151_float(comp.get("amount"))
+                        note = str(comp.get("note") or note)
+                except Exception:
+                    pass
         item = dict(rec)
-        item["_v151_amount"] = _v151_float(rec.get("amount"))
-        item["_v151_note"] = str(rec.get("note") or "")
+        item["_v151_amount"] = amount
+        item["_v151_note"] = note
         item["_v151_currency"] = "ars"
         rows.append(item)
     try:
@@ -4847,28 +4871,98 @@ except Exception: pass
 _export_end_calendar_keyboard = _v177_legacy_0171_export_end_calendar_keyboard
 
 
-# Strict ledger isolation. v151 additionally read embedded usd_amount from ARS records;
-# that caused ARS values to leak into / duplicate the USD export table.
+# v192 canonical USD export ledger.
+# Historical snapshots may contain a polluted usd_records list that is merely a
+# byte-for-byte/business clone of ARS records.  At the same time older legitimate
+# USD movements were stored as usd_amount/usd_note inside the ARS record.  For
+# Excel/Google we therefore build one canonical USD stream:
+#   1) keep genuinely independent USD-ledger records;
+#   2) reject exact ARS clones from a polluted USD ledger;
+#   3) add only the USD COMPONENT (usd_amount), never the ARS amount;
+#   4) dedupe the same Telegram source across both representations.
 def _v177_legacy_0272_v151_usd_records(chat_id: int) -> list[dict]:
     store = get_chat_store(int(chat_id))
     active = _v151_sync_currency_snapshots(store)
-    source = store.get("records", []) if active == "usd" else store.get("usd_records", [])
+    ars_source = store.get("records", []) if active == "ars" else store.get("ars_records", [])
+    usd_source = store.get("records", []) if active == "usd" else store.get("usd_records", [])
+
+    ars_by_msg = {}
+    ars_by_op = {}
+    for rec in ars_source or []:
+        if not isinstance(rec, dict):
+            continue
+        msg = int(rec.get("source_msg_id") or 0)
+        op = str(rec.get("operation_key") or "").strip()
+        if msg:
+            ars_by_msg[msg] = rec
+        if op:
+            ars_by_op[op] = rec
+
+    def _same_business_row(left: dict, right: dict) -> bool:
+        try:
+            return (
+                abs(_v151_float(left.get("amount")) - _v151_float(right.get("amount"))) <= 1e-9
+                and str(left.get("note") or "").strip() == str(right.get("note") or "").strip()
+                and _v151_day_key(left) == _v151_day_key(right)
+            )
+        except Exception:
+            return False
+
     rows = []
-    seen = set()
-    for rec in source or []:
+    represented_sources = set()
+    seen_independent = set()
+
+    # Genuine independent USD ledger first.  Exact clones of ARS are historical
+    # contamination and must never become dollar amounts in reports.
+    for rec in usd_source or []:
         if not isinstance(rec, dict):
             continue
         operation_key = str(rec.get("operation_key") or "").strip()
         source_msg_id = int(rec.get("source_msg_id") or 0)
-        key = ("op", operation_key) if operation_key else (("msg", source_msg_id) if source_msg_id else (int(rec.get("id") or 0), str(rec.get("timestamp") or ""), _v151_day_key(rec)))
-        if key in seen:
+        peer = ars_by_msg.get(source_msg_id) if source_msg_id else None
+        if peer is None and operation_key:
+            peer = ars_by_op.get(operation_key)
+        explicit_usd = str(rec.get("currency") or "").strip().upper() == "USD"
+        if peer is not None and _same_business_row(rec, peer) and not explicit_usd:
             continue
-        seen.add(key)
+        key = ("op", operation_key) if operation_key else (("msg", source_msg_id) if source_msg_id else (int(rec.get("id") or 0), str(rec.get("timestamp") or ""), _v151_day_key(rec), _v151_float(rec.get("amount"))))
+        if key in seen_independent:
+            continue
+        seen_independent.add(key)
         item = dict(rec)
         item["_v151_amount"] = _v151_float(rec.get("amount"))
-        item["_v151_note"] = str(rec.get("note") or "")
+        item["_v151_note"] = str(rec.get("note") or rec.get("usd_note") or "")
         item["_v151_currency"] = "usd"
         rows.append(item)
+        if source_msg_id:
+            represented_sources.add(("msg", source_msg_id))
+        if operation_key:
+            represented_sources.add(("op", operation_key))
+
+    # Legacy/mixed ARS rows contribute only their explicit USD component.
+    for rec in ars_source or []:
+        if not isinstance(rec, dict):
+            continue
+        usd_amount = _v151_float(rec.get("usd_amount"))
+        if abs(usd_amount) <= 1e-12:
+            continue
+        operation_key = str(rec.get("operation_key") or "").strip()
+        source_msg_id = int(rec.get("source_msg_id") or 0)
+        source_keys = set()
+        if source_msg_id:
+            source_keys.add(("msg", source_msg_id))
+        if operation_key:
+            source_keys.add(("op", operation_key))
+        if source_keys and any(k in represented_sources for k in source_keys):
+            continue
+        item = dict(rec)
+        item["_v151_amount"] = usd_amount
+        item["_v151_note"] = str(rec.get("usd_note") or rec.get("note") or "")
+        item["_v151_currency"] = "usd"
+        item["_v151_embedded"] = True
+        rows.append(item)
+        represented_sources.update(source_keys)
+
     try:
         return sorted(rows, key=record_sort_key)
     except Exception:
@@ -5053,4 +5147,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v189_main_window_authority_final
+# v192_excel_ars_usd_delivery_final

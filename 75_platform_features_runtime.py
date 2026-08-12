@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v192_excel_ars_usd_delivery_final
 # ---- integrated from 113_v163_audit_hardening.py ----
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
@@ -466,6 +466,25 @@ if callable(_V163_PREV_SEND_DOCUMENT):
 _V163_BASE_FILE_RUNNER = globals().get("_interactive_file_job_runner")
 
 
+def file_job_mark_external_delivery(kind: str, reference: str = "") -> bool:
+    """Mark a successful non-document export (Google Sheets/Drive) in current file job."""
+    try:
+        ctx = getattr(_FILE_JOB_CONTEXT, "value", None)
+        if not isinstance(ctx, dict):
+            return False
+        key = str(ctx.get("key") or "")
+        with _FILE_JOB_LOCK:
+            st = _FILE_JOB_STATE.get(key)
+            if not isinstance(st, dict):
+                return False
+            st["external_deliveries_sent"] = int(st.get("external_deliveries_sent") or 0) + 1
+            st["external_delivery_kind"] = str(kind or "external")[:40]
+            st["external_delivery_reference"] = str(reference or "")[:500]
+        return True
+    except Exception:
+        return False
+
+
 def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
     key = str(job_meta.get("key") or _INTERACTIVE_FILE_JOB_KEY)
     previous = getattr(_FILE_JOB_CONTEXT, "value", None)
@@ -479,6 +498,8 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
                 st["started_monotonic"] = _v163_time.monotonic()
                 st["phase"] = "запуск"
                 st["telegram_documents_sent"] = 0
+                st["external_deliveries_sent"] = 0
+                st["external_delivery_kind"] = ""
         _file_job_progress("запуск", force=True)
         mem_ctx = globals().get("memory_operation")
         if callable(mem_ctx):
@@ -493,9 +514,10 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
         with _FILE_JOB_LOCK:
             st = _FILE_JOB_STATE.get(key)
             sent = int((st or {}).get("telegram_documents_sent") or 0) if isinstance(st, dict) else 0
-        ok = (result is not False) and sent > 0
+            external = int((st or {}).get("external_deliveries_sent") or 0) if isinstance(st, dict) else 0
+        ok = (result is not False) and (sent > 0 or external > 0)
         if not ok:
-            error_text = "файл сформирован, но Telegram не подтвердил отправку документа"
+            error_text = "экспорт завершился без подтверждённой доставки в Telegram/Google"
     except Exception as exc:
         error_text = str(exc)[:300]
         try: log_error(f"INTERACTIVE FILE JOB v163 {job_meta.get('kind')}: {exc}")
@@ -510,18 +532,23 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
                 label = str(st.get("label") or "Файл")
                 started = float(st.get("started_monotonic") or st.get("queued_monotonic") or now_m)
                 sent = int(st.get("telegram_documents_sent") or 0)
+                external = int(st.get("external_deliveries_sent") or 0)
+                external_kind = str(st.get("external_delivery_kind") or "")
                 elapsed = _file_job_elapsed_text(now_m - started)
             else:
                 chat_id = int(job_meta.get("chat_id") or 0)
                 msg_id = None
                 label = str(job_meta.get("label") or "Файл")
                 sent = 0
+                external = 0
+                external_kind = ""
                 elapsed = "0:00"
         try:
             if msg_id:
                 close_s = internal_timer_seconds("file_status_close", 15)
                 if ok:
-                    final = f"✅ {label}\nОтправлено в чат за {elapsed}.\nОкно закроется через {_format_duration_short(close_s)}."
+                    delivered_text = (f"Выгружено в {external_kind or 'Google'}" if external > 0 and sent <= 0 else "Отправлено в чат")
+                    final = f"✅ {label}\n{delivered_text} за {elapsed}.\nОкно закроется через {_format_duration_short(close_s)}."
                 else:
                     final = (
                         f"⚠️ {label}\nЗавершено за {elapsed}.\n"
@@ -537,7 +564,7 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
             bot_journal(
                 "file_job_done" if ok else "file_job_send_missing",
                 chat_id,
-                f"kind={job_meta.get('kind')} elapsed={elapsed} sent_documents={sent} error={error_text}",
+                f"kind={job_meta.get('kind')} elapsed={elapsed} sent_documents={sent} external_deliveries={external} error={error_text}",
                 "INFO" if ok else "WARN",
             )
         except Exception:
@@ -4924,4 +4951,4 @@ try:
     )
 except Exception:
     pass
-# v189_main_window_authority_final
+# v192_excel_ars_usd_delivery_final

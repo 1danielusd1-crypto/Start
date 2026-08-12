@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v192_excel_ars_usd_delivery_final
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -373,21 +373,24 @@ def _v177_legacy_0209_send_export_for_chat_to(recipient_chat_id: int, target_cha
             label = "за всё время"
             if os.path.exists(path):
                 fobj = file_bytesio_named(path, export_display_filename(target_chat_id, mode, day_key, "xlsx" if file_type == "xlsx" else "csv"))
-                if fobj:
-                    _tg_call_retry(
-                        bot.send_document,
-                        recipient_chat_id,
-                        fobj,
-                        caption=f"📂 {'Excel ' + _export_style_caption(excel_style_override) if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
-                        timeout=120,
-                        purpose="export_send_document"
-                    )
+                if not fobj:
+                    raise RuntimeError("Готовый экспорт не удалось открыть для отправки в Telegram")
+                _tg_call_retry(
+                    bot.send_document,
+                    recipient_chat_id,
+                    fobj,
+                    caption=f"📂 {'Excel ' + _export_style_caption(excel_style_override) if file_type == 'xlsx' else 'CSV'} {label}: {get_chat_display_name(target_chat_id)}",
+                    timeout=120,
+                    purpose="export_send_document"
+                )
                 return True
 
         rows, label = _period_export_rows(target_chat_id, mode, day_key)
         ext = "xlsx" if file_type in {"xlsx", "xlsxstat"} else "csv"
         if not rows and ext != "xlsx":
             send_info(recipient_chat_id, f"Нет данных {label}.")
+            try: file_job_mark_external_delivery("info", "no_data")
+            except Exception: pass
             return True
         tmp_name = os.path.join(MEGA_LOCAL_TMP_DIR, f"export_{target_chat_id}_{mode}_{int(time.time() * 1000)}.{ext}")
         if file_type == "xlsxstat":
@@ -419,6 +422,8 @@ def _v177_legacy_0209_send_export_for_chat_to(recipient_chat_id: int, target_cha
                     f"📊 Google Таблица — статьи {label}: {get_chat_display_name(target_chat_id)}\n\n{sheet_url}\n\nВизуализация: статьи по колонкам, цветные суммы и разделители дней.",
                     disable_web_page_preview=True,
                 )
+                try: file_job_mark_external_delivery("Google Sheets", sheet_url)
+                except Exception: pass
                 return True
             _write_excel_by_selected_style(
                 tmp_name, xlsx_rows, target_chat_id, sheet_name="Статьи", category_layout=category_layout,
@@ -450,6 +455,8 @@ def _v177_legacy_0209_send_export_for_chat_to(recipient_chat_id: int, target_cha
                     f"📊 Google Таблица {label}: {get_chat_display_name(target_chat_id)}\n\n{sheet_url}\n\nВизуализация: статьи по колонкам, цветные суммы и разделители дней.",
                     disable_web_page_preview=True,
                 )
+                try: file_job_mark_external_delivery("Google Sheets", sheet_url)
+                except Exception: pass
                 return True
             if excel_style_override != "old":
                 if description_column:
@@ -493,19 +500,22 @@ def _v177_legacy_0209_send_export_for_chat_to(recipient_chat_id: int, target_cha
                 f"☁️ Google Drive {label}: {get_chat_display_name(target_chat_id)}\n\n{drive_url}",
                 disable_web_page_preview=True,
             )
+            try: file_job_mark_external_delivery("Google Drive", drive_url)
+            except Exception: pass
             return True
 
         _file_job_progress("отправляю файл в Telegram", force=True)
         fobj = file_bytesio_named(tmp_name, display_name)
-        if fobj:
-            _tg_call_retry(
-                bot.send_document,
-                recipient_chat_id,
-                fobj,
-                caption=f"📂 {('Excel статьи ' + _export_style_caption(excel_style_override)) if file_type == 'xlsxstat' else (('Excel ' + _export_style_caption(excel_style_override)) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
-                timeout=120,
-                purpose="export_send_document"
-            )
+        if not fobj:
+            raise RuntimeError("Экспорт создан, но файл не удалось открыть для отправки в Telegram")
+        _tg_call_retry(
+            bot.send_document,
+            recipient_chat_id,
+            fobj,
+            caption=f"📂 {('Excel статьи ' + _export_style_caption(excel_style_override)) if file_type == 'xlsxstat' else (('Excel ' + _export_style_caption(excel_style_override)) if ext == 'xlsx' else 'CSV')} {label}: {get_chat_display_name(target_chat_id)}",
+            timeout=120,
+            purpose="export_send_document"
+        )
         return True
     except Exception as e:
         log_error(f"send_export_for_chat_to({get_chat_display_name(target_chat_id)}): {e}")
@@ -849,4 +859,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v188_restore_forward_fix_final
+# v192_excel_ars_usd_delivery_final

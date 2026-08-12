@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v192_excel_ars_usd_delivery_final
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -885,10 +885,11 @@ def export_period_date_label(mode: str, day_key: str) -> str:
             return f"({_d(start.strftime('%Y-%m-%d'))}-{_d(day_key)})"
         if mode == "wedthu":
             base = datetime.strptime(day_key, "%Y-%m-%d")
-            while base.weekday() != 2:
-                base -= timedelta(days=1)
-            end = base + timedelta(days=1)
-            return f"({_d(base.strftime('%Y-%m-%d'))}-{_d(end.strftime('%Y-%m-%d'))})"
+            # Thursday=3 ... Wednesday=2.  Use the same 7-day boundary as the
+            # actual rolling export instead of the old accidental Wed-Thu label.
+            start = base - timedelta(days=((base.weekday() - 3) % 7))
+            end = start + timedelta(days=6)
+            return f"({_d(start.strftime('%Y-%m-%d'))}-{_d(end.strftime('%Y-%m-%d'))})"
     except Exception:
         pass
     return "(all)"
@@ -1065,4 +1066,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v189_main_window_authority_final
+# v192_excel_ars_usd_delivery_final

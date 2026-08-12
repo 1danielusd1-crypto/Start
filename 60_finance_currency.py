@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v192_excel_ars_usd_delivery_final
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -1748,6 +1748,8 @@ def _v177_legacy_0179_send_exact_range_export(recipient_chat_id: int, target_cha
                     target_chat_id=target_chat_id,
                 )
                 bot.send_message(recipient_chat_id, f"📊 Google Таблица — статьи, точный период\n\n{sheet_url}", disable_web_page_preview=True)
+                try: file_job_mark_external_delivery("Google Sheets", sheet_url)
+                except Exception: pass
                 return True
             _write_excel_by_selected_style(
                 tmp_name, xlsx_rows, target_chat_id, sheet_name="Excel стат",
@@ -1772,6 +1774,8 @@ def _v177_legacy_0179_send_exact_range_export(recipient_chat_id: int, target_cha
                     target_chat_id=target_chat_id,
                 )
                 bot.send_message(recipient_chat_id, f"📊 Google Таблица — точный период\n\n{sheet_url}", disable_web_page_preview=True)
+                try: file_job_mark_external_delivery("Google Sheets", sheet_url)
+                except Exception: pass
                 return True
             if excel_style_override != "old":
                 if description_column:
@@ -1822,19 +1826,22 @@ def _v177_legacy_0179_send_exact_range_export(recipient_chat_id: int, target_cha
                 f"☁️ Google Drive — точный период\n\n{drive_url}",
                 disable_web_page_preview=True,
             )
+            try: file_job_mark_external_delivery("Google Drive", drive_url)
+            except Exception: pass
             return True
 
         fobj = file_bytesio_named(tmp_name, display_name)
-        if fobj:
-            _file_job_progress("отправляю файл в Telegram", force=True)
-            _tg_call_retry(
-                bot.send_document,
-                recipient_chat_id,
-                fobj,
-                caption=caption,
-                timeout=120,
-                purpose="exact_export_send_document",
-            )
+        if not fobj:
+            raise RuntimeError("Точный экспорт создан, но файл не удалось открыть для отправки в Telegram")
+        _file_job_progress("отправляю файл в Telegram", force=True)
+        _tg_call_retry(
+            bot.send_document,
+            recipient_chat_id,
+            fobj,
+            caption=caption,
+            timeout=120,
+            purpose="exact_export_send_document",
+        )
         return True
     except Exception as exc:
         log_error(f"send_exact_range_export({target_chat_id}): {exc}")
@@ -2159,4 +2166,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v188_restore_forward_fix_final
+# v192_excel_ars_usd_delivery_final

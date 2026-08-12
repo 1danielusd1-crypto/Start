@@ -1,0 +1,102 @@
+{
+  "version": "bot_v192_excel_ars_usd_delivery_final",
+  "status": "PASS",
+  "runtime_modules": 27,
+  "top_level_symbols": 2661,
+  "duplicate_top_level": {},
+  "changed_runtime_files": [
+    "10_mega_runtime.py",
+    "40_message_router.py",
+    "60_finance_currency.py",
+    "63_google_sheets.py",
+    "73_state_export_runtime.py",
+    "75_platform_features_runtime.py",
+    "85_runtime_control.py"
+  ],
+  "callback_handler_registrations": 1,
+  "telegram_bot_backups_start_refs": 0,
+  "manifest": {
+    "version_ok": true,
+    "hashes_ok": true,
+    "markers_ok": true
+  },
+  "excel_audit": {
+    "functional": {
+      "ledger_isolation": "PASS",
+      "polluted_usd_clone_filter": "PASS",
+      "separate_totals": "PASS",
+      "simple_formulas": "PASS",
+      "category_formulas": "PASS",
+      "thu_wed_bounds": "PASS",
+      "thu_wed_filename": "PASS",
+      "notes_canonical_map": "PASS",
+      "all_excel_paths_currency_split": "PASS",
+      "delivery_proofs": "PASS",
+      "xlsx_formula_notes_package": "PASS",
+      "monthly_xlsx_ars_usd": "PASS",
+      "tabl_lsx_ars_usd": "PASS",
+      "google_formula_value": "PASS",
+      "legacy_pure_usd_excluded_from_ars": "PASS"
+    },
+    "formula_contract": {
+      "income": "SUM(data income)",
+      "expense": "SUM(data expense)",
+      "closing": "opening + income - expense",
+      "turnover": "closing - gomonk reserve",
+      "ars_products": "ARS only",
+      "usd_products_metric": "not applied"
+    },
+    "currency_contract": "ARS and USD exported as independent sections/ledgers; no currency conversion or cross-summing.",
+    "xlsx_recalc": {
+      "fullCalcOnLoad": true,
+      "forceFullCalc": true
+    },
+    "telegram_delivery": "success requires actual send_document confirmation",
+    "google_delivery": "success requires confirmed Google Sheets/Drive external delivery marker",
+    "notes_old_mismatch_string_present": false
+  },
+  "uploaded_gz_audit": {
+    "sqlite_integrity": "ok",
+    "ars_raw": {
+      "count": 772,
+      "income": 61672527.4,
+      "expense": 58789427.0,
+      "net": 2883100.4
+    },
+    "usd_raw": {
+      "count": 740,
+      "income": 61672527.4,
+      "expense": 57323652.0,
+      "net": 4348875.4
+    },
+    "usd_exact_ars_clones": 740,
+    "explicit_embedded_usd": {
+      "count": 48,
+      "income": 51605.0,
+      "expense": 45105.0,
+      "net": 6500.0
+    },
+    "v192_expected_canonical_usd": {
+      "count": 48,
+      "income": 51605.0,
+      "expense": 45105.0,
+      "net": 6500.0
+    },
+    "legacy_ars_reparse_audit": {
+      "raw_count": 772,
+      "raw_net": 2883100.4,
+      "canonical_count": 758,
+      "canonical_net": 1239945.33,
+      "pure_usd_rows_excluded_from_ars": 14,
+      "mixed_rows_reparsed": 34
+    },
+    "note": "This uploaded historical snapshot has a polluted usd_records list consisting of ARS business clones. v192 filters those at export time and preserves explicit usd_amount components without mutating the backup."
+  },
+  "scope_unchanged": [
+    "DATA CONSTITUTION",
+    "MEGA LIGHT",
+    "strict /restore REPLACE",
+    "careful restore",
+    "main-window authority"
+  ]
+}
