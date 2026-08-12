@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 # ---- integrated from 105_v155_button_navigation_audit.py ----
 """v155: full button/navigation audit hardening and live callback outcome diagnostics."""
 
@@ -14,7 +14,7 @@ import threading as _v155_threading
 import time as _v155_time
 from collections import deque as _v155_deque
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 V155_BUTTON_AUDIT_ENABLED = str(_v155_os.getenv("BUTTON_OUTCOME_AUDIT", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
 _V155_BUTTON_AUDIT_LOCK = _v155_threading.RLock()
@@ -413,7 +413,7 @@ import tempfile as _v156_tempfile
 import threading as _v156_threading
 import time as _v156_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 # ---------------------------------------------------------------------------
 # Visual process status. Telegram callback toasts have a platform-controlled
@@ -1037,7 +1037,7 @@ import tempfile as _v157_tempfile
 import threading as _v157_threading
 import time as _v157_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 # ---------------------------------------------------------------------------
 # Process window settings: one submenu in INFO, two explicit platform-owner
@@ -1738,7 +1738,7 @@ except Exception:
 # ---- integrated from 108_v158_no_process_messages_income_notes.py ----
 """v158: remove auxiliary process messages and add income annotations to every annotated Excel layout."""
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 # ---------------------------------------------------------------------------
 # 1) Process UI messages are disabled completely.
@@ -2108,7 +2108,7 @@ import sqlite3 as _v159_sqlite3
 import tempfile as _v159_tempfile
 import time as _v159_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 # ---------------------------------------------------------------------------
 # 1) Internal timer labels / new helper timers.
@@ -2714,7 +2714,7 @@ import threading as _v160_threading
 import time as _v160_time
 from datetime import timedelta as _v160_timedelta
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 # ---------------------------------------------------------------------------
 # 1) Generic telegram_update/process pop-up is removed again.
@@ -4172,7 +4172,7 @@ import tempfile as _v161_tempfile
 import threading as _v161_threading
 import time as _v161_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 # 1. Ф232 is forbidden for ordinary telegram_update/background work. Ф233 stays for real file jobs.
 try:
@@ -4993,7 +4993,7 @@ import sqlite3 as _v162_sqlite3
 import tempfile as _v162_tempfile
 import threading as _v162_threading
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 _V162_START_LOCK_GUARD = _v162_threading.RLock()
 _V162_START_LOCKS = {}
@@ -5213,4 +5213,4 @@ try:
     bot_journal("v162_start_hard_fix_installed", int(OWNER_ID or 0), "process_new_updates_intercept=1; start_always_new_f91=1; silent_returns=0")
 except Exception:
     pass
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

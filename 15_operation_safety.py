@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
 _EXPENSE_INBOX_LOCK = threading.RLock()
@@ -1293,4 +1293,4 @@ def expense_draft_input_message(msg):
         raise
     finally:
         msg.text = original_text
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

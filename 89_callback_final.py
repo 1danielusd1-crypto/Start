@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 """v179 single callback middleware for owner, circle 1, circle 2 and all users with feature access."""
 
 def _v179_resolve_callback(call):
@@ -110,4 +110,4 @@ def final_callback_router(call):
 # Exactly one Telegram callback handler in the package.
 bot.callback_query_handler(func=lambda c: True)(final_callback_router)
 _V179_FINAL_CALLBACK_HANDLERS = 1
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

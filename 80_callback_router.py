@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
@@ -1596,6 +1596,22 @@ def on_callback(call):
             save_data(data, chat_ids=[chat_id])
             open_remaining_window(chat_id, day_key, call.message.message_id)
             return
+        if data_str == "careful_restore_toggle":
+            if not is_owner_chat(chat_id) or int(getattr(getattr(call, "from_user", None), "id", 0) or 0) != int(OWNER_ID or 0):
+                try: bot.answer_callback_query(call.id, "Только основной владелец.", show_alert=True)
+                except Exception: pass
+                return
+            enabled = careful_restore_toggle(chat_id)
+            st = careful_restore_status(chat_id)
+            try:
+                if enabled:
+                    bot.answer_callback_query(call.id, f"ВКЛ → {fmt_date_ddmmyy(st.get('day_key') or today_key())}; авто-ВЫКЛ через {_format_duration_short(internal_timer_seconds('careful_restore_idle', 120))}", show_alert=False)
+                else:
+                    bot.answer_callback_query(call.id, "Аккуратное восстановление выключено", show_alert=False)
+            except Exception:
+                pass
+            fast_ui_edit_message_text(chat_id, call.message.message_id, build_info_text(chat_id), reply_markup=build_info_keyboard(chat_id), purpose="careful_restore_toggle")
+            return
         if data_str == "main_articles_toggle":
             if not version_mode_feature("article_buttons"):
                 return
@@ -3152,4 +3168,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

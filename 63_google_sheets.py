@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -849,4 +849,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

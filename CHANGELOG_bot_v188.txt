@@ -1,0 +1,9 @@
+v188 RESTORE FORWARD FIX FINAL
+
+- Fixed /restore crash: missing _v184_restore_forward_edges.
+- Added one final restore_forward_edges_exact implementation.
+- Strict per-chat forwarding restore: clear old incoming/outgoing edges for target chat, then restore exactly from backup.
+- No per-edge save/MEGA/UI side effects during restore.
+- Removed stale forward_pair_order entries touching restored chat; menu rebuilds derived order lazily.
+- Static audit: no unresolved _v184/_v186/_v187 calls.
+- Strict /restore REPLACE FROM FILE and Data Constitution preserved.

@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 import os
 import io
 import json
@@ -842,7 +842,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -4206,6 +4206,8 @@ WINDOW_MARKER_CONSTANTS = {
     'security_roles:*': 'Ф214',
     'security_role_user:*': 'Ф215',
     'security_role_set:*': 'Ф216',
+    # v187: temporary manual replay helper from INFO.
+    'careful_restore_toggle': 'Ф251',
     # v143: aliases emitted by render/update helpers after callback normalization.
     'info': 'Ф54',
     'edit_list': 'Ф49',
@@ -4526,9 +4528,185 @@ INTERNAL_TIMER_DEFS = {
     "balance_collapse": {"label": "🏦 Сворачивание быстрого остатка", "default": 90, "min": 5, "max": 3600},
     "main_window_refresh": {"label": "⏰ Обновление главного окна Ф40", "default": 5, "min": 1, "max": 300},
     "process_status_refresh": {"label": "⚙️ Обновление статуса процессов", "default": 10, "min": 2, "max": 300},
+    "careful_restore_idle": {"label": "⏰ Аккуратное восстановление · авто-ВЫКЛ", "default": 120, "min": 30, "max": 900},
 }
 _timer_input_sessions = {}
 _timer_input_lock = threading.RLock()
+
+
+# v187: «Аккуратное восстановление» is intentionally RAM-only.
+# It never changes strict /restore semantics and never survives a restart/deploy.
+_careful_restore_sessions = {}
+_careful_restore_lock = threading.RLock()
+
+
+def _careful_restore_scheduler_key(chat_id: int) -> str:
+    return f"careful-restore:{int(chat_id)}"
+
+
+def is_forwarded_telegram_message(msg) -> bool:
+    """True only for Telegram-forwarded input; ordinary fresh finance text is untouched."""
+    if msg is None:
+        return False
+    for attr in ("forward_origin", "forward_date", "forward_from", "forward_from_chat", "forward_sender_name"):
+        try:
+            if getattr(msg, attr, None):
+                return True
+        except Exception:
+            pass
+    # Telegram automatic-forward/channel propagation is deliberately excluded:
+    # this recovery helper must react only to a user's manually forwarded message.
+    return False
+
+
+def _careful_restore_expire(chat_id: int, expected_deadline: float | None = None) -> bool:
+    chat_id = int(chat_id)
+    with _careful_restore_lock:
+        sess = _careful_restore_sessions.get(chat_id)
+        if not isinstance(sess, dict):
+            return False
+        deadline = float(sess.get("deadline", 0.0) or 0.0)
+        if expected_deadline is not None and abs(deadline - float(expected_deadline)) > 0.001:
+            return False
+        now_m = time.monotonic()
+        if deadline > now_m:
+            remaining = max(0.05, deadline - now_m)
+            DELAYED_SCHEDULER.schedule(
+                _careful_restore_scheduler_key(chat_id), remaining,
+                lambda cid=chat_id, dl=deadline: _careful_restore_expire(cid, dl),
+            )
+            return False
+        _careful_restore_sessions.pop(chat_id, None)
+    try:
+        bot_journal("careful_restore_auto_off", chat_id, "idle timeout", "INFO")
+    except Exception:
+        pass
+    def _notice():
+        try:
+            fn = globals().get("send_and_auto_delete")
+            if callable(fn):
+                fn(chat_id, f"⏰ Аккуратное восстановление отключено: {_format_duration_short(internal_timer_seconds('careful_restore_idle', 120))} не было принятых финансовых значений.", 10)
+            elif globals().get("bot"):
+                bot.send_message(chat_id, "⏰ Аккуратное восстановление отключено по таймеру.")
+        except Exception:
+            pass
+    try:
+        pool = globals().get("UI_TASK_POOL") or globals().get("BACKGROUND_TASK_POOL")
+        if pool is not None:
+            pool.submit(_notice, key=f"careful-restore-notice:{chat_id}")
+    except Exception:
+        pass
+    return True
+
+
+def careful_restore_status(chat_id: int) -> dict:
+    chat_id = int(chat_id)
+    with _careful_restore_lock:
+        sess = _careful_restore_sessions.get(chat_id)
+        if not isinstance(sess, dict):
+            return {"active": False, "remaining": 0, "day_key": ""}
+        deadline = float(sess.get("deadline", 0.0) or 0.0)
+    if deadline <= time.monotonic():
+        _careful_restore_expire(chat_id, deadline)
+        return {"active": False, "remaining": 0, "day_key": ""}
+    try:
+        day_key = str(get_chat_store(chat_id).get("current_view_day") or finance_today_key(chat_id))[:10]
+    except Exception:
+        day_key = today_key()
+    return {
+        "active": True,
+        "remaining": max(0, int(round(deadline - time.monotonic()))),
+        "day_key": day_key,
+        "enabled_at": sess.get("enabled_at", ""),
+        "last_value_at": sess.get("last_value_at", ""),
+        "accepted": int(sess.get("accepted", 0) or 0),
+    }
+
+
+def careful_restore_active(chat_id: int) -> bool:
+    return bool(careful_restore_status(int(chat_id)).get("active"))
+
+
+def careful_restore_set(chat_id: int, enabled: bool, reason: str = "manual") -> bool:
+    chat_id = int(chat_id)
+    DELAYED_SCHEDULER.cancel(_careful_restore_scheduler_key(chat_id))
+    if not enabled:
+        with _careful_restore_lock:
+            existed = bool(_careful_restore_sessions.pop(chat_id, None))
+        try:
+            bot_journal("careful_restore_off", chat_id, f"reason={reason}; existed={int(existed)}", "INFO")
+        except Exception:
+            pass
+        return False
+    delay = float(internal_timer_seconds("careful_restore_idle", 120))
+    deadline = time.monotonic() + delay
+    try:
+        day_key = str(get_chat_store(chat_id).get("current_view_day") or finance_today_key(chat_id))[:10]
+    except Exception:
+        day_key = today_key()
+    with _careful_restore_lock:
+        _careful_restore_sessions[chat_id] = {
+            "deadline": deadline,
+            "enabled_at": now_local().isoformat(timespec="seconds"),
+            "last_value_at": "",
+            "accepted": 0,
+        }
+    DELAYED_SCHEDULER.schedule(
+        _careful_restore_scheduler_key(chat_id), delay,
+        lambda cid=chat_id, dl=deadline: _careful_restore_expire(cid, dl),
+    )
+    try:
+        bot_journal("careful_restore_on", chat_id, f"day={day_key}; idle={delay:.0f}s", "INFO")
+    except Exception:
+        pass
+    return True
+
+
+def careful_restore_toggle(chat_id: int) -> bool:
+    chat_id = int(chat_id)
+    return careful_restore_set(chat_id, not careful_restore_active(chat_id), "toggle")
+
+
+def careful_restore_touch_value(chat_id: int, day_key: str, msg=None, record=None) -> bool:
+    """Refresh inactivity timer only after a finance value was actually accepted."""
+    chat_id = int(chat_id)
+    if not careful_restore_active(chat_id):
+        return False
+    delay = float(internal_timer_seconds("careful_restore_idle", 120))
+    deadline = time.monotonic() + delay
+    with _careful_restore_lock:
+        sess = _careful_restore_sessions.get(chat_id)
+        if not isinstance(sess, dict):
+            return False
+        sess["deadline"] = deadline
+        sess["last_value_at"] = now_local().isoformat(timespec="seconds")
+        sess["accepted"] = int(sess.get("accepted", 0) or 0) + 1
+        accepted = int(sess["accepted"])
+    DELAYED_SCHEDULER.cancel(_careful_restore_scheduler_key(chat_id))
+    DELAYED_SCHEDULER.schedule(
+        _careful_restore_scheduler_key(chat_id), delay,
+        lambda cid=chat_id, dl=deadline: _careful_restore_expire(cid, dl),
+    )
+    try:
+        mid = int(getattr(msg, "message_id", 0) or 0) if msg is not None else 0
+        rid = int((record or {}).get("id", 0) or 0) if isinstance(record, dict) else 0
+        bot_journal("careful_restore_value", chat_id, f"day={day_key}; msg={mid}; record={rid}; accepted={accepted}; idle_reset={delay:.0f}s", "INFO")
+    except Exception:
+        pass
+    return True
+
+
+def careful_restore_button_label(chat_id: int) -> str:
+    st = careful_restore_status(int(chat_id))
+    if not st.get("active"):
+        return "🩹 Аккуратное восстановление: ВЫКЛ"
+    dk = str(st.get("day_key") or "")
+    try:
+        dk = datetime.strptime(dk, "%Y-%m-%d").strftime("%d.%m")
+    except Exception:
+        pass
+    return f"🩹 Аккуратное восстановление: ВКЛ · {dk}"
+
 
 
 def _format_duration_short(seconds: int | float) -> str:
@@ -7861,4 +8039,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

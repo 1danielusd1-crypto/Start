@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -8116,6 +8116,77 @@ def _v184_settings_scope_ok(chat_id: int, candidate: dict, platform_owner: bool 
     return True
 
 
+
+def restore_forward_edges_exact(root_key: str, chat_id: int, outgoing: dict, incoming: dict) -> dict:
+    """STRICT restore of forwarding edges belonging to one chat, without merge or per-edge side effects."""
+    if root_key not in {"forward_rules", "forward_finance"}:
+        raise ValueError(f"Unsupported forwarding root: {root_key}")
+    cid = str(int(chat_id))
+    outgoing = outgoing if isinstance(outgoing, dict) else {}
+    incoming = incoming if isinstance(incoming, dict) else {}
+    lock = globals().get("_V166_FORWARD_STATE_LOCK")
+
+    def _apply():
+        root = data.setdefault(root_key, {})
+        if not isinstance(root, dict):
+            root = {}
+            data[root_key] = root
+
+        # Exact REPLACE for this chat: delete all old outgoing and incoming edges first.
+        root.pop(cid, None)
+        for src in list(root.keys()):
+            row = root.get(src)
+            if not isinstance(row, dict):
+                continue
+            row.pop(cid, None)
+            if not row:
+                root.pop(src, None)
+
+        # Restore exactly what the file contains for this chat.
+        if outgoing:
+            root[cid] = _v184_copy(outgoing)
+        for src, value in incoming.items():
+            ss = str(src)
+            if ss == cid:
+                # Self edge, if it exists in the backup, belongs to outgoing and must not be duplicated.
+                if cid not in root and outgoing:
+                    root[cid] = _v184_copy(outgoing)
+                continue
+            root.setdefault(ss, {})[cid] = _v184_copy(value)
+
+    if lock is not None:
+        with data_lock, lock:
+            _apply()
+    else:
+        with data_lock:
+            _apply()
+
+    # Pair order is derived UI state. Drop stale pairs touching this chat; current relations
+    # will be rediscovered lazily by the forwarding menu without modifying business data.
+    try:
+        order = data.get("forward_pair_order")
+        if isinstance(order, list):
+            kept = []
+            for key in order:
+                try:
+                    a, b = str(key).split(":", 1)
+                except Exception:
+                    kept.append(key); continue
+                if a == cid or b == cid:
+                    continue
+                kept.append(key)
+            data["forward_pair_order"] = kept
+    except Exception:
+        pass
+
+    return {
+        "root": root_key,
+        "chat_id": int(chat_id),
+        "outgoing": len(outgoing),
+        "incoming": len(incoming),
+    }
+
+
 def _v184_apply_chat_settings_backup(chat_id: int, settings_backup: dict, *, platform_owner: bool = False) -> dict:
     """Strict file restore for chat settings. Current live settings/forward edges never fill gaps."""
     if not isinstance(settings_backup, dict):
@@ -8175,8 +8246,8 @@ def _v184_apply_chat_settings_backup(chat_id: int, settings_backup: dict, *, pla
         g = settings_backup.get("global_forward_finance") or {}
         if ff_out is None and isinstance(g, dict): ff_out = (g.get(cid) or {})
         if ff_in is None and isinstance(g, dict): ff_in = {src:(dsts or {}).get(cid) for src,dsts in g.items() if isinstance(dsts,dict) and cid in dsts}
-    _v184_restore_forward_edges("forward_rules", int(chat_id), fr_out or {}, fr_in or {})
-    _v184_restore_forward_edges("forward_finance", int(chat_id), ff_out or {}, ff_in or {})
+    restore_forward_edges_exact("forward_rules", int(chat_id), fr_out or {}, fr_in or {})
+    restore_forward_edges_exact("forward_finance", int(chat_id), ff_out or {}, ff_in or {})
 
     fac = settings_backup.get("finance_active_chats")
     enabled = bool(settings_backup.get("finance_mode", store.get("finance_mode", False)))
@@ -8339,8 +8410,8 @@ def _v186_clear_chat_scope_before_restore(chat_id: int) -> None:
                 continue
     except Exception: pass
     try:
-        _v184_restore_forward_edges("forward_rules", cid, {}, {})
-        _v184_restore_forward_edges("forward_finance", cid, {}, {})
+        restore_forward_edges_exact("forward_rules", cid, {}, {})
+        restore_forward_edges_exact("forward_finance", cid, {}, {})
     except Exception: pass
     try:
         finance_active_chats.discard(cid)
@@ -9493,4 +9564,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

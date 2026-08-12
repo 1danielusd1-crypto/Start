@@ -1,0 +1,35 @@
+{
+  "version": "bot_v188_restore_forward_fix_final",
+  "runtime_parts": 27,
+  "tests": {
+    "compile_errors": [],
+    "manifest_hash_bad": [],
+    "marker_bad": [],
+    "duplicate_top_level_count": 0,
+    "duplicate_top_level": {},
+    "callback_registration_count": 1,
+    "callback_registrations": [
+      [
+        "89_callback_final.py",
+        111,
+        "bot.callback_query_handler(func=lambda c: True)(final_callback_router)"
+      ]
+    ],
+    "unresolved__v184": [],
+    "unresolved__v186": [],
+    "unresolved__v187": [],
+    "unresolved__v188": [],
+    "restore_forward_exact_defs": 1,
+    "old_missing_helper_refs": [],
+    "backup_start_refs": [],
+    "forward_rules_exact_pass": true,
+    "forward_finance_exact_pass": true,
+    "pair_order_cleanup_pass": true,
+    "last_version_assignment": [
+      "85_runtime_control.py",
+      1392,
+      "bot_v188_restore_forward_fix_final"
+    ]
+  },
+  "pass": true
+}

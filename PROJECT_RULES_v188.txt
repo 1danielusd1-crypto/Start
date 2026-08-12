@@ -1,0 +1,8 @@
+v188 project rules
+- Canonical durable root: /TelegramBotBackups (or exact MEGA_BACKUP_DIR).
+- /restore = strict REPLACE FROM FILE; no automatic merge with live state.
+- pre_restore durable backup before destructive restore.
+- Restore JSON/ISON/GZ must restore all saved state in its scope.
+- Forwarding edges for restored chat are replaced exactly from file; unrelated chats untouched.
+- Storage/Data Constitution must not be overridden by UI/performance layers.
+- New/changed source files first and last line contain only version marker.

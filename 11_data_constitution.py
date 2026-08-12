@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 """v185 DATA CONSTITUTION.
 
 Immutable storage contract. UI/performance modules must not redefine these functions.
@@ -650,4 +650,4 @@ def constitution_verify_protected_symbols() -> tuple[bool, str]:
         constitution_set_quarantine("storage-core symbol redefined: " + ", ".join(changed))
         return False, ", ".join(changed)
     return True, "ok"
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

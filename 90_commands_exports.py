@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -135,7 +135,7 @@ def find_record_by_operation_key(chat_id: int, operation_key: str):
         pass
     return None
 
-def _v177_legacy_0227_add_record_to_chat(
+def _finance_add_record_base(
     chat_id: int,
     amount: float,
     note: str,
@@ -215,9 +215,8 @@ def _v177_legacy_0227_add_record_to_chat(
         except Exception as _v168_local_exc:
             try: log_error(f"v168 record local commit {chat_id}: {_v168_local_exc}")
             except Exception: pass
-        try:
-            if "schedule_financial_window_refresh" in globals(): schedule_financial_window_refresh(int(chat_id), str(day_key), reason="record_insert_immediate_v168")
-        except Exception: pass
+        # UI refresh is intentionally scheduled once by the final add_record_to_chat
+        # after reserve/gomonk state is settled; do not enqueue a pre-reserve repaint here.
         try:
             finance_cache_invalidate(chat_id, "finance_add")
             finance_integrity_append(chat_id, "add", rec)
@@ -225,9 +224,6 @@ def _v177_legacy_0227_add_record_to_chat(
             log_error(f"finance add integrity: {_integrity_exc}")
         if op_id and "operation_complete" in globals(): operation_complete(op_id, f"record={rec.get('id')}")
         return rec
-try: _v177_legacy_0227_add_record_to_chat.__name__ = 'add_record_to_chat'
-except Exception: pass
-add_record_to_chat = _v177_legacy_0227_add_record_to_chat
 
 def delete_record_in_chat(chat_id: int, rid: int):
     if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
@@ -1697,4 +1693,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

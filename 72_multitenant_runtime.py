@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 # ---- integrated from 92_v147_diagnostic_hardening.py ----
 # ─────────────────────────────────────────────────────────────
 # v147: защита диагностических секретов, точные reminder-witness и безопасный back-main,
@@ -2494,7 +2494,7 @@ from copy import deepcopy as _v149_deepcopy
 from datetime import timedelta as _v149_timedelta
 from pathlib import Path as _v149_Path
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 V149_GOOGLE_SCHEMA_VERSION = 1
 V149_REMINDER_SCHEMA_VERSION = 1
 _V149_GOOGLE_CONTEXT = _v149_threading.local()
@@ -3946,4 +3946,4 @@ def _v177_legacy_0266_v149_extension_callback(call, data_str: str) -> bool:
 try: _v177_legacy_0266_v149_extension_callback.__name__ = 'v149_extension_callback'
 except Exception: pass
 v149_extension_callback = _v177_legacy_0266_v149_extension_callback
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

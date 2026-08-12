@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -421,7 +421,7 @@ def _text_without_spans(text: str, spans: list[tuple[int, int]]) -> str:
     return re.sub(r"\s+", " ", "".join(chars)).strip()
 
 
-def _v177_legacy_0136_add_record_to_currency_ledger(
+def _base_add_currency_record(
     chat_id: int,
     ledger: str,
     amount: float,
@@ -485,12 +485,9 @@ def _v177_legacy_0136_add_record_to_currency_ledger(
     except Exception as _integrity_exc:
         log_error(f"finance currency add integrity: {_integrity_exc}")
     if op_id and "operation_complete" in globals(): operation_complete(op_id, f"record={rid} currency={ledger}")
-try: _v177_legacy_0136_add_record_to_currency_ledger.__name__ = '_add_record_to_currency_ledger'
-except Exception: pass
-_add_record_to_currency_ledger = _v177_legacy_0136_add_record_to_currency_ledger
 
 
-def _v177_legacy_0138_handle_finance_text(msg):
+def handle_finance_text(msg):
     """
     Обработка обычного ввода для финучёта.
     Теперь принимает сумму не только из text, но и из caption
@@ -511,6 +508,17 @@ def _v177_legacy_0138_handle_finance_text(msg):
             except Exception:
                 pass
             return True
+    except Exception:
+        pass
+    # Finalized v152 per-chat permission check: integrated here instead of a later wrapper.
+    try:
+        uid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
+        if "v152_chat_permission_allowed" in globals() and "_v152_actor_is_platform_owner" in globals():
+            capability = "finance.usd" if ("usd_transactions_view_enabled" in globals() and usd_transactions_view_enabled(chat_id)) else "finance.ars"
+            if not _v152_actor_is_platform_owner(uid) and (not v152_chat_permission_allowed(chat_id, "finance.mode") or not v152_chat_permission_allowed(chat_id, capability)):
+                try: send_and_auto_delete(chat_id, "⛔ Добавление финансовых операций запрещено правами этого чата.", 8)
+                except Exception: pass
+                return True
     except Exception:
         pass
     bot_journal("finance_text_start", chat_id, describe_msg_for_log(msg))
@@ -539,11 +547,18 @@ def _v177_legacy_0138_handle_finance_text(msg):
         log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
         return False
 
-    entry_day = finance_day_key_from_message(msg)
-    store["current_view_day"] = entry_day
+    # v187 careful restore: only a manually forwarded Telegram message is redirected
+    # to the day currently opened in the main finance window. Ordinary fresh input
+    # and automatic forwarding keep their normal date semantics.
+    careful_forward = bool(careful_restore_active(chat_id) and is_forwarded_telegram_message(msg))
+    if careful_forward:
+        entry_day = str(store.get("current_view_day") or finance_today_key(chat_id))[:10]
+    else:
+        entry_day = finance_day_key_from_message(msg)
+        store["current_view_day"] = entry_day
 
     try:
-        add_record_to_chat(
+        rec = add_record_to_chat(
             chat_id,
             amount,
             note,
@@ -555,17 +570,25 @@ def _v177_legacy_0138_handle_finance_text(msg):
             usd_only=comp.get("usd_only", False),
             source_finance_text=comp.get("source_finance_text", text),
         )
+        if careful_forward:
+            careful_restore_touch_value(chat_id, entry_day, msg=msg, record=rec)
         schedule_finalize(chat_id, entry_day)
         return True
     except Exception as e:
         log_error(f"[FINANCE ADD ERROR] {describe_msg_for_log(msg)} amount={amount} note={note!r}: {e}")
         return False
-try: _v177_legacy_0138_handle_finance_text.__name__ = 'handle_finance_text'
-except Exception: pass
-handle_finance_text = _v177_legacy_0138_handle_finance_text
 
-def _v177_legacy_0139_handle_finance_edit(msg):
+def handle_finance_edit(msg):
     chat_id = msg.chat.id
+    try:
+        uid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
+        if "v152_chat_permission_allowed" in globals() and "_v152_actor_is_platform_owner" in globals():
+            if not _v152_actor_is_platform_owner(uid) and not v152_chat_permission_allowed(chat_id, "finance.edit"):
+                try: send_and_auto_delete(chat_id, "⛔ Редактирование операций запрещено правами этого чата.", 8)
+                except Exception: pass
+                return False
+    except Exception:
+        pass
     if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
         try: send_and_auto_delete(chat_id, "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы. Используйте /data_constitution.", 20)
         except Exception: pass
@@ -630,9 +653,6 @@ def _v177_legacy_0139_handle_finance_edit(msg):
     except Exception as _constitution_edit_exc:
         log_error(f"DATA CONSTITUTION edited finance ledger: {_constitution_edit_exc}")
     return True
-try: _v177_legacy_0139_handle_finance_edit.__name__ = 'handle_finance_edit'
-except Exception: pass
-handle_finance_edit = _v177_legacy_0139_handle_finance_edit
 def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str, owner: int = 0, source_msg=None):
     with locked_chat(dst_chat_id):
         if not is_finance_mode(dst_chat_id):
@@ -1025,4 +1045,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

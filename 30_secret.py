@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
@@ -2247,4 +2247,4 @@ def cmd_forward_copy_edit(msg):
         delete_message_later(msg.chat.id, msg.message_id, 1)
     except Exception as e:
         log_error(f"cmd_forward_copy_edit: {e}")
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

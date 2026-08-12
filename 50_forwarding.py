@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -2349,4 +2349,4 @@ def forward_any_message(source_chat_id: int, msg):
 
     except Exception as e:
         log_error(f"forward_any_message fatal: {e}")
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

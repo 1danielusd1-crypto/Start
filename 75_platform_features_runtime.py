@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 # ---- integrated from 113_v163_audit_hardening.py ----
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
@@ -7,7 +7,7 @@ import contextlib as _v163_contextlib
 import threading as _v163_threading
 import time as _v163_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 # ---------------------------------------------------------------------------
 # 1) Priority lanes: /start never waits behind ordinary content for the chat.
@@ -593,7 +593,7 @@ import tempfile as _v164_tempfile
 import threading as _v164_threading
 import time as _v164_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 V164_CIRCLE_SCHEMA = 1
 
 _V164_LOCK = _v164_threading.RLock()
@@ -1819,7 +1819,7 @@ import shutil as _v165_shutil
 import sqlite3 as _v165_sqlite3
 import tempfile as _v165_tempfile
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 _V165_PREV_RESTORE_VALIDATE = globals().get("_v153_validate_restore_gz")
 
@@ -2014,7 +2014,7 @@ import tempfile as _v166_tempfile
 import threading as _v166_threading
 import time as _v166_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 # ---------------------------------------------------------------------------
 # Pools / execution lanes.
@@ -2842,7 +2842,7 @@ import zipfile as _v167_zipfile
 import xml.etree.ElementTree as _v167_ET
 from datetime import datetime as _v167_datetime, timedelta as _v167_timedelta
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 V167_FILE_MARKER = "v170_clear_journal_names"
 
 _V167_BASE_V151_CATEGORIES = globals().get("_v151_categories")
@@ -4078,7 +4078,7 @@ import tempfile as _v171_tempfile
 import threading as _v171_threading
 import time as _v171_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 V171_FILE_MARKER = "v171_all_tz_reliability"
 
 # ---------------------------------------------------------------------------
@@ -4946,4 +4946,4 @@ try:
     )
 except Exception:
     pass
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -12,7 +12,7 @@ import statistics as _v176_statistics
 import threading as _v176_threading
 import time as _v176_time
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -739,6 +739,14 @@ def build_info_text(chat_id: int, *args, **kwargs) -> str:
         rows = [r for r in str(base).splitlines() if not r.strip().startswith(("🧱 Тяжёлые процессы:", "⚡ Тяжёлые процессы:", "⚙️ Процессы / скорость:"))]
         off = sum(1 for c in _V176_PROCESS_DEFS if not v176_process_enabled(c))
         rows += ["", f"⚙️ Процессы / скорость: отключено {off}/{len(_V176_PROCESS_DEFS)}"]
+        try:
+            cr = careful_restore_status(cid)
+            if cr.get("active"):
+                rows.append(f"🩹 Аккуратное восстановление: ВКЛ → {fmt_date_ddmmyy(cr.get('day_key') or today_key())}; осталось {_format_duration_short(cr.get('remaining', 0))}")
+            else:
+                rows.append("🩹 Аккуратное восстановление: ВЫКЛ")
+        except Exception:
+            pass
         base = "\n".join(rows).strip()
     return str(base)[:3900]
 
@@ -847,6 +855,18 @@ def build_info_keyboard(chat_id: int):
             grouped.extend(block)
             first = False
         rows = grouped
+
+    # v187 temporary manual replay switch. It is owner-only and RAM-only.
+    if cid == int(OWNER_ID or 0):
+        if not any(_v177_info_btn_cb(b) == "careful_restore_toggle" for row in rows for b in (row or [])):
+            insert_at = len(rows)
+            for idx, row in enumerate(rows):
+                labels = " ".join(_v177_info_btn_text(b) for b in (row or [])).casefold()
+                callbacks = " ".join(_v177_info_btn_cb(b) for b in (row or []))
+                if "назад" in labels or "закры" in labels or "info_close" in callbacks or "back_main" in callbacks:
+                    insert_at = idx
+                    break
+            rows.insert(insert_at, [IB(careful_restore_button_label(cid), callback_data="careful_restore_toggle")])
 
     # v178 owner-admin process/speed center.  This replaces only the old v175
     # heavy-toggle control; the older functional "⚙️ Процессы" menu remains.
@@ -1369,5 +1389,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v179 authoritative runtime version after integrated historical modules.
-VERSION = "bot_v186_restore_exact_fast"
-# v186_restore_exact_fast
+VERSION = "bot_v188_restore_forward_fix_final"
+# v188_restore_forward_fix_final

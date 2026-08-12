@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -940,6 +940,12 @@ def render_day_window(chat_id: int, day_key: str):
     label = f"{dk} ({tag}, {wd})" if tag else f"{dk} ({wd})"
 
     header = [f"📅 {label}", ""]
+    try:
+        _cr = careful_restore_status(int(chat_id))
+        if _cr.get("active"):
+            header += [f"🩹 Аккуратное восстановление ВКЛ: пересланные значения → {fmt_date_ddmmyy(day_key)} · ⏰ {_format_duration_short(_cr.get('remaining', 0))}", ""]
+    except Exception:
+        pass
     mode = currency_mode(chat_id) if version_mode_feature("daily_usd") else "ars"
     rate_info = usd_rate_cached(force=False) if mode != "ars" else None
     total_income = 0.0
@@ -2153,4 +2159,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final

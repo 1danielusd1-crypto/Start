@@ -1,4 +1,4 @@
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -12,7 +12,7 @@ import threading as _v150_threading
 import time as _v150_time
 from datetime import datetime as _v150_datetime
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 V150_CHAT_STATUSES = {"active", "unreachable", "bot_removed", "migrated", "archived"}
 V150_CHAT_STATUS_LABELS = {
     "active": "🟢 active",
@@ -29,8 +29,8 @@ _V150_BASE_REMINDER_MENU_KEYBOARD = globals().get("build_reminder_menu_keyboard"
 _V150_BASE_CATEGORY_ROWS = globals().get("build_exact_category_stats_xlsx_rows")
 _V150_BASE_SIMPLE_ROWS = globals().get("_xlsx_simple_rows_with_balances")
 _V150_BASE_COMPACT_ROWS = globals().get("_compact_simple_excel_rows_and_annotations")
-_V150_BASE_ADD_RECORD = globals().get("add_record_to_chat")
-_V150_BASE_ADD_CURRENCY_RECORD = globals().get("_add_record_to_currency_ledger")
+_V150_BASE_ADD_RECORD = globals().get("_finance_add_record_base")
+_V150_BASE_ADD_CURRENCY_RECORD = globals().get("_base_add_currency_record")
 _V150_BASE_DURABLE_REQUIRED = globals().get("durable_task_required")
 _V150_BASE_DURABLE_EXPECTED = globals().get("_durable_expected_effects")
 _V150_BASE_DURABLE_REPORT = globals().get("_durable_effect_report")
@@ -399,7 +399,7 @@ def _v150_prepare_intent(chat_id: int, currency: str, source_msg, amount: float,
     return key
 
 
-def _v177_legacy_0228_add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str = "", usd_only: bool = False, source_finance_text: str = ""):
+def _v150_add_record_compat(chat_id: int, amount: float, note: str, owner: int, source_msg=None, day_key=None, usd_amount=None, usd_note: str = "", usd_only: bool = False, source_finance_text: str = ""):
     _v150_prepare_intent(int(chat_id), "ars", source_msg, amount, note)
     if usd_amount is not None:
         _v150_prepare_intent(int(chat_id), "usd", source_msg, usd_amount, usd_note or note)
@@ -409,12 +409,9 @@ def _v177_legacy_0228_add_record_to_chat(chat_id: int, amount: float, note: str,
         if usd_amount is not None:
             _v150_apply_reserve_cover(int(chat_id), "usd", rec)
     return rec
-try: _v177_legacy_0228_add_record_to_chat.__name__ = 'add_record_to_chat'
-except Exception: pass
-add_record_to_chat = _v177_legacy_0228_add_record_to_chat
 
 
-def _v177_legacy_0137_add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, note: str, owner: int, source_msg=None, day_key: str | None = None):
+def _v150_add_currency_record_compat(chat_id: int, ledger: str, amount: float, note: str, owner: int, source_msg=None, day_key: str | None = None):
     ledger = "usd" if str(ledger).lower() == "usd" else "ars"
     _v150_prepare_intent(int(chat_id), ledger, source_msg, amount, note)
     store = get_chat_store(int(chat_id))
@@ -433,9 +430,6 @@ def _v177_legacy_0137_add_record_to_currency_ledger(chat_id: int, ledger: str, a
     if isinstance(rec, dict):
         _v150_apply_reserve_cover(int(chat_id), ledger, rec)
     return rec
-try: _v177_legacy_0137_add_record_to_currency_ledger.__name__ = '_add_record_to_currency_ledger'
-except Exception: pass
-_add_record_to_currency_ledger = _v177_legacy_0137_add_record_to_currency_ledger
 
 
 def _v150_repair_pending_rebalances() -> int:
@@ -1099,7 +1093,7 @@ import re as _v151_re
 import threading as _v151_threading
 from datetime import datetime as _v151_datetime, timedelta as _v151_timedelta
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 _V151_EXPORT_LOCAL = _v151_threading.local()
 _V151_MONTH_LOCAL = _v151_threading.local()
@@ -1110,8 +1104,8 @@ _V151_BASE_SEND_EXACT_EXPORT = globals().get("send_exact_range_export")
 _V151_BASE_PERIOD_ROWS = globals().get("_period_export_rows")
 _V151_BASE_EXACT_ROWS = globals().get("_exact_export_rows")
 _V151_BASE_SET_WEBHOOK = globals().get("set_webhook")
-_V151_BASE_ADD_RECORD = globals().get("_V150_BASE_ADD_RECORD") or globals().get("add_record_to_chat")
-_V151_BASE_ADD_LEDGER_RECORD = globals().get("_V150_BASE_ADD_CURRENCY_RECORD") or globals().get("_add_record_to_currency_ledger")
+_V151_BASE_ADD_RECORD = globals().get("_finance_add_record_base")
+_V151_BASE_ADD_LEDGER_RECORD = globals().get("_base_add_currency_record")
 
 
 def _v151_float(value, default=0.0) -> float:
@@ -1791,15 +1785,13 @@ def add_record_to_chat(chat_id: int, amount: float, note: str, owner: int, sourc
     if isinstance(rec, dict):
         try: ensure_finance_record_uid(int(chat_id), rec)
         except Exception: pass
-        try: persist_finance_chat_local_fast(int(chat_id))
-        except Exception: pass
-        try: schedule_financial_window_refresh(int(chat_id), str(rec.get("day_key") or day_key or ""), reason="record_add_fast_v168")
-        except Exception: pass
         _v151_apply_reserve_cover(int(chat_id), "ars", rec)
         if usd_amount is not None:
             _v151_apply_reserve_cover(int(chat_id), "usd", rec)
         try: persist_finance_chat_local_fast(int(chat_id))
         except Exception: pass
+        # The caller's single schedule_finalize() owns the visible repaint.
+        # Keeping UI scheduling out of the storage primitive prevents duplicate queue bursts.
     return rec
 
 
@@ -1824,12 +1816,10 @@ def _add_record_to_currency_ledger(chat_id: int, ledger: str, amount: float, not
     if isinstance(rec, dict):
         try: ensure_finance_record_uid(int(chat_id), rec)
         except Exception: pass
-        try: persist_finance_chat_local_fast(int(chat_id))
-        except Exception: pass
-        try: schedule_financial_window_refresh(int(chat_id), str(rec.get("day_key") or day_key or ""), reason="currency_record_add_fast_v168")
-        except Exception: pass
         _v151_apply_reserve_cover(int(chat_id), ledger, rec)
         try: persist_finance_chat_local_fast(int(chat_id))
+        except Exception: pass
+        try: schedule_financial_window_refresh(int(chat_id), str(rec.get("day_key") or day_key or ""), reason="currency_record_add_final_v187")
         except Exception: pass
     return result if result is not None else rec
 
@@ -2071,7 +2061,7 @@ def set_webhook():
     return _V151_BASE_SET_WEBHOOK()
 
 # ---- integrated from 102_v152_human_journals_chat_rights.py ----
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 import functools as _v152_functools
 import io as _v152_io
@@ -2704,28 +2694,8 @@ def _v152_install_command_wrappers() -> int:
     return wrapped
 
 
-# In-handler enforcement for ordinary finance input/edit and forwarding, including non-slash messages.
-_V152_ORIG_HANDLE_FINANCE_TEXT = globals().get("handle_finance_text")
-def handle_finance_text(msg):
-    cid = int(msg.chat.id); uid = _v152_actor_id(msg)
-    capability = "finance.usd" if usd_transactions_view_enabled(cid) else "finance.ars"
-    if not _v152_actor_is_platform_owner(uid) and (not v152_chat_permission_allowed(cid, "finance.mode") or not v152_chat_permission_allowed(cid, capability)):
-        try: send_and_auto_delete(cid, "⛔ Добавление финансовых операций запрещено правами этого чата.", 8)
-        except Exception: pass
-        return True
-    return _V152_ORIG_HANDLE_FINANCE_TEXT(msg) if callable(_V152_ORIG_HANDLE_FINANCE_TEXT) else False
-
-
-_V152_ORIG_HANDLE_FINANCE_EDIT = globals().get("handle_finance_edit")
-def handle_finance_edit(msg):
-    cid = int(msg.chat.id); uid = _v152_actor_id(msg)
-    if not _v152_actor_is_platform_owner(uid) and not v152_chat_permission_allowed(cid, "finance.edit"):
-        try: send_and_auto_delete(cid, "⛔ Редактирование операций запрещено правами этого чата.", 8)
-        except Exception: pass
-        return False
-    return _V152_ORIG_HANDLE_FINANCE_EDIT(msg) if callable(_V152_ORIG_HANDLE_FINANCE_EDIT) else False
-
-
+# In-handler enforcement for ordinary finance input/edit is finalized directly in
+# 40_message_router.py. No later handle_finance_text/handle_finance_edit wrappers.
 _V152_ORIG_HANDLE_GOMONK_INSERT = globals().get("handle_gomonk_insert_message")
 def handle_gomonk_insert_message(msg):
     cid = int(msg.chat.id); uid = _v152_actor_id(msg)
@@ -3074,7 +3044,7 @@ import zipfile as _v153_zipfile
 from datetime import datetime as _v153_datetime
 from pathlib import Path as _V153Path
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 V153_EXPORT_SCHEMA = 1
 V153_OLD_MEGA_ROOT = "/TelegramBotBackups"
 V153_NEW_MEGA_ROOT = "/TelegramBotBackups"
@@ -4733,7 +4703,7 @@ import gzip as _v154_gzip
 import tempfile as _v154_tempfile
 import json as _v154_json
 
-VERSION = "bot_v186_restore_exact_fast"
+VERSION = "bot_v188_restore_forward_fix_final"
 
 _V154_BASE_PERIOD_EXCEL_KEYBOARD = globals().get("_period_excel_style_keyboard")
 _V154_BASE_CATEGORY_COMPACT = globals().get("_category_rows_without_description")
@@ -5082,4 +5052,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v186_restore_exact_fast
+# v188_restore_forward_fix_final
