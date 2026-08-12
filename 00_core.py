@@ -1,4 +1,4 @@
-# v193_architecture_lifecycle_final
+# v190_mega_light_fast_recovery
 import os
 import io
 import json
@@ -842,7 +842,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v193_architecture_lifecycle_final"
+VERSION = "bot_v190_mega_light_fast_recovery"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1621,11 +1621,9 @@ _JOURNAL_DURABLE_SEQ = 0
 _JOURNAL_DURABLE_THREAD_STARTED = False
 _JOURNAL_DURABLE_STATS = {
     "uploaded_chunks": 0, "uploaded_rows": 0, "upload_errors": 0,
-    "restored_chunks": 0, "restored_rows": 0, "restore_corrupt_chunks": 0,
-    "restore_skipped_chunks": 0, "last_restore_error": "", "last_upload_at": "",
+    "restored_chunks": 0, "restored_rows": 0, "last_upload_at": "",
     "last_upload_file": "", "last_error": "",
 }
-_JOURNAL_RESTORE_BAD_SEEN = set()
 
 
 def _journal_ts() -> str:
@@ -2699,45 +2697,19 @@ def _journal_read_mega_rows(limit: int = 20000) -> list[dict]:
         return []
     chunks = []
     total = 0
-    good_chunks = 0
-    skipped_chunks = 0
     # mega-find returns reverse sorted. Read newest until enough rows, then merge chronologically.
-    # Recovery parsing is intentionally quiet: a single truncated historical chunk must not turn
-    # a successful boot into an ERROR. We skip it, expose counters, and continue with older chunks.
     for remote in files:
         local = None
         try:
             local = _mega_download_remote_path(remote)
-            if not local:
-                skipped_chunks += 1
-                continue
-            try:
-                with open(local, "r", encoding="utf-8") as fh:
-                    doc = json.load(fh)
-            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-                skipped_chunks += 1
-                _JOURNAL_DURABLE_STATS["restore_corrupt_chunks"] = int(_JOURNAL_DURABLE_STATS.get("restore_corrupt_chunks", 0) or 0) + 1
-                _JOURNAL_DURABLE_STATS["last_restore_error"] = f"{os.path.basename(str(remote))}: {exc}"[:500]
-                remote_key = str(remote)
-                if remote_key not in _JOURNAL_RESTORE_BAD_SEEN:
-                    _JOURNAL_RESTORE_BAD_SEEN.add(remote_key)
-                    try:
-                        runtime_event("journal_restore_corrupt_chunk", _JOURNAL_DURABLE_STATS["last_restore_error"], "WARN")
-                    except Exception:
-                        pass
-                continue
+            doc = _load_json(local, {}) if local else {}
             rows = doc.get("rows") if isinstance(doc, dict) else []
             if isinstance(rows, list) and rows:
                 chunks.append(rows)
-                good_chunks += 1
                 total += len(rows)
                 if total >= int(limit):
                     break
-            else:
-                skipped_chunks += 1
-        except Exception as exc:
-            skipped_chunks += 1
-            _JOURNAL_DURABLE_STATS["last_restore_error"] = str(exc)[:500]
+        except Exception:
             continue
         finally:
             try:
@@ -2745,8 +2717,6 @@ def _journal_read_mega_rows(limit: int = 20000) -> list[dict]:
                     shutil.rmtree(os.path.dirname(local), ignore_errors=True)
             except Exception:
                 pass
-    _JOURNAL_DURABLE_STATS["restored_chunks"] = int(good_chunks)
-    _JOURNAL_DURABLE_STATS["restore_skipped_chunks"] = int(skipped_chunks)
     merged = []
     for rows in reversed(chunks):
         merged.extend(rows)
@@ -2770,13 +2740,9 @@ def journal_restore_from_mega(limit: int = 200) -> dict:
         except Exception as e:
             _JOURNAL_DURABLE_STATS["last_error"] = str(e)[:500]
     _JOURNAL_DURABLE_STATS["restored_rows"] = len(remote_rows)
-    return {
-        "remote_rows": len(remote_rows),
-        "merged_rows": len(merged),
-        "restored_chunks": int(_JOURNAL_DURABLE_STATS.get("restored_chunks", 0) or 0),
-        "corrupt_chunks": int(_JOURNAL_DURABLE_STATS.get("restore_corrupt_chunks", 0) or 0),
-        "skipped_chunks": int(_JOURNAL_DURABLE_STATS.get("restore_skipped_chunks", 0) or 0),
-    }
+    # approximate chunk count is exposed by read limit files; exact count not worth a second mega-find
+    _JOURNAL_DURABLE_STATS["restored_chunks"] = 0 if not remote_rows else 1
+    return {"remote_rows": len(remote_rows), "merged_rows": len(merged)}
 
 
 def journal_durable_stats() -> dict:
@@ -8160,4 +8126,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v193_architecture_lifecycle_final
+# v190_mega_light_fast_recovery

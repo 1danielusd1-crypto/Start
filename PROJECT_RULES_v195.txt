@@ -1,0 +1,11 @@
+v195 PROJECT RULES
+1. Excel/table fixes are TOTAL: all XLSX/CSV/Google paths, all periods, all roles/contours.
+2. ARS and USD are always independent.
+3. ARS historical stored amounts are accounting facts; exports must never reparse old source text into different money.
+4. Opening balance is one canonical value shared by main accounting, Remaining, Telegram Excel/CSV and Google.
+5. Telegram and Google of the same report use the same builders/formulas.
+6. Summary formulas must anchor to the summary block, not transaction text.
+7. Remaining gomonk switch uses explicit desired state and must react idempotently.
+8. /restore remains strict REPLACE FROM FILE.
+9. Canonical durable root is /TelegramBotBackups.
+10. Changed source files start and end with their version marker only.

@@ -1,0 +1,7 @@
+FULL_bot_v194_excel_canonical_opening_total_final.py
+CHANGELOG_bot_v194.txt
+CODEMAP_v194.json
+DATA_CONSTITUTION_v194.md
+PROJECT_RULES_v194.txt
+SHA256SUMS_bot_v194.txt
+TEST_REPORT_v194.json

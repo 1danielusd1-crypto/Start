@@ -1,0 +1,51 @@
+{
+  "version": "bot_v195_balance_authority_remaining_final",
+  "created_at": "2026-08-12T17:31:52.934953+00:00",
+  "scope": "TOTAL ARS opening-balance authority across bot + remaining window + gomonk toggle + Excel #REF formula collision",
+  "contract": {
+    "ars_truth": "stored ARS accounting amount in the bot ledger; never reparse old source text for reports",
+    "opening": "balance immediately before selected day/range, identical across main accounting, Remaining, XLSX, CSV and Google",
+    "usd": "independent USD ledger; never mixed into ARS",
+    "gomonk_toggle": "explicit desired-state callback 0/1; repeated/delayed callbacks are idempotent",
+    "summary_formulas": "summary rows are selected from the bottom summary block, never a transaction description with the same word"
+  },
+  "real_user_regression": {
+    "backup_close_2026_08_08": 3785348.4000000004,
+    "close_2026_08_09": 3667348.4000000004,
+    "close_2026_08_10": 3297998.4000000004,
+    "correct_close_2026_08_11_and_open_2026_08_12": 3144220.4000000004,
+    "delta_authoritative_balance": 3144220.4000000004,
+    "delta_matches_expected": true,
+    "uploaded_v194_xlsx_wrong_opening": 1501365.33,
+    "wrong_opening_delta": -1642855.0700000003,
+    "remaining_2026_08_11_first_expense_without_gomonk": 3292498.4000000004,
+    "remaining_2026_08_11_first_expense_with_480000_gomonk": 2812498.4000000004
+  },
+  "regressions": {
+    "ars_historical_text_reparse_removed": true,
+    "formula_label_collision_fixed": true,
+    "gomonk_explicit_idempotent": true,
+    "all_export_opening_bridges": {
+      "monthly": true,
+      "exact_ranges": true,
+      "tabl_lsx": true,
+      "remaining_window": true,
+      "google_exact": true,
+      "v151_all_tables": true
+    }
+  },
+  "static_checks": {
+    "runtime_modules": 27,
+    "compile_all": true,
+    "compile_errors": [],
+    "duplicate_top_level_files": {},
+    "callback_final_registrations": 1,
+    "canonical_opening_definition_count": 1,
+    "remaining_opening_bridge_definition_count": 1,
+    "mega_backups_start_refs": 0,
+    "manifest_hashes_markers": true,
+    "manifest_problems": [],
+    "runtime_version_authority": true
+  },
+  "overall": "PASS"
+}

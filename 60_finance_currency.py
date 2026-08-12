@@ -1,4 +1,4 @@
-# v192_excel_ars_usd_delivery_final
+# v195_balance_authority_remaining_final
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -487,15 +487,92 @@ def open_gomonk_window(chat_id: int, message_id: int | None = None, currency: st
         send_or_edit_stored_window(chat_id, "info_msg_id", build_gomonk_menu_text(chat_id, currency), reply_markup=build_gomonk_menu_keyboard(chat_id, currency), delay=None)
 
 
-def _opening_balance_before_day(store: dict, day_key: str) -> float:
-    total = 0.0
-    for rec in (store.get("records", []) or []):
+def _opening_balance_before_day(store: dict, day_key: str, chat_id: int | None = None) -> float:
+    """Official opening balance before ``day_key``.
+
+    v195 keeps ONE runtime authority with Excel/Google: when the canonical export
+    helper is loaded, the remaining window calls that exact helper too.  The
+    fallback below exists only for bootstrap/isolated tests and sums the stored
+    accounting ledger losslessly; it never re-parses historical source text.
+    """
+    canonical = globals().get("_excel_canonical_opening_balance")
+    if callable(canonical) and chat_id is not None:
         try:
-            if _record_day_key(rec) < day_key:
-                total += float(rec.get("amount", 0) or 0)
+            return float(canonical(int(chat_id), "ars", str(day_key or "")[:10], 0, False))
         except Exception:
             pass
-    return total
+    total = 0.0
+    target = str(day_key or "")[:10]
+    try:
+        rows = sorted((store.get("records", []) or []), key=record_sort_key)
+    except Exception:
+        rows = list(store.get("records", []) or [])
+    for rec in rows:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            if _record_day_key(rec) >= target:
+                break
+            total += float(rec.get("amount", 0) or 0)
+        except Exception:
+            continue
+    return float(total)
+
+
+def _remaining_state(chat_id: int, currency: str | None = None) -> bool:
+    settings = _gomonk_settings(int(chat_id), currency)
+    _enabled_key, _entries_key, remaining_key = _gomonk_keys(int(chat_id), currency)
+    return bool(settings.get(remaining_key, True))
+
+
+def _set_remaining_state(chat_id: int, enabled: bool, currency: str | None = None) -> bool:
+    """Atomically set remaining-window gomonk mode to an explicit state."""
+    cid = int(chat_id)
+    cur = _gomonk_currency(cid, currency)
+    with data_lock:
+        settings = _gomonk_settings(cid, cur)
+        _enabled_key, _entries_key, remaining_key = _gomonk_keys(cid, cur)
+        settings[remaining_key] = bool(enabled)
+        value = bool(settings[remaining_key])
+    return value
+
+
+def _toggle_remaining_state(chat_id: int, currency: str | None = None) -> bool:
+    cid = int(chat_id)
+    cur = _gomonk_currency(cid, currency)
+    with data_lock:
+        settings = _gomonk_settings(cid, cur)
+        _enabled_key, _entries_key, remaining_key = _gomonk_keys(cid, cur)
+        settings[remaining_key] = not bool(settings.get(remaining_key, True))
+        value = bool(settings[remaining_key])
+    return value
+
+
+def _persist_remaining_state_async(chat_id: int) -> None:
+    """Persist after the visible Telegram update; never block the button on MEGA."""
+    cid = int(chat_id)
+    def _persist():
+        try:
+            save_data(data, chat_ids=[cid])
+        except Exception as exc:
+            try: log_error(f"remaining state save {cid}: {exc}")
+            except Exception: pass
+        try:
+            schedule_config_backup_for_chats(cid, delay=0.5)
+        except Exception:
+            pass
+    try:
+        pool = globals().get("GENERAL_TASK_POOL")
+        submit_unique = getattr(pool, "submit_unique", None) if pool is not None else None
+        if callable(submit_unique):
+            if submit_unique(f"remaining-state-save:{cid}", _persist):
+                return
+        if pool is not None and hasattr(pool, "submit"):
+            pool.submit(f"remaining-state-save:{cid}", _persist)
+            return
+    except Exception:
+        pass
+    _persist()
 
 
 def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = None) -> str:
@@ -505,37 +582,61 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
     _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id, currency)
     if with_gomonk is None:
         with_gomonk = bool(settings.get(remaining_key, True))
-    reserve = gomonk_total(chat_id, currency) if (with_gomonk and gomonk_enabled(chat_id, currency)) else 0.0
+    gomonk_is_on = bool(gomonk_enabled(chat_id, currency))
+    reserve_total = gomonk_total(chat_id, currency) if gomonk_is_on else 0.0
+    reserve = reserve_total if bool(with_gomonk) else 0.0
     view_usd = currency == "usd" and usd_transactions_view_enabled(int(chat_id))
+
     if view_usd:
-        running = 0.0
-        for rec in sorted((store.get("records", []) or []), key=record_sort_key):
-            try:
-                if _record_day_key(rec) >= str(day_key):
-                    break
-                if financial_view_record_visible(store, rec):
-                    running += float(rec.get("usd_amount", 0) or 0)
-            except Exception:
-                pass
-        day_records = usd_records_for_day(int(chat_id), str(day_key))
-        current_balance = usd_balance_for_chat(int(chat_id))
+        # USD remains a separate canonical ledger; it must never borrow ARS balance.
+        canonical_open = globals().get("_excel_canonical_opening_balance")
+        canonical_range = globals().get("_excel_canonical_records_for_range")
+        canonical_all = globals().get("_v151_all_records")
+        if callable(canonical_open) and callable(canonical_range) and callable(canonical_all):
+            running = float(canonical_open(int(chat_id), "usd", str(day_key), 0, False))
+            day_records = list(canonical_range(int(chat_id), "usd", str(day_key), str(day_key)) or [])
+            current_balance = sum(float(r.get("_v151_amount", 0) or 0) for r in (canonical_all(int(chat_id), "usd") or []))
+            canonical_mode = True
+        else:
+            running = 0.0
+            for rec in sorted((store.get("records", []) or []), key=record_sort_key):
+                try:
+                    if _record_day_key(rec) >= str(day_key):
+                        break
+                    if financial_view_record_visible(store, rec):
+                        running += float(rec.get("usd_amount", 0) or 0)
+                except Exception:
+                    pass
+            day_records = usd_records_for_day(int(chat_id), str(day_key))
+            current_balance = usd_balance_for_chat(int(chat_id))
+            canonical_mode = False
         amount_fmt = lambda value: fmt_usd_native(value)
     else:
-        running = _opening_balance_before_day(store, day_key)
-        day_records = sorted((store.get("daily_records", {}) or {}).get(day_key, []) or [], key=record_sort_key)
+        # ARS source of truth = exact accounting ledger used by the main day window.
+        # This is the key v195 correction: no export parser and no historical text
+        # reinterpretation are allowed in the running-balance window.
+        running = _opening_balance_before_day(store, str(day_key), chat_id=int(chat_id))
+        day_records = sorted((store.get("daily_records", {}) or {}).get(str(day_key), []) or [], key=record_sort_key)
         current_balance = float(store.get("balance", 0) or 0)
+        canonical_mode = False
         amount_fmt = lambda value: format_chat_amount(chat_id, value, mixed_space=False)
+
     lines = [
         f"🧮 Остаток после каждого расхода • {currency.upper()}",
         f"📅 {fmt_date_ddmmyy(day_key)}",
-        f"Режим: {'с гомонковыми' if reserve else 'без гомонковых'}",
+        f"Режим: {'с гомонковыми' if bool(with_gomonk) else 'без гомонковых'}",
         "",
     ]
     show_ost = remaining_ost_label_enabled(chat_id)
     shown = 0
     for rec in day_records:
         try:
-            amount = float(rec.get("usd_amount", 0) or 0) if view_usd else float(rec.get("amount", 0) or 0)
+            if view_usd and canonical_mode:
+                amount = float(rec.get("_v151_amount", rec.get("usd_amount", 0)) or 0)
+            elif view_usd:
+                amount = float(rec.get("usd_amount", 0) or 0)
+            else:
+                amount = float(rec.get("amount", 0) or 0)
         except Exception:
             continue
         running += amount
@@ -543,7 +644,11 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
             continue
         shown += 1
         rid = (rec.get("usd_short_id") or f"U{rec.get('id', '')}") if view_usd else (rec.get("short_id") or f"R{rec.get('id', '')}")
-        note = html.escape(str((rec.get("usd_note") or rec.get("note") or "") if view_usd else (rec.get("note") or "")).strip())
+        if view_usd and canonical_mode:
+            note_raw = rec.get("_v151_note", rec.get("usd_note") or rec.get("note")) or ""
+        else:
+            note_raw = (rec.get("usd_note") or rec.get("note") or "") if view_usd else (rec.get("note") or "")
+        note = html.escape(str(note_raw).strip())
         after = running - reserve
         label = "ост:" if show_ost else ""
         lines.append(f"{rid} {amount_fmt(amount)} {note} ({label}{amount_fmt(after)})".rstrip())
@@ -551,16 +656,16 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
         lines.append(f"За этот день расходов {currency.upper()} нет.")
     current_remaining = current_balance - reserve
     lines.extend(["", f"🏦 Текущий остаток по чату: {amount_fmt(current_remaining)}"])
-    if reserve:
-        lines.append(f"🧳 Вычтено гомонковых {currency.upper()}: {amount_fmt(reserve)}")
+    if bool(with_gomonk) and gomonk_is_on:
+        lines.append(f"🧳 Вычтено гомонковых {currency.upper()}: {amount_fmt(reserve_total)}")
     return wm_common("\n".join(lines), 9, html_mode=True)
 
 
-def build_remaining_keyboard(chat_id: int, day_key: str):
+def build_remaining_keyboard(chat_id: int, day_key: str, with_gomonk: bool | None = None):
     currency = _gomonk_currency(chat_id)
     settings = _gomonk_settings(chat_id, currency)
     _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id, currency)
-    with_g = bool(settings.get(remaining_key, True))
+    with_g = bool(settings.get(remaining_key, True)) if with_gomonk is None else bool(with_gomonk)
     try:
         dt = datetime.strptime(day_key, "%Y-%m-%d")
     except Exception:
@@ -582,14 +687,15 @@ def build_remaining_keyboard(chat_id: int, day_key: str):
         nav.append(IB("📅 Сегодня", callback_data=f"remaining_open:{today_key()}"))
     nav.append(IB("День ➡️", callback_data=f"remaining_open:{next_key}"))
     kb.row(*nav)
-    kb.row(IB("Без гомонковых" if with_g else "С гомонковыми", callback_data=f"remaining_toggle:{day_key}"))
+    target = 0 if with_g else 1
+    kb.row(IB("Без гомонковых" if with_g else "С гомонковыми", callback_data=f"remaining_toggle:{day_key}:{target}"))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"), IB("❌ Закрыть", callback_data="aux_close"))
     return kb
 
 
-def open_remaining_window(chat_id: int, day_key: str, message_id: int | None = None):
-    text = build_remaining_text(chat_id, day_key)
-    kb = build_remaining_keyboard(chat_id, day_key)
+def open_remaining_window(chat_id: int, day_key: str, message_id: int | None = None, with_gomonk: bool | None = None):
+    text = build_remaining_text(chat_id, day_key, with_gomonk=with_gomonk)
+    kb = build_remaining_keyboard(chat_id, day_key, with_gomonk=with_gomonk)
     if message_id:
         fast_ui_edit_message_text(chat_id, message_id, text, reply_markup=kb, parse_mode="HTML", purpose="remaining_window")
     else:
@@ -2166,4 +2272,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v192_excel_ars_usd_delivery_final
+# v195_balance_authority_remaining_final

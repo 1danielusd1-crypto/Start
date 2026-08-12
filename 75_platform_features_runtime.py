@@ -1,4 +1,4 @@
-# v193_architecture_lifecycle_final
+# v195_balance_authority_remaining_final
 # ---- integrated from 113_v163_audit_hardening.py ----
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
@@ -575,17 +575,6 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
         except Exception: pass
         with _FILE_JOB_LOCK:
             _FILE_JOB_STATE.pop(key, None)
-        release_waiters = globals().get("_v153_release_waiters")
-        if callable(release_waiters):
-            try:
-                release_waiters(bool(ok), str(error_text or ""))
-                bot_journal(
-                    "file_job_waiters_released", chat_id,
-                    f"kind={job_meta.get('kind')} ok={int(bool(ok))} error={error_text}"
-                )
-            except Exception as exc:
-                try: log_error(f"FILE JOB WAIT RELEASE {chat_id}: {exc}")
-                except Exception: pass
         if previous is None:
             try: delattr(_FILE_JOB_CONTEXT, "value")
             except Exception: pass
@@ -3053,11 +3042,14 @@ def _v167_formulaize_simple(rows: list[list], compact: bool, chat_id: int, curre
     income_col = 2 if compact else 3  # 1-based
     expense_col = 3 if compact else 4
     opening_row = _v167_find_label(rows, "Остаток с прошлого раза", label_col)
-    income_row = _v167_find_label(rows, "Приход за период", label_col)
-    expense_row = _v167_find_label(rows, "Расход за период", label_col)
-    closing_row = _v167_find_label(rows, "Остаток на руках", label_col)
-    reserve_row = _v167_find_label(rows, "Гомонковые", label_col)
-    turnover_row = _v167_find_label(rows, "Остаток в обороте", label_col)
+    # v195: summary labels must be resolved from the bottom summary block.
+    # A real finance note may itself be named "приход"/"расход"; selecting the
+    # first matching text can formulaize a data row and create a circular #REF!.
+    income_row = _v167_find_label_last(rows, "Приход за период", label_col)
+    expense_row = _v167_find_label_last(rows, "Расход за период", label_col)
+    closing_row = _v167_find_label_last(rows, "Остаток на руках", label_col)
+    reserve_row = _v167_find_label_last(rows, "Гомонковые", label_col)
+    turnover_row = _v167_find_label_last(rows, "Остаток в обороте", label_col)
     if not (opening_row and income_row and expense_row and closing_row):
         return rows
     data_start = opening_row + 2
@@ -3073,14 +3065,14 @@ def _v167_formulaize_simple(rows: list[list], compact: bool, chat_id: int, curre
             f"{ic}{closing_row}-{ic}{reserve_row}", rows[turnover_row-1][income_col-1]
         )
     products_row = _v167_find_label_last(rows, "Продукты", label_col)
-    metric_row = _v167_find_label(rows, "Расход еды на человека в сутки", label_col)
+    metric_row = _v167_find_label_last(rows, "Расход еды на человека в сутки", label_col)
     if str(currency).lower() == "ars" and products_row and not compact:
-        # Simple table has no category columns; recalculate the common "продукт*" rows from Description.
-        desc_col = "B"
-        rows[products_row-1][income_col-1] = _v167_formula(
-            f'SUMIF({desc_col}{data_start}:{desc_col}{data_end},"*продукт*",{ec}{data_start}:{ec}{data_end})',
-            rows[products_row-1][income_col-1],
-        )
+        # v193: there is no exact worksheet formula for business category overrides in a
+        # simple table (Description alone is insufficient). Keep the canonical numeric
+        # value calculated by _v151_product_total instead of an approximate SUMIF that
+        # Google would recalculate differently. The food metric below can safely refer
+        # to this canonical Products cell.
+        pass
     if str(currency).lower() == "ars" and products_row and metric_row:
         try:
             start_key, end_key = _v151_context_bounds(int(chat_id))
@@ -3099,12 +3091,16 @@ def _v167_formulaize_simple(rows: list[list], compact: bool, chat_id: int, curre
 def _v167_formulaize_category(rows: list[list], chat_id: int, currency: str):
     rows = _v167_copy.deepcopy(rows or [])
     opening_row = _v167_find_label(rows, "Остаток с прошлого раза", 1)
-    sums_row = _v167_find_label(rows, "Сумма по статьям", 1)
-    expense_row = _v167_find_label(rows, "Расход", 1)
-    income_row = _v167_find_label(rows, "Приход", 1)
-    closing_row = _v167_find_label(rows, "Остаток на руках", 1)
-    reserve_row = _v167_find_label(rows, "Гомонковые", 1)
-    turnover_row = _v167_find_label(rows, "Остаток в обороте", 1)
+    # v195: all summary rows are selected from the END of the table. This is
+    # critical because an ordinary record description may be exactly "приход"
+    # or "расход". The old first-match lookup rewrote that transaction cell,
+    # creating a circular reference through "Сумма по статьям".
+    sums_row = _v167_find_label_last(rows, "Сумма по статьям", 1)
+    expense_row = _v167_find_label_last(rows, "Расход", 1)
+    income_row = _v167_find_label_last(rows, "Приход", 1)
+    closing_row = _v167_find_label_last(rows, "Остаток на руках", 1)
+    reserve_row = _v167_find_label_last(rows, "Гомонковые", 1)
+    turnover_row = _v167_find_label_last(rows, "Остаток в обороте", 1)
     header_row = 0
     for i, row in enumerate(rows, start=1):
         if len(row or []) >= 3 and str(row[0] or "").strip().casefold() == "дата" and str(row[1] or "").strip().casefold() == "описание":
@@ -3129,7 +3125,7 @@ def _v167_formulaize_category(rows: list[list], chat_id: int, currency: str):
         rows[turnover_row-1][2] = _v167_formula(f"C{closing_row}-C{reserve_row}", rows[turnover_row-1][2])
     if str(currency).lower() == "ars":
         products_row = _v167_find_label_last(rows, "Продукты", 1)
-        metric_row = _v167_find_label(rows, "Расход еды на человека в сутки", 1)
+        metric_row = _v167_find_label_last(rows, "Расход еды на человека в сутки", 1)
         product_col = 0
         header = list(rows[header_row-1] or [])
         for idx, value in enumerate(header, start=1):
@@ -4962,4 +4958,4 @@ try:
     )
 except Exception:
     pass
-# v193_architecture_lifecycle_final
+# v195_balance_authority_remaining_final

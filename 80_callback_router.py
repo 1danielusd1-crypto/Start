@@ -1,4 +1,4 @@
-# v193_architecture_lifecycle_final
+# v195_balance_authority_remaining_final
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
@@ -1633,13 +1633,29 @@ def on_callback(call):
         if data_str.startswith("remaining_toggle:"):
             if not _v85_enabled("remaining_window"):
                 return
-            day_key = data_str.split(":", 1)[1] or today_key()
+            parts = data_str.split(":")
+            day_key = (parts[1] if len(parts) > 1 else "") or today_key()
             currency = _gomonk_currency(chat_id)
-            settings = _gomonk_settings(chat_id, currency)
-            _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id, currency)
-            settings[remaining_key] = not bool(settings.get(remaining_key, True))
-            save_data(data, chat_ids=[chat_id])
-            open_remaining_window(chat_id, day_key, call.message.message_id)
+            # v195 buttons carry the DESIRED state (0/1), not a blind toggle.
+            # This makes delayed/repeated Telegram callbacks idempotent.  Old
+            # v194 buttons without the suffix remain supported as one atomic toggle.
+            desired = None
+            if len(parts) > 2 and parts[2] in {"0", "1"}:
+                desired = parts[2] == "1"
+            if desired is None:
+                new_state = _toggle_remaining_state(chat_id, currency)
+            else:
+                new_state = _set_remaining_state(chat_id, desired, currency)
+            try:
+                bot.answer_callback_query(call.id, "С гомонковыми" if new_state else "Без гомонковых", show_alert=False)
+            except Exception:
+                pass
+            open_remaining_window(chat_id, day_key, call.message.message_id, with_gomonk=new_state)
+            _persist_remaining_state_async(chat_id)
+            try:
+                bot_journal("remaining_gomonk_state_v195", chat_id, f"currency={currency}; day={day_key}; enabled={int(new_state)}; explicit={int(desired is not None)}")
+            except Exception:
+                pass
             return
         if data_str == "careful_restore_toggle":
             if not is_owner_chat(chat_id) or int(getattr(getattr(call, "from_user", None), "id", 0) or 0) != int(OWNER_ID or 0):
@@ -3219,12 +3235,10 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Эта кнопка не обработана. Откройте меню заново.", show_alert=True)
         except Exception:
             pass
-        return False
     except Exception as e:
         log_error(f"on_callback error: data={locals().get('data_str', '')} chat={locals().get('chat_id', '')}: {e}")
         try:
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-        return False
-# v193_architecture_lifecycle_final
+# v195_balance_authority_remaining_final

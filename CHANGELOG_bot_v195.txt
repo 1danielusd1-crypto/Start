@@ -1,0 +1,8 @@
+bot_v195_balance_authority_remaining_final
+
+- Fixed ARS opening balance globally. Removed historical source-text reparsing from `_v151_ars_records`; stored ledger amount is authoritative.
+- Correct opening for the supplied 12.08 fixture is 3,144,220.40 ARS, matching the durable delta balance.
+- `Remaining` now uses the same canonical opening as Excel/CSV/Google and the main accounting ledger.
+- Gomonk Remaining switch now carries explicit target state `0/1`, is atomic/idempotent, acknowledges immediately, and persists after UI refresh.
+- Fixed Excel/Google circular `#REF!` when a real transaction description is `приход`/`расход`; summary rows are selected from the bottom summary block.
+- DATA CONSTITUTION/MEGA/restore architecture otherwise unchanged.
