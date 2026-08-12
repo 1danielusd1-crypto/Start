@@ -1,4 +1,4 @@
-# v195_balance_authority_remaining_final
+# v195_chat_identity_names_final
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -12,7 +12,7 @@ import statistics as _v176_statistics
 import threading as _v176_threading
 import time as _v176_time
 
-VERSION = "bot_v195_balance_authority_remaining_final"
+VERSION = "bot_v195_chat_identity_names_final"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -46,7 +46,7 @@ _V176_PROCESS_DEFS = {
     "ui_retry": ("ui", "🔁 Повторы edit Telegram", True, "hot", "Внешние повторы safe_edit при 429/ошибке. Кандидат на задержку кнопок."),
     "win_diag": ("ui", "🩺 Диагностика окон", False, "hot", "Маркировка/диагностика жизненного цикла окон."),
     "win_reg": ("ui", "🗂 Реестр окон → SQLite/MEGA", _V176_MIGRATED_HEAVY, "hot", "Фоновое сохранение реестра открытых окон."),
-    "win_rec": ("ui", "🔄 Reconcile окон", _V176_MIGRATED_HEAVY, "hot", "Сверка реестра окон, включая цикл v153 каждые 600 сек."),
+    "win_rec": ("ui", "🔄 Reconcile окон", _V176_MIGRATED_HEAVY, "hot", "Ленивая/ручная сверка реестра окон; постоянного отдельного цикла v153 больше нет."),
     "btn_chain": ("ui", "🧾 Трассировка press/result", False, "hot", "Две дополнительные записи на обработанный callback."),
     "btn_press": ("ui", "📝 Журнал button_pressed", False, "hot", "Запись исходной кнопки в общий журнал."),
     "win_journal": ("ui", "📐 Window-журнал", False, "hot", "Подробные window_* события, которые раньше писались принудительно."),
@@ -179,6 +179,7 @@ _V176_ORIG_MEGA_RECOVERY = globals().get("schedule_mega_task_recovery")
 _V176_ORIG_GOOGLE_AFTER = globals().get("_v169_schedule_google_after_change")
 _V176_ORIG_GOOGLE_ENQUEUE = globals().get("_v169_google_enqueue")
 _V176_ORIG_REMINDER_TICK = globals().get("_reminder_tick")
+_V176_ORIG_REMINDER_SCHEDULER_TICK = globals().get("_reminder_scheduler_tick")
 _V176_ORIG_EXPENSE_ENQUEUE = globals().get("enqueue_expense_ping_event")
 _V176_ORIG_EXPENSE_RECOVERY = globals().get("schedule_expense_ping_recovery")
 _V176_ORIG_LOWRAM_SWEEP = globals().get("_lowram_idle_sweep_job")
@@ -276,8 +277,14 @@ if callable(_V176_ORIG_SCHEDULE_DELTA):
 if callable(_V176_ORIG_CRITICAL_DELTA):
     def persist_critical_delta_now(chat_id: int) -> bool:
         if not v176_process_enabled("delta_critical"):
-            # Diagnostic bypass: business action is not failed merely because external witness was intentionally disabled.
-            return True
+            # A disabled durability witness is NOT a successful durability witness. Returning
+            # True here allowed a durable finance task to move to done without the required MEGA
+            # delta. Keep the business effect intact, but leave completion unconfirmed/recoverable.
+            try:
+                bot_journal("critical_delta_blocked", int(chat_id), "delta_critical=off; durable completion not confirmed", "WARN")
+            except Exception:
+                pass
+            return False
         return bool(_V176_ORIG_CRITICAL_DELTA(int(chat_id)))
 
 if callable(_V176_ORIG_FULL_BACKUP):
@@ -389,6 +396,14 @@ if callable(_V176_ORIG_REMINDER_TICK):
             return None
         return _V176_ORIG_REMINDER_TICK()
 
+if callable(_V176_ORIG_REMINDER_SCHEDULER_TICK):
+    def _reminder_scheduler_tick() -> None:
+        # Stop the scheduler itself when disabled. The legacy scheduler reschedules in finally;
+        # wrapping only _reminder_tick left an idle timer running forever and made STOP incomplete.
+        if not v176_process_enabled("reminders"):
+            return None
+        return _V176_ORIG_REMINDER_SCHEDULER_TICK()
+
 if callable(_V176_ORIG_EXPENSE_ENQUEUE):
     def enqueue_expense_ping_event(source: str = "iphone", force: bool = False):
         if not v176_process_enabled("expense_ping"):
@@ -423,7 +438,7 @@ def _v176_cancel_for(code: str) -> None:
         "win_reg": ["window-registry-root-v168"],
         "win_rec": ["v153-window-reconcile"],
         "runtime_upload": ["runtime-heartbeat"],
-        "journal_mega": ["journal-warm-tail", "journal-error-flush"],
+        "journal_mega": ["journal-warm-tail", "journal-error-flush", "journal-durable-tick"],
         "full_global": ["mega-global-quiet-v90", "mega-global-max-v90", "mega-global-retry-v90"],
         "failed_repair": ["mega-task-safe-failed-repair"],
         "failed_diag": ["v146-failed-task-diagnostics"],
@@ -432,6 +447,7 @@ def _v176_cancel_for(code: str) -> None:
         "lowram": ["lowram-idle-sweep"],
         "memory_guard": ["memory-guard"],
         "expense_ping": ["expense-ping-recovery"],
+        "reminders": ["reminder-scheduler"],
     }.get(code, [])
     for key in keys:
         try:
@@ -451,8 +467,13 @@ def _v176_resume_for(code: str) -> None:
             GENERAL_TASK_POOL.submit_unique("v176-window-reconcile", globals()["_v153_reconcile_windows"])
         elif code == "runtime_upload" and callable(globals().get("_runtime_heartbeat_job")):
             scheduler.schedule("runtime-heartbeat", 2.0, globals()["_runtime_heartbeat_job"])
+        elif code == "source_archive" and callable(globals().get("archive_current_bot_source_to_mega")):
+            GENERAL_TASK_POOL.submit_unique("v176-source-archive", globals()["archive_current_bot_source_to_mega"])
         elif code == "journal_mega" and callable(globals().get("_journal_warm_tail_job")):
             scheduler.schedule("journal-warm-tail", 3.0, globals()["_journal_warm_tail_job"])
+            tick = globals().get("_journal_durable_tick")
+            if callable(tick):
+                scheduler.schedule("journal-durable-tick", 4.0, tick)
         elif code == "full_global" and bool(globals().get("_global_snapshot_pending", False)) and callable(globals().get("_mark_global_snapshot_pending")):
             globals()["_mark_global_snapshot_pending"]()
         elif code == "failed_repair" and callable(globals().get("schedule_safe_failed_task_repairs")):
@@ -469,6 +490,10 @@ def _v176_resume_for(code: str) -> None:
             scheduler.schedule("memory-guard", 2.0, globals()["memory_guard_tick"])
         elif code == "expense_ping" and callable(globals().get("schedule_expense_ping_recovery")):
             globals()["schedule_expense_ping_recovery"](0.5)
+        elif code == "reminders" and callable(globals().get("_reminder_scheduler_tick")):
+            scheduler.schedule("reminder-scheduler", 0.5, globals()["_reminder_scheduler_tick"])
+        elif code == "lease" and callable(globals().get("_v179_runtime_lease_check")):
+            GENERAL_TASK_POOL.submit_unique("v176-lease-check", globals()["_v179_runtime_lease_check"], True)
     except Exception:
         pass
 
@@ -1364,6 +1389,6 @@ def runtime_mark_ready(detail: str = ""):
 # v179_clean_final
 
 
-# v192 authoritative runtime version after Excel ARS/USD and delivery audit.
-VERSION = "bot_v195_balance_authority_remaining_final"
-# v195_balance_authority_remaining_final
+# v193 authoritative runtime version after lifecycle/recovery architecture audit.
+VERSION = "bot_v195_chat_identity_names_final"
+# v195_chat_identity_names_final

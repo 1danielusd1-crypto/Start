@@ -1,11 +1,24 @@
-v195 PROJECT RULES
-1. Excel/table fixes are TOTAL: all XLSX/CSV/Google paths, all periods, all roles/contours.
-2. ARS and USD are always independent.
-3. ARS historical stored amounts are accounting facts; exports must never reparse old source text into different money.
-4. Opening balance is one canonical value shared by main accounting, Remaining, Telegram Excel/CSV and Google.
-5. Telegram and Google of the same report use the same builders/formulas.
-6. Summary formulas must anchor to the summary block, not transaction text.
-7. Remaining gomonk switch uses explicit desired state and must react idempotently.
-8. /restore remains strict REPLACE FROM FILE.
-9. Canonical durable root is /TelegramBotBackups.
-10. Changed source files start and end with their version marker only.
+PROJECT RULES v195
+- Canonical MEGA root: /TelegramBotBackups.
+- Strict /restore remains REPLACE FROM FILE with mandatory pre_restore; no merge.
+- DATA CONSTITUTION / v190 MEGA LIGHT keeps one small write-before-execute pending task on the critical hot path.
+- Because v190 intentionally has no foreground pending→running move, a pending task found after a crash is ambiguous. Recovery must verify/repair idempotently and must not blindly replay non-idempotent Telegram sends, toggles, SECRET source writes or mutation commands.
+- Durable done is allowed only after expected effects, Constitution ledger token (when required) and critical MEGA delta are confirmed. A disabled critical delta is not success.
+- Process switches must have symmetric lifecycle semantics: either dynamic on-demand gating, or explicit cancel/resume for schedulers.
+- Callback routing has exactly one Telegram callback handler; unhandled callbacks are explicit unsuccessful results.
+- Interactive exports are single-flight and every accepted/waiting request has a visible terminal path (delivered / failed / ready to retry/download).
+- Excel/Google financial exports keep ARS and USD independent and never cross-sum currencies.
+- Telegram file export success requires send_document confirmation; Google/Drive success requires an external delivery reference.
+- Changed source files start/end with their release marker.
+
+- v194 balance-source rule: auxiliary balance/remaining windows are read-only and must use the same ARS daily index as the main day window.
+- LOW-RAM persistence must never rebuild one finance index from another merely because a cold field was read.
+- If records/daily_records diverge during finance normalization, preserve the deduplicated union, then rebuild the derived daily index and balance.
+- “С гомонковыми” = full balance; “Без гомонковых” = full balance minus reserve.
+- Balance-source fixes apply to Telegram day/remaining/total/balance surfaces and Excel/CSV/Google export paths.
+
+- v195 chat identity rule: permissions/owner-access/finance/forwarding/space roles NEVER change a chat's stored or displayed Telegram name.
+- The special owner label 🏀 is valid only for the exact private OWNER_ID chat, never for an ordinary chat merely because owner access is enabled.
+- Owner-access UI is a badge on the immutable chat name: ☑️ enabled, ⬜ disabled.
+- Chat picker menus de-duplicate exact Telegram identities (same id/username). Equal titles alone are not merged; distinct same-title chats are disambiguated instead.
+- Forwarding, finance-mode, owner-access, descriptions and space/circle pickers use the same canonical chat display-name helper.

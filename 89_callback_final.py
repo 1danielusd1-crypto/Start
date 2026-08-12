@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v193_architecture_lifecycle_final
 """v179 single callback middleware for owner, circle 1, circle 2 and all users with feature access."""
 
 def _v179_resolve_callback(call):
@@ -130,8 +130,9 @@ def _v179_dispatch_callback(call, raw: str, resolved: str):
     if callable(fn) and fn(call): return True
 
     # Remaining business callbacks are handled by the core dispatcher.
-    on_callback(call)
-    return True
+    # None means a legacy branch handled the callback; explicit False means the router reached
+    # its visible UNHANDLED/ERROR ending. This lets the final middleware report the real result.
+    return on_callback(call) is not False
 
 def final_callback_router(call):
     clock = globals().get("_v176_time") or globals().get("time")
@@ -139,7 +140,7 @@ def final_callback_router(call):
     raw, resolved = _v179_resolve_callback(call)
     try: _V177_PERF_LOCAL.action = resolved[:120]
     except Exception: pass
-    cid = None; seq_before = 0; err = ""
+    cid = None; seq_before = 0; err = ""; handled = False
     try:
         cid = int(call.message.chat.id)
         seq_before = int(globals().get("_WINDOW_DIAG_SEQ", 0) or 0)
@@ -150,7 +151,10 @@ def final_callback_router(call):
                 bot_journal("button_chain_press", cid, f"action={resolved}")
         except Exception: pass
     try:
-        return _v179_dispatch_callback(call, raw, resolved)
+        handled = bool(_v179_dispatch_callback(call, raw, resolved))
+        if not handled:
+            err = "unhandled_callback"
+        return handled
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
         try: log_error(f"FINAL_CALLBACK_ERROR action={resolved} chat={cid}: {exc}")
@@ -164,7 +168,7 @@ def final_callback_router(call):
             if raw != "v176:speed_clear":
                 _V176_PERF.append({"ts": clock.time(), "action": resolved[:120], "elapsed": elapsed})
             if resolved != "none" and v176_process_enabled("btn_chain"):
-                bot_journal("button_chain_result", cid, f"action={resolved}; ok={int(not bool(err))}; elapsed={elapsed:.3f}s")
+                bot_journal("button_chain_result", cid, f"action={resolved}; ok={int(bool(handled) and not bool(err))}; elapsed={elapsed:.3f}s")
         except Exception: pass
         try:
             audit = globals().get("_v155_record_button_outcome")
@@ -177,4 +181,4 @@ def final_callback_router(call):
 # Exactly one Telegram callback handler in the package.
 bot.callback_query_handler(func=lambda c: True)(final_callback_router)
 _V179_FINAL_CALLBACK_HANDLERS = 1
-# v189_main_window_authority_final
+# v193_architecture_lifecycle_final

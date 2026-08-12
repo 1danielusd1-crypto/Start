@@ -1,0 +1,23 @@
+АУДИТ bot_v195_chat_identity_names_final
+
+ПРОБЛЕМА ПО СКРИНАМ
+- Чаты с включённым доступом владельца отображались как 🏀 вместо своих реальных названий.
+- В списках пересылки/финрежима/владельца/пространств из-за этого появлялось много одинаковых строк 🏀 и меню становилось неразличимым.
+- Владелец-доступ визуально выглядел как отдельное переименование, хотя должен быть только правом доступа.
+
+КОРНЕВАЯ ПРИЧИНА
+get_chat_display_name(chat_id) использовал is_primary_owner(chat_id). После v168 is_primary_owner() намеренно возвращает True для обычного чата, если реальный владелец включил в нём дополнительный owner/testing access. Право доступа ошибочно стало источником имени.
+
+ИСПРАВЛЕНИЕ
+- Идентичность отделена от permission model. 🏀 возвращается только когда chat_id == OWNER_ID.
+- Обычный чат всегда берёт title/username из собственной Telegram-карточки; owner known_chats используется только как fallback после LOW-RAM.
+- Owner access: ☑️ имя / ⬜ имя, без переименования.
+- Picker de-dup: одинаковый id/username показывается один раз. Два разных чата с одинаковым title не склеиваются; им добавляется короткий различитель.
+- Единый helper применяется в owner access, forwarding, finance pickers, description и spaces/circles.
+
+ЗАЩИЩЁННАЯ ЛОГИКА
+- v194 режим остатка и гомонковых не изменён.
+- 60_finance_currency.py, 63_google_sheets.py, 90_commands_exports.py, 91_finance_records_handlers.py, 10_mega_runtime.py, 11_data_constitution.py не менялись.
+- 80_callback_router.py изменён только в трёх UI-строках owner-access legend.
+- 00_core.py изменён только в chat identity/display helper; LOW-RAM/finance функции не менялись.
+- strict /restore остаётся REPLACE FROM FILE без merge.

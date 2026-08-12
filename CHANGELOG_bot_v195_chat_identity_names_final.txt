@@ -1,0 +1,9 @@
+bot_v195_chat_identity_names_final
+
+- Fixed architectural bug: get_chat_display_name no longer calls permission-sensitive is_primary_owner().
+- Only exact OWNER_ID keeps the 🏀 display label. Owner-enabled ordinary chats retain their real Telegram titles.
+- Added canonical fallback chat card (per-chat info -> owner known_chats cache).
+- Added safe chat picker de-duplication by id/username and disambiguation of genuinely different equal-title chats.
+- Owner access picker now shows ☑️/⬜ beside the unchanged chat name.
+- Applied canonical labels to forwarding, finance chat pickers, chat descriptions and space/circle menus.
+- v194 finance/balance/restore/table semantics preserved; no formula/storage/restore code changed.

@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v195_chat_identity_names_final
 def finance_mode_compact_icon(chat_id: int) -> str:
     """v108: hidden finance and visible auto-window mode are shown independently."""
     try:
@@ -94,9 +94,8 @@ def build_quick_balance_chat_menu(day_key: str):
             owner_item = None
 
     buttons = []
-    for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
-        if owner_item and int_cid == owner_item[0]:
-            continue
+    ordinary_ids = [cid for cid in items if not (owner_item and cid == owner_item[0])]
+    for int_cid, title in chat_menu_entries(ordinary_ids, max_len=31):
         mode = finance_window_mode(int_cid) if is_finance_mode(int_cid) else "off"
         icon = "✅🥇" if mode == "first" else ("✅3️⃣" if mode == "open" else ("✅🔟" if mode == "normal" else "❌"))
         buttons.append(IB(
@@ -215,9 +214,12 @@ def build_hidden_finance_chat_menu(day_key: str):
             pass
 
     buttons = []
-    for int_cid, title in sorted(items.items(), key=lambda x: x[1].lower()):
+    visible_ids = []
+    for int_cid in items:
         if is_chat_bot_removed(int_cid) and not (OWNER_ID and str(int_cid) == str(OWNER_ID)):
             continue
+        visible_ids.append(int_cid)
+    for int_cid, title in chat_menu_entries(visible_ids, max_len=31):
         enabled = is_hidden_finance_mode(int_cid)
         icon = "🙈" if enabled else "❌"
         buttons.append(IB(
@@ -563,7 +565,7 @@ def _v177_legacy_0200_build_fin_windows_chat_menu(day_key: str):
 
     buttons = [
         IB(chat_button_title(cid, title), callback_data=f"d:{day_key}:finwin_open_{cid}")
-        for cid, title in sorted(items, key=lambda x: x[1].lower())
+        for cid, title in chat_menu_entries([cid for cid, _title in items], max_len=34)
     ]
 
     if buttons:
@@ -766,4 +768,4 @@ def _v177_legacy_0203_period_export_rows(chat_id: int, mode: str, day_key: str):
 try: _v177_legacy_0203_period_export_rows.__name__ = '_period_export_rows'
 except Exception: pass
 _period_export_rows = _v177_legacy_0203_period_export_rows
-# v188_restore_forward_fix_final
+# v195_chat_identity_names_final

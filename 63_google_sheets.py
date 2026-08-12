@@ -1,4 +1,4 @@
-# v194_excel_canonical_opening_total_final
+# v192_excel_ars_usd_delivery_final
 # ─────────────────────────────────────────────────────────────
 # v128: нативные Google Sheets Notes через Sheets API
 # ─────────────────────────────────────────────────────────────
@@ -367,9 +367,7 @@ def _v177_legacy_0209_send_export_for_chat_to(recipient_chat_id: int, target_cha
         if mode == "all_real":
             mode = "all"
 
-        # v194: never use the stale prebuilt raw CSV shortcut.  All visible
-        # financial tables must pass through the canonical ARS/USD projection.
-        if delivery == "chat" and mode == "all" and file_type == "xlsx" and not financial_view_is_usd(get_chat_store(target_chat_id)) and (excel_style_override == "old" and not custom_options and not force_google):
+        if delivery == "chat" and mode == "all" and file_type in {"csv", "xlsx"} and not financial_view_is_usd(get_chat_store(target_chat_id)) and (file_type == "csv" or (excel_style_override == "old" and not custom_options and not force_google)):
             save_chat_json(target_chat_id)
             path = chat_xlsx_file(target_chat_id) if file_type == "xlsx" else chat_csv_file(target_chat_id)
             label = "за всё время"
@@ -861,4 +859,4 @@ def _one_button_keyboard(label: str, callback_data: str):
     kb = types.InlineKeyboardMarkup()
     kb.row(IB(label, callback_data=callback_data))
     return kb
-# v194_excel_canonical_opening_total_final
+# v192_excel_ars_usd_delivery_final

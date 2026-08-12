@@ -1,4 +1,4 @@
-# v195_balance_authority_remaining_final
+# v195_chat_identity_names_final
 # ---- integrated from 113_v163_audit_hardening.py ----
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
@@ -575,6 +575,17 @@ def _interactive_file_job_runner(job_meta: dict, func, args, kwargs):
         except Exception: pass
         with _FILE_JOB_LOCK:
             _FILE_JOB_STATE.pop(key, None)
+        release_waiters = globals().get("_v153_release_waiters")
+        if callable(release_waiters):
+            try:
+                release_waiters(bool(ok), str(error_text or ""))
+                bot_journal(
+                    "file_job_waiters_released", chat_id,
+                    f"kind={job_meta.get('kind')} ok={int(bool(ok))} error={error_text}"
+                )
+            except Exception as exc:
+                try: log_error(f"FILE JOB WAIT RELEASE {chat_id}: {exc}")
+                except Exception: pass
         if previous is None:
             try: delattr(_FILE_JOB_CONTEXT, "value")
             except Exception: pass
@@ -1268,8 +1279,11 @@ def tenant_consume_invite(payload: str, user_id: int, chat_id: int, chat_type: s
 # ---------------------------------------------------------------------------
 # Simple space menu
 # ---------------------------------------------------------------------------
-def _v164_circle_label(cid: int, include_parent: bool = False) -> str:
-    title = get_chat_display_name(int(cid)) or f"Чат {int(cid)}"
+def _v164_circle_label(cid: int, include_parent: bool = False, label_override: str | None = None) -> str:
+    # A space/circle is identified by its real Telegram chat title. Access roles
+    # never participate in naming. ``label_override`` is used only for safe
+    # duplicate-title disambiguation prepared by chat_menu_entries().
+    title = str(label_override or get_chat_display_name(int(cid)) or f"Чат {int(cid)}")
     if include_parent and circle_level_for_chat(cid) == 2:
         parent = circle_parent_for_chat(cid)
         return f"{title} ← {get_chat_display_name(parent)}"
@@ -1335,11 +1349,11 @@ def _v164_space_list_text(context_chat_id: int, level: int) -> str:
     if not ids:
         lines.append("Нет подключённых чатов.")
     else:
-        for cid in ids:
+        for cid, label in chat_menu_entries(ids, max_len=48):
             if int(level) == 2:
-                lines.append(f"• {_v164_circle_label(cid, include_parent=True)}")
+                lines.append(f"• {_v164_circle_label(cid, include_parent=True, label_override=label)}")
             else:
-                lines.append(f"• {_v164_circle_label(cid)}")
+                lines.append(f"• {_v164_circle_label(cid, label_override=label)}")
     lines += ["", "Каждый чат хранит собственные настройки и данные."]
     return "\n".join(lines)[:3900]
 
@@ -1347,9 +1361,9 @@ def _v164_space_list_text(context_chat_id: int, level: int) -> str:
 def _v164_space_list_keyboard(context_chat_id: int, user_id: int, level: int):
     kb = types.InlineKeyboardMarkup(row_width=1)
     ids = _v164_scope_ids(level, context_chat_id)
-    for cid in ids[:60]:
+    for cid, label in chat_menu_entries(ids[:60], max_len=42):
         tid = tenant_id_for_chat(cid, create=True, actor_user_id=user_id)
-        kb.row(IB(_v164_circle_label(cid, include_parent=(int(level) == 2)), callback_data=f"sp:open:{tid}"))
+        kb.row(IB(_v164_circle_label(cid, include_parent=(int(level) == 2), label_override=label), callback_data=f"sp:open:{tid}"))
     if int(level) == 2 and circle_level_for_chat(context_chat_id) == 1 and tenant_can_manage(user_id, chat_id=context_chat_id):
         tid = tenant_id_for_chat(context_chat_id, create=True, actor_user_id=user_id)
         kb.row(IB("🔗 Подключить чат 2-го круга", callback_data=f"sp:chatlink:{tid}"))
@@ -1880,6 +1894,7 @@ def _collect_forward_picker_items(include_owner: bool = True, include_removed: b
     level = _v164_current_window_circle("forward", 1)
     items = []
     owner_item = None
+    visible_ids = []
     for cid in _v164_scope_ids(level, current_state_chat_id()):
         try:
             icid = int(cid)
@@ -1890,7 +1905,10 @@ def _collect_forward_picker_items(include_owner: bool = True, include_removed: b
                 continue
         except Exception:
             pass
-        items.append((icid, get_chat_display_name(icid) or f"Чат {icid}"))
+        visible_ids.append(icid)
+    # Same Telegram identity is shown once; equal human titles remain distinct
+    # but receive a short suffix so the user never sees two identical rows.
+    items.extend(chat_menu_entries(visible_ids, max_len=34))
 
     # Compatibility rule: only the platform owner, while looking at the 1st-circle page,
     # sees the owner chat as the dedicated owner row. This does not reclassify the owner as circle 1.
@@ -1948,6 +1966,7 @@ def build_finance_toggle_chat_menu(day_key: str):
                 callback_data=f"d:{day_key}:fw_finmode_pick_{oid}",
             ))
 
+    finance_ids = []
     for cid in _v164_scope_ids(level, current_state_chat_id()):
         try:
             cid = int(cid)
@@ -1960,9 +1979,11 @@ def build_finance_toggle_chat_menu(day_key: str):
                 continue
         except Exception:
             pass
+        finance_ids.append(cid)
+    for cid, label in chat_menu_entries(finance_ids, max_len=31):
         icon = finance_mode_compact_icon(cid)
         buttons.append(IB(
-            f"{icon} {chat_button_title(cid, get_chat_display_name(cid))}",
+            f"{icon} {chat_button_title(cid, label)}",
             callback_data=f"d:{day_key}:fw_finmode_pick_{cid}",
         ))
     add_buttons_in_rows(kb, buttons, 2)
@@ -1993,6 +2014,7 @@ def build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
         if owner_item:
             kb.row(IB(chat_button_title(owner_item[0], owner_item[1]), callback_data=f"chat_desc_open:{origin}:{owner_item[0]}"))
 
+    desc_ids = []
     for cid in _v164_scope_ids(level, viewer_chat_id):
         try:
             cid = int(cid)
@@ -2005,7 +2027,9 @@ def build_chat_description_menu(viewer_chat_id: int, origin: str, day_key: str):
                 continue
         except Exception:
             pass
-        buttons.append(IB(chat_button_title(cid), callback_data=f"chat_desc_open:{origin}:{cid}"))
+        desc_ids.append(cid)
+    for cid, label in chat_menu_entries(desc_ids, max_len=34):
+        buttons.append(IB(chat_button_title(cid, label), callback_data=f"chat_desc_open:{origin}:{cid}"))
     add_buttons_in_rows(kb, buttons, 2)
     kb.row(IB("🔙 Назад", callback_data=_chat_description_origin_back(origin, day_key)))
     kb.row(IB("⬅️ Назад осн. окно", callback_data=f"d:{day_key}:back_main"))
@@ -3042,14 +3066,11 @@ def _v167_formulaize_simple(rows: list[list], compact: bool, chat_id: int, curre
     income_col = 2 if compact else 3  # 1-based
     expense_col = 3 if compact else 4
     opening_row = _v167_find_label(rows, "Остаток с прошлого раза", label_col)
-    # v195: summary labels must be resolved from the bottom summary block.
-    # A real finance note may itself be named "приход"/"расход"; selecting the
-    # first matching text can formulaize a data row and create a circular #REF!.
-    income_row = _v167_find_label_last(rows, "Приход за период", label_col)
-    expense_row = _v167_find_label_last(rows, "Расход за период", label_col)
-    closing_row = _v167_find_label_last(rows, "Остаток на руках", label_col)
-    reserve_row = _v167_find_label_last(rows, "Гомонковые", label_col)
-    turnover_row = _v167_find_label_last(rows, "Остаток в обороте", label_col)
+    income_row = _v167_find_label(rows, "Приход за период", label_col)
+    expense_row = _v167_find_label(rows, "Расход за период", label_col)
+    closing_row = _v167_find_label(rows, "Остаток на руках", label_col)
+    reserve_row = _v167_find_label(rows, "Гомонковые", label_col)
+    turnover_row = _v167_find_label(rows, "Остаток в обороте", label_col)
     if not (opening_row and income_row and expense_row and closing_row):
         return rows
     data_start = opening_row + 2
@@ -3065,14 +3086,14 @@ def _v167_formulaize_simple(rows: list[list], compact: bool, chat_id: int, curre
             f"{ic}{closing_row}-{ic}{reserve_row}", rows[turnover_row-1][income_col-1]
         )
     products_row = _v167_find_label_last(rows, "Продукты", label_col)
-    metric_row = _v167_find_label_last(rows, "Расход еды на человека в сутки", label_col)
+    metric_row = _v167_find_label(rows, "Расход еды на человека в сутки", label_col)
     if str(currency).lower() == "ars" and products_row and not compact:
-        # v193: there is no exact worksheet formula for business category overrides in a
-        # simple table (Description alone is insufficient). Keep the canonical numeric
-        # value calculated by _v151_product_total instead of an approximate SUMIF that
-        # Google would recalculate differently. The food metric below can safely refer
-        # to this canonical Products cell.
-        pass
+        # Simple table has no category columns; recalculate the common "продукт*" rows from Description.
+        desc_col = "B"
+        rows[products_row-1][income_col-1] = _v167_formula(
+            f'SUMIF({desc_col}{data_start}:{desc_col}{data_end},"*продукт*",{ec}{data_start}:{ec}{data_end})',
+            rows[products_row-1][income_col-1],
+        )
     if str(currency).lower() == "ars" and products_row and metric_row:
         try:
             start_key, end_key = _v151_context_bounds(int(chat_id))
@@ -3091,16 +3112,12 @@ def _v167_formulaize_simple(rows: list[list], compact: bool, chat_id: int, curre
 def _v167_formulaize_category(rows: list[list], chat_id: int, currency: str):
     rows = _v167_copy.deepcopy(rows or [])
     opening_row = _v167_find_label(rows, "Остаток с прошлого раза", 1)
-    # v195: all summary rows are selected from the END of the table. This is
-    # critical because an ordinary record description may be exactly "приход"
-    # or "расход". The old first-match lookup rewrote that transaction cell,
-    # creating a circular reference through "Сумма по статьям".
-    sums_row = _v167_find_label_last(rows, "Сумма по статьям", 1)
-    expense_row = _v167_find_label_last(rows, "Расход", 1)
-    income_row = _v167_find_label_last(rows, "Приход", 1)
-    closing_row = _v167_find_label_last(rows, "Остаток на руках", 1)
-    reserve_row = _v167_find_label_last(rows, "Гомонковые", 1)
-    turnover_row = _v167_find_label_last(rows, "Остаток в обороте", 1)
+    sums_row = _v167_find_label(rows, "Сумма по статьям", 1)
+    expense_row = _v167_find_label(rows, "Расход", 1)
+    income_row = _v167_find_label(rows, "Приход", 1)
+    closing_row = _v167_find_label(rows, "Остаток на руках", 1)
+    reserve_row = _v167_find_label(rows, "Гомонковые", 1)
+    turnover_row = _v167_find_label(rows, "Остаток в обороте", 1)
     header_row = 0
     for i, row in enumerate(rows, start=1):
         if len(row or []) >= 3 and str(row[0] or "").strip().casefold() == "дата" and str(row[1] or "").strip().casefold() == "описание":
@@ -3125,7 +3142,7 @@ def _v167_formulaize_category(rows: list[list], chat_id: int, currency: str):
         rows[turnover_row-1][2] = _v167_formula(f"C{closing_row}-C{reserve_row}", rows[turnover_row-1][2])
     if str(currency).lower() == "ars":
         products_row = _v167_find_label_last(rows, "Продукты", 1)
-        metric_row = _v167_find_label_last(rows, "Расход еды на человека в сутки", 1)
+        metric_row = _v167_find_label(rows, "Расход еды на человека в сутки", 1)
         product_col = 0
         header = list(rows[header_row-1] or [])
         for idx, value in enumerate(header, start=1):
@@ -4958,4 +4975,4 @@ try:
     )
 except Exception:
     pass
-# v195_balance_authority_remaining_final
+# v195_chat_identity_names_final

@@ -1,51 +1,76 @@
 {
-  "version": "bot_v195_balance_authority_remaining_final",
-  "created_at": "2026-08-12T17:31:52.934953+00:00",
-  "scope": "TOTAL ARS opening-balance authority across bot + remaining window + gomonk toggle + Excel #REF formula collision",
-  "contract": {
-    "ars_truth": "stored ARS accounting amount in the bot ledger; never reparse old source text for reports",
-    "opening": "balance immediately before selected day/range, identical across main accounting, Remaining, XLSX, CSV and Google",
-    "usd": "independent USD ledger; never mixed into ARS",
-    "gomonk_toggle": "explicit desired-state callback 0/1; repeated/delayed callbacks are idempotent",
-    "summary_formulas": "summary rows are selected from the bottom summary block, never a transaction description with the same word"
+  "compile_modules": {
+    "count": 27,
+    "errors": []
   },
-  "real_user_regression": {
-    "backup_close_2026_08_08": 3785348.4000000004,
-    "close_2026_08_09": 3667348.4000000004,
-    "close_2026_08_10": 3297998.4000000004,
-    "correct_close_2026_08_11_and_open_2026_08_12": 3144220.4000000004,
-    "delta_authoritative_balance": 3144220.4000000004,
-    "delta_matches_expected": true,
-    "uploaded_v194_xlsx_wrong_opening": 1501365.33,
-    "wrong_opening_delta": -1642855.0700000003,
-    "remaining_2026_08_11_first_expense_without_gomonk": 3292498.4000000004,
-    "remaining_2026_08_11_first_expense_with_480000_gomonk": 2812498.4000000004
+  "markers": {
+    "errors": []
   },
-  "regressions": {
-    "ars_historical_text_reparse_removed": true,
-    "formula_label_collision_fixed": true,
-    "gomonk_explicit_idempotent": true,
-    "all_export_opening_bridges": {
-      "monthly": true,
-      "exact_ranges": true,
-      "tabl_lsx": true,
-      "remaining_window": true,
-      "google_exact": true,
-      "v151_all_tables": true
-    }
+  "manifest_hashes": {
+    "errors": []
   },
-  "static_checks": {
-    "runtime_modules": 27,
-    "compile_all": true,
-    "compile_errors": [],
-    "duplicate_top_level_files": {},
-    "callback_final_registrations": 1,
-    "canonical_opening_definition_count": 1,
-    "remaining_opening_bridge_definition_count": 1,
-    "mega_backups_start_refs": 0,
-    "manifest_hashes_markers": true,
-    "manifest_problems": [],
-    "runtime_version_authority": true
+  "manifest_version_ok": true,
+  "full_compile": {
+    "ok": true,
+    "error": ""
   },
-  "overall": "PASS"
+  "bot_loader_marker": true,
+  "bot_loader_version": true,
+  "callback_handler_occurrences": [
+    [
+      "89_callback_final.py",
+      182,
+      "bot.callback_query_handler(func=lambda c: True)(final_callback_router)"
+    ]
+  ],
+  "protected_modules_unchanged": {
+    "10_mega_runtime.py": true,
+    "11_data_constitution.py": true,
+    "60_finance_currency.py": true,
+    "63_google_sheets.py": true,
+    "90_commands_exports.py": true,
+    "91_finance_records_handlers.py": true
+  },
+  "callback_finance_logic_unchanged_except_owner_legend": true,
+  "core_protected_functions_unchanged": {
+    "_lowram_flush_chat": true
+  },
+  "chat_identity_tests": {
+    "owner_access_does_not_rename": true,
+    "dedupe_and_collision": true,
+    "rows": [
+      [
+        200,
+        "Локации"
+      ],
+      [
+        201,
+        "ТЗ задачи · … 201"
+      ],
+      [
+        202,
+        "ТЗ задачи · … 202"
+      ]
+    ]
+  },
+  "owner_access_badges": {
+    "enabled_checkbox": true,
+    "uses_canonical_labels": true
+  },
+  "menu_coverage": {
+    "forwarding": true,
+    "finance_mode": true,
+    "owner_access": true,
+    "spaces": true,
+    "finance_aux": true,
+    "chat_descriptions": true
+  },
+  "protected_contracts": {
+    "with_gomonk_full": true,
+    "remaining_daily_source": true,
+    "strict_restore": true,
+    "mega_root": true,
+    "protected_project_rule": true
+  },
+  "forbidden_mega_root": []
 }
