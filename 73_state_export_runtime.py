@@ -1,4 +1,4 @@
-# v182_restore_unified
+# v183_restore_json_routing_fix
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -821,6 +821,24 @@ def _v150_is_known_slash_command(text: str) -> bool:
 
 
 def durable_task_required(payload: dict) -> tuple[bool, str]:
+    # v183: an uploaded restore document is a control-plane input, not a finance message.
+    # It already has its own pre_restore backup + validated restore workflow, so do not create
+    # a source_finance durable witness for JSON/ISON/GZ/CSV while /restore mode is active.
+    try:
+        _raw_restore = (payload or {}).get("message") or (payload or {}).get("channel_post")
+        if isinstance(_raw_restore, dict) and isinstance(_raw_restore.get("document"), dict):
+            _restore_cid = int(((_raw_restore.get("chat") or {}).get("id")))
+            _restore_name = str((_raw_restore.get("document") or {}).get("file_name") or "").lower()
+            _restore_active = globals().get("restore_mode")
+            if (
+                _restore_active is not None
+                and int(_restore_active) == _restore_cid
+                and _restore_name.endswith((".json", ".ison", ".csv", ".gz"))
+            ):
+                return False, "v183:restore_document_control"
+    except Exception:
+        pass
+
     command, _chat_id, _msg_id, _uid = _v150_command_from_payload(payload)
     if str(command or "").lower().startswith("/izm_"):
         return False, "v168:record_edit_open"
@@ -5064,4 +5082,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v182_restore_unified
+# v183_restore_json_routing_fix

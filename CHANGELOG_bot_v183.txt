@@ -1,0 +1,8 @@
+v183 RESTORE JSON ROUTING FIX
+
+1. /restore upload JSON/ISON/GZ/CSV is routed before generic on_any_message finance/forwarding processing.
+2. Removed unreachable separate TeleBot document handler registration; handle_document remains a direct restore helper.
+3. Active restore uploads are excluded from finance durable classification, preventing source_finance false witnesses / needs_review.
+4. chat_<id>.json is explicitly documented and accepted by payload chat_id.
+5. Existing pre_restore backup behavior is preserved.
+6. MEGA root remains /TelegramBotBackups / MEGA_BACKUP_DIR.

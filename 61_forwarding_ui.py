@@ -1,4 +1,4 @@
-# v182_restore_unified
+# v183_restore_json_routing_fix
 def build_forward_root_menu(day_key: str):
     """Корневое меню пересылки: старый режим или новый визуальный режим пары A/B."""
     if forward_menu_new_style_enabled():
@@ -624,4 +624,4 @@ def _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode(day_key: str 
 try: _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode.__name__ = 'build_forward_menu_keyboard_for_current_mode'
 except Exception: pass
 build_forward_menu_keyboard_for_current_mode = _v177_legacy_0195_build_forward_menu_keyboard_for_current_mode
-# v182_restore_unified
+# v183_restore_json_routing_fix

@@ -1,4 +1,4 @@
-# v182_restore_unified
+# v183_restore_json_routing_fix
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -25,6 +25,34 @@ def on_any_message(msg):
         bot_journal("message_received", chat_id, describe_msg_for_log(msg))
     except Exception:
         pass
+
+    # v183: restore documents must be consumed BEFORE the generic finance/forwarding path.
+    # The old generic handler is registered earlier than the document helper, so without this
+    # direct route Telegram JSON/GZ/CSV uploads were swallowed as ordinary documents.
+    if msg.content_type == "document":
+        try:
+            _restore_chat = globals().get("restore_mode")
+            _doc = getattr(msg, "document", None)
+            _fname = str(getattr(_doc, "file_name", "") or "").lower()
+            _restore_ext = _fname.endswith((".json", ".ison", ".csv", ".gz"))
+            _owner_json_prompt = (
+                _restore_chat is None
+                and is_owner_chat(chat_id)
+                and _fname.endswith((".json", ".ison"))
+            )
+            if (_restore_chat is not None and int(_restore_chat) == int(chat_id) and _restore_ext) or _owner_json_prompt:
+                _restore_doc_handler = globals().get("handle_document")
+                if callable(_restore_doc_handler):
+                    bot_journal("restore_document_routed_v183", chat_id, f"file={_fname}; mode={_restore_chat}")
+                    return _restore_doc_handler(msg)
+                raise RuntimeError("restore document handler is unavailable")
+        except Exception as _restore_route_exc:
+            log_error(f"v183 restore document route failed: {_restore_route_exc}")
+            try:
+                send_and_auto_delete(chat_id, f"❌ Файл восстановления не обработан: {_restore_route_exc}", 15)
+            except Exception:
+                pass
+            return
 
     # v149: one-time Google setup inputs must be consumed before finance/forwarding.
     try:
@@ -982,4 +1010,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v182_restore_unified
+# v183_restore_json_routing_fix

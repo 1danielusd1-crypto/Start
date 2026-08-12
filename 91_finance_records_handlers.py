@@ -1,4 +1,4 @@
-# v182_restore_unified
+# v183_restore_json_routing_fix
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -700,7 +700,6 @@ def reset_chat_data(chat_id: int):
         log_error(f"reset_chat_data({chat_id}): {e}")
 
 
-@bot.message_handler(content_types=["document"])
 def handle_document(msg):
     global restore_mode, data
 
@@ -768,10 +767,20 @@ def handle_document(msg):
         backup_dir = ""
         try:
             backup_fn = globals().get("_v153_backup_before_restore")
-            if callable(backup_fn):
-                backup_dir = backup_fn()
+            if not callable(backup_fn):
+                raise RuntimeError("pre_restore backup helper недоступен")
+            if callable(globals().get("mega_is_configured")) and not mega_is_configured():
+                raise RuntimeError("MEGA не настроена — восстановление остановлено, чтобы не потерять текущие данные")
+            backup_dir = backup_fn()
+            bot_journal("restore_pre_backup_ok_v183", chat_id, f"file={fname}")
         except Exception as e:
             log_error(f"pre_restore backup before file restore: {e}")
+            try:
+                if os.path.exists(tmp_path): os.remove(tmp_path)
+            except Exception:
+                pass
+            send_and_auto_delete(chat_id, f"❌ Восстановление остановлено: не удалось создать pre_restore backup. {e}", 20)
+            return
 
         try:
             if fname in {"data.json", "data.ison"}:
@@ -1546,4 +1555,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v182_restore_unified
+# v183_restore_json_routing_fix

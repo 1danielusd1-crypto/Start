@@ -1,0 +1,23 @@
+{
+  "version": "bot_v183_restore_json_routing_fix",
+  "status": "PASS",
+  "runtime_modules": 26,
+  "duplicate_top_level_callables": 0,
+  "assertions": {
+    "direct_restore_route": true,
+    "durable_restore_exclusion": true,
+    "no_separate_doc_handler": true,
+    "pre_restore_required": true,
+    "no_start_root": true
+  },
+  "uploaded_json_test": {
+    "valid_json": true,
+    "kind": "chat_full_backup",
+    "chat_id": 8592220081,
+    "records": 904,
+    "accepted_shape": true,
+    "newest": "08:08:26",
+    "oldest": "25:04:26"
+  },
+  "problems": []
+}

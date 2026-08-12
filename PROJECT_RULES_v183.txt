@@ -1,0 +1,5 @@
+MEGA durable root: /TelegramBotBackups (or Render MEGA_BACKUP_DIR).
+No /TelegramBotBackupsStart.
+Performance/UI fixes apply to owner, circle1 and circle2 where available.
+Fast/Minimum profiles do not auto-disable diagnostics.
+Each source .py first and last line is the bot version marker.

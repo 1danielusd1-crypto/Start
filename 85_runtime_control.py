@@ -1,4 +1,4 @@
-# v182_restore_unified
+# v183_restore_json_routing_fix
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -1278,7 +1278,7 @@ def v182_cmd_restore(msg):
         "📥 Режим восстановления включён.\n\n"
         "Теперь отправьте ОДИН файл:\n"
         "• *.sqlite3.gz / *.gz — полный SQLite snapshot\n"
-        "• *.json / *.ison — JSON backup\n"
+        "• *.json / *.ison — JSON backup (включая chat_<id>.json)\n"
         "• *.csv — CSV чата\n\n"
         "Для следующего файла снова отправьте /restore.\n"
         "Отмена: /restore_off",
@@ -1372,5 +1372,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v179 authoritative runtime version after integrated historical modules.
-VERSION = "bot_v182_restore_unified"
-# v182_restore_unified
+VERSION = "bot_v183_restore_json_routing_fix"
+# v183_restore_json_routing_fix
