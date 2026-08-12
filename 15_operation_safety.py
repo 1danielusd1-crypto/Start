@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
 _EXPENSE_INBOX_LOCK = threading.RLock()
@@ -1035,6 +1035,16 @@ def _integrity_root() -> dict:
     root.setdefault("tips", {})
     root.setdefault("anchor", {})
     root.setdefault("event_seq", 0)
+    # v189 delta restore carries only the compact chain head; merge it over the older
+    # full-snapshot history so the next immutable event continues from the right hash.
+    try:
+        head = data.get("_finance_integrity_head_v189") or {}
+        if isinstance(head, dict) and int(head.get("event_seq") or 0) >= int(root.get("event_seq") or 0):
+            root["event_seq"] = int(head.get("event_seq") or 0)
+            if isinstance(head.get("tips"), dict): root["tips"] = copy.deepcopy(head.get("tips") or {})
+            if isinstance(head.get("anchor"), dict): root["anchor"] = copy.deepcopy(head.get("anchor") or {})
+    except Exception:
+        pass
     return root
 
 
@@ -1293,4 +1303,4 @@ def expense_draft_input_message(msg):
         raise
     finally:
         msg.text = original_text
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

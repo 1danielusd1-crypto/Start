@@ -1,0 +1,130 @@
+{
+  "version": "bot_v189_main_window_authority_final",
+  "tests": {
+    "compile_runtime_parts": {
+      "ok": true,
+      "detail": "27 parts"
+    },
+    "compile_loader_and_full": {
+      "ok": true,
+      "detail": ""
+    },
+    "manifest_hashes": {
+      "ok": true,
+      "detail": ""
+    },
+    "source_markers": {
+      "ok": true,
+      "detail": ""
+    },
+    "duplicate_top_level_defs_classes_zero": {
+      "ok": true,
+      "detail": "{}"
+    },
+    "single_public_delta_uploader": {
+      "ok": true,
+      "detail": ""
+    },
+    "single_public_finance_refresh": {
+      "ok": true,
+      "detail": ""
+    },
+    "single_public_finance_changed": {
+      "ok": true,
+      "detail": ""
+    },
+    "single_public_schedule_finalize": {
+      "ok": true,
+      "detail": ""
+    },
+    "single_active_finance_finalizer": {
+      "ok": true,
+      "detail": ""
+    },
+    "no_nested_late_finrefresh_wrapper": {
+      "ok": true,
+      "detail": ""
+    },
+    "no_nested_late_globalsnapshot_wrapper": {
+      "ok": true,
+      "detail": ""
+    },
+    "legacy_parallel_main_collapses_to_current": {
+      "ok": true,
+      "detail": "(101, '2026-08-09', {'active_messages': {'1': {'2026-08-09': 101}}, 'chats': {'1': {'current_view_day': '2026-08-09', 'primary_main_window_id': 101, 'primary_main_window_day': '2026-08-09'}}})"
+    },
+    "new_main_is_single_authority": {
+      "ok": true,
+      "detail": "{'active_messages': {'1': {'2026-08-10': 200}}, 'chats': {'1': {'current_view_day': '2026-08-10', 'primary_main_window_id': 200, 'primary_main_window_day': '2026-08-10'}}}"
+    },
+    "previous_main_retired": {
+      "ok": true,
+      "detail": "([(1, 101)], [(1, 101)])"
+    },
+    "old_day_has_no_active_window": {
+      "ok": true,
+      "detail": ""
+    },
+    "journal_filename_sanitize": {
+      "ok": true,
+      "detail": "Мой_журнал_август"
+    },
+    "delta_excludes_full_integrity_events": {
+      "ok": true,
+      "detail": ""
+    },
+    "delta_carries_integrity_head": {
+      "ok": true,
+      "detail": ""
+    },
+    "integrity_head_delta_small": {
+      "ok": true,
+      "detail": "269 bytes"
+    },
+    "restore_reanchors_delta_after_generation": {
+      "ok": true,
+      "detail": ""
+    },
+    "restore_no_immediate_prebaseline_delta": {
+      "ok": true,
+      "detail": ""
+    },
+    "normal_finance_does_not_set_view_from_message": {
+      "ok": true,
+      "detail": ""
+    },
+    "finance_finalizer_does_not_move_ui_day": {
+      "ok": true,
+      "detail": ""
+    },
+    "finance_refresh_skips_historical_main": {
+      "ok": true,
+      "detail": ""
+    },
+    "one_finalize_one_refresh": {
+      "ok": true,
+      "detail": ""
+    },
+    "careful_restore_uses_canonical_main": {
+      "ok": true,
+      "detail": ""
+    },
+    "stale_main_callback_redirect": {
+      "ok": true,
+      "detail": ""
+    },
+    "journal_name_input_precedes_finance": {
+      "ok": true,
+      "detail": ""
+    },
+    "canonical_mega_root_no_start": {
+      "ok": true,
+      "detail": ""
+    },
+    "single_callback_registration": {
+      "ok": true,
+      "detail": "1"
+    }
+  },
+  "ok": true
+}

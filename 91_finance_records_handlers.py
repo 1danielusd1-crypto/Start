@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -422,11 +422,6 @@ def _v177_legacy_0237_finance_changed_now(chat_id: int, day_key: str | None = No
 
     except Exception as e:
         raise
-try: _v177_legacy_0237_finance_changed_now.__name__ = '_finance_changed_now'
-except Exception: pass
-_finance_changed_now = _v177_legacy_0237_finance_changed_now
-
-
 def _v177_legacy_0238_finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.35):
     """Debounced универсальный финальный пересчёт для одного чата."""
     chat_id = int(chat_id)
@@ -447,19 +442,9 @@ def _v177_legacy_0238_finance_changed(chat_id: int, day_key: str | None = None, 
             _finalize_timers.pop(chat_id, None)
         _job()
     DELAYED_SCHEDULER.schedule(f"finance-finalize:{chat_id}", delay, _fire_finance)
-try: _v177_legacy_0238_finance_changed.__name__ = 'finance_changed'
-except Exception: pass
-finance_changed = _v177_legacy_0238_finance_changed
-
-
 def _v177_legacy_0239_schedule_finalize(chat_id: int, day_key: str, delay: float = 0.35):
     """Совместимость со старым кодом: теперь всё идёт через finance_changed()."""
     return finance_changed(chat_id, day_key, reason="schedule_finalize", delay=delay)
-try: _v177_legacy_0239_schedule_finalize.__name__ = 'schedule_finalize'
-except Exception: pass
-schedule_finalize = _v177_legacy_0239_schedule_finalize
-
-
 def _v177_legacy_0240_backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
     """
     Окно дня для владельца без document-caption.
@@ -1541,4 +1526,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

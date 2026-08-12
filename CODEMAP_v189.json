@@ -1,0 +1,72 @@
+{
+  "version": "bot_v189_main_window_authority_final",
+  "main_window_authority": {
+    "module": "90_commands_exports.py",
+    "symbols": [
+      "get_primary_main_window",
+      "canonical_main_day",
+      "set_active_window_id",
+      "get_active_window_id"
+    ]
+  },
+  "stale_callback_redirect": {
+    "module": "89_callback_final.py",
+    "symbols": [
+      "_v189_redirect_stale_finance_window"
+    ]
+  },
+  "finance_date_routing": {
+    "module": "40_message_router.py",
+    "symbols": [
+      "handle_finance_text",
+      "sync_forwarded_finance_message"
+    ]
+  },
+  "finance_finalize": {
+    "module": "72_multitenant_runtime.py",
+    "symbols": [
+      "_finance_changed_now"
+    ]
+  },
+  "finance_refresh": {
+    "module": "75_platform_features_runtime.py",
+    "symbols": [
+      "refresh_registered_financial_windows",
+      "schedule_financial_window_refresh",
+      "finance_changed",
+      "schedule_finalize"
+    ]
+  },
+  "delta_core": {
+    "module": "10_mega_runtime.py",
+    "symbols": [
+      "_delta_root_patch",
+      "initialize_delta_baseline",
+      "_delta_upload_payload",
+      "_mark_global_snapshot_pending"
+    ]
+  },
+  "restore_reanchor": {
+    "module": "11_data_constitution.py",
+    "symbols": [
+      "constitution_reanchor_after_manual_restore"
+    ]
+  },
+  "journal_names": {
+    "module": "00_core.py",
+    "symbols": [
+      "journal_download_base_name",
+      "set_journal_download_base_name",
+      "journal_download_filename",
+      "handle_journal_filename_input"
+    ]
+  },
+  "journal_ui": {
+    "module": "80_callback_router.py",
+    "callbacks": [
+      "journal_name_edit",
+      "journal_name_cancel",
+      "journal_name_reset"
+    ]
+  }
+}

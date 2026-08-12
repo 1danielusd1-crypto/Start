@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 # ---- integrated from 105_v155_button_navigation_audit.py ----
 """v155: full button/navigation audit hardening and live callback outcome diagnostics."""
 
@@ -14,7 +14,7 @@ import threading as _v155_threading
 import time as _v155_time
 from collections import deque as _v155_deque
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 V155_BUTTON_AUDIT_ENABLED = str(_v155_os.getenv("BUTTON_OUTCOME_AUDIT", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
 _V155_BUTTON_AUDIT_LOCK = _v155_threading.RLock()
@@ -413,7 +413,7 @@ import tempfile as _v156_tempfile
 import threading as _v156_threading
 import time as _v156_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 # ---------------------------------------------------------------------------
 # Visual process status. Telegram callback toasts have a platform-controlled
@@ -1037,7 +1037,7 @@ import tempfile as _v157_tempfile
 import threading as _v157_threading
 import time as _v157_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 # ---------------------------------------------------------------------------
 # Process window settings: one submenu in INFO, two explicit platform-owner
@@ -1738,7 +1738,7 @@ except Exception:
 # ---- integrated from 108_v158_no_process_messages_income_notes.py ----
 """v158: remove auxiliary process messages and add income annotations to every annotated Excel layout."""
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 # ---------------------------------------------------------------------------
 # 1) Process UI messages are disabled completely.
@@ -2108,7 +2108,7 @@ import sqlite3 as _v159_sqlite3
 import tempfile as _v159_tempfile
 import time as _v159_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 # ---------------------------------------------------------------------------
 # 1) Internal timer labels / new helper timers.
@@ -2714,7 +2714,7 @@ import threading as _v160_threading
 import time as _v160_time
 from datetime import timedelta as _v160_timedelta
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 # ---------------------------------------------------------------------------
 # 1) Generic telegram_update/process pop-up is removed again.
@@ -4172,7 +4172,7 @@ import tempfile as _v161_tempfile
 import threading as _v161_threading
 import time as _v161_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 # 1. Ф232 is forbidden for ordinary telegram_update/background work. Ф233 stays for real file jobs.
 try:
@@ -4352,6 +4352,15 @@ def _v161_window_is_auxiliary(chat_id: int, message_id: int) -> bool:
 
 def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int | None = None):
     chat_id = int(chat_id); day_key = str(day_key)[:10]
+    # v189: background calculations for another day must never create/resurrect a second main window.
+    try:
+        primary_mid, primary_day = get_primary_main_window(chat_id)
+    except Exception:
+        primary_mid, primary_day = (None, day_key)
+    if primary_mid and message_id_override is None and str(primary_day)[:10] != day_key:
+        try: bot_journal("main_refresh_skipped_nonprimary_v189", chat_id, f"requested={day_key}; primary={primary_day}")
+        except Exception: pass
+        return False
     try: mid = int(message_id_override or get_active_window_id(chat_id, day_key) or 0)
     except Exception: mid = 0
     if mid and not _v161_explicit_main_action() and _v161_window_is_auxiliary(chat_id, mid):
@@ -4365,6 +4374,15 @@ def backup_window_for_owner(chat_id: int, day_key: str, message_id_override: int
 
 def update_or_send_day_window(chat_id: int, day_key: str):
     chat_id = int(chat_id); day_key = str(day_key)[:10]
+    # v189: only explicit navigation may move the main window to another day.
+    try:
+        primary_mid, primary_day = get_primary_main_window(chat_id)
+    except Exception:
+        primary_mid, primary_day = (None, day_key)
+    if primary_mid and str(primary_day)[:10] != day_key:
+        try: bot_journal("day_window_send_skipped_nonprimary_v189", chat_id, f"requested={day_key}; primary={primary_day}")
+        except Exception: pass
+        return False
     try: mid = int(get_active_window_id(chat_id, day_key) or 0)
     except Exception: mid = 0
     if mid and not _v161_explicit_main_action() and _v161_window_is_auxiliary(chat_id, mid):
@@ -4993,7 +5011,7 @@ import sqlite3 as _v162_sqlite3
 import tempfile as _v162_tempfile
 import threading as _v162_threading
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 _V162_START_LOCK_GUARD = _v162_threading.RLock()
 _V162_START_LOCKS = {}
@@ -5213,4 +5231,4 @@ try:
     bot_journal("v162_start_hard_fix_installed", int(OWNER_ID or 0), "process_new_updates_intercept=1; start_always_new_f91=1; silent_returns=0")
 except Exception:
     pass
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -12,7 +12,7 @@ import threading as _v150_threading
 import time as _v150_time
 from datetime import datetime as _v150_datetime
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 V150_CHAT_STATUSES = {"active", "unreachable", "bot_removed", "migrated", "archived"}
 V150_CHAT_STATUS_LABELS = {
     "active": "🟢 active",
@@ -1093,7 +1093,7 @@ import re as _v151_re
 import threading as _v151_threading
 from datetime import datetime as _v151_datetime, timedelta as _v151_timedelta
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 _V151_EXPORT_LOCAL = _v151_threading.local()
 _V151_MONTH_LOCAL = _v151_threading.local()
@@ -2061,7 +2061,7 @@ def set_webhook():
     return _V151_BASE_SET_WEBHOOK()
 
 # ---- integrated from 102_v152_human_journals_chat_rights.py ----
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 import functools as _v152_functools
 import io as _v152_io
@@ -3044,7 +3044,7 @@ import zipfile as _v153_zipfile
 from datetime import datetime as _v153_datetime
 from pathlib import Path as _V153Path
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 V153_EXPORT_SCHEMA = 1
 V153_OLD_MEGA_ROOT = "/TelegramBotBackups"
 V153_NEW_MEGA_ROOT = "/TelegramBotBackups"
@@ -4104,7 +4104,8 @@ def _v153_apply_global_restore(raw: str) -> None:
     except Exception as exc:
         log_error(f"v184 global GZ post-restore rehydrate: {exc}")
     save_data(data, full=True)
-    schedule_delta_backup(int(OWNER_ID or 0), delay=0.1, reason="v184_global_restore")
+    # v189: no pre-reanchor delta after a destructive restore. The constitution checkpoint
+    # publishes a full immutable generation and resets the confirmed delta baseline first.
 
 
 def _v153_retarget_tenant_value(value, source_tenant: str, target_tenant: str):
@@ -4703,7 +4704,7 @@ import gzip as _v154_gzip
 import tempfile as _v154_tempfile
 import json as _v154_json
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 _V154_BASE_PERIOD_EXCEL_KEYBOARD = globals().get("_period_excel_style_keyboard")
 _V154_BASE_CATEGORY_COMPACT = globals().get("_category_rows_without_description")
@@ -5052,4 +5053,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

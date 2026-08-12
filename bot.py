@@ -1,8 +1,8 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 from pathlib import Path
 import hashlib, json, os
-MODULAR_VERSION = "bot_v188_restore_forward_fix_final"
-MODULE_FILE_VERSION = "v188_restore_forward_fix_final"
+MODULAR_VERSION = "bot_v189_main_window_authority_final"
+MODULE_FILE_VERSION = "v189_main_window_authority_final"
 MODULAR_SOURCE_PARTS = ['00_core.py', '10_mega_runtime.py', '11_data_constitution.py', '15_operation_safety.py', '16_window_diagnostics.py', '17_memory_runtime.py', '20_callback_tokens.py', '30_secret.py', '35_reminders.py', '40_message_router.py', '50_forwarding.py', '60_finance_currency.py', '61_forwarding_ui.py', '62_finance_ui.py', '63_google_sheets.py', '70_fast_ui.py', '80_callback_router.py', '90_commands_exports.py', '91_finance_records_handlers.py', '72_multitenant_runtime.py', '99_web_runtime.py', '73_state_export_runtime.py', '74_ui_reliability_runtime.py', '75_platform_features_runtime.py', '76_tasks_runtime.py', '85_runtime_control.py', '89_callback_final.py']
 _MODULAR_ROOT = Path(__file__).resolve().parent
 _MODULAR_MERGED_CACHE = None
@@ -46,4 +46,4 @@ def _modular_merged_source_path() -> str:
 _validate_modular_package()
 for _part in MODULAR_SOURCE_PARTS: _exec_source_part(_part)
 if __name__ == "__main__": main()
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

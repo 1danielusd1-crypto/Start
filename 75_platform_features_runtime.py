@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 # ---- integrated from 113_v163_audit_hardening.py ----
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
@@ -7,7 +7,7 @@ import contextlib as _v163_contextlib
 import threading as _v163_threading
 import time as _v163_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 # ---------------------------------------------------------------------------
 # 1) Priority lanes: /start never waits behind ordinary content for the chat.
@@ -593,7 +593,7 @@ import tempfile as _v164_tempfile
 import threading as _v164_threading
 import time as _v164_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 V164_CIRCLE_SCHEMA = 1
 
 _V164_LOCK = _v164_threading.RLock()
@@ -1819,7 +1819,7 @@ import shutil as _v165_shutil
 import sqlite3 as _v165_sqlite3
 import tempfile as _v165_tempfile
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 _V165_PREV_RESTORE_VALIDATE = globals().get("_v153_validate_restore_gz")
 
@@ -2014,7 +2014,7 @@ import tempfile as _v166_tempfile
 import threading as _v166_threading
 import time as _v166_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 
 # ---------------------------------------------------------------------------
 # Pools / execution lanes.
@@ -2651,65 +2651,46 @@ def _v168_fin_window_is_recent(item: dict, max_age_seconds: float = 900.0) -> bo
 
 
 def refresh_registered_financial_windows(chat_id: int):
-    """Fan out current/recent finance windows after a committed finance change.
+    """Refresh only the single authoritative main window plus actually open auxiliaries.
 
-    Same Telegram message is always serialized by one pool key; different messages in the same
-    chat are allowed to refresh concurrently. This is the safe maximum parallelism for UI.
+    v189 rule: historical main windows never auto-refresh. This removes cross-day repaint
+    races and guarantees that background finance changes cannot resurrect an older main window.
     """
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
     submitted_messages = set()
 
-    def _submit_main(day_value, message_value):
+    # Exactly one primary main window.
+    try:
+        fn = globals().get("get_primary_main_window")
+        primary_mid, primary_day = fn(chat_id) if callable(fn) else (None, str(store.get("current_view_day") or today_key())[:10])
+    except Exception:
+        primary_mid, primary_day = None, str(store.get("current_view_day") or today_key())[:10]
+    if primary_mid:
         try:
-            mid_i = int(message_value or 0)
-            if not mid_i or mid_i in submitted_messages:
-                return
+            mid_i = int(primary_mid)
             submitted_messages.add(mid_i)
-            _v166_fin_submit(f"msg:{chat_id}:{mid_i}", _v166_refresh_main_one, chat_id, str(day_value or today_key()), mid_i)
+            _v166_fin_submit(f"msg:{chat_id}:{mid_i}", _v166_refresh_main_one, chat_id, str(primary_day), mid_i)
         except Exception:
             pass
 
-    # Active pointer(s) always refresh immediately.
-    active_mids = set()
-    for day_value, mid in list((get_or_create_active_windows(chat_id) or {}).items()):
-        try:
-            if int(mid or 0): active_mids.add(int(mid))
-        except Exception: pass
-        _submit_main(day_value, mid)
-
-    # v168: old parallel windows remain valid when clicked, but only recent windows auto-refresh.
-    # This prevents one transaction from generating dozens of Telegram edits after many versions/windows.
     registry_snapshot = list((_open_window_registry() or {}).items())
-    for _key, item in registry_snapshot:
-        try:
-            if str((item or {}).get("window_type") or "") != "main_day":
-                continue
-            host = int((item or {}).get("chat_id") or (item or {}).get("host_chat_id") or 0)
-            if host != chat_id:
-                continue
-            mid = int((item or {}).get("message_id") or 0)
-            if mid not in active_mids and not _v168_fin_window_is_recent(item):
-                continue
-            _submit_main((item or {}).get("day_key") or store.get("current_view_day") or today_key(), mid)
-        except Exception:
-            continue
 
     rem_mid = int(store.get("remaining_msg_id") or 0)
     if rem_mid and rem_mid not in submitted_messages:
         submitted_messages.add(rem_mid)
         _v166_fin_submit(f"msg:{chat_id}:{rem_mid}", _v166_refresh_remaining, chat_id, rem_mid)
 
-    # Categories window, if one is actually open, gets the same per-message serialization rule.
     cat_mid = int(store.get("categories_msg_id") or 0)
     if cat_mid:
         _v166_fin_submit(f"msg:{chat_id}:{cat_mid}", _refresh_categories_window_from_state, chat_id)
 
-    # Owner/auxiliary views of this financial chat may live in another Telegram chat. Each concrete
-    # host message is independent and therefore can update in parallel with the main windows.
+    # Auxiliary views are refreshed only when they are recent and are not stale main windows.
     for _key, item in registry_snapshot:
         try:
             wtype = str((item or {}).get("window_type") or "")
+            if wtype == "main_day":
+                continue
             if wtype not in {"fin_view", "local_fin_view", "fin_categories_view", "stored"}:
                 continue
             if not _v168_fin_window_is_recent(item):
@@ -2730,15 +2711,22 @@ def refresh_registered_financial_windows(chat_id: int):
             continue
     return True
 
-
-def _v177_legacy_0247_schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, reason: str = "finance_changed", delay: float = 0.0):
-    """v166: post-commit UI refresh is dispatched immediately to independent per-message lanes.
-
-    finance_changed() already debounces/serializes the business commit. Adding another 120-150 ms
-    debounce here only made the visible balance lag, so the second debounce is removed.
-    """
+def schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, reason: str = "finance_changed", delay: float = 0.0):
+    """Single final finance repaint path. Only the authoritative main window may repaint."""
     chat_id = int(chat_id)
-    day_key = str(day_key or get_chat_store(chat_id).get("current_view_day") or today_key())[:10]
+    try:
+        switch = globals().get("v176_process_enabled")
+        if callable(switch) and not switch("fin_refresh"):
+            return False
+    except Exception:
+        pass
+    # Mutation day is diagnostic only. Visual day belongs to the primary main window.
+    try:
+        main_day_fn = globals().get("canonical_main_day")
+        visual_day = str(main_day_fn(chat_id) if callable(main_day_fn) else (get_chat_store(chat_id).get("current_view_day") or today_key()))[:10]
+    except Exception:
+        visual_day = str(get_chat_store(chat_id).get("current_view_day") or today_key())[:10]
+    day_key = str(day_key or visual_day)[:10]
 
     def _dispatch():
         try:
@@ -2761,15 +2749,18 @@ def _v177_legacy_0247_schedule_financial_window_refresh(chat_id: int, day_key: s
         key = f"finance-visual:{chat_id}"
         V166_FINANCE_DEBOUNCE_SCHEDULER.cancel(key)
         V166_FINANCE_DEBOUNCE_SCHEDULER.schedule(key, max(0.01, min(float(delay or 0.0), 0.05)), _fire_visual)
-        return True
+        scheduled = True
     except Exception:
-        _fire_visual()
-        return True
-try: _v177_legacy_0247_schedule_financial_window_refresh.__name__ = 'schedule_financial_window_refresh'
-except Exception: pass
-schedule_financial_window_refresh = _v177_legacy_0247_schedule_financial_window_refresh
-
-
+        _fire_visual(); scheduled = True
+    # Google change hook shares this single mutation signal; no wrapper cascade.
+    try:
+        switch = globals().get("v176_process_enabled")
+        google_allowed = (not callable(switch)) or switch("google_auto")
+        hook = globals().get("_v169_schedule_google_after_change")
+        if google_allowed and callable(hook): hook(chat_id, reason)
+    except Exception:
+        pass
+    return scheduled
 # Faster finance finalization debounce. Actual finance writes still go through FINANCE_TASK_POOL per chat.
 def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "change", delay: float = 0.05):
     chat_id = int(chat_id)
@@ -2780,13 +2771,8 @@ def finance_changed(chat_id: int, day_key: str | None = None, reason: str = "cha
         requested = 0.05
     # UI-oriented finance changes should settle almost immediately; restore/reset can still request 0.1 s.
     effective = min(requested, 0.10)
-    bot_journal("finance_changed_scheduled", chat_id, f"day={day_key} reason={reason} delay={effective} v168=pre_refresh")
-    try:
-        # Visible windows must not wait for SQLite/MEGA/finalization. Per-message lanes coalesce safely.
-        schedule_financial_window_refresh(chat_id, day_key, reason=f"{reason}:precommit_v168")
-    except Exception as exc:
-        try: log_error(f"v168 immediate finance UI {chat_id}: {exc}")
-        except Exception: pass
+    bot_journal("finance_changed_scheduled", chat_id, f"day={day_key} reason={reason} delay={effective} v189=single_refresh")
+    # v189: no pre-commit repaint. One mutation -> one finalize -> one coalesced repaint.
 
     def _job():
         if not FINANCE_TASK_POOL.submit(chat_id, _finance_changed_now, chat_id, day_key, reason):
@@ -2842,7 +2828,7 @@ import zipfile as _v167_zipfile
 import xml.etree.ElementTree as _v167_ET
 from datetime import datetime as _v167_datetime, timedelta as _v167_timedelta
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 V167_FILE_MARKER = "v170_clear_journal_names"
 
 _V167_BASE_V151_CATEGORIES = globals().get("_v151_categories")
@@ -3657,15 +3643,7 @@ def _v169_schedule_google_after_change(target_chat_id: int, reason: str = "finan
         except Exception: pass
 
 
-# Late wrapper: every real finance mutation already goes through this active v166 hook.
-_V169_BASE_SCHEDULE_FINANCIAL_WINDOW_REFRESH = globals().get("schedule_financial_window_refresh")
-def schedule_financial_window_refresh(chat_id: int, day_key: str | None = None, reason: str = "finance_changed", delay: float = 0.0):
-    result = None
-    if callable(_V169_BASE_SCHEDULE_FINANCIAL_WINDOW_REFRESH):
-        result = _V169_BASE_SCHEDULE_FINANCIAL_WINDOW_REFRESH(int(chat_id), day_key, reason=reason, delay=delay)
-    _v169_schedule_google_after_change(int(chat_id), reason)
-    return result
-
+# v189: Google change scheduling is integrated into the single finance refresh function above.
 
 def _v167_google_scheduler_tick():
     try:
@@ -4078,7 +4056,7 @@ import tempfile as _v171_tempfile
 import threading as _v171_threading
 import time as _v171_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 V171_FILE_MARKER = "v171_all_tz_reliability"
 
 # ---------------------------------------------------------------------------
@@ -4728,7 +4706,7 @@ def _v171_delta_breakdown(payload: dict) -> str:
     return " ".join(pieces)
 
 
-def _delta_upload_payload(payload: dict) -> tuple[bool, str]:
+def _v171_delta_upload_payload_legacy_unused(payload: dict) -> tuple[bool, str]:
     global _V171_DELTA_LAST_WARN
     if not payload or not mega_is_configured():
         return False, ""
@@ -4946,4 +4924,4 @@ try:
     )
 except Exception:
     pass
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

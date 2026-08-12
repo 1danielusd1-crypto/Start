@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -12,7 +12,7 @@ import statistics as _v176_statistics
 import threading as _v176_threading
 import time as _v176_time
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -265,24 +265,7 @@ if callable(_V176_ORIG_WINDOW_CLEANUP):
             return {"skipped": "v176_win_cleanup_off"}
         return _V176_ORIG_WINDOW_CLEANUP(*args, **kwargs)
 
-if callable(_V176_ORIG_FIN_REFRESH):
-    def schedule_financial_window_refresh(chat_id: int, day_key=None, reason: str = "finance_changed", delay: float = 0.0):
-        """Final finance refresh path: v166 refresh + optional Google trigger, no wrapper cascade."""
-        if not v176_process_enabled("fin_refresh"):
-            return False
-        result = None
-        base = globals().get("_V169_BASE_SCHEDULE_FINANCIAL_WINDOW_REFRESH")
-        if callable(base):
-            result = base(int(chat_id), day_key, reason=reason, delay=delay)
-        elif callable(_V176_ORIG_FIN_REFRESH):
-            result = _V176_ORIG_FIN_REFRESH(int(chat_id), day_key, reason=reason, delay=delay)
-        if v176_process_enabled("google_auto"):
-            try:
-                hook = globals().get("_v169_schedule_google_after_change")
-                if callable(hook): hook(int(chat_id), reason)
-            except Exception:
-                pass
-        return result
+# v189: fin_refresh/google_auto process checks are integrated in the single authoritative refresh path.
 
 if callable(_V176_ORIG_SCHEDULE_DELTA):
     def schedule_delta_backup(chat_id=None, delay=None, reason="change"):
@@ -303,16 +286,7 @@ if callable(_V176_ORIG_FULL_BACKUP):
             return None
         return _V176_ORIG_FULL_BACKUP(int(chat_id), delay)
 
-if callable(_V176_ORIG_GLOBAL_SNAPSHOT):
-    def _mark_global_snapshot_pending():
-        if not v176_process_enabled("full_global"):
-            try:
-                globals()["_global_snapshot_pending"] = True
-                globals()["_global_snapshot_last_change_monotonic"] = _v176_time.monotonic()
-            except Exception:
-                pass
-            return None
-        return _V176_ORIG_GLOBAL_SNAPSHOT()
+# v189: full_global process check is integrated in _mark_global_snapshot_pending.
 
 if callable(_V176_ORIG_JOURNAL_FLUSH):
     def journal_flush_to_mega(force: bool = False) -> bool:
@@ -1389,5 +1363,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v179 authoritative runtime version after integrated historical modules.
-VERSION = "bot_v188_restore_forward_fix_final"
-# v188_restore_forward_fix_final
+VERSION = "bot_v189_main_window_authority_final"
+# v189_main_window_authority_final

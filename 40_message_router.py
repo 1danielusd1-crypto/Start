@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -53,6 +53,15 @@ def on_any_message(msg):
             except Exception:
                 pass
             return
+
+    # v189: journal filename input is a control-plane message and must never be parsed as finance.
+    if msg.content_type == "text":
+        try:
+            fn = globals().get("handle_journal_filename_input")
+            if callable(fn) and fn(msg):
+                return
+        except Exception as _journal_name_exc:
+            log_error(f"journal filename route: {_journal_name_exc}")
 
     # v149: one-time Google setup inputs must be consumed before finance/forwarding.
     try:
@@ -547,15 +556,25 @@ def handle_finance_text(msg):
         log_error(f"[FINANCE PARSE ERROR] {describe_msg_for_log(msg)} text={text[:220]!r}: {e}")
         return False
 
-    # v187 careful restore: only a manually forwarded Telegram message is redirected
-    # to the day currently opened in the main finance window. Ordinary fresh input
-    # and automatic forwarding keep their normal date semantics.
-    careful_forward = bool(careful_restore_active(chat_id) and is_forwarded_telegram_message(msg))
+    # v189: visible main-window context and accounting date are independent.
+    # While careful restore is active, every manually received finance value in this
+    # chat is written to the ONE authoritative main-window day. Telegram may hide
+    # forward metadata, so relying on forward_origin made recovery miss the target day.
+    careful_forward = bool(careful_restore_active(chat_id))
     if careful_forward:
-        entry_day = str(store.get("current_view_day") or finance_today_key(chat_id))[:10]
+        try:
+            fn = globals().get("canonical_main_day")
+            entry_day = str(fn(chat_id) if callable(fn) else (store.get("current_view_day") or finance_today_key(chat_id)))[:10]
+        except Exception:
+            entry_day = str(store.get("current_view_day") or finance_today_key(chat_id))[:10]
+        try:
+            bot_journal("careful_restore_route", chat_id, f"msg={getattr(msg,'message_id',0)} day={entry_day}", "INFO")
+        except Exception:
+            pass
     else:
+        # Normal finance keeps the real message date, but MUST NOT move the user's
+        # currently open main window to that date.
         entry_day = finance_day_key_from_message(msg)
-        store["current_view_day"] = entry_day
 
     try:
         rec = add_record_to_chat(
@@ -673,7 +692,8 @@ def sync_forwarded_finance_message(dst_chat_id: int, dst_msg_id: int, text: str,
                 break
 
         entry_day = finance_day_key_from_message(source_msg) if source_msg is not None else finance_today_key()
-        store["current_view_day"] = entry_day
+        # v189: forwarded/business message dates do not own UI navigation state.
+        # The last main window remains authoritative for current_view_day.
 
         if text and looks_like_amount(text):
             try:
@@ -1045,4 +1065,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

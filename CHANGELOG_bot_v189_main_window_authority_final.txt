@@ -1,0 +1,10 @@
+bot_v189_main_window_authority_final
+
+1. ONE MAIN WINDOW: one authoritative main message/day per chat; stale old main callbacks close and redirect to latest.
+2. DATE FIX: finance messages/finalizers no longer mutate current_view_day. Careful Restore uses authoritative main day reliably.
+3. NO OLD REPAINT: background refresh never refreshes/resurrects historical main_day windows.
+4. RESTORE/DELTA FIX: successful manual restore resets delta baseline and pending batch after Constitution checkpoint; removed immediate pre-reanchor restore delta.
+5. DELTA SPEED: full finance_integrity event history removed from tiny deltas; compact integrity head only.
+6. ONE REPAINT: removed precommit duplicate finance repaint; one finalize -> one coalesced refresh.
+7. JOURNAL NAME: Journal menu can set persistent downloaded journal base filename.
+8. FINALIZATION: active finance/delta wrapper chains straightened; zero duplicate top-level defs/classes.

@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 import os
 import io
 import json
@@ -842,7 +842,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -3201,6 +3201,81 @@ except Exception: pass
 submit_interactive_file_job = _v177_legacy_0016_submit_interactive_file_job
 
 
+_JOURNAL_FILENAME_WAIT = {}
+_JOURNAL_FILENAME_WAIT_LOCK = threading.RLock()
+
+def _sanitize_journal_download_base(value: str) -> str:
+    raw = str(value or "").strip()
+    raw = re.sub(r"\.txt$", "", raw, flags=re.I).strip()
+    raw = re.sub(r"[\\/:*?\"<>|]+", " ", raw)
+    raw = re.sub(r"\s+", "_", raw).strip("._- ")
+    raw = re.sub(r"_+", "_", raw)
+    return raw[:64] or "Журнал_бота"
+
+def journal_download_base_name() -> str:
+    try:
+        value = str((data.get("_global_settings", {}) or {}).get("journal_download_base_name") or "")
+    except Exception:
+        value = ""
+    return _sanitize_journal_download_base(value or "Журнал_бота")
+
+def set_journal_download_base_name(value: str | None) -> str:
+    base = _sanitize_journal_download_base(value or "Журнал_бота")
+    gs = data.setdefault("_global_settings", {})
+    gs["journal_download_base_name"] = base
+    try: save_data(data, full=True)
+    except Exception: pass
+    try:
+        if mega_is_configured() and not RESTORE_GUARD_ACTIVE:
+            schedule_config_backup_for_chats(int(OWNER_ID or 0), delay=0.5)
+    except Exception: pass
+    return base
+
+def journal_download_filename(kind: str = "full") -> str:
+    base = journal_download_base_name()
+    stamp = now_local().strftime("%Y-%m-%d_%H-%M-%S")
+    suffix = "текущая_версия" if str(kind) == "current" else "полный"
+    return f"{base}_{suffix}_{stamp}.txt"
+
+def journal_filename_begin_wait(chat_id: int, seconds: float = 120.0) -> float:
+    deadline = time.monotonic() + max(15.0, float(seconds))
+    with _JOURNAL_FILENAME_WAIT_LOCK:
+        _JOURNAL_FILENAME_WAIT[int(chat_id)] = deadline
+    return deadline
+
+def journal_filename_cancel_wait(chat_id: int) -> None:
+    with _JOURNAL_FILENAME_WAIT_LOCK:
+        _JOURNAL_FILENAME_WAIT.pop(int(chat_id), None)
+
+def handle_journal_filename_input(msg) -> bool:
+    try:
+        chat_id = int(msg.chat.id)
+        if not is_owner_chat(chat_id) or str(getattr(msg, "content_type", "")) != "text":
+            return False
+        with _JOURNAL_FILENAME_WAIT_LOCK:
+            deadline = float(_JOURNAL_FILENAME_WAIT.get(chat_id) or 0.0)
+            if not deadline:
+                return False
+            if time.monotonic() > deadline:
+                _JOURNAL_FILENAME_WAIT.pop(chat_id, None)
+                return False
+            _JOURNAL_FILENAME_WAIT.pop(chat_id, None)
+        raw = str(getattr(msg, "text", "") or "").strip()
+        if raw.upper() in {"СБРОС", "RESET", "АВТО", "ПО УМОЛЧАНИЮ"}:
+            base = set_journal_download_base_name("Журнал_бота")
+        else:
+            base = set_journal_download_base_name(raw)
+        try: bot.delete_message(chat_id, int(msg.message_id))
+        except Exception: pass
+        send_and_auto_delete(chat_id, f"✅ Имя скачиваемых журналов: {base}\nПример: {journal_download_filename('current')}", 15)
+        try: bot_journal("journal_download_name_changed_v189", chat_id, f"base={base}")
+        except Exception: pass
+        return True
+    except Exception as exc:
+        try: log_error(f"journal filename input: {exc}")
+        except Exception: pass
+        return False
+
 def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
     """Build/send diagnostics inside EXPORT_TASK_POOL; never block Telegram webhook workers."""
     if not is_owner_chat(chat_id):
@@ -3220,8 +3295,8 @@ def _send_journal_file_to_owner_sync(chat_id: int, limit: int = 3000):
     diag = _journal_diagnostic_snapshot()
     tmp_path = None
     try:
-        fd, tmp_path = tempfile.mkstemp(prefix="bot_diagnostic_", suffix=".txt")
-        os.close(fd)
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        tmp_path = os.path.join(MEGA_LOCAL_TMP_DIR, journal_download_filename("full"))
         with open(tmp_path, "w", encoding="utf-8") as fh:
             fh.write("📓 МАКСИМАЛЬНЫЙ ДИАГНОСТИЧЕСКИЙ ЖУРНАЛ БОТА\n")
             fh.write(f"Создан: {_journal_ts()}\nВерсия: {VERSION}\n")
@@ -3346,9 +3421,8 @@ def _send_current_version_journal_to_owner_sync(chat_id: int, limit: int = 5000)
             journal_flush_to_mega(True)
         except Exception:
             pass
-        stamp = now_local().strftime("%Y%m%d_%H%M%S")
-        safe_ver = re.sub(r"[^0-9A-Za-z_\-]+", "_", str(VERSION))[:90]
-        tmp_path = os.path.join(MEGA_LOCAL_TMP_DIR, f"journal_{safe_ver}_{stamp}.txt")
+        os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
+        tmp_path = os.path.join(MEGA_LOCAL_TMP_DIR, journal_download_filename("current"))
         with open(tmp_path, "w", encoding="utf-8") as fh:
             fh.write("📓 ЖУРНАЛ ТЕКУЩЕЙ ВЕРСИИ БОТА\n")
             fh.write(f"Версия: {VERSION}\n")
@@ -4610,7 +4684,8 @@ def careful_restore_status(chat_id: int) -> dict:
         _careful_restore_expire(chat_id, deadline)
         return {"active": False, "remaining": 0, "day_key": ""}
     try:
-        day_key = str(get_chat_store(chat_id).get("current_view_day") or finance_today_key(chat_id))[:10]
+        fn = globals().get("canonical_main_day")
+        day_key = str(fn(chat_id) if callable(fn) else (get_chat_store(chat_id).get("current_view_day") or finance_today_key(chat_id)))[:10]
     except Exception:
         day_key = today_key()
     return {
@@ -4641,7 +4716,8 @@ def careful_restore_set(chat_id: int, enabled: bool, reason: str = "manual") -> 
     delay = float(internal_timer_seconds("careful_restore_idle", 120))
     deadline = time.monotonic() + delay
     try:
-        day_key = str(get_chat_store(chat_id).get("current_view_day") or finance_today_key(chat_id))[:10]
+        fn = globals().get("canonical_main_day")
+        day_key = str(fn(chat_id) if callable(fn) else (get_chat_store(chat_id).get("current_view_day") or finance_today_key(chat_id)))[:10]
     except Exception:
         day_key = today_key()
     with _careful_restore_lock:
@@ -5347,14 +5423,25 @@ def restore_finance_window_runtime_state():
                 settings["quick_balance_enabled"] = False
                 settings["quick_balance_behavior"] = "normal"
                 settings["quick_balance_user_selected"] = True
-            main_windows = state.get("main_windows") or {}
-            data.setdefault("active_messages", {})[str(cid)] = {
-                str(k): int(v) for k, v in main_windows.items() if v
-            }
+            # v189: only ONE main window survives deploy/restore. Collapse legacy parallel
+            # day->message maps deterministically around the saved current day.
+            main_windows = {str(k): int(v) for k, v in (state.get("main_windows") or {}).items() if v}
+            selected_day = str(state.get("current_view_day") or store.get("current_view_day") or today_key())[:10]
+            selected_mid = int(main_windows.get(selected_day) or 0)
+            if not selected_mid and main_windows:
+                try:
+                    selected_day, selected_mid = list(main_windows.items())[-1]
+                    selected_day = str(selected_day)[:10]; selected_mid = int(selected_mid)
+                except Exception:
+                    selected_mid = 0
+            data.setdefault("active_messages", {})[str(cid)] = ({selected_day: selected_mid} if selected_mid else {})
+            store["primary_main_window_id"] = selected_mid or None
+            store["primary_main_window_day"] = selected_day
+            store["current_view_day"] = selected_day
+            state["main_windows"] = ({selected_day: selected_mid} if selected_mid else {})
+            state["current_view_day"] = selected_day
             store["balance_panel_id"] = int(state.get("balance_panel_id")) if state.get("balance_panel_id") else None
             store["balance_panel_mode"] = str(state.get("balance_panel_mode") or "mini")
-            if state.get("current_view_day"):
-                store["current_view_day"] = str(state.get("current_view_day"))
     except Exception as e:
         log_error(f"restore_finance_window_runtime_state: {e}")
 
@@ -8039,4 +8126,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

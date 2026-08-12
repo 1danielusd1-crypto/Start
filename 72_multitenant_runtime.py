@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 # ---- integrated from 92_v147_diagnostic_hardening.py ----
 # ─────────────────────────────────────────────────────────────
 # v147: защита диагностических секретов, точные reminder-witness и безопасный back-main,
@@ -374,27 +374,18 @@ def _v177_legacy_0246_schedule_financial_window_refresh(chat_id: int, day_key: s
         bot_journal("finance_window_refresh_detached", chat_id, f"day={day_key} reason={reason} delay={delay}")
     except Exception:
         pass
-try: _v177_legacy_0246_schedule_financial_window_refresh.__name__ = 'schedule_financial_window_refresh'
-except Exception: pass
-schedule_financial_window_refresh = _v177_legacy_0246_schedule_financial_window_refresh
-
-
 def _v177_legacy_0045_refresh_registered_financial_windows(chat_id: int):
     """v146 compatibility: no mass Telegram edits; schedule only primary windows and mark the rest dirty."""
     schedule_financial_window_refresh(int(chat_id), reason="registry_refresh")
     return True
-try: _v177_legacy_0045_refresh_registered_financial_windows.__name__ = 'refresh_registered_financial_windows'
-except Exception: pass
-refresh_registered_financial_windows = _v177_legacy_0045_refresh_registered_financial_windows
-
-
 def _finance_changed_now(chat_id: int, day_key: str | None = None, reason: str = "change"):
     chat_id = int(chat_id)
     day_key = str(day_key or get_chat_store(chat_id).get("current_view_day") or today_key())[:10]
     finance_cache_invalidate(chat_id, f"finance_changed:{reason}")
     with locked_chat(chat_id):
         store = get_chat_store(chat_id)
-        store["current_view_day"] = day_key
+        # v189: business finalization must NEVER move the user's selected/main window day.
+        # day_key is the mutation day only; canonical UI day is owned by the last main window.
         _safe_stabilize("normalize_chat_records", lambda: normalize_chat_records(chat_id))
         _safe_stabilize("recalc_balance", lambda: recalc_balance(chat_id))
         _safe_stabilize("rebuild_month_short_ids", lambda: rebuild_month_short_ids(chat_id))
@@ -2494,7 +2485,7 @@ from copy import deepcopy as _v149_deepcopy
 from datetime import timedelta as _v149_timedelta
 from pathlib import Path as _v149_Path
 
-VERSION = "bot_v188_restore_forward_fix_final"
+VERSION = "bot_v189_main_window_authority_final"
 V149_GOOGLE_SCHEMA_VERSION = 1
 V149_REMINDER_SCHEMA_VERSION = 1
 _V149_GOOGLE_CONTEXT = _v149_threading.local()
@@ -3946,4 +3937,4 @@ def _v177_legacy_0266_v149_extension_callback(call, data_str: str) -> bool:
 try: _v177_legacy_0266_v149_extension_callback.__name__ = 'v149_extension_callback'
 except Exception: pass
 v149_extension_callback = _v177_legacy_0266_v149_extension_callback
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

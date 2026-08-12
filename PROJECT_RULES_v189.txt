@@ -1,0 +1,32 @@
+bot_v189_main_window_authority_final
+
+MAIN WINDOW AUTHORITY
+- Exactly one authoritative main finance window per chat.
+- primary_main_window_id + primary_main_window_day own visible navigation.
+- Old main callback => close old + send latest canonical main; never execute old callback.
+- Background finance refresh may edit only the authoritative main and currently open auxiliary views; never old main_day windows.
+- Finance calculation/record dates never mutate current_view_day.
+
+CAREFUL RESTORE
+- Separate from /restore.
+- While ON, every manually received parsed finance value goes to primary_main_window_day.
+- Each accepted value resets 120-second idle timer.
+- Mode is RAM-only and OFF after restart.
+
+RESTORE / DATA CONSTITUTION
+- /restore = strict REPLACE FROM FILE.
+- pre_restore before destructive apply.
+- successful restore => checkpoint + immutable generation => initialize_delta_baseline(data) + clear pending delta batch.
+- canonical MEGA root only /TelegramBotBackups.
+- finance_integrity full event history never copied into every compact delta; only compact head.
+
+JOURNALS
+- Journal menu includes persistent custom download base filename.
+- filename input is consumed before finance/forwarding.
+
+FINALIZATION
+- One registered callback router.
+- Zero duplicate top-level functions/classes across runtime parts.
+- One active schedule_financial_window_refresh.
+- One active _delta_upload_payload.
+- No late runtime wrappers for those two functions or _mark_global_snapshot_pending.

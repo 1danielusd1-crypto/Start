@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 """v185 DATA CONSTITUTION.
 
 Immutable storage contract. UI/performance modules must not redefine these functions.
@@ -492,6 +492,35 @@ def constitution_reanchor_after_manual_restore(reason: str = "manual_restore") -
         gz = raw + ".gz"
         SQLITE.backup_to(raw); _lowram_gzip_file(raw, gz)
         active = constitution_publish_sqlite_generation(raw, gz, checkpoint["at"], allow_destructive=True)
+        # v189: the restore itself becomes the NEW confirmed delta baseline. Without this,
+        # the first tiny edit after restore is compared with the PRE-restore state and can
+        # become a >1 MiB "full-in-delta" storm that blocks finance/UI for minutes.
+        try:
+            init_delta = globals().get("initialize_delta_baseline")
+            if callable(init_delta):
+                init_delta(data)
+            lock = globals().get("_delta_state_lock")
+            pending = globals().get("_delta_pending_chats")
+            generations = globals().get("_delta_chat_generation")
+            if lock is not None:
+                with lock:
+                    if hasattr(pending, "clear"): pending.clear()
+                    if hasattr(generations, "clear"): generations.clear()
+            else:
+                if hasattr(pending, "clear"): pending.clear()
+                if hasattr(generations, "clear"): generations.clear()
+            sched = globals().get("DELAYED_SCHEDULER")
+            if sched is not None:
+                try: sched.cancel("mega-delta-batch-v90")
+                except Exception: pass
+            try:
+                bot_journal("constitution_delta_reanchored_v189", int(OWNER_ID or 0), f"reason={reason}; records={live.get('total_records',0)}")
+            except Exception: pass
+        except Exception as _delta_reanchor_exc:
+            # A failed re-anchor is not silently ignored: freeze writes before a bad baseline
+            # can poison MEGA again.
+            constitution_set_quarantine(f"delta baseline re-anchor failed after restore: {_delta_reanchor_exc}")
+            raise
         constitution_clear_quarantine("manual restore checkpoint verified")
         try: _clear_restore_guard()
         except Exception: pass
@@ -604,7 +633,7 @@ def constitution_status_text() -> str:
     active = constitution_load_active_manifest_remote(force=False) or {}
     live = constitution_semantic_manifest_from_live()
     return (
-        "🏛 КОНСТИТУЦИЯ ДАННЫХ v185\n"
+        "🏛 КОНСТИТУЦИЯ ДАННЫХ v189\n"
         f"Статус: {'🚨 КАРАНТИН' if constitution_quarantine_active() else '✅ НОРМА'}\n"
         f"Причина: {DATA_CONSTITUTION_REASON or globals().get('RESTORE_GUARD_REASON','') or '—'}\n"
         f"Live finance records: {live.get('total_records',0)}\n"
@@ -650,4 +679,4 @@ def constitution_verify_protected_symbols() -> tuple[bool, str]:
         constitution_set_quarantine("storage-core symbol redefined: " + ", ".join(changed))
         return False, ", ".join(changed)
     return True, "ok"
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

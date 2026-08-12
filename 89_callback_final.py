@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 """v179 single callback middleware for owner, circle 1, circle 2 and all users with feature access."""
 
 def _v179_resolve_callback(call):
@@ -24,7 +24,74 @@ def _v179_set_source_context(call, resolved):
     except Exception:
         pass
 
+def _v189_is_finance_window_callback(resolved: str) -> bool:
+    """Callbacks that can originate from an old MAIN window. Auxiliary windows keep their own controls."""
+    value = str(resolved or "")
+    return value.startswith(("d:", "c:", "main_close:", "remaining_open:"))
+
+def _v189_redirect_stale_finance_window(call, resolved: str) -> bool:
+    """Close any old finance window and recreate the ONE latest main window at chat bottom."""
+    if not _v189_is_finance_window_callback(resolved):
+        return False
+    try:
+        chat_id = int(call.message.chat.id)
+        message_id = int(call.message.message_id)
+        fn = globals().get("get_primary_main_window")
+        if not callable(fn):
+            return False
+        primary_mid, primary_day = fn(chat_id)
+        if not primary_mid or int(primary_mid) == message_id:
+            return False
+        day_key = str(primary_day or globals().get("today_key", lambda: "")())[:10]
+    except Exception:
+        return False
+
+    try:
+        bot.answer_callback_query(call.id, "Старое окно закрыто → открываю последнее", show_alert=False)
+    except Exception:
+        pass
+
+    def _redirect():
+        try:
+            deleter = globals().get("_v189_delete_stale_main_message")
+            if callable(deleter): deleter(chat_id, message_id)
+            else:
+                try: bot.delete_message(chat_id, message_id)
+                except Exception: pass
+            # Send the canonical main window immediately. set_active_window_id() retires
+            # the previous primary asynchronously, so we avoid a blocking delete-before-send.
+            force_new = globals().get("force_new_day_window")
+            if callable(force_new):
+                force_new(chat_id, day_key)
+            else:
+                recreate = globals().get("recreate_main_window_now")
+                if callable(recreate): recreate(chat_id, day_key)
+            try: bot_journal("stale_main_redirect_v189", chat_id, f"old={message_id}; primary={primary_mid}; day={day_key}; action={resolved}", "INFO")
+            except Exception: pass
+        except Exception as exc:
+            try: log_error(f"v189 stale main redirect {chat_id}/{message_id}: {exc}")
+            except Exception: pass
+
+    try:
+        pool = globals().get("UI_TASK_POOL") or globals().get("GENERAL_TASK_POOL")
+        if pool is not None:
+            submit_unique = getattr(pool, "submit_unique", None)
+            if callable(submit_unique):
+                submit_unique(f"v189-stale-redirect:{chat_id}", _redirect)
+            else:
+                pool.submit(f"v189-stale-redirect:{chat_id}", _redirect)
+        else:
+            _redirect()
+    except Exception:
+        _redirect()
+    return True
+
+
 def _v179_dispatch_callback(call, raw: str, resolved: str):
+    # v189: stale finance windows never execute business logic. They close and redirect
+    # to a freshly recreated copy of the single authoritative main window.
+    if _v189_redirect_stale_finance_window(call, resolved):
+        return True
     # Exact callback-id dedupe only. No historical same-button delay suppression.
     fn = globals().get("_v160_exact_callback_duplicate")
     if callable(fn) and fn(call):
@@ -110,4 +177,4 @@ def final_callback_router(call):
 # Exactly one Telegram callback handler in the package.
 bot.callback_query_handler(func=lambda c: True)(final_callback_router)
 _V179_FINAL_CALLBACK_HANDLERS = 1
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

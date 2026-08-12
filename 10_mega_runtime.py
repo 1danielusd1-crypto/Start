@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -3285,6 +3285,7 @@ _DELTA_VOLATILE_CHAT_KEYS = {
     "active_windows", "edit_wait", "edit_target", "categories_msg_id", "report_window_id",
     "info_msg_id", "command_window_id", "total_msg_id", "balance_panel_id", "secret_wait",
     "main_window_msg_count", "balance_panel_msg_count", "current_view_day",
+    "finance_window_state", "primary_main_window_id", "primary_main_window_day",
 }
 # Производные/дублирующие массивы никогда не должны попадать в delta целиком.
 # Источник истины для финансовых изменений: chat_changes.upserts/deletes.
@@ -3305,6 +3306,9 @@ _DELTA_GLOBAL_SETTINGS_EXCLUDE = {
     # It stays in SQLite/full snapshots, but must never inflate each financial delta by hundreds of KB.
     "_window_tz_v160",
     "_window_marker_catalog_v160",
+    # v189: never copy the growing full integrity event history into every tiny delta.
+    # A compact head is emitted separately; immutable details live in Constitution ledger/full generations.
+    "finance_integrity_v141",
 }
 _DELTA_CHAT_SETTINGS_EXCLUDE = {
     # Audit/history arrays are not needed to replay one financial mutation; current reserve state remains included.
@@ -3368,11 +3372,24 @@ def _delta_root_patch(payload: dict) -> dict:
         and k not in {"_universal_backup", "_backup_meta", "_runtime_snapshot", "_delta_restore_meta"}
     }
     gs = out.get("_global_settings")
+    source_gs = (payload or {}).get("_global_settings") or {}
     if isinstance(gs, dict):
         out["_global_settings"] = {
             str(k): v for k, v in gs.items()
             if str(k) not in _DELTA_GLOBAL_SETTINGS_EXCLUDE
         }
+    # Compact continuation point for the integrity chain. This replaces hundreds of KB
+    # of repeated `events` with a few hashes while preserving exact next-event continuity.
+    try:
+        integ = source_gs.get("finance_integrity_v141") if isinstance(source_gs, dict) else None
+        if isinstance(integ, dict):
+            out["_finance_integrity_head_v189"] = {
+                "event_seq": int(integ.get("event_seq") or 0),
+                "tips": _delta_json_clone(integ.get("tips") or {}),
+                "anchor": _delta_json_clone(integ.get("anchor") or {}),
+            }
+    except Exception:
+        pass
     return out
 
 
@@ -3559,17 +3576,35 @@ def _commit_delta_baseline(baseline: dict):
         if "root_sigs" in baseline:
             _delta_root_baseline = dict(baseline.get("root_sigs") or {})
 
-def _v177_legacy_0076_delta_upload_payload(payload: dict) -> tuple[bool, str]:
+def _delta_upload_payload(payload: dict) -> tuple[bool, str]:
+    """Canonical compact-delta uploader. Soft warn 512 KiB; hard stop 1 MiB."""
     if not payload or not mega_is_configured():
         return False, ""
-    # Защита от регрессии: обычная delta не должна внезапно содержать мегабайты истории.
-    # 512 КБ оставляет большой запас для массовых реальных изменений, но блокирует случайный full-in-delta.
     try:
+        soft = max(128 * 1024, int(os.getenv("MEGA_DELTA_SOFT_WARN_BYTES", str(512 * 1024)) or 512 * 1024))
+        hard = max(soft + 1, int(os.getenv("MEGA_DELTA_HARD_MAX_BYTES", str(1024 * 1024)) or 1024 * 1024))
         encoded_size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
-        if encoded_size > 512 * 1024:
-            log_error(f"[MEGA DELTA BLOCKED] oversized compact delta: {encoded_size} bytes; full snapshot scheduled")
+        if encoded_size > hard:
+            def _sz(value):
+                try: return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+                except Exception: return -1
+            pieces = [f"{k}={_sz((payload or {}).get(k))}" for k in ("chat_changes","root_patch","root_map_patches","root_deletes","root_map_deletes")]
+            try:
+                chats = payload.get("chat_changes") or {}
+                top = sorted(((str(k), _sz(v)) for k,v in chats.items()), key=lambda x:x[1], reverse=True)[:3]
+                if top: pieces.append("top_chats=" + ",".join(f"{k}:{v}" for k,v in top))
+            except Exception: pass
+            log_error(f"[MEGA DELTA BLOCKED] oversized compact delta: {encoded_size} bytes > hard {hard}; {' '.join(pieces)}; full snapshot scheduled")
             _mark_global_snapshot_pending()
             return False, ""
+        if encoded_size > soft:
+            try:
+                now_m = time.monotonic()
+                last = float(globals().get("_V189_DELTA_LAST_WARN", 0.0) or 0.0)
+                if now_m - last >= 60.0:
+                    globals()["_V189_DELTA_LAST_WARN"] = now_m
+                    bot_journal("mega_delta_large_allowed_v189", None, f"bytes={encoded_size}; soft={soft}; hard={hard}", "WARN")
+            except Exception: pass
     except Exception as e:
         log_error(f"[MEGA DELTA SIZE CHECK] {e}")
     day_dir = mega_delta_remote_day_dir(str(payload.get("created_at") or today_key())[:10])
@@ -3579,7 +3614,6 @@ def _v177_legacy_0076_delta_upload_payload(payload: dict) -> tuple[bool, str]:
     try:
         _save_json(local_path, payload)
         mega_ensure_remote_path(day_dir)
-        # Delta immutable: уникальное имя, старые файлы не удаляем и не заменяем.
         _mega_run("mega-put", [local_path, day_dir], check=True, timeout=MEGA_TIMEOUT)
         return True, day_dir.rstrip("/") + "/" + name
     except Exception as e:
@@ -3587,20 +3621,22 @@ def _v177_legacy_0076_delta_upload_payload(payload: dict) -> tuple[bool, str]:
         return False, ""
     finally:
         try:
-            if os.path.exists(local_path):
-                os.remove(local_path)
-        except Exception:
-            pass
-try: _v177_legacy_0076_delta_upload_payload.__name__ = '_delta_upload_payload'
-except Exception: pass
-_delta_upload_payload = _v177_legacy_0076_delta_upload_payload
-
-
+            if os.path.exists(local_path): os.remove(local_path)
+        except Exception: pass
 def _mark_global_snapshot_pending():
     """Full global: после 3 минут тишины, но максимум через 15 минут непрерывной работы."""
     global _global_snapshot_pending, _global_snapshot_last_change_monotonic
     if RESTORE_GUARD_ACTIVE or not mega_is_configured():
         return
+    try:
+        switch = globals().get("v176_process_enabled")
+        if callable(switch) and not switch("full_global"):
+            with _delta_state_lock:
+                _global_snapshot_pending = True
+                _global_snapshot_last_change_monotonic = time.monotonic()
+            return
+    except Exception:
+        pass
     now_mono = time.monotonic()
     with _delta_state_lock:
         _global_snapshot_pending = True
@@ -9564,4 +9600,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

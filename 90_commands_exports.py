@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -272,40 +272,132 @@ def renumber_chat_records(chat_id: int):
     
 def get_or_create_active_windows(chat_id: int) -> dict:
     return data.setdefault("active_messages", {}).setdefault(str(chat_id), {})
+
+def get_primary_main_window(chat_id: int) -> tuple[int | None, str]:
+    """Return the single authoritative main window for this chat."""
+    chat_id = int(chat_id)
+    store = get_chat_store(chat_id)
+    mid = 0
+    try:
+        mid = int(store.get("primary_main_window_id") or 0)
+    except Exception:
+        mid = 0
+    day = str(store.get("primary_main_window_day") or store.get("current_view_day") or today_key())[:10]
+    if mid:
+        return mid, day
+    # v189 migration: collapse any legacy per-day map to the newest/current pointer.
+    aw = get_or_create_active_windows(chat_id)
+    if aw:
+        preferred = aw.get(day)
+        if preferred:
+            try: mid = int(preferred)
+            except Exception: mid = 0
+        if not mid:
+            try:
+                last_day, last_mid = list(aw.items())[-1]
+                day = str(last_day)[:10]
+                mid = int(last_mid)
+            except Exception:
+                mid = 0
+        if mid:
+            store["primary_main_window_id"] = mid
+            store["primary_main_window_day"] = day
+            store["current_view_day"] = day
+            aw.clear(); aw[day] = mid
+    return (mid or None), day
+
+def canonical_main_day(chat_id: int) -> str:
+    _mid, day = get_primary_main_window(int(chat_id))
+    return str(day or today_key())[:10]
+
+def is_primary_main_message(chat_id: int, message_id: int) -> bool:
+    mid, _day = get_primary_main_window(int(chat_id))
+    try:
+        return bool(mid and int(mid) == int(message_id))
+    except Exception:
+        return False
+
+def _v189_delete_stale_main_message(chat_id: int, message_id: int):
+    try:
+        fn = globals().get("v177_delete_message_async")
+        if callable(fn):
+            fn(int(chat_id), int(message_id), "v189_stale_main")
+            return
+    except Exception:
+        pass
+    try:
+        pool = globals().get("GENERAL_TASK_POOL")
+        if pool is not None:
+            pool.submit(f"v189-stale-main:{int(chat_id)}:{int(message_id)}", lambda: _tg_call_retry(bot.delete_message, int(chat_id), int(message_id), attempts=1, purpose="v189_stale_main_delete"))
+            return
+    except Exception:
+        pass
+
 def _v186_persist_active_window_state(chat_id: int):
     """Persist UI-only window state outside callback latency path."""
     try:
         _finance_window_state(int(chat_id))["auto_reopen_on_boot"] = True
-        _sync_finance_window_state_from_runtime(int(chat_id), schedule_delta=True)
+        _sync_finance_window_state_from_runtime(int(chat_id), schedule_delta=False)
         save_data(data, chat_ids=[int(chat_id)])
+        # UI state is durable but low-priority; never compete with finance delta/ledger.
+        try: schedule_config_backup_for_chats(int(chat_id), delay=3.0)
+        except Exception: pass
     except Exception as exc:
         try: log_error(f"v186 active window persist {chat_id}: {exc}")
         except Exception: pass
 
 def set_active_window_id(chat_id: int, day_key: str, message_id: int):
+    """Promote exactly one Telegram message as the authoritative main window."""
     chat_id = int(chat_id); day_key = str(day_key)[:10]; message_id = int(message_id)
     aw = get_or_create_active_windows(chat_id)
-    aw[day_key] = message_id
-    register_open_window(chat_id, message_id, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": True})
-    # register_open_window already schedules root persistence. Chat/window runtime sync is debounced in background.
+    stale_ids = set()
+    for _dk, _mid in list(aw.items()):
+        try:
+            if int(_mid or 0) and int(_mid) != message_id:
+                stale_ids.add(int(_mid))
+        except Exception:
+            pass
+    store = get_chat_store(chat_id)
+    try:
+        prev_primary = int(store.get("primary_main_window_id") or 0)
+        if prev_primary and prev_primary != message_id:
+            stale_ids.add(prev_primary)
+    except Exception:
+        pass
+    aw.clear(); aw[day_key] = message_id
+    store["primary_main_window_id"] = message_id
+    store["primary_main_window_day"] = day_key
+    store["current_view_day"] = day_key
+    register_open_window(chat_id, message_id, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": False, "primary": True})
+    # Retire legacy parallel main windows. Deletion is asynchronous and never blocks the callback.
+    for stale_mid in sorted(stale_ids):
+        try: unregister_open_window(chat_id, stale_mid)
+        except Exception: pass
+        _v189_delete_stale_main_message(chat_id, stale_mid)
     try:
         DELAYED_SCHEDULER.schedule(f"v186-active-window-persist:{chat_id}", 0.15, _v186_persist_active_window_state, chat_id)
     except Exception:
         pass
+
 def get_active_window_id(chat_id: int, day_key: str):
-    aw = get_or_create_active_windows(chat_id)
-    return aw.get(day_key)
+    mid, active_day = get_primary_main_window(int(chat_id))
+    return mid if mid and str(active_day) == str(day_key)[:10] else None
 
 def clear_active_window_id(chat_id: int, day_key: str):
     try:
+        chat_id = int(chat_id); day_key = str(day_key)[:10]
         aw = get_or_create_active_windows(chat_id)
-        if str(day_key) in aw:
-            old_mid = aw.pop(str(day_key), None)
-            if old_mid:
-                unregister_open_window(chat_id, old_mid)
-            # UI callback remains RAM-fast; persist once in the same debounced background path.
-            try: DELAYED_SCHEDULER.schedule(f"v186-active-window-persist:{int(chat_id)}", 0.15, _v186_persist_active_window_state, int(chat_id))
-            except Exception: pass
+        old_mid = aw.pop(day_key, None)
+        store = get_chat_store(chat_id)
+        primary_mid = int(store.get("primary_main_window_id") or 0)
+        primary_day = str(store.get("primary_main_window_day") or "")[:10]
+        if old_mid:
+            unregister_open_window(chat_id, int(old_mid))
+        if primary_day == day_key or (old_mid and primary_mid == int(old_mid)):
+            store["primary_main_window_id"] = None
+            store["primary_main_window_day"] = ""
+        try: DELAYED_SCHEDULER.schedule(f"v186-active-window-persist:{chat_id}", 0.15, _v186_persist_active_window_state, chat_id)
+        except Exception: pass
     except Exception as e:
         log_error(f"clear_active_window_id({chat_id},{day_key}): {e}")
 
@@ -1693,4 +1785,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final

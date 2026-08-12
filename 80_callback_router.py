@@ -1,4 +1,4 @@
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
@@ -1446,12 +1446,57 @@ def on_callback(call):
             kb = types.InlineKeyboardMarkup()
             kb.row(IB("📄 Полный диагностический журнал", callback_data="journal_file"))
             kb.row(IB("📓 Журнал текущей версии", callback_data="journal_current_file"))
+            _jbase = journal_download_base_name()
+            _jlabel = _jbase if len(_jbase) <= 28 else (_jbase[:25] + "…")
+            kb.row(IB(f"✏️ Имя журналов: {_jlabel}", callback_data="journal_name_edit"))
             kb.row(IB("🤖 Скачать бот текущего деплоя", callback_data="journal_bot_source"))
             kb.row(
                 IB("🔙 Назад", callback_data="journal_back"),
                 IB("⬅️ Назад осн. окно", callback_data=f"d:{get_chat_store(chat_id).get('current_view_day', today_key())}:back_main"),
                 IB("❌ Закрыть", callback_data="info_close"),
             )
+            safe_edit(bot, call, format_journal_text(120), reply_markup=kb)
+            return
+        if data_str == "journal_name_edit":
+            if not is_owner_chat(chat_id):
+                return
+            journal_filename_begin_wait(chat_id, 120.0)
+            kb = types.InlineKeyboardMarkup()
+            kb.row(IB("♻️ Сбросить имя", callback_data="journal_name_reset"))
+            kb.row(IB("🔙 Назад в журналы", callback_data="journal_open"), IB("❌ Отмена", callback_data="journal_name_cancel"))
+            safe_edit(
+                bot, call,
+                "✏️ <b>Имя скачиваемых журналов</b>\n\n"
+                f"Сейчас: <code>{journal_download_base_name()}</code>\n\n"
+                "Отправьте одним сообщением новое имя. Расширение .txt добавится автоматически.\n"
+                "Например: <code>Журнал_Михаил</code>\n\n"
+                "⏰ Ожидание ввода: 2 минуты.",
+                reply_markup=kb, parse_mode="HTML",
+            )
+            return
+        if data_str == "journal_name_cancel":
+            if not is_owner_chat(chat_id): return
+            journal_filename_cancel_wait(chat_id)
+            kb = types.InlineKeyboardMarkup()
+            kb.row(IB("📄 Полный диагностический журнал", callback_data="journal_file"))
+            kb.row(IB("📓 Журнал текущей версии", callback_data="journal_current_file"))
+            kb.row(IB(f"✏️ Имя журналов: {journal_download_base_name()[:28]}", callback_data="journal_name_edit"))
+            kb.row(IB("🤖 Скачать бот текущего деплоя", callback_data="journal_bot_source"))
+            kb.row(IB("🔙 Назад", callback_data="journal_back"), IB("❌ Закрыть", callback_data="info_close"))
+            safe_edit(bot, call, format_journal_text(120), reply_markup=kb)
+            return
+        if data_str == "journal_name_reset":
+            if not is_owner_chat(chat_id): return
+            journal_filename_cancel_wait(chat_id)
+            base = set_journal_download_base_name("Журнал_бота")
+            try: bot.answer_callback_query(call.id, f"Имя сброшено: {base}")
+            except Exception: pass
+            kb = types.InlineKeyboardMarkup()
+            kb.row(IB("📄 Полный диагностический журнал", callback_data="journal_file"))
+            kb.row(IB("📓 Журнал текущей версии", callback_data="journal_current_file"))
+            kb.row(IB(f"✏️ Имя журналов: {base}", callback_data="journal_name_edit"))
+            kb.row(IB("🤖 Скачать бот текущего деплоя", callback_data="journal_bot_source"))
+            kb.row(IB("🔙 Назад", callback_data="journal_back"), IB("❌ Закрыть", callback_data="info_close"))
             safe_edit(bot, call, format_journal_text(120), reply_markup=kb)
             return
         if data_str == "journal_file":
@@ -2541,6 +2586,14 @@ def on_callback(call):
             return
         _, day_key, cmd = data_str.split(":", 2)
         store = get_chat_store(chat_id)
+        # v189: callback payload dates are only hints. The ONE primary main window owns
+        # the active day, except calendar's explicit `open` command which selects a new day.
+        if cmd != "open":
+            try:
+                fn = globals().get("canonical_main_day")
+                if callable(fn): day_key = str(fn(chat_id))[:10]
+            except Exception:
+                pass
         if cmd.startswith("removed_"):
             try:
                 removed_chat_id = int(cmd.rsplit("_", 1)[1])
@@ -2558,7 +2611,11 @@ def on_callback(call):
             elif cmd == "today":
                 nd = today_key()
             else:
-                base_day_key = store.get("current_view_day") or day_key
+                try:
+                    fn = globals().get("canonical_main_day")
+                    base_day_key = str(fn(chat_id) if callable(fn) else (store.get("current_view_day") or day_key))[:10]
+                except Exception:
+                    base_day_key = str(store.get("current_view_day") or day_key)[:10]
                 shift = -1 if cmd == "prev" else 1
                 nd = (datetime.strptime(base_day_key, "%Y-%m-%d") + timedelta(days=shift)).strftime("%Y-%m-%d")
             store["current_view_day"] = nd
@@ -3168,4 +3225,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v188_restore_forward_fix_final
+# v189_main_window_authority_final
