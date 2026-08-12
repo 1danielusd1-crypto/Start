@@ -1,4 +1,4 @@
-# v192_excel_ars_usd_delivery_final
+# v193_excel_formula_single_source_final
 # ---- integrated from 113_v163_audit_hardening.py ----
 """v163: priority /start, per-window navigation lanes, fast callback ACK, export reliability, TZ window fixes."""
 
@@ -3064,12 +3064,12 @@ def _v167_formulaize_simple(rows: list[list], compact: bool, chat_id: int, curre
     products_row = _v167_find_label_last(rows, "Продукты", label_col)
     metric_row = _v167_find_label(rows, "Расход еды на человека в сутки", label_col)
     if str(currency).lower() == "ars" and products_row and not compact:
-        # Simple table has no category columns; recalculate the common "продукт*" rows from Description.
-        desc_col = "B"
-        rows[products_row-1][income_col-1] = _v167_formula(
-            f'SUMIF({desc_col}{data_start}:{desc_col}{data_end},"*продукт*",{ec}{data_start}:{ec}{data_end})',
-            rows[products_row-1][income_col-1],
-        )
+        # v193: there is no exact worksheet formula for business category overrides in a
+        # simple table (Description alone is insufficient). Keep the canonical numeric
+        # value calculated by _v151_product_total instead of an approximate SUMIF that
+        # Google would recalculate differently. The food metric below can safely refer
+        # to this canonical Products cell.
+        pass
     if str(currency).lower() == "ars" and products_row and metric_row:
         try:
             start_key, end_key = _v151_context_bounds(int(chat_id))
@@ -4951,4 +4951,4 @@ try:
     )
 except Exception:
     pass
-# v192_excel_ars_usd_delivery_final
+# v193_excel_formula_single_source_final

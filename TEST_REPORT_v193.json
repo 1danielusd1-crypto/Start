@@ -1,0 +1,85 @@
+{
+  "version": "bot_v193_excel_formula_single_source_final",
+  "real_files_compared": [
+    "chat_month_2026-07-31_excel_статьи.xlsx",
+    "Telegram Finance Bot.xlsx"
+  ],
+  "meaningful_differences_found": 6,
+  "google_workbook_currency_formula_audit": {
+    "bad_formula_domain_refs_before": 28,
+    "bad_formula_domain_refs_after_v193_projection": 0,
+    "sheets": [
+      {
+        "sheet": "🏀 — статьи — Ср–Чт · 09.08 02-",
+        "usd_row": 37,
+        "bad_now": 0,
+        "bad_after_v193": 0
+      },
+      {
+        "sheet": "06-12.08.26",
+        "usd_row": 70,
+        "bad_now": 4,
+        "bad_after_v193": 0
+      },
+      {
+        "sheet": "🏀 — статьи — за всё время · 11",
+        "usd_row": 1025,
+        "bad_now": 4,
+        "bad_after_v193": 0
+      },
+      {
+        "sheet": "🏀 — статьи — за всё время · 12",
+        "usd_row": 1030,
+        "bad_now": 4,
+        "bad_after_v193": 0
+      },
+      {
+        "sheet": "🏀 — статьи — за месяц · 12.08 ",
+        "usd_row": 123,
+        "bad_now": 4,
+        "bad_after_v193": 0
+      },
+      {
+        "sheet": "Лист2",
+        "usd_row": 119,
+        "bad_now": 4,
+        "bad_after_v193": 0
+      },
+      {
+        "sheet": "Ооооооо",
+        "usd_row": 122,
+        "bad_now": 4,
+        "bad_after_v193": 0
+      },
+      {
+        "sheet": "Лист3",
+        "usd_row": 311,
+        "bad_now": 4,
+        "bad_after_v193": 0
+      }
+    ]
+  },
+  "july_expected_common_values_after_v193": {
+    "Products_ARS": 704523.0,
+    "Food_per_person_per_day_USD_equivalent": 2.9324578563995836,
+    "USD_income": 9500.0,
+    "USD_expense": 13400.0,
+    "USD_closing": 3600.0,
+    "USD_turnover": -200.0
+  },
+  "fixes": {
+    "usd_formula_row_offset": true,
+    "formula_domain_fail_closed": true,
+    "products_honors_category_override_slug": true,
+    "simple_products_approx_sumif_removed": true,
+    "monthly_backup_usd_shifted": true,
+    "tabl_lsx_usd_shifted": true
+  },
+  "static": {
+    "runtime_modules": 27,
+    "duplicate_top_level_callables": 0,
+    "callback_handler_registrations": 1,
+    "manifest_issues": [],
+    "compile": "PASS"
+  }
+}

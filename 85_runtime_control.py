@@ -1,4 +1,4 @@
-# v192_excel_ars_usd_delivery_final
+# v193_excel_formula_single_source_final
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -12,7 +12,7 @@ import statistics as _v176_statistics
 import threading as _v176_threading
 import time as _v176_time
 
-VERSION = "bot_v192_excel_ars_usd_delivery_final"
+VERSION = "bot_v193_excel_formula_single_source_final"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -1365,5 +1365,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v192 authoritative runtime version after Excel ARS/USD and delivery audit.
-VERSION = "bot_v192_excel_ars_usd_delivery_final"
-# v192_excel_ars_usd_delivery_final
+VERSION = "bot_v193_excel_formula_single_source_final"
+# v193_excel_formula_single_source_final

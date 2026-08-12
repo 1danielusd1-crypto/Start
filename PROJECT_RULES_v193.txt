@@ -1,0 +1,6 @@
+v193 Excel single-source rules
+1. ARS and USD are independent report sections.
+2. A formula inside an appended USD section must reference only rows within that USD section.
+3. Telegram XLSX cached values and Google Sheets recalculation must produce the same business totals.
+4. Category overrides participate identically in category columns and derived Products/food metrics.
+5. If formula-domain validation fails, export must abort instead of publishing inconsistent tables.

@@ -1,8 +1,8 @@
 {
-  "version": "bot_v192_excel_ars_usd_delivery_final",
+  "version": "bot_v193_excel_formula_single_source_final",
   "file_markers": {
     "00_core.py": "v190_mega_light_fast_recovery",
-    "10_mega_runtime.py": "v192_excel_ars_usd_delivery_final",
+    "10_mega_runtime.py": "v193_excel_formula_single_source_final",
     "11_data_constitution.py": "v190_mega_light_fast_recovery",
     "15_operation_safety.py": "v189_main_window_authority_final",
     "16_window_diagnostics.py": "v188_restore_forward_fix_final",
@@ -22,16 +22,16 @@
     "91_finance_records_handlers.py": "v189_main_window_authority_final",
     "72_multitenant_runtime.py": "v189_main_window_authority_final",
     "99_web_runtime.py": "v188_restore_forward_fix_final",
-    "73_state_export_runtime.py": "v192_excel_ars_usd_delivery_final",
+    "73_state_export_runtime.py": "v193_excel_formula_single_source_final",
     "74_ui_reliability_runtime.py": "v189_main_window_authority_final",
-    "75_platform_features_runtime.py": "v192_excel_ars_usd_delivery_final",
+    "75_platform_features_runtime.py": "v193_excel_formula_single_source_final",
     "76_tasks_runtime.py": "v189_main_window_authority_final",
-    "85_runtime_control.py": "v192_excel_ars_usd_delivery_final",
+    "85_runtime_control.py": "v193_excel_formula_single_source_final",
     "89_callback_final.py": "v189_main_window_authority_final"
   },
   "files": {
     "00_core.py": "92503464c8cf2529eb095cfe9b15212a17da5722b452443e5fadad31272eaee9",
-    "10_mega_runtime.py": "1135900fd9ab7f85b268fb10216b131ab8d138e3ef31b6ed7bafc997c2d0ff5f",
+    "10_mega_runtime.py": "91bb496f00a1be7b31d2a5e39d1df843b9df9dd4698ea6e85af9bd71abff03ee",
     "11_data_constitution.py": "c49540582092f6f1176a28a5d950ca5e33f3cb03e6d5fe54446b5e119d2f2f8a",
     "15_operation_safety.py": "f0af5f82151519e80c3d57ee9005c22b843479d03700513b965fcd173af5134c",
     "16_window_diagnostics.py": "58c8ab7c03dda702ab16179fa76a466eaa562c742d5849b8db9499cff8182006",
@@ -51,11 +51,11 @@
     "91_finance_records_handlers.py": "00697cffc85c8100687e1e39f2201c576e08b293ace674ef2c76807e2d486ba3",
     "72_multitenant_runtime.py": "c09112377726e11db1fca1b3ccb4f1762c544ee282850e376b63813f90c641c7",
     "99_web_runtime.py": "5638ac3cc7f9a36e3c35600158207f4640f64d014beac04186ddf0ed7d59c917",
-    "73_state_export_runtime.py": "2bcebbbaf3fd3f822fa649710444d475f3431d4a72de8b737ae7b1e446534aa1",
+    "73_state_export_runtime.py": "554dec48b35055ac6eca41200d828faba6b752b6f5c8c1b49c97fbffa49360a0",
     "74_ui_reliability_runtime.py": "a102b1105779e6790e7e2f3c01c259d7b6fc194caa76549cb0e989d230c675c5",
-    "75_platform_features_runtime.py": "857266ba714a1f2c586054177d90be6ea162eb641398fdfb2ffb6421c92e554c",
+    "75_platform_features_runtime.py": "ad75c1d612f2a5c1948280c10c1331e26b89ad499a9182baf0d50b2cf94d76f1",
     "76_tasks_runtime.py": "9d3f9cf385d9c9b9bba942a90cb94fe52447075eeae3253140037b7a44f9b4c9",
-    "85_runtime_control.py": "d0547d87337b8c32dc9540f8da1d5922335ed6f44e9b9d5790872e682fc001c4",
+    "85_runtime_control.py": "6c67f13e58ce7c2f782378b7212c5b12688ae37a03976937936e966e20d241e0",
     "89_callback_final.py": "c4b8497d20c3127b313dc9fc72ed27ce76a5f326950b3b76046d12122b4b1fc7"
   }
 }

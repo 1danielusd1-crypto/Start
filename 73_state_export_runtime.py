@@ -1,4 +1,4 @@
-# v192_excel_ars_usd_delivery_final
+# v193_excel_formula_single_source_final
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -1364,7 +1364,11 @@ def _v151_product_total(chat_id: int, records: list[dict]) -> float:
             continue
         note = str(rec.get("_v151_note") or "")
         try:
-            category = str(resolve_expense_category(note, store) or "").strip().casefold()
+            category = resolve_expense_category(note, store)
+            override_slug = str((rec or {}).get("category_override_slug") or "").strip()
+            if override_slug:
+                category = get_category_by_slug(override_slug, store) or category
+            category = str(category or "").strip().casefold()
         except Exception:
             category = ""
         if category in {"продукты", "продукт", "еда", "food", "products"}:
@@ -4972,11 +4976,70 @@ except Exception: pass
 _v151_usd_records = _v177_legacy_0272_v151_usd_records
 
 
+_V193_A1_REF_RE = _v151_re.compile(r"(?<![A-Z0-9_])(\$?[A-Z]{1,3}\$?)(\d+)")
+
+def _v193_shift_formula_a1(formula: str, row_offset: int) -> str:
+    """Shift only A1-style row references when a prebuilt table is appended lower in a sheet."""
+    text = str(formula or "")
+    offset = int(row_offset or 0)
+    if not text or not offset:
+        return text
+    def _repl(match):
+        return f"{match.group(1)}{int(match.group(2)) + offset}"
+    return _V193_A1_REF_RE.sub(_repl, text)
+
+def _v193_shift_formula_rows(rows: list[list], row_offset: int) -> list[list]:
+    """Deep-copy row payloads and move formula references with the appended section."""
+    out = _v154_copy.deepcopy(list(rows or []))
+    offset = int(row_offset or 0)
+    if not offset:
+        return out
+    for row in out:
+        if not isinstance(row, list):
+            continue
+        for idx, cell in enumerate(row):
+            if isinstance(cell, dict) and cell.get("formula"):
+                item = dict(cell)
+                item["formula"] = _v193_shift_formula_a1(item.get("formula"), offset)
+                row[idx] = item
+    return out
+
+def _v193_validate_currency_formula_domains(rows: list[list]) -> bool:
+    """USD formulas must never point back into the ARS section after sections are joined."""
+    usd_row = None
+    for idx, row in enumerate(rows or [], start=1):
+        try:
+            if str((row or [""])[0]).strip().upper() == "USD":
+                usd_row = idx
+                break
+        except Exception:
+            pass
+    if not usd_row:
+        return True
+    bad = []
+    for rr, row in enumerate(rows or [], start=1):
+        if rr < usd_row or not isinstance(row, list):
+            continue
+        for cc, cell in enumerate(row, start=1):
+            if not isinstance(cell, dict) or not cell.get("formula"):
+                continue
+            refs = [int(m.group(2)) for m in _V193_A1_REF_RE.finditer(str(cell.get("formula") or ""))]
+            if refs and min(refs) < usd_row:
+                bad.append((rr, cc, str(cell.get("formula"))))
+    if bad:
+        raise RuntimeError(f"Excel USD formula escaped into ARS section: {bad[:8]}")
+    return True
+
 def _v154_join_ars_usd(ars_rows: list[list], usd_rows: list[list], chat_id: int) -> list[list]:
     if not excel_usd_table_enabled(int(chat_id)):
         return list(ars_rows or [])
-    # Exactly two blank rows between ARS and USD sections.
-    return list(ars_rows or []) + [[], []] + list(usd_rows or [])
+    # Formula dictionaries are created while USD is a standalone table (row 1).
+    # Once appended after ARS, every A1 row reference must move by the same offset.
+    prefix = list(ars_rows or []) + [[], []]
+    shifted_usd = _v193_shift_formula_rows(list(usd_rows or []), len(prefix))
+    joined = prefix + shifted_usd
+    _v193_validate_currency_formula_domains(joined)
+    return joined
 
 
 def build_exact_category_stats_xlsx_rows(target_chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int) -> list[list]:
@@ -5014,7 +5077,11 @@ def _v177_legacy_0096_compact_simple_excel_rows_and_annotations(raw_rows: list[t
         return ars_rows, dict(ars_notes)
     # USD must retain Description, so even compact ARS exports append the four-column USD table.
     usd_rows, _ = _v151_simple_table(int(target_chat_id), "usd", compact=False)
-    return ars_rows + [[], []] + usd_rows, dict(ars_notes)
+    prefix = list(ars_rows or []) + [[], []]
+    shifted_usd = _v193_shift_formula_rows(usd_rows, len(prefix))
+    joined = prefix + shifted_usd
+    _v193_validate_currency_formula_domains(joined)
+    return joined, dict(ars_notes)
 try: _v177_legacy_0096_compact_simple_excel_rows_and_annotations.__name__ = '_compact_simple_excel_rows_and_annotations'
 except Exception: pass
 _compact_simple_excel_rows_and_annotations = _v177_legacy_0096_compact_simple_excel_rows_and_annotations
@@ -5147,4 +5214,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v192_excel_ars_usd_delivery_final
+# v193_excel_formula_single_source_final

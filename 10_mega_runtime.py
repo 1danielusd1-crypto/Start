@@ -1,4 +1,4 @@
-# v192_excel_ars_usd_delivery_final
+# v193_excel_formula_single_source_final
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -3326,8 +3326,14 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
             finally:
                 ctx_local.value = prev_ctx
             if usd_rows:
+                prefix_offset = len(rows) + 2
                 rows.extend([[], []])
-                rows.extend(usd_rows)
+                shifter = globals().get("_v193_shift_formula_rows")
+                shifted_usd = shifter(usd_rows, prefix_offset) if callable(shifter) else usd_rows
+                rows.extend(shifted_usd)
+                validator = globals().get("_v193_validate_currency_formula_domains")
+                if callable(validator):
+                    validator(rows)
     except Exception as _v192_usd_exc:
         try: log_error(f"monthly XLSX USD append({chat_id},{month_key}): {_v192_usd_exc}")
         except Exception: pass
@@ -8132,14 +8138,19 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
                 offset = len(rows) + 2
                 rows.extend([[], []])
                 styles.extend([[], []])
+                shifter = globals().get("_v193_shift_formula_rows")
+                shifted_usd = shifter(usd_rows, offset) if callable(shifter) else usd_rows
                 if modern_excel and callable(globals().get("_modern_simple_excel_styles_comments")):
-                    usd_styles, usd_comments, _freeze, _widths = _modern_simple_excel_styles_comments(usd_rows)
+                    usd_styles, usd_comments, _freeze, _widths = _modern_simple_excel_styles_comments(shifted_usd)
                     styles.extend(usd_styles)
                     for (rr, cc), text in (usd_comments or {}).items():
                         comments[(int(rr) + offset, int(cc))] = text
                 else:
-                    styles.extend([[4] * len(r or []) for r in usd_rows])
-                rows.extend(usd_rows)
+                    styles.extend([[4] * len(r or []) for r in shifted_usd])
+                rows.extend(shifted_usd)
+                validator = globals().get("_v193_validate_currency_formula_domains")
+                if callable(validator):
+                    validator(rows)
     except Exception as _v192_usd_exc:
         try: log_error(f"tabl_lsx USD append({chat_id}): {_v192_usd_exc}")
         except Exception: pass
@@ -9871,4 +9882,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v192_excel_ars_usd_delivery_final
+# v193_excel_formula_single_source_final

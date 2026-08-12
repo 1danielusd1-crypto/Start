@@ -1,0 +1,16 @@
+{
+  "version": "bot_v193_excel_formula_single_source_final",
+  "changed_runtime_files": [
+    "10_mega_runtime.py",
+    "73_state_export_runtime.py",
+    "75_platform_features_runtime.py",
+    "85_runtime_control.py"
+  ],
+  "excel_formula_core": "73_state_export_runtime.py::_v193_shift_formula_rows/_v193_validate_currency_formula_domains",
+  "product_category_core": "73_state_export_runtime.py::_v151_product_total",
+  "formulaize_core": "75_platform_features_runtime.py::_v167_formulaize_simple/_v167_formulaize_category",
+  "legacy_excel_paths": [
+    "10_mega_runtime.py monthly backup XLSX",
+    "10_mega_runtime.py /tabl_lsx"
+  ]
+}
