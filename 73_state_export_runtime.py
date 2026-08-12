@@ -1,4 +1,4 @@
-# v195_balance_authority_remaining_final
+# v198_owner_alert_scope_fix_final
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -630,7 +630,13 @@ def update_chat_info_from_chat_object(chat_obj) -> bool:
     return result
 
 
-def probe_bot_in_chat(chat_id: int) -> bool:
+def _v150_probe_bot_in_chat_legacy(chat_id: int) -> bool:
+    """Legacy lifecycle-only probe kept private.
+
+    v197 introduced the canonical extended probe in 00_core.py with keyword controls
+    (deep/persist/schedule_backup).  Do NOT rebind the public probe_bot_in_chat here:
+    doing so used to erase that signature and broke the full chat sync.
+    """
     chat_id = int(chat_id)
     try:
         obj = _tg_call_retry(bot.get_chat, chat_id, attempts=2, purpose="probe_get_chat")
@@ -5329,4 +5335,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v195_balance_authority_remaining_final
+# v198_owner_alert_scope_fix_final

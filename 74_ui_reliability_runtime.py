@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v198_owner_alert_scope_fix_final
 # ---- integrated from 105_v155_button_navigation_audit.py ----
 """v155: full button/navigation audit hardening and live callback outcome diagnostics."""
 
@@ -3056,13 +3056,60 @@ def submit_interactive_file_job(chat_id: int, kind: str, label: str, func, *args
 
 
 # Small helper messages must never occupy/replace command_window_id/F91.
+# v198: technical alarms belong only in the PRIMARY owner private chat.  Other
+# contours must not receive internal W/Ф helper markers, 🚨 alarms, journal/error
+# pointers or similar diagnostic noise.
+def _v198_primary_owner_chat(chat_id: int) -> bool:
+    try:
+        return bool(OWNER_ID) and int(chat_id) == int(OWNER_ID)
+    except Exception:
+        return False
+
+
+def _v198_owner_only_technical_text(text: str) -> bool:
+    value = str(text or "")
+    low = value.lower()
+    return (
+        "🚨" in value
+        or "смотрите журнал" in low
+        or "смотри /errors" in low
+        or "data constitution:" in low
+    )
+
+
+def _v198_route_helper_message(chat_id: int, text: str):
+    """Return (target_chat_id, text) or (None, text) when a technical alert has nowhere safe to go."""
+    try:
+        source = int(chat_id)
+    except Exception:
+        source = 0
+    value = str(text or "")
+    if _v198_owner_only_technical_text(value) and not _v198_primary_owner_chat(source):
+        try:
+            owner = int(OWNER_ID or 0)
+        except Exception:
+            owner = 0
+        if not owner:
+            return None, value
+        try:
+            source_name = get_chat_display_name(source) if source else "неизвестный чат"
+        except Exception:
+            source_name = str(source or "неизвестный чат")
+        value = f"{value}\n\nИсточник: {source_name} · {source}"
+        return owner, value
+    return source, value
+
+
 def send_and_auto_delete(chat_id: int, text: str, delay: int = 25):
-    if is_finance_output_suppressed(chat_id):
+    target_chat_id, routed_text = _v198_route_helper_message(chat_id, text)
+    if not target_chat_id:
+        return
+    if is_finance_output_suppressed(target_chat_id):
         return
     delay = _v159_helper_delay(delay)
     try:
-        msg = bot.send_message(int(chat_id), _v159_helper_mark(text))
-        _v160_schedule_delete(int(chat_id), int(msg.message_id), delay, "helper")
+        msg = bot.send_message(int(target_chat_id), _v159_helper_mark(routed_text))
+        _v160_schedule_delete(int(target_chat_id), int(msg.message_id), delay, "helper")
     except Exception as exc:
         try:
             log_error(f"send_and_auto_delete v160: {exc}")
@@ -3070,13 +3117,54 @@ def send_and_auto_delete(chat_id: int, text: str, delay: int = 25):
             pass
 
 
+def send_owner_technical_alert(text: str, delay: int = 25, source_chat_id: int | None = None):
+    """Explicit technical-notification API. It never emits into non-owner contours."""
+    try:
+        owner = int(OWNER_ID or 0)
+    except Exception:
+        owner = 0
+    if not owner:
+        return False
+    value = str(text or "")
+    if source_chat_id is not None:
+        try:
+            source = int(source_chat_id)
+            if source != owner:
+                try: source_name = get_chat_display_name(source)
+                except Exception: source_name = str(source)
+                value += f"\n\nИсточник: {source_name} · {source}"
+        except Exception:
+            pass
+    send_and_auto_delete(owner, value, delay)
+    return True
+
+
+def send_plain_and_auto_delete(chat_id: int, text: str, delay: int = 8):
+    """Short business feedback for non-owner contours, without W/Ф diagnostic markers."""
+    try:
+        target = int(chat_id)
+    except Exception:
+        return
+    if is_finance_output_suppressed(target):
+        return
+    try:
+        msg = bot.send_message(target, str(text or ""))
+        _v160_schedule_delete(target, int(msg.message_id), max(0.1, float(delay)), "plain-helper")
+    except Exception as exc:
+        try: log_error(f"send_plain_and_auto_delete v198: {exc}")
+        except Exception: pass
+
+
 def send_html_and_auto_delete(chat_id: int, html_text: str, delay: int = 25):
-    if is_finance_output_suppressed(chat_id):
+    target_chat_id, routed_text = _v198_route_helper_message(chat_id, html_text)
+    if not target_chat_id:
+        return
+    if is_finance_output_suppressed(target_chat_id):
         return
     delay = _v159_helper_delay(delay)
     try:
-        msg = bot.send_message(int(chat_id), _v159_helper_mark(html_text), parse_mode="HTML")
-        _v160_schedule_delete(int(chat_id), int(msg.message_id), delay, "helper-html")
+        msg = bot.send_message(int(target_chat_id), _v159_helper_mark(routed_text), parse_mode="HTML")
+        _v160_schedule_delete(int(target_chat_id), int(msg.message_id), delay, "helper-html")
     except Exception as exc:
         try:
             log_error(f"send_html_and_auto_delete v160: {exc}")
@@ -4948,6 +5036,7 @@ try:
     WINDOW_MARKER_CONSTANTS.update({
         "v149:rem:merge:*": "Ф191", "v149:rem:command:*": "Ф191", "v149:rem:done:*": "Ф191", "v149:rem:history": "Ф191",
         "v160:marker_capture": "Ф235", "v160:tz_capture": "Ф236", "v160:export_markers": "Ф237", "v160:export_tz": "Ф238",
+        "journal_name_edit": "Ф252", "journal_name_cancel": "Ф89", "journal_name_reset": "Ф89",
     })
 except Exception: pass
 
@@ -5231,4 +5320,4 @@ try:
     bot_journal("v162_start_hard_fix_installed", int(OWNER_ID or 0), "process_new_updates_intercept=1; start_always_new_f91=1; silent_returns=0")
 except Exception:
     pass
-# v189_main_window_authority_final
+# v198_owner_alert_scope_fix_final

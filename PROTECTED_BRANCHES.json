@@ -1,5 +1,5 @@
 {
-  "bot_version": "bot_v197_chat_identity_sync_final",
+  "bot_version": "bot_v198_owner_alert_scope_fix_final",
   "branches": [
     {
       "id": "finance.ars",
@@ -790,7 +790,7 @@
       "id": "diagnostics.journal",
       "group": "🩺 Диагностика",
       "title": "Журналы / диагностика",
-      "rev": 2,
+      "rev": 3,
       "purpose": "Фиксировать ошибки, события, скорость и давать скачиваемые журналы.",
       "entry": [
         "Инфо → Журнал",
@@ -810,14 +810,17 @@
       "invariants": [
         "диагностика не выключается Fast Test/Minimum автоматически",
         "имя скачиваемого журнала сохраняется",
-        "битая remote строка не ломает runtime"
+        "битая remote строка не ломает runtime",
+        "технические аварийные уведомления и 🚨 видит только основной OWNER_ID; другие контуры получают максимум краткий функциональный ответ без внутренних маркеров"
       ],
       "tests": [
         "current/full journal",
         "custom filename",
-        "warm tail"
+        "warm tail",
+        "owner-only technical alerts",
+        "non-owner contour has no W/Ф/🚨 diagnostic helper"
       ],
-      "contract_hash": "28702181196ec3c7b9f96524dcc0b3e320f4cc632f26e09020cf0cadd54aac18"
+      "contract_hash": "a7ff4e8caf2df27cf780168bd3afc28953349c035b53061ec3534563e5bdab2b"
     },
     {
       "id": "runtime.performance",
@@ -918,12 +921,17 @@
   "current_version_changes": [
     {
       "branch": "ui.chat_identity",
-      "summary": "Проверить чаты теперь делает полную Telegram-синхронизацию всех известных чатов, включая основной owner-chat; убрана подмена имени владельца символом 🏀.",
+      "summary": "Исправлена полная проверка чатов: поздний legacy probe больше не переопределяет canonical deep probe; массовая синхронизация снова выполняется.",
       "regression": "PASS"
     },
     {
-      "branch": "forward.core",
-      "summary": "Массовая проверка пересылки обновляет реальные chat title/username/type/access и сохраняет доступные bot-visible параметры одной синхронизацией.",
+      "branch": "diagnostics.journal",
+      "summary": "🚨 и технические background/error уведомления маршрутизируются только в основной OWNER_ID; другие контуры не получают внутренние W/Ф/диагностические сообщения.",
+      "regression": "PASS"
+    },
+    {
+      "branch": "ui.info",
+      "summary": "Добавлены декларации маркеров journal_name_edit/reset/cancel, чтобы смена имени журнала не создавала WINDOW_MARKER_NOT_DECLARED.",
       "regression": "PASS"
     }
   ],

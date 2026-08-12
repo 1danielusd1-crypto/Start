@@ -1,4 +1,4 @@
-# v197_chat_identity_sync_final
+# v198_owner_alert_scope_fix_final
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -505,7 +505,15 @@ def handle_finance_text(msg):
 
     chat_id = msg.chat.id
     if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
-        try: send_and_auto_delete(chat_id, "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы до проверки/восстановления. /data_constitution", 20)
+        try:
+            if _v198_primary_owner_chat(chat_id):
+                send_and_auto_delete(chat_id, "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы до проверки/восстановления. /data_constitution", 20)
+            else:
+                send_owner_technical_alert(
+                    "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы до проверки/восстановления. /data_constitution",
+                    20, source_chat_id=chat_id,
+                )
+                send_plain_and_auto_delete(chat_id, "⛔ Финансовые изменения временно недоступны.", 8)
         except Exception: pass
         return True
     try:
@@ -609,7 +617,15 @@ def handle_finance_edit(msg):
     except Exception:
         pass
     if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
-        try: send_and_auto_delete(chat_id, "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы. Используйте /data_constitution.", 20)
+        try:
+            if _v198_primary_owner_chat(chat_id):
+                send_and_auto_delete(chat_id, "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы. Используйте /data_constitution.", 20)
+            else:
+                send_owner_technical_alert(
+                    "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы. Используйте /data_constitution.",
+                    20, source_chat_id=chat_id,
+                )
+                send_plain_and_auto_delete(chat_id, "⛔ Финансовые изменения временно недоступны.", 8)
         except Exception: pass
         return True
     text = (msg.text or msg.caption or "").strip()
@@ -1064,4 +1080,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v197_chat_identity_sync_final
+# v198_owner_alert_scope_fix_final

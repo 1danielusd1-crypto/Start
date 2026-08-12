@@ -1,0 +1,33 @@
+{
+  "version": "bot_v198_owner_alert_scope_fix_final",
+  "tests": {
+    "compile": "PASS",
+    "manifest_markers_hashes": "PASS",
+    "changed_file_markers": "PASS",
+    "duplicate_top_level_symbols": "PASS",
+    "callback_registration_count": 1,
+    "probe_public_definitions": [],
+    "probe_public_assignments": [
+      [
+        "00_core.py",
+        6366
+      ]
+    ],
+    "probe_single_authority": "PASS",
+    "probe_extended_signature": "PASS",
+    "owner_only_technical_route": "PASS",
+    "nonowner_alarm_source_annotation": "PASS",
+    "probe_error_owner_only": "PASS",
+    "constitution_nonowner_plain": "PASS",
+    "backup_guard_owner_only": "PASS",
+    "constitution_status_owner_only": "PASS",
+    "journal_name_markers": "PASS",
+    "no_TelegramBotBackupsStart": "PASS",
+    "final_runtime_version": "bot_v198_owner_alert_scope_fix_final",
+    "final_runtime_version_pass": "PASS",
+    "branch_current_changes": "PASS",
+    "full_markers": "PASS",
+    "callback_registration_pass": "PASS"
+  },
+  "overall": "PASS"
+}

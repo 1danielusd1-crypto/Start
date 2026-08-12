@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v198_owner_alert_scope_fix_final
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -1261,7 +1261,7 @@ def cmd_mega_backup_now(msg):
         return
     try:
         if RESTORE_GUARD_ACTIVE:
-            send_and_auto_delete(chat_id, "🚨 Бэкап заблокирован: " + RESTORE_GUARD_REASON, 120)
+            send_owner_technical_alert("🚨 Бэкап заблокирован: " + RESTORE_GUARD_REASON, 120, source_chat_id=chat_id)
             return
         with data_lock:
             export_global_csv(data)
@@ -1526,4 +1526,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v189_main_window_authority_final
+# v198_owner_alert_scope_fix_final

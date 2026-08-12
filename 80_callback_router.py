@@ -1,4 +1,4 @@
-# v197_chat_identity_sync_final
+# v198_owner_alert_scope_fix_final
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
@@ -23,7 +23,10 @@ def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     except Exception as exc:
         log_error(f"forward_probe_all_background: {exc}")
         try:
-            send_and_auto_delete(int(owner_chat_id), "❌ Проверка чатов завершилась с ошибкой. Смотрите журнал.", 12)
+            send_owner_technical_alert(
+                "❌ Проверка чатов завершилась с ошибкой. Смотрите журнал.",
+                20, source_chat_id=int(owner_chat_id),
+            )
         except Exception:
             pass
 
@@ -3249,4 +3252,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v197_chat_identity_sync_final
+# v198_owner_alert_scope_fix_final

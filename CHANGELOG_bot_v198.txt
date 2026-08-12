@@ -1,0 +1,8 @@
+bot_v198_owner_alert_scope_fix_final
+
+1. Исправлена 📡 Проверка чатов: legacy probe больше не переопределяет canonical extended probe.
+2. Технические background/error уведомления и 🚨 маршрутизируются только в основной OWNER_ID.
+3. Другие контуры не получают W/Ф диагностические helper-маркеры; при блокировке finance допускается краткое нейтральное сообщение.
+4. DATA CONSTITUTION status/backup guard technical output — owner private only.
+5. Добавлены marker declarations для journal_name_edit/reset/cancel; WINDOW_MARKER_NOT_DECLARED устранён.
+6. Финансы, Excel, restore, MEGA data model и forwarding business rules не изменялись.

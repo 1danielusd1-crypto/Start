@@ -1,11 +1,14 @@
 # PROTECTED BRANCHES — карточки функций
 
-Статус галочек хранится runtime в `_global_settings.protected_branches_registry` и попадает в скачиваемый из Telegram журнал веток.
+Версия: `bot_v198_owner_alert_scope_fix_final`
+
+Статус галочек хранится runtime в `_global_settings.protected_branches_registry` и попадает в скачиваемый журнал веток.
 
 ## Правки текущей версии
 
-- 🛠 **Чаты · реальные имена / полная проверка** (`ui.chat_identity`) — Проверить чаты теперь делает полную Telegram-синхронизацию всех известных чатов, включая основной owner-chat; убрана подмена имени владельца символом 🏀. Regression: **PASS**.
-- 🛠 **Пересылка · правила/доставка** (`forward.core`) — Массовая проверка пересылки обновляет реальные chat title/username/type/access и сохраняет доступные bot-visible параметры одной синхронизацией. Regression: **PASS**.
+- 🛠 **Чаты · реальные имена / полная проверка** (`ui.chat_identity`) — Исправлена полная проверка чатов: поздний legacy probe больше не переопределяет canonical deep probe; массовая синхронизация снова выполняется. Regression: **PASS**.
+- 🛠 **Журналы / диагностика** (`diagnostics.journal`) — 🚨 и технические background/error уведомления маршрутизируются только в основной OWNER_ID; другие контуры не получают внутренние W/Ф/диагностические сообщения. Regression: **PASS**.
+- 🛠 **Инфо / служебные меню** (`ui.info`) — Добавлены декларации маркеров journal_name_edit/reset/cancel, чтобы смена имени журнала не создавала WINDOW_MARKER_NOT_DECLARED. Regression: **PASS**.
 
 ## 💰 Финансы / ARS · основной учёт
 
@@ -631,7 +634,7 @@
 ## 🩺 Диагностика / Журналы / диагностика
 
 **ID:** `diagnostics.journal`  
-**Contract:** r2  
+**Contract:** r3  
 **Суть:** Фиксировать ошибки, события, скорость и давать скачиваемые журналы.
 
 **Точки входа:**
@@ -646,11 +649,14 @@
 - диагностика не выключается Fast Test/Minimum автоматически
 - имя скачиваемого журнала сохраняется
 - битая remote строка не ломает runtime
+- технические аварийные уведомления и 🚨 видит только основной OWNER_ID; другие контуры получают максимум краткий функциональный ответ без внутренних маркеров
 
 **Регрессионные тесты:**
 - current/full journal
 - custom filename
 - warm tail
+- owner-only technical alerts
+- non-owner contour has no W/Ф/🚨 diagnostic helper
 
 **Зависимости:** storage.mega
 

@@ -1,4 +1,4 @@
-# v190_mega_light_fast_recovery
+# v198_owner_alert_scope_fix_final
 """v185 DATA CONSTITUTION.
 
 Immutable storage contract. UI/performance modules must not redefine these functions.
@@ -826,9 +826,11 @@ def cmd_data_constitution(msg):
     except Exception:
         return
     try:
-        send_and_auto_delete(int(msg.chat.id), constitution_status_text(), 180)
+        send_and_auto_delete(int(OWNER_ID), constitution_status_text(), 180)
     except Exception as exc:
-        try: bot.send_message(int(msg.chat.id), f"❌ DATA CONSTITUTION status: {exc}")
+        try:
+            if OWNER_ID:
+                bot.send_message(int(OWNER_ID), f"❌ DATA CONSTITUTION status: {exc}")
         except Exception: pass
 
 
@@ -851,4 +853,4 @@ def constitution_verify_protected_symbols() -> tuple[bool, str]:
         constitution_set_quarantine("storage-core symbol redefined: " + ", ".join(changed))
         return False, ", ".join(changed)
     return True, "ok"
-# v190_mega_light_fast_recovery
+# v198_owner_alert_scope_fix_final

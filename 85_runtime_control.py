@@ -1,4 +1,4 @@
-# v197_chat_identity_sync_final
+# v198_owner_alert_scope_fix_final
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -15,7 +15,7 @@ import hashlib as _v196_hashlib
 import os as _v196_os
 import tempfile as _v196_tempfile
 
-VERSION = "bot_v197_chat_identity_sync_final"
+VERSION = "bot_v198_owner_alert_scope_fix_final"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -927,14 +927,19 @@ V196_BRANCH_CATALOG = {
         "tests": ["owner", "circle1", "circle2", "permission deny"],
     },
     "diagnostics.journal": {
-        "group": "🩺 Диагностика", "title": "Журналы / диагностика", "rev": 2,
+        "group": "🩺 Диагностика", "title": "Журналы / диагностика", "rev": 3,
         "purpose": "Фиксировать ошибки, события, скорость и давать скачиваемые журналы.",
         "entry": ["Инфо → Журнал", "runtime events", "download"],
         "flow": ["event → runtime journal → optional MEGA → download"],
         "storage": ["journal buffers/files", "journal_download_base_name"],
         "depends": ["storage.mega"],
-        "invariants": ["диагностика не выключается Fast Test/Minimum автоматически", "имя скачиваемого журнала сохраняется", "битая remote строка не ломает runtime"],
-        "tests": ["current/full journal", "custom filename", "warm tail"],
+        "invariants": [
+            "диагностика не выключается Fast Test/Minimum автоматически",
+            "имя скачиваемого журнала сохраняется",
+            "битая remote строка не ломает runtime",
+            "технические аварийные уведомления и 🚨 видит только основной OWNER_ID; другие контуры не получают внутренние W/Ф/диагностические helper-сообщения",
+        ],
+        "tests": ["current/full journal", "custom filename", "warm tail", "owner-only technical alerts", "non-owner contour has no W/Ф/🚨 diagnostic helper"],
     },
     "runtime.performance": {
         "group": "🩺 Диагностика", "title": "Процессы / скорость", "rev": 1,
@@ -971,12 +976,14 @@ V196_BRANCH_CATALOG = {
 # Every release must explicitly list the functional branches it changed.  Protected
 # branches remain checked; a touched protected branch must have a PASS regression result.
 V196_CURRENT_BRANCH_CHANGES = [
-    ("ui.chat_identity", "Проверить чаты теперь делает полную Telegram-синхронизацию всех известных чатов, включая основной owner-chat; убрана подмена имени владельца символом 🏀."),
-    ("forward.core", "Массовая проверка пересылки обновляет реальные chat title/username/type/access и сохраняет доступные bot-visible параметры одной синхронизацией."),
+    ("ui.chat_identity", "Исправлена полная проверка чатов: поздний legacy probe больше не переопределяет canonical deep probe; массовая синхронизация снова выполняется."),
+    ("diagnostics.journal", "🚨 и технические background/error уведомления маршрутизируются только в основной OWNER_ID; другие контуры не получают внутренние W/Ф/диагностические сообщения."),
+    ("ui.info", "Добавлены декларации маркеров journal_name_edit/reset/cancel, чтобы смена имени журнала не создавала WINDOW_MARKER_NOT_DECLARED."),
 ]
 V196_BRANCH_REGRESSION_RESULTS = {
     "ui.chat_identity": "PASS",
-    "forward.core": "PASS",
+    "diagnostics.journal": "PASS",
+    "ui.info": "PASS",
 }
 
 
@@ -2015,5 +2022,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v192 authoritative runtime version after Excel ARS/USD and delivery audit.
-VERSION = "bot_v197_chat_identity_sync_final"
-# v197_chat_identity_sync_final
+VERSION = "bot_v198_owner_alert_scope_fix_final"
+# v198_owner_alert_scope_fix_final
