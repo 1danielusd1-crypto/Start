@@ -1,0 +1,367 @@
+{
+  "version": "bot_v190_mega_light_fast_recovery",
+  "tests": {
+    "compile_all": {
+      "ok": true,
+      "detail": "27 runtime + loader + FULL"
+    },
+    "marker_00_core.py": {
+      "ok": true,
+      "detail": "# v190_mega_light_fast_recovery"
+    },
+    "hash_00_core.py": {
+      "ok": true,
+      "detail": "92503464c8cf"
+    },
+    "marker_10_mega_runtime.py": {
+      "ok": true,
+      "detail": "# v190_mega_light_fast_recovery"
+    },
+    "hash_10_mega_runtime.py": {
+      "ok": true,
+      "detail": "92e8932e10c8"
+    },
+    "marker_11_data_constitution.py": {
+      "ok": true,
+      "detail": "# v190_mega_light_fast_recovery"
+    },
+    "hash_11_data_constitution.py": {
+      "ok": true,
+      "detail": "c49540582092"
+    },
+    "marker_15_operation_safety.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_15_operation_safety.py": {
+      "ok": true,
+      "detail": "f0af5f821515"
+    },
+    "marker_16_window_diagnostics.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_16_window_diagnostics.py": {
+      "ok": true,
+      "detail": "58c8ab7c03dd"
+    },
+    "marker_17_memory_runtime.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_17_memory_runtime.py": {
+      "ok": true,
+      "detail": "fbb088c4f4d0"
+    },
+    "marker_20_callback_tokens.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_20_callback_tokens.py": {
+      "ok": true,
+      "detail": "f6e6b55bcbc7"
+    },
+    "marker_30_secret.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_30_secret.py": {
+      "ok": true,
+      "detail": "405832f9105b"
+    },
+    "marker_35_reminders.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_35_reminders.py": {
+      "ok": true,
+      "detail": "ae15058d50ae"
+    },
+    "marker_40_message_router.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_40_message_router.py": {
+      "ok": true,
+      "detail": "39e429be0bfa"
+    },
+    "marker_50_forwarding.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_50_forwarding.py": {
+      "ok": true,
+      "detail": "fd486977be08"
+    },
+    "marker_60_finance_currency.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_60_finance_currency.py": {
+      "ok": true,
+      "detail": "4b41eab05981"
+    },
+    "marker_61_forwarding_ui.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_61_forwarding_ui.py": {
+      "ok": true,
+      "detail": "24817cfbb2a3"
+    },
+    "marker_62_finance_ui.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_62_finance_ui.py": {
+      "ok": true,
+      "detail": "734da79c1624"
+    },
+    "marker_63_google_sheets.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_63_google_sheets.py": {
+      "ok": true,
+      "detail": "12072b33aa95"
+    },
+    "marker_70_fast_ui.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_70_fast_ui.py": {
+      "ok": true,
+      "detail": "a0f42c1baa34"
+    },
+    "marker_80_callback_router.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_80_callback_router.py": {
+      "ok": true,
+      "detail": "df54cc8ef1a6"
+    },
+    "marker_90_commands_exports.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_90_commands_exports.py": {
+      "ok": true,
+      "detail": "0693434c4307"
+    },
+    "marker_91_finance_records_handlers.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_91_finance_records_handlers.py": {
+      "ok": true,
+      "detail": "00697cffc85c"
+    },
+    "marker_72_multitenant_runtime.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_72_multitenant_runtime.py": {
+      "ok": true,
+      "detail": "c09112377726"
+    },
+    "marker_99_web_runtime.py": {
+      "ok": true,
+      "detail": "# v188_restore_forward_fix_final"
+    },
+    "hash_99_web_runtime.py": {
+      "ok": true,
+      "detail": "5638ac3cc7f9"
+    },
+    "marker_73_state_export_runtime.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_73_state_export_runtime.py": {
+      "ok": true,
+      "detail": "a8686e7ba52d"
+    },
+    "marker_74_ui_reliability_runtime.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_74_ui_reliability_runtime.py": {
+      "ok": true,
+      "detail": "a102b1105779"
+    },
+    "marker_75_platform_features_runtime.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_75_platform_features_runtime.py": {
+      "ok": true,
+      "detail": "4d2228d81d1b"
+    },
+    "marker_76_tasks_runtime.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_76_tasks_runtime.py": {
+      "ok": true,
+      "detail": "9d3f9cf385d9"
+    },
+    "marker_85_runtime_control.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_85_runtime_control.py": {
+      "ok": true,
+      "detail": "0c42f51dba50"
+    },
+    "marker_89_callback_final.py": {
+      "ok": true,
+      "detail": "# v189_main_window_authority_final"
+    },
+    "hash_89_callback_final.py": {
+      "ok": true,
+      "detail": "c4b8497d20c3"
+    },
+    "full_marker": {
+      "ok": true,
+      "detail": ""
+    },
+    "duplicate_top_level_symbols": {
+      "ok": true,
+      "detail": "count=0"
+    },
+    "callback_registration_one": {
+      "ok": true,
+      "detail": "1"
+    },
+    "forbidden_start_root_zero": {
+      "ok": true,
+      "detail": ""
+    },
+    "delta_excludes_operation_ledger": {
+      "ok": true,
+      "detail": ""
+    },
+    "delta_excludes_full_integrity": {
+      "ok": true,
+      "detail": ""
+    },
+    "delta_compact_json": {
+      "ok": true,
+      "detail": ""
+    },
+    "delta_keep_60": {
+      "ok": true,
+      "detail": ""
+    },
+    "delta_priority_12": {
+      "ok": true,
+      "detail": ""
+    },
+    "delta_general_15": {
+      "ok": true,
+      "detail": ""
+    },
+    "snapshot_quiet_120": {
+      "ok": true,
+      "detail": ""
+    },
+    "snapshot_max_600": {
+      "ok": true,
+      "detail": ""
+    },
+    "done_tasks_30": {
+      "ok": true,
+      "detail": ""
+    },
+    "durable_pending_one_put": {
+      "ok": true,
+      "detail": "1"
+    },
+    "durable_pending_no_mv": {
+      "ok": true,
+      "detail": ""
+    },
+    "durable_no_pending_running_move": {
+      "ok": true,
+      "detail": ""
+    },
+    "ledger_async_contract": {
+      "ok": true,
+      "detail": ""
+    },
+    "root_self_heal_retry": {
+      "ok": true,
+      "detail": ""
+    },
+    "root_self_heal_reseed": {
+      "ok": true,
+      "detail": ""
+    },
+    "root_self_heal_simulation": {
+      "ok": true,
+      "detail": "['mega-root-reseed-v190']"
+    },
+    "fast_boot_latest_before_generation": {
+      "ok": true,
+      "detail": ""
+    },
+    "fast_boot_embedded_manifest": {
+      "ok": true,
+      "detail": ""
+    },
+    "boot_verify_local_before_remote": {
+      "ok": true,
+      "detail": ""
+    },
+    "generation_history_bounded": {
+      "ok": true,
+      "detail": ""
+    },
+    "real_large_delta_reduction": {
+      "ok": true,
+      "detail": "[{'file': 'delta_20260812_020347_814300_1786511027814299508.json', 'original_bytes': 671503, 'v190_estimated_bytes': 9904, 'reduction_percent': 98.53}, {'file': 'delta_20260812_020352_412214_1786511032412213467.json', 'original_bytes': 671682, 'v190_estimated_bytes': 10027, 'reduction_percent': 98.51}, {'file': 'delta_20260812_020401_516211_1786511041516210180.json', 'original_bytes': 657197, 'v190_estimated_bytes': 361, 'reduction_percent': 99.95}]"
+    },
+    "substantive_runtime_changed_exact": {
+      "ok": true,
+      "detail": "['00_core.py', '10_mega_runtime.py', '11_data_constitution.py']"
+    }
+  },
+  "delta_samples": [
+    {
+      "file": "delta_20260812_020347_814300_1786511027814299508.json",
+      "original_bytes": 671503,
+      "v190_estimated_bytes": 9904,
+      "reduction_percent": 98.53
+    },
+    {
+      "file": "delta_20260812_020352_412214_1786511032412213467.json",
+      "original_bytes": 671682,
+      "v190_estimated_bytes": 10027,
+      "reduction_percent": 98.51
+    },
+    {
+      "file": "delta_20260812_020355_814809_1786511035814807807.json",
+      "original_bytes": 570,
+      "v190_estimated_bytes": 462,
+      "reduction_percent": 18.95
+    },
+    {
+      "file": "delta_20260812_020401_516211_1786511041516210180.json",
+      "original_bytes": 657197,
+      "v190_estimated_bytes": 361,
+      "reduction_percent": 99.95
+    }
+  ],
+  "substantive_runtime_changed": [
+    "00_core.py",
+    "10_mega_runtime.py",
+    "11_data_constitution.py"
+  ],
+  "summary": {
+    "runtime_modules": 27,
+    "duplicate_symbols": 0,
+    "callback_registrations": 1,
+    "forbidden_start_refs": 0,
+    "all_pass": true
+  }
+}

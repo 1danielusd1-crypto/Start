@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v190_mega_light_fast_recovery
 import os
 import io
 import json
@@ -842,7 +842,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v189_main_window_authority_final"
+VERSION = "bot_v190_mega_light_fast_recovery"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -914,9 +914,9 @@ MEGA_DELTA_BACKUP_DIR = os.getenv("MEGA_DELTA_BACKUP_DIR", "deltas").strip().str
 MEGA_TASKS_ENABLED = _env_bool("MEGA_TASKS_ENABLED", "1")
 MEGA_TASK_BACKUP_DIR = os.getenv("MEGA_TASK_BACKUP_DIR", "tasks").strip().strip("/") or "tasks"
 try:
-    MEGA_TASK_DONE_KEEP = max(20, min(1000, int(os.getenv("MEGA_TASK_DONE_KEEP", "200") or "200")))
+    MEGA_TASK_DONE_KEEP = max(20, min(120, int(os.getenv("MEGA_TASK_DONE_KEEP", "30") or "30")))
 except Exception:
-    MEGA_TASK_DONE_KEEP = 200
+    MEGA_TASK_DONE_KEEP = 30
 try:
     MEGA_TASK_RECOVERY_LIMIT = max(20, min(2000, int(os.getenv("MEGA_TASK_RECOVERY_LIMIT", "500") or "500")))
 except Exception:
@@ -934,21 +934,21 @@ try:
 except Exception:
     MEGA_TASK_PROCESSED_KEEP = 500
 try:
-    MEGA_DELTA_DELAY_SECONDS = max(1.0, float(os.getenv("MEGA_DELTA_DELAY_SECONDS", "8") or "8"))
+    MEGA_DELTA_DELAY_SECONDS = max(5.0, float(os.getenv("MEGA_DELTA_DELAY_SECONDS", "15") or "15"))
 except Exception:
-    MEGA_DELTA_DELAY_SECONDS = 8.0
+    MEGA_DELTA_DELAY_SECONDS = 15.0
 try:
-    MEGA_DELTA_PRIORITY_DELAY_SECONDS = max(0.5, float(os.getenv("MEGA_DELTA_PRIORITY_DELAY_SECONDS", "1") or "1"))
+    MEGA_DELTA_PRIORITY_DELAY_SECONDS = max(3.0, float(os.getenv("MEGA_DELTA_PRIORITY_DELAY_SECONDS", "12") or "12"))
 except Exception:
-    MEGA_DELTA_PRIORITY_DELAY_SECONDS = 1.0
+    MEGA_DELTA_PRIORITY_DELAY_SECONDS = 12.0
 try:
-    MEGA_GLOBAL_QUIET_SECONDS = max(60.0, float(os.getenv("MEGA_GLOBAL_QUIET_SECONDS", "180") or "180"))
+    MEGA_GLOBAL_QUIET_SECONDS = max(60.0, float(os.getenv("MEGA_GLOBAL_QUIET_SECONDS", "120") or "120"))
 except Exception:
-    MEGA_GLOBAL_QUIET_SECONDS = 180.0
+    MEGA_GLOBAL_QUIET_SECONDS = 120.0
 try:
-    MEGA_GLOBAL_MAX_INTERVAL_SECONDS = max(300.0, float(os.getenv("MEGA_GLOBAL_MAX_INTERVAL_SECONDS", "900") or "900"))
+    MEGA_GLOBAL_MAX_INTERVAL_SECONDS = max(300.0, float(os.getenv("MEGA_GLOBAL_MAX_INTERVAL_SECONDS", "600") or "600"))
 except Exception:
-    MEGA_GLOBAL_MAX_INTERVAL_SECONDS = 900.0
+    MEGA_GLOBAL_MAX_INTERVAL_SECONDS = 600.0
 try:
     MEGA_GLOBAL_HISTORY_KEEP = min(2, max(1, int(os.getenv("MEGA_GLOBAL_HISTORY_KEEP", "2") or "2")))
 except Exception:
@@ -958,9 +958,9 @@ try:
 except Exception:
     MEGA_FILE_HISTORY_KEEP = 2
 try:
-    MEGA_DELTA_KEEP_FILES = max(50, int(os.getenv("MEGA_DELTA_KEEP_FILES", "500") or "500"))
+    MEGA_DELTA_KEEP_FILES = max(30, min(120, int(os.getenv("MEGA_DELTA_KEEP_FILES", "60") or "60")))
 except Exception:
-    MEGA_DELTA_KEEP_FILES = 500
+    MEGA_DELTA_KEEP_FILES = 60
 try:
     MEGA_DELTA_RESTORE_LIMIT = max(50, int(os.getenv("MEGA_DELTA_RESTORE_LIMIT", "1000") or "1000"))
 except Exception:
@@ -8126,4 +8126,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v189_main_window_authority_final
+# v190_mega_light_fast_recovery

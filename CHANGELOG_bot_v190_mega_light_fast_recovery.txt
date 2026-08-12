@@ -1,0 +1,12 @@
+bot_v190_mega_light_fast_recovery
+
+1. MEGA root self-heal: stale directory cache invalidates on missing destination; path recreates and put retries.
+2. Root re-seed: if canonical root itself is recreated during live operation, a full SQLite snapshot is scheduled in background.
+3. Durable hot path: one compact pending task put; removed foreground pending->running MEGA move.
+4. Finance Constitution ledger uploads outside user worker when protected by durable task; task stays pending until ledger is confirmed.
+5. Delta: operation_ledger_v141 removed, finance integrity reduced to head, lifecycle history removed, compact JSON.
+6. Delta batching: 12s finance / 15s general; bounded to 60 after verified snapshots.
+7. Full SQLite: 120s quiet / 600s max, deferred while user content/UI/finance queues are busy.
+8. Bounded MEGA history: done tasks 30; generations/manifests/pointer history bounded; ledger events pruned only after coverage by two verified generations.
+9. Fast boot: protected latest SQLite mirror first, embedded semantic manifest; generation pointer becomes fallback.
+10. Strict /restore, DATA CONSTITUTION, main-window authority, careful restore and custom journal filename remain intact.

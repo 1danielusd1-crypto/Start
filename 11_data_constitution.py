@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v190_mega_light_fast_recovery
 """v185 DATA CONSTITUTION.
 
 Immutable storage contract. UI/performance modules must not redefine these functions.
@@ -402,6 +402,51 @@ def constitution_load_active_manifest_remote(force: bool = False) -> dict | None
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def _constitution_prune_bounded_history(active_manifest: dict) -> dict:
+    """v190 bounded MEGA history: keep enough rollback points, never unlimited file growth."""
+    result = {"generations": 0, "manifests": 0, "pointer_history": 0, "ledger": 0}
+    try:
+        prune = globals().get("_mega_prune_remote_history")
+        if callable(prune):
+            keep = max(12, min(48, int(os.getenv("DATA_CONSTITUTION_GENERATION_KEEP", "24") or "24")))
+            result["generations"] = int(prune(constitution_generations_dir(), "generation_*.sqlite3.gz", keep) or 0)
+            result["manifests"] = int(prune(constitution_manifests_dir(), "generation_*.json", keep) or 0)
+            result["pointer_history"] = int(prune(constitution_manifest_history_dir(), "current_manifest_*.json", keep) or 0)
+    except Exception as exc:
+        try: log_error(f"constitution generation prune v190: {exc}")
+        except Exception: pass
+
+    # Finance ledger is a write-ahead bridge between verified generations, not an
+    # ever-growing second database.  Once an event is included in BOTH the previous
+    # and current verified generations, the raw per-event witness may be removed.
+    try:
+        cutoff = int((active_manifest or {}).get("previous_ledger_highwater_seq") or 0)
+        finder = globals().get("_mega_find_remote_files")
+        if cutoff > 0 and callable(finder):
+            rows = finder(constitution_ledger_root(), "ledger_*.json")
+            removed = 0
+            for remote_path in rows:
+                name = os.path.basename(str(remote_path))
+                m = re.match(r"ledger_(\d+)_", name)
+                if not m:
+                    continue
+                if int(m.group(1)) <= cutoff:
+                    try:
+                        res = _mega_run("mega-rm", [remote_path], check=False, timeout=30)
+                        if res.returncode == 0:
+                            removed += 1
+                    except Exception:
+                        pass
+            result["ledger"] = removed
+    except Exception as exc:
+        try: log_error(f"constitution ledger prune v190: {exc}")
+        except Exception: pass
+    if any(result.values()):
+        try: bot_journal("constitution_prune_v190", None, json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        except Exception: pass
+    return result
+
+
 def constitution_publish_sqlite_generation(raw_sqlite: str, gz_path: str, created_at: str, *, allow_destructive: bool = False) -> dict:
     """Publish immutable generation first, then atomically move only the active pointer.
 
@@ -422,7 +467,13 @@ def constitution_publish_sqlite_generation(raw_sqlite: str, gz_path: str, create
     workdir = tempfile.mkdtemp(prefix="constitution_publish_")
     try:
         manifest_local = os.path.join(workdir, manifest_name)
-        candidate.update({"generation": generation_name, "remote_generation": constitution_generations_dir()+"/"+generation_name})
+        candidate.update({
+            "generation": generation_name,
+            "remote_generation": constitution_generations_dir()+"/"+generation_name,
+            "previous_generation": str((current or {}).get("generation") or ""),
+            "previous_created_at": str((current or {}).get("created_at") or ""),
+            "previous_ledger_highwater_seq": int((current or {}).get("ledger_highwater_seq") or 0),
+        })
         _save_json(manifest_local, candidate)
         mega_ensure_remote_path(constitution_generations_dir())
         mega_ensure_remote_path(constitution_manifests_dir())
@@ -453,6 +504,10 @@ def constitution_publish_sqlite_generation(raw_sqlite: str, gz_path: str, create
             DATA_CONSTITUTION_MANIFEST_CACHE["at"] = time.monotonic(); DATA_CONSTITUTION_MANIFEST_CACHE["value"] = copy.deepcopy(candidate)
         try:
             SQLITE.set_meta("data_constitution", "active_manifest", candidate)
+        except Exception:
+            pass
+        try:
+            _constitution_prune_bounded_history(candidate)
         except Exception:
             pass
         return candidate
@@ -544,11 +599,48 @@ def constitution_download_active_generation(workdir: str) -> tuple[str | None, d
 
 
 def constitution_boot_verify_after_restore() -> dict:
+    """Fast semantic boot verification without a mandatory MEGA manifest round-trip.
+
+    v190 snapshots embed their semantic manifest inside SQLite. Older protected snapshots
+    normally contain the previous active manifest in SQLite metadata. Either local baseline
+    is enough to prove that the restored+delta state did not silently lose history. Remote
+    ``current_manifest.json`` remains the fallback and is reconciled by the next background
+    full snapshot, keeping READY independent from MEGA metadata latency.
+    """
     global DATA_CONSTITUTION_LAST_VERIFY
-    current = constitution_load_active_manifest_remote(force=True)
     live = constitution_semantic_manifest_from_live()
+    local_baseline = {}
+    baseline_source = ""
+    try:
+        local_baseline = SQLITE.get_meta("data_constitution_snapshot", "main", {}) or {}
+        if isinstance(local_baseline, dict) and local_baseline.get("kind"):
+            baseline_source = "embedded_snapshot"
+        else:
+            local_baseline = SQLITE.get_meta("data_constitution", "active_manifest", {}) or {}
+            if isinstance(local_baseline, dict) and local_baseline.get("kind"):
+                baseline_source = "sqlite_active_manifest"
+    except Exception:
+        local_baseline = {}
+
+    if isinstance(local_baseline, dict) and local_baseline.get("kind") == "telegram_bot_data_constitution_manifest":
+        rejection = constitution_snapshot_rejection(live, local_baseline)
+        ok = not bool(rejection)
+        result = {"ok": ok, "mode": "fast_local_verify", "baseline_source": baseline_source, "live": live, "current": local_baseline, "reason": rejection}
+        DATA_CONSTITUTION_LAST_VERIFY = result
+        if not ok:
+            constitution_set_quarantine("BOOT local semantic verification failed: " + rejection)
+        else:
+            with DATA_CONSTITUTION_LOCK:
+                globals()["DATA_CONSTITUTION_QUARANTINE"] = False; globals()["DATA_CONSTITUTION_REASON"] = ""
+        try:
+            runtime_event("data_constitution_boot_verify", f"ok={ok}; mode=fast_local; source={baseline_source}; records={live.get('total_records')}; baseline={local_baseline.get('total_records')}; {rejection}", "INFO" if ok else "ERROR")
+        except Exception:
+            pass
+        return result
+
+    # Compatibility/bootstrap fallback for very old snapshots that carry no local baseline.
+    current = constitution_load_active_manifest_remote(force=True)
     if not current:
-        # First constitution boot: immutable GENESIS anchors all pre-v185 history.
         try:
             genesis = constitution_bootstrap_ledger_genesis()
             live = constitution_semantic_manifest_from_live()
@@ -564,26 +656,86 @@ def constitution_boot_verify_after_restore() -> dict:
         return result
     rejection = constitution_snapshot_rejection(live, current)
     ok = not bool(rejection)
-    result = {"ok": ok, "mode": "verify", "live": live, "current": current, "reason": rejection}
+    result = {"ok": ok, "mode": "remote_fallback_verify", "live": live, "current": current, "reason": rejection}
     DATA_CONSTITUTION_LAST_VERIFY = result
     if not ok:
         constitution_set_quarantine("BOOT semantic verification failed: " + rejection)
     else:
-        # Only clear the constitution quarantine; manual restore guard remains under existing owner controls.
         with DATA_CONSTITUTION_LOCK:
             globals()["DATA_CONSTITUTION_QUARANTINE"] = False; globals()["DATA_CONSTITUTION_REASON"] = ""
     try:
-        runtime_event("data_constitution_boot_verify", f"ok={ok}; records={live.get('total_records')}; active={current.get('total_records')}; {rejection}", "INFO" if ok else "ERROR")
+        runtime_event("data_constitution_boot_verify", f"ok={ok}; mode=remote_fallback; records={live.get('total_records')}; active={current.get('total_records')}; {rejection}", "INFO" if ok else "ERROR")
     except Exception:
         pass
     return result
 
 
-def constitution_ledger_append(chat_id: int, action: str, record: dict | None, details: dict | None, integrity_hash: str, seq: int) -> bool:
-    """Synchronous immutable financial event in MEGA.
+_CONSTITUTION_LEDGER_ASYNC_LOCK = threading.RLock()
+_CONSTITUTION_LEDGER_ASYNC_STATE = {}
 
-    A failed ledger write quarantines future mutations/backups. The already committed mutation
-    remains recoverable through the existing durable update/delta path.
+
+def constitution_ledger_tokens_ready(tokens) -> tuple[bool, str]:
+    """Used by the durable finalizer: a task stays recoverable until its ledger witness is in MEGA."""
+    vals = [str(x) for x in (tokens or []) if str(x or "").strip()]
+    if not vals:
+        return True, ""
+    with _CONSTITUTION_LEDGER_ASYNC_LOCK:
+        states = {token: str((_CONSTITUTION_LEDGER_ASYNC_STATE.get(token) or {}).get("state") or "pending") for token in vals}
+    failed = [k for k,v in states.items() if v == "failed"]
+    pending = [k for k,v in states.items() if v not in {"done", "failed"}]
+    if failed:
+        return False, "failed:" + ",".join(failed[:4])
+    if pending:
+        return False, "pending:" + ",".join(pending[:4])
+    return True, ""
+
+
+def _constitution_upload_ledger_event(token: str, event: dict, name: str, remote_dir: str) -> bool:
+    workdir = tempfile.mkdtemp(prefix="constitution_ledger_async_")
+    local = os.path.join(workdir, name)
+    try:
+        with open(local, "w", encoding="utf-8") as fh:
+            json.dump(event, fh, ensure_ascii=False, separators=(",", ":"), default=str)
+        with DATA_CONSTITUTION_LEDGER_LOCK:
+            mega_ensure_remote_path(remote_dir)
+            _mega_run("mega-put", [local, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+        high = {
+            "seq": int(event.get("seq") or 0),
+            "hash": str(event.get("event_hash") or ""),
+            "integrity_hash": str(event.get("integrity_hash") or ""),
+            "at": str(event.get("at") or ""),
+            "remote": remote_dir + "/" + name,
+        }
+        SQLITE.set_meta("data_constitution", "ledger_highwater", high)
+        try:
+            _root_settings()["data_constitution_ledger_highwater"] = copy.deepcopy(high)
+            _root_save_coalesced("constitution_ledger_highwater", 0.5)
+        except Exception:
+            pass
+        SQLITE.set_meta("data_constitution_pending", name, {"done": True, "at": event.get("at")})
+        with _CONSTITUTION_LEDGER_ASYNC_LOCK:
+            _CONSTITUTION_LEDGER_ASYNC_STATE[token] = {"state": "done", "at": time.monotonic()}
+        try: bot_journal("constitution_ledger_async_done_v190", int(event.get("chat_id") or 0), f"seq={event.get('seq')}")
+        except Exception: pass
+        return True
+    except Exception as exc:
+        with _CONSTITUTION_LEDGER_ASYNC_LOCK:
+            _CONSTITUTION_LEDGER_ASYNC_STATE[token] = {"state": "failed", "error": str(exc)[:300], "at": time.monotonic()}
+        constitution_set_quarantine(f"immutable finance ledger write failed seq={event.get('seq')}: {exc}")
+        try: log_error(f"[DATA CONSTITUTION LEDGER] {exc}")
+        except Exception: pass
+        return False
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def constitution_ledger_append(chat_id: int, action: str, record: dict | None, details: dict | None, integrity_hash: str, seq: int) -> bool:
+    """v190 immutable ledger: local transaction now, MEGA upload outside the user worker when safe.
+
+    A finance Telegram update already has a write-before-execute MEGA task witness.  Its task is
+    not allowed to become ``done`` until this ledger token is uploaded.  Therefore the user path
+    no longer waits for a second MEGA put, while a deploy/crash still leaves the source update
+    recoverable in ``tasks/pending``.
     """
     if not mega_is_configured():
         constitution_set_quarantine("finance ledger unavailable: MEGA is not configured")
@@ -600,40 +752,60 @@ def constitution_ledger_append(chat_id: int, action: str, record: dict | None, d
         "integrity_hash": str(integrity_hash or ""),
         "at": now_local().isoformat(timespec="microseconds"),
     }
-    event["event_hash"] = hashlib.sha256(json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+    event["event_hash"] = hashlib.sha256(
+        json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
     day = event["at"][:10].replace("-", "/")
-    remote_dir = constitution_ledger_root()+"/"+day
+    remote_dir = constitution_ledger_root() + "/" + day
     name = f"ledger_{int(seq):010d}_{int(chat_id)}_{event['event_hash'][:16]}.json"
-    workdir = tempfile.mkdtemp(prefix="constitution_ledger_")
-    local = os.path.join(workdir, name)
+    token = name
+    SQLITE.set_meta("data_constitution_pending", name, event)
+
+    # If this mutation is protected by a Telegram durable task, upload asynchronously.
+    ctx = {}
     try:
-        SQLITE.set_meta("data_constitution_pending", name, event)
-        _save_json(local, event)
-        with DATA_CONSTITUTION_LEDGER_LOCK:
-            mega_ensure_remote_path(remote_dir)
-            _mega_run("mega-put", [local, remote_dir], check=True, timeout=MEGA_TIMEOUT)
-        high = {"seq": int(seq), "hash": event["event_hash"], "integrity_hash": str(integrity_hash or ""), "at": event["at"], "remote": remote_dir+"/"+name}
-        SQLITE.set_meta("data_constitution", "ledger_highwater", high)
+        fn = globals().get("_current_telegram_update_context")
+        if callable(fn):
+            ctx = fn() or {}
+    except Exception:
+        ctx = {}
+    update_id = ctx.get("update_id")
+    durable_state = ""
+    try:
+        state_fn = globals().get("mega_task_known_state")
+        if update_id is not None and callable(state_fn):
+            durable_state = str(state_fn(update_id) or "")
+    except Exception:
+        durable_state = ""
+
+    if update_id is not None and durable_state in {"pending", "running"}:
+        with _CONSTITUTION_LEDGER_ASYNC_LOCK:
+            _CONSTITUTION_LEDGER_ASYNC_STATE[token] = {"state": "pending", "seq": int(seq), "at": time.monotonic()}
         try:
-            _root_settings()["data_constitution_ledger_highwater"] = copy.deepcopy(high)
-            _root_save_coalesced("constitution_ledger_highwater", 0.1)
-        except Exception: pass
-        SQLITE.set_meta("data_constitution_pending", name, {"done": True, "at": event["at"]})
-        return True
-    except Exception as exc:
-        constitution_set_quarantine(f"immutable finance ledger write failed seq={seq}: {exc}")
-        try: log_error(f"[DATA CONSTITUTION LEDGER] {exc}")
-        except Exception: pass
-        return False
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+            raw_ctx = getattr(globals().get("_TELEGRAM_UPDATE_CONTEXT"), "value", None)
+            if isinstance(raw_ctx, dict):
+                raw_ctx.setdefault("constitution_ledger_tokens", []).append(token)
+        except Exception:
+            pass
+        pool = globals().get("RECOVERY_TASK_POOL")
+        if pool is not None:
+            try:
+                if pool.submit_unique(f"constitution-ledger:{token}", _constitution_upload_ledger_event, token, event, name, remote_dir):
+                    return True
+            except Exception:
+                pass
+        # Queue saturation: fall back to synchronous upload rather than weaken durability.
+
+    with _CONSTITUTION_LEDGER_ASYNC_LOCK:
+        _CONSTITUTION_LEDGER_ASYNC_STATE[token] = {"state": "pending", "seq": int(seq), "at": time.monotonic()}
+    return bool(_constitution_upload_ledger_event(token, event, name, remote_dir))
 
 
 def constitution_status_text() -> str:
     active = constitution_load_active_manifest_remote(force=False) or {}
     live = constitution_semantic_manifest_from_live()
     return (
-        "🏛 КОНСТИТУЦИЯ ДАННЫХ v189\n"
+        "🏛 КОНСТИТУЦИЯ ДАННЫХ v190\n"
         f"Статус: {'🚨 КАРАНТИН' if constitution_quarantine_active() else '✅ НОРМА'}\n"
         f"Причина: {DATA_CONSTITUTION_REASON or globals().get('RESTORE_GUARD_REASON','') or '—'}\n"
         f"Live finance records: {live.get('total_records',0)}\n"
@@ -679,4 +851,4 @@ def constitution_verify_protected_symbols() -> tuple[bool, str]:
         constitution_set_quarantine("storage-core symbol redefined: " + ", ".join(changed))
         return False, ", ".join(changed)
     return True, "ok"
-# v189_main_window_authority_final
+# v190_mega_light_fast_recovery

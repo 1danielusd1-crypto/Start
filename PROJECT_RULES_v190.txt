@@ -1,0 +1,13 @@
+PROJECT RULES v190
+- Canonical MEGA root: /TelegramBotBackups only.
+- Missing/renamed MEGA paths must self-heal; stale path caches cannot permanently disable backup.
+- User critical path may wait only for one small write-before-execute MEGA witness; full snapshot/prune/journal/diagnostics are background work.
+- Remote durable task stays pending during business and is finalized only after all required witnesses, including DATA CONSTITUTION ledger, are confirmed.
+- Compact deltas are bounded WAL, never a copy of growing diagnostic history.
+- Full SQLite snapshots are semantically validated before activation.
+- Fast boot uses protected latest SQLite with embedded semantic manifest; immutable generations are rollback/fallback.
+- History is bounded, but no witness is pruned until safely covered by verified generations.
+- /restore = STRICT REPLACE FROM FILE with pre_restore; no merge.
+- Careful restore is separate RAM-only manual fill mode.
+- One canonical main finance window per chat controls UI date.
+- No /TelegramBotBackupsStart.

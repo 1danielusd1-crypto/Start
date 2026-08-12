@@ -1,9 +1,9 @@
 {
-  "version": "bot_v189_main_window_authority_final",
+  "version": "bot_v190_mega_light_fast_recovery",
   "file_markers": {
-    "00_core.py": "v189_main_window_authority_final",
-    "10_mega_runtime.py": "v189_main_window_authority_final",
-    "11_data_constitution.py": "v189_main_window_authority_final",
+    "00_core.py": "v190_mega_light_fast_recovery",
+    "10_mega_runtime.py": "v190_mega_light_fast_recovery",
+    "11_data_constitution.py": "v190_mega_light_fast_recovery",
     "15_operation_safety.py": "v189_main_window_authority_final",
     "16_window_diagnostics.py": "v188_restore_forward_fix_final",
     "17_memory_runtime.py": "v188_restore_forward_fix_final",
@@ -30,9 +30,9 @@
     "89_callback_final.py": "v189_main_window_authority_final"
   },
   "files": {
-    "00_core.py": "f1f26b8d6b8f178919c12ed1469c1cffd77e58a3d8f314fa16cc17cfe222dae8",
-    "10_mega_runtime.py": "68c034ad7e6ff00b973c43ab4a08cd982543df9cd01ad1352cc664b0240a9eea",
-    "11_data_constitution.py": "a90120a9226949daed5053d1f9ebb6511bda0c7737d7f9ab14c260a795698692",
+    "00_core.py": "92503464c8cf2529eb095cfe9b15212a17da5722b452443e5fadad31272eaee9",
+    "10_mega_runtime.py": "92e8932e10c87e0ce08e7e168518954895ff5e7de32f371898086a45405deea4",
+    "11_data_constitution.py": "c49540582092f6f1176a28a5d950ca5e33f3cb03e6d5fe54446b5e119d2f2f8a",
     "15_operation_safety.py": "f0af5f82151519e80c3d57ee9005c22b843479d03700513b965fcd173af5134c",
     "16_window_diagnostics.py": "58c8ab7c03dda702ab16179fa76a466eaa562c742d5849b8db9499cff8182006",
     "17_memory_runtime.py": "fbb088c4f4d03cccc20f95fedb1f9a370956471756dd518771fa425539617641",

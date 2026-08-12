@@ -1,0 +1,53 @@
+{
+  "version": "bot_v190_mega_light_fast_recovery",
+  "runtime_order": [
+    "00_core.py",
+    "10_mega_runtime.py",
+    "11_data_constitution.py",
+    "15_operation_safety.py",
+    "16_window_diagnostics.py",
+    "17_memory_runtime.py",
+    "20_callback_tokens.py",
+    "30_secret.py",
+    "35_reminders.py",
+    "40_message_router.py",
+    "50_forwarding.py",
+    "60_finance_currency.py",
+    "61_forwarding_ui.py",
+    "62_finance_ui.py",
+    "63_google_sheets.py",
+    "70_fast_ui.py",
+    "80_callback_router.py",
+    "90_commands_exports.py",
+    "91_finance_records_handlers.py",
+    "72_multitenant_runtime.py",
+    "99_web_runtime.py",
+    "73_state_export_runtime.py",
+    "74_ui_reliability_runtime.py",
+    "75_platform_features_runtime.py",
+    "76_tasks_runtime.py",
+    "85_runtime_control.py",
+    "89_callback_final.py"
+  ],
+  "substantive_changed_runtime": [
+    "00_core.py",
+    "10_mega_runtime.py",
+    "11_data_constitution.py"
+  ],
+  "storage_core": [
+    "00_core.py",
+    "10_mega_runtime.py",
+    "11_data_constitution.py"
+  ],
+  "hot_path": {
+    "durable_witness": "_mega_task_upload_new_pending",
+    "task_claim": "mega_task_begin",
+    "finance_ledger": "constitution_ledger_append",
+    "delta": "_delta_upload_payload",
+    "full_snapshot": "mega_upload_latest_database_backup",
+    "boot_restore": "mega_restore_sqlite_snapshot_from_cloud",
+    "root_self_heal": "_v190_recreate_remote_path_uncached"
+  },
+  "restore_contract": "STRICT REPLACE FROM FILE",
+  "mega_root": "/TelegramBotBackups"
+}

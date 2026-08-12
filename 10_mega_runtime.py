@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v190_mega_light_fast_recovery
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -51,11 +51,14 @@ _V178_MEGA_PRIORITY_ACTIVE = False
 
 def _v178_mega_priority(cmd: str, args) -> int:
     text = " ".join(str(x or "") for x in (args or [])).casefold()
-    # 0 = business durability; 3 = diagnostics/maintenance.
-    if any(x in text for x in ("/deltas/", "/tasks/running", "/tasks/done", "/tasks/failed", "sqlite")):
+    # v190: 0 = only the tiny write-before-execute witness / finance ledger.
+    # Large snapshots must never sit at the same priority as a user's finance message.
+    if any(x in text for x in ("/tasks/pending", "/ledger/finance")):
         return 0
-    if any(x in text for x in ("/chats/", "/global", "backup")):
+    if any(x in text for x in ("/tasks/running", "/tasks/done", "/tasks/failed", "/deltas/")):
         return 1
+    if any(x in text for x in ("/database/", "generation_", "current_manifest", "sqlite", "/chats/", "/global", "backup")):
+        return 2
     if any(x in text for x in ("/runtime/journal", "/runtime", "journal_", "runtime_slot_")):
         return 3
     if str(cmd or "") in {"mega-find", "mega-whoami", "mega-mkdir"}:
@@ -114,6 +117,22 @@ def _v177_legacy_0063_mega_run(cmd: str, args=None, timeout: int | None = None, 
                 res = _run_command()
         else:
             res = _run_command()
+
+        # v190 MEGA self-heal: the process may have cached a folder that the owner later
+        # renamed/deleted in MEGA.  A failed put invalidates that cache, recreates the
+        # complete destination path, and retries exactly once.
+        if res.returncode != 0 and str(cmd or "") == "mega-put" and len(args) >= 2:
+            text = ((res.stderr or "") + "\n" + (res.stdout or "")).casefold()
+            if "couldn't find destination folder" in text or "could not find destination folder" in text or "destination folder" in text and "find" in text:
+                healer = globals().get("_v190_recreate_remote_path_uncached")
+                if callable(healer):
+                    try:
+                        if healer(str(args[-1] or "")):
+                            res = _run_command()
+                    except Exception as heal_exc:
+                        try: log_error(f"[MEGA ROOT SELF-HEAL] {heal_exc}")
+                        except Exception: pass
+
         if check and res.returncode != 0:
             out = (res.stdout or "").strip()
             err = (res.stderr or "").strip()
@@ -135,6 +154,87 @@ _V178_MEGA_CACHE_LOCK = threading.RLock()
 _V178_MEGA_SESSION_OK_UNTIL = 0.0
 _V178_MEGA_SESSION_TTL_SECONDS = max(60.0, min(1800.0, float(os.getenv("MEGA_SESSION_CACHE_SECONDS", "300") or "300")))
 _V178_MEGA_KNOWN_DIRS = set()
+
+
+def _v190_invalidate_mega_path_cache(remote_dir: str | None = None) -> None:
+    """Forget a remote path and its descendants after an external rename/delete."""
+    target = str(remote_dir or "").rstrip("/")
+    with _V178_MEGA_CACHE_LOCK:
+        if not target:
+            _V178_MEGA_KNOWN_DIRS.clear()
+        else:
+            for item in list(_V178_MEGA_KNOWN_DIRS):
+                if item == target or item.startswith(target + "/") or target.startswith(item + "/"):
+                    _V178_MEGA_KNOWN_DIRS.discard(item)
+    # Other subsystem-level "dirs ready" flags must not outlive an external root rename.
+    try:
+        globals()["_mega_task_dirs_ready"] = False
+    except Exception:
+        pass
+
+
+def _v190_schedule_root_reseed() -> None:
+    """After an externally deleted/renamed canonical root, seed a new full DB snapshot ASAP.
+
+    The user action that discovered the loss is never made to wait for this snapshot.
+    ``_submit_global_snapshot_v90`` itself defers while UI/content/finance lanes are busy.
+    """
+    def _fire():
+        fn = globals().get("_submit_global_snapshot_v90")
+        if callable(fn):
+            fn("mega_root_self_heal")
+            return
+        snap = globals().get("mega_upload_latest_database_backup")
+        pool = globals().get("BACKUP_TASK_POOL")
+        if callable(snap) and pool is not None:
+            try: pool.submit_unique("mega-root-reseed-v190", snap, True)
+            except Exception: pass
+    try:
+        sched = globals().get("DELAYED_SCHEDULER")
+        if sched is not None:
+            sched.cancel("mega-root-reseed-v190")
+            sched.schedule("mega-root-reseed-v190", 2.0, _fire)
+        else:
+            _fire()
+    except Exception:
+        pass
+
+
+def _v190_recreate_remote_path_uncached(remote_dir: str) -> bool:
+    """Recreate a MEGA directory tree without trusting the process-lifetime cache."""
+    remote_dir = str(remote_dir or MEGA_BACKUP_DIR).strip() or MEGA_BACKUP_DIR
+    _v190_invalidate_mega_path_cache(remote_dir)
+    exe = shutil.which("mega-mkdir")
+    if not exe:
+        return False
+    parts = [p for p in remote_dir.strip("/").split("/") if p]
+    current = ""
+    canonical_root = "/" + str(MEGA_BACKUP_DIR or "").strip("/")
+    canonical_root_created = False
+    for part in parts:
+        current += "/" + part
+        priority = 0 if current.startswith(str(MEGA_BACKUP_DIR).rstrip("/")) else 2
+        _v178_mega_gate_enter(priority)
+        try:
+            with MEGA_COMMAND_LOCK:
+                res = subprocess.run([exe, current], capture_output=True, text=True, timeout=30)
+        finally:
+            _v178_mega_gate_exit()
+        text = ((res.stderr or "") + "\n" + (res.stdout or "")).casefold()
+        ok = res.returncode == 0 or "already exists" in text or "exists" in text
+        if not ok:
+            return False
+        if current == canonical_root and res.returncode == 0:
+            canonical_root_created = True
+        with _V178_MEGA_CACHE_LOCK:
+            _V178_MEGA_KNOWN_DIRS.add(current)
+    try:
+        bot_journal("mega_root_self_healed_v190", None, f"path={remote_dir}; root_created={int(canonical_root_created)}")
+    except Exception:
+        pass
+    if canonical_root_created:
+        _v190_schedule_root_reseed()
+    return True
 
 
 def mega_login_if_needed() -> bool:
@@ -170,10 +270,12 @@ def mega_login_if_needed() -> bool:
     return True
 
 
-def _v178_mega_ensure_cached_path(remote_dir: str) -> bool:
+def _v178_mega_ensure_cached_path(remote_dir: str, force: bool = False) -> bool:
     if not mega_login_if_needed():
         return False
     remote_dir = (remote_dir or MEGA_BACKUP_DIR).strip() or MEGA_BACKUP_DIR
+    if force:
+        return _v190_recreate_remote_path_uncached(remote_dir)
     parts = [p for p in remote_dir.strip("/").split("/") if p]
     current = ""
     for part in parts:
@@ -181,21 +283,22 @@ def _v178_mega_ensure_cached_path(remote_dir: str) -> bool:
         with _V178_MEGA_CACHE_LOCK:
             if current in _V178_MEGA_KNOWN_DIRS:
                 continue
-        # Folder existence is durable in MEGA. A successful or already-exists mkdir
-        # is enough to remember it for this process lifetime.
-        _mega_run("mega-mkdir", [current], check=False, timeout=30)
+        res = _mega_run("mega-mkdir", [current], check=False, timeout=30)
+        text = ((res.stderr or "") + "\n" + (res.stdout or "")).casefold()
+        if res.returncode != 0 and "already exists" not in text and "exists" not in text:
+            return False
         with _V178_MEGA_CACHE_LOCK:
             _V178_MEGA_KNOWN_DIRS.add(current)
     return True
 
 
-def mega_ensure_remote_dir() -> bool:
-    return _v178_mega_ensure_cached_path(MEGA_BACKUP_DIR)
+def mega_ensure_remote_dir(force: bool = False) -> bool:
+    return _v178_mega_ensure_cached_path(MEGA_BACKUP_DIR, force=force)
 
 
-def mega_ensure_remote_path(remote_dir: str) -> bool:
-    """Создаёт путь один раз за runtime; повторные backup/delta не делают mkdir заново."""
-    return _v178_mega_ensure_cached_path(remote_dir)
+def mega_ensure_remote_path(remote_dir: str, force: bool = False) -> bool:
+    """Create a path cheaply; force=True ignores stale runtime cache."""
+    return _v178_mega_ensure_cached_path(remote_dir, force=force)
 
 
 def mega_safe_name(value, fallback: str = "chat") -> str:
@@ -1568,6 +1671,15 @@ def finalize_durable_task_after_business(update_id, chat_id, update_type: str = 
         payload or {},
         expected_effects if isinstance(expected_effects, dict) else (_durable_expected_effects(payload) if isinstance(payload, dict) else {}),
     )
+    ledger_tokens = expected.get("_constitution_ledger_tokens_v190") or []
+    if ledger_tokens:
+        ready_fn = globals().get("constitution_ledger_tokens_ready")
+        if callable(ready_fn):
+            ready, detail = ready_fn(ledger_tokens)
+            if not ready:
+                try: bot_journal("durable_wait_constitution_ledger_v190", chat_id, f"update={key}; {detail}")
+                except Exception: pass
+                return False
     wait_forward = bool(expected.get("forward_targets")) or any(
         str((row or {}).get("kind") or "").startswith("propagated_copy_edit")
         for row in (expected.get("record_edits") or [])
@@ -1914,6 +2026,7 @@ def _durable_execution_context_snapshot() -> dict:
             "record_edits": _delta_json_clone(ctx.get("record_edits") or []),
             "secret_edits": _delta_json_clone(ctx.get("secret_edits") or []),
             "reminder_edits": _delta_json_clone(ctx.get("reminder_edits") or []),
+            "constitution_ledger_tokens": _delta_json_clone(ctx.get("constitution_ledger_tokens") or []),
         }
     except Exception:
         return {}
@@ -1929,6 +2042,9 @@ def _durable_expected_after_execution(base_expected: dict | None, execution_ctx:
     expected = _delta_json_clone(base_expected or {}) if isinstance(base_expected, dict) else {}
     execution_ctx = execution_ctx if isinstance(execution_ctx, dict) else {}
     actual_specs = execution_ctx.get("actual_forward_targets") if execution_ctx.get("forward_decision_reached") else []
+    ledger_tokens = [str(x) for x in (execution_ctx.get("constitution_ledger_tokens") or []) if str(x or "").strip()]
+    if ledger_tokens:
+        expected["_constitution_ledger_tokens_v190"] = ledger_tokens
     rebuilt = []
     text = ""
     try:
@@ -2264,7 +2380,12 @@ def restore_mega_task_context(task: dict):
 
 
 def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
-    """Write-before-execute: task exists in MEGA before it may enter a RAM worker queue."""
+    """v190 write-before-execute witness: one MEGA put, no candidate+rename round-trip.
+
+    task_<update_id>.json is unique.  If a retry races with an already uploaded copy,
+    the existing file is accepted.  This keeps strict external durability while removing
+    two foreground MEGA operations from every finance message.
+    """
     global _mega_task_last_error
     _timing_started = time.monotonic()
     if not mega_tasks_active():
@@ -2285,23 +2406,17 @@ def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
         if not ensure_mega_task_dirs():
             raise RuntimeError("MEGA task directories unavailable")
         os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
-        stamp = now_local().strftime("%Y%m%d_%H%M%S_%f")
-        candidate_name = f"candidate_task_{key}_{stamp}.json"
-        local_path = os.path.join(MEGA_LOCAL_TMP_DIR, candidate_name)
-        _save_json(local_path, task_payload)
-        _mega_run("mega-put", [local_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
-        remote_candidate = f"{remote_dir.rstrip('/')}/{candidate_name}"
-        remote_final = mega_task_remote_path(key, "pending")
-        # update_id is unique, so a final file should not exist. If it does after a rare race,
-        # prefer the existing durable copy and remove only our candidate.
-        mv = _mega_run("mega-mv", [remote_candidate, remote_final], check=False, timeout=60)
-        if mv.returncode != 0:
+        local_path = os.path.join(MEGA_LOCAL_TMP_DIR, mega_task_filename(key))
+        # Compact witness: this file is latency-sensitive and not human-facing.
+        with open(local_path, "w", encoding="utf-8") as fh:
+            json.dump(task_payload, fh, ensure_ascii=False, separators=(",", ":"), default=str)
+        try:
+            _mega_run("mega-put", [local_path, remote_dir], check=True, timeout=MEGA_TIMEOUT)
+        except Exception:
             existing = _mega_find_remote_files(remote_dir, mega_task_filename(key), limit=2)
-            if existing:
-                _mega_run("mega-rm", [remote_candidate], check=False, timeout=30)
-            else:
-                err = (mv.stderr or mv.stdout or "")[:500]
-                raise RuntimeError(f"task candidate move failed: {err}")
+            if not existing:
+                raise
+        remote_final = mega_task_remote_path(key, "pending")
         _mega_task_update_registry(key, "pending", remote_final)
         try:
             if "operation_step" in globals():
@@ -2310,7 +2425,7 @@ def _mega_task_upload_new_pending(update_id, task_payload: dict) -> bool:
             pass
         with _MEGA_TASK_LOCK:
             _mega_task_counters["persisted"] += 1
-        bot_journal("mega_task_timing", None, f"phase=persist update={key} elapsed={time.monotonic()-_timing_started:.3f}s")
+        bot_journal("mega_task_timing", None, f"phase=persist_v190_one_put update={key} elapsed={time.monotonic()-_timing_started:.3f}s")
         return True
     except Exception as e:
         _mega_task_last_error = str(e)[:500]
@@ -2341,9 +2456,16 @@ def _mega_task_move(update_id, from_state: str, to_state: str) -> bool:
         res = _mega_run("mega-mv", [src, dst], check=False, timeout=60)
         if res.returncode != 0:
             err = (res.stderr or res.stdout or "")[:500]
+            if _mega_remote_missing_error(err):
+                try:
+                    mega_ensure_remote_path(dst_dir, force=True)
+                    res = _mega_run("mega-mv", [src, dst], check=False, timeout=60)
+                    err = (res.stderr or res.stdout or "")[:500]
+                except Exception:
+                    pass
             # If destination already exists, treat move as completed.
             found = _mega_find_remote_files(dst_dir, mega_task_filename(key), limit=2)
-            if not found:
+            if res.returncode != 0 and not found:
                 raise RuntimeError(err or f"cannot move {src} -> {dst}")
         _mega_task_update_registry(key, to_state, dst)
         bot_journal("mega_task_timing", None, f"phase=move update={key} {from_state}->{to_state} elapsed={time.monotonic()-_timing_started:.3f}s")
@@ -2355,8 +2477,14 @@ def _mega_task_move(update_id, from_state: str, to_state: str) -> bool:
 
 
 def mega_task_begin(update_id, allow_existing_running: bool = False) -> bool:
-    """Claim a persisted task for this process. Remote running state prevents double workers."""
+    """Claim a persisted task locally without a foreground MEGA move.
+
+    The remote file intentionally stays in ``pending`` until background verification moves
+    it directly to done/failed.  If Render dies during execution, startup sees ``pending``
+    and safely replays/repairs the idempotent update.
+    """
     key = _mega_task_id(update_id)
+    success = False
     with _MEGA_TASK_LOCK:
         if key in _mega_task_processing:
             return False
@@ -2365,27 +2493,26 @@ def mega_task_begin(update_id, allow_existing_running: bool = False) -> bool:
             return False
         if state == "running" and not allow_existing_running:
             return False
+        if state not in {"pending", "failed", "running"}:
+            return False
         _mega_task_processing.add(key)
     try:
         state = mega_task_known_state(key)
-        if state == "pending":
-            if not _mega_task_move(key, "pending", "running"):
+        if state == "failed":
+            # Manual/recovery retry may move failed back to pending off the hot path.
+            if not _mega_task_move(key, "failed", "pending"):
                 return False
-        elif state == "failed":
-            if not _mega_task_move(key, "failed", "running"):
-                return False
-        elif state == "running" and allow_existing_running:
-            pass
-        else:
+        elif state == "running" and not allow_existing_running:
             return False
         try:
             if "operation_step" in globals():
-                operation_step(operation_for_update(key), "effect_running", f"state={mega_task_known_state(key)}", persist=False)
+                operation_step(operation_for_update(key), "effect_running", f"state=pending_remote/local_running", persist=False)
         except Exception:
             pass
+        success = True
         return True
     finally:
-        if mega_task_known_state(key) != "running":
+        if not success:
             with _MEGA_TASK_LOCK:
                 _mega_task_processing.discard(key)
 
@@ -3309,6 +3436,9 @@ _DELTA_GLOBAL_SETTINGS_EXCLUDE = {
     # v189: never copy the growing full integrity event history into every tiny delta.
     # A compact head is emitted separately; immutable details live in Constitution ledger/full generations.
     "finance_integrity_v141",
+    # v190: diagnostic operation history is large and changes on every durable update.
+    # It belongs to SQLite/full generations, never to a compact recovery delta.
+    "operation_ledger_v141",
 }
 _DELTA_CHAT_SETTINGS_EXCLUDE = {
     # Audit/history arrays are not needed to replay one financial mutation; current reserve state remains included.
@@ -3359,6 +3489,9 @@ def _delta_chat_meta(store: dict) -> dict:
             continue
         if str(k) == "settings" and isinstance(v, dict):
             v = {str(sk): sv for sk, sv in v.items() if str(sk) not in _DELTA_CHAT_SETTINGS_EXCLUDE}
+        if str(k) == "chat_lifecycle_v150" and isinstance(v, dict):
+            # Status is useful after recovery; the historical lifecycle array is diagnostic.
+            v = {str(lk): lv for lk, lv in v.items() if str(lk) != "history"}
         out[str(k)] = _delta_json_clone(v)
     return out
 
@@ -3612,7 +3745,8 @@ def _delta_upload_payload(payload: dict) -> tuple[bool, str]:
     name = f"delta_{payload.get('delta_id')}.json"
     local_path = os.path.join(MEGA_LOCAL_TMP_DIR, name)
     try:
-        _save_json(local_path, payload)
+        with open(local_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"), default=str)
         mega_ensure_remote_path(day_dir)
         _mega_run("mega-put", [local_path, day_dir], check=True, timeout=MEGA_TIMEOUT)
         return True, day_dir.rstrip("/") + "/" + name
@@ -3669,6 +3803,17 @@ def _mark_global_snapshot_pending():
 
 def _submit_global_snapshot_v90(reason: str):
     if RESTORE_GUARD_ACTIVE:
+        return
+    # v190: never start a large snapshot while a user finance/content/UI action is waiting.
+    try:
+        busy = any(
+            int((pool.stats() or {}).get("active", 0) or 0) + int((pool.stats() or {}).get("pending", 0) or 0) > 0
+            for pool in (WEBHOOK_TASK_POOL, UI_TASK_POOL, FINANCE_TASK_POOL)
+        )
+    except Exception:
+        busy = False
+    if busy:
+        DELAYED_SCHEDULER.schedule("mega-global-user-idle-v190", 5.0, _submit_global_snapshot_v90, reason)
         return
     def _job():
         ok = mega_upload_latest_global_backup()
@@ -3889,12 +4034,31 @@ def merge_global_snapshot_with_mega_deltas(local_global_path: str) -> tuple[str,
 
 
 def _prune_delta_files_after_full_snapshot():
-    """v185 DATA CONSTITUTION: never delete deltas immediately after a snapshot.
+    """v190 bounded delta retention.
 
-    Deltas remain an independent recovery path. Future pruning may remove only deltas
-    older than two separately verified immutable generations and an age grace period.
+    The verified active SQLite generation already contains all state up to its capture.
+    Keep only the newest MEGA_DELTA_KEEP_FILES deltas as an independent short rollback
+    trail instead of letting thousands of tiny files grow forever.
     """
-    return 0
+    try:
+        rows = _mega_find_remote_files(mega_delta_remote_root(), "delta_*.json")
+        keep = max(30, int(MEGA_DELTA_KEEP_FILES))
+        removed = 0
+        for remote_path in rows[keep:]:
+            try:
+                res = _mega_run("mega-rm", [remote_path], check=False, timeout=30)
+                if res.returncode == 0:
+                    removed += 1
+            except Exception:
+                pass
+        if removed:
+            try: bot_journal("mega_delta_pruned_v190", None, f"removed={removed}; keep={keep}")
+            except Exception: pass
+        return removed
+    except Exception as exc:
+        try: log_error(f"delta prune v190: {exc}")
+        except Exception: pass
+        return 0
 
 
 def delta_status_text() -> str:
@@ -5726,7 +5890,19 @@ def mega_upload_latest_database_backup(force: bool = False) -> bool:
                 capture_generation = int(_delta_generation)
             _lowram_flush_all_hot(evict=False)
             created_at = now_local().isoformat(timespec="seconds")
-            SQLITE.set_meta("db_snapshot", "main", {"created_at": created_at, "bot_version": VERSION, "schema": 2, "data_constitution": 1})
+            SQLITE.set_meta("db_snapshot", "main", {"created_at": created_at, "bot_version": VERSION, "schema": 3, "data_constitution": 2, "fast_boot_mirror": 1})
+            # v190 fast-boot contract: the protected latest SQLite carries its own semantic
+            # manifest.  A normal restart therefore needs one DB download, not a manifest
+            # network round-trip followed by a generation download. Immutable generations
+            # remain the fallback/rollback source.
+            try:
+                semantic_fn = globals().get("constitution_semantic_manifest_from_live")
+                if callable(semantic_fn):
+                    embedded = semantic_fn() or {}
+                    embedded["snapshot_created_at"] = created_at
+                    SQLITE.set_meta("data_constitution_snapshot", "main", embedded)
+            except Exception as _embed_exc:
+                log_error(f"[DATA CONSTITUTION EMBED] {_embed_exc}")
             raw = os.path.join(workdir, "bot_state.sqlite3")
             gz = os.path.join(workdir, f"candidate_bot_state_{now_local().strftime('%Y%m%d_%H%M%S_%f')}.sqlite3.gz")
             SQLITE.backup_to(raw)
@@ -5751,6 +5927,10 @@ def mega_upload_latest_database_backup(force: bool = False) -> bool:
                 history = lowram_database_remote_dir().rstrip("/") + "/history"
                 _mega_prune_remote_history(history, "bot_state_*.sqlite3.gz", max(24, int(LOWRAM_DB_HISTORY_KEEP)))
             except Exception: pass
+            try:
+                _prune_delta_files_after_full_snapshot()
+            except Exception:
+                pass
             with _LOWRAM_LOCK:
                 _LOWRAM_STATS["db_snapshots"] += 1; _LOWRAM_STATS["last_snapshot_at"] = created_at
             log_info(f"[DATA CONSTITUTION SNAPSHOT] active={manifest.get('generation')} records={manifest.get('total_records')} bytes={os.path.getsize(gz)}")
@@ -5772,24 +5952,30 @@ def _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, s
     workdir = tempfile.mkdtemp(prefix="lowram_db_restore_")
     try:
         mega_login_if_needed()
+        # v190: if the canonical MEGA root was externally renamed/deleted, recreate it
+        # before any restore/write path starts.  A fresh process has no stale path cache.
+        try: mega_ensure_remote_dir()
+        except Exception: pass
         gz = None; active_manifest = None; source = ""
-        resolver = globals().get("constitution_download_active_generation")
-        if callable(resolver):
-            try:
-                gz, active_manifest, source = resolver(workdir)
-            except Exception as exc:
-                log_error(f"[DATA CONSTITUTION RESTORE] generation resolver: {exc}")
-        if not gz:
-            remote = lowram_database_remote_latest()
-            res = _mega_run("mega-get", [remote, workdir], check=False, timeout=MEGA_TIMEOUT)
-            if res.returncode != 0:
-                return False, "MEGA SQLite snapshot not found yet"
+        # v190 fast path: one protected latest SQLite download.  The file is only promoted
+        # after DATA CONSTITUTION semantic acceptance and contains an embedded manifest.
+        remote = lowram_database_remote_latest()
+        res = _mega_run("mega-get", [remote, workdir], check=False, timeout=MEGA_TIMEOUT)
+        if res.returncode == 0:
             candidates = list(Path(workdir).rglob(LOWRAM_DB_LATEST_NAME))
-            if not candidates:
-                candidates = list(Path(workdir).rglob("*.sqlite3.gz"))
-            if not candidates:
-                return False, "download returned no sqlite3.gz"
-            gz = str(candidates[0]); source = "legacy latest mirror"
+            if candidates:
+                gz = str(candidates[0]); source = "constitution protected latest mirror"
+        # Fallback: immutable generation pointer/history. This is slower but survives a
+        # missing/corrupt compatibility mirror.
+        if not gz:
+            resolver = globals().get("constitution_download_active_generation")
+            if callable(resolver):
+                try:
+                    gz, active_manifest, source = resolver(workdir)
+                except Exception as exc:
+                    log_error(f"[DATA CONSTITUTION RESTORE] generation resolver: {exc}")
+        if not gz:
+            return False, "MEGA SQLite snapshot/generation not found yet"
         raw = os.path.join(workdir, "restored.sqlite3")
         _lowram_gunzip_file(gz, raw)
         # Technical integrity + semantic manifest check before replacing live working copy.
@@ -5805,13 +5991,30 @@ def _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, s
                     remote_created = str((json.loads(mrow[0]) or {}).get("created_at") or "")
             except Exception:
                 remote_created = ""
+            embedded_manifest = {}
+            try:
+                erow = test.execute("SELECT v FROM meta WHERE kind='data_constitution_snapshot' AND k='main'").fetchone()
+                embedded_manifest = json.loads(erow[0]) if erow and erow[0] else {}
+                if not isinstance(embedded_manifest, dict): embedded_manifest = {}
+            except Exception:
+                embedded_manifest = {}
         finally:
             test.close()
         semantic_fn = globals().get("constitution_semantic_manifest_from_sqlite")
         if callable(semantic_fn):
             semantic = semantic_fn(raw)
+            if embedded_manifest:
+                # The fast mirror validates itself before it can replace local working state.
+                if int(semantic.get("total_records") or 0) != int(embedded_manifest.get("total_records") or 0):
+                    raise RuntimeError(f"embedded semantic mismatch: records {semantic.get('total_records')} != {embedded_manifest.get('total_records')}")
+                for _cid, _old in (embedded_manifest.get("chats") or {}).items():
+                    _new = (semantic.get("chats") or {}).get(str(_cid)) or {}
+                    if int((_new or {}).get("record_count") or 0) != int((_old or {}).get("record_count") or 0):
+                        raise RuntimeError(f"embedded semantic mismatch chat {_cid}: {(_new or {}).get('record_count')} != {(_old or {}).get('record_count')}")
+                if int(semantic.get("integrity_seq") or 0) != int(embedded_manifest.get("integrity_seq") or 0):
+                    raise RuntimeError(f"embedded integrity mismatch: {semantic.get('integrity_seq')} != {embedded_manifest.get('integrity_seq')}")
             if active_manifest:
-                # Exact generation must match the active pointer semantics.
+                # Fallback generation must match the active pointer semantics.
                 if int(semantic.get("total_records") or 0) != int(active_manifest.get("total_records") or 0):
                     raise RuntimeError(f"active generation semantic mismatch: records {semantic.get('total_records')} != manifest {active_manifest.get('total_records')}")
                 for cid, old in (active_manifest.get("chats") or {}).items():
@@ -9600,4 +9803,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v189_main_window_authority_final
+# v190_mega_light_fast_recovery
