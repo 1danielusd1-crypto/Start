@@ -1,0 +1,24 @@
+{
+  "version": "bot_v191_gz_restore_schema_compat",
+  "changed_runtime_files": [
+    "85_runtime_control.py"
+  ],
+  "changed_packaging_files": [
+    "bot.py",
+    "modules_manifest.json"
+  ],
+  "restore_entry": "v182_prepare_gz_restore_document -> _v153_validate_restore_gz",
+  "final_validator": {
+    "file": "85_runtime_control.py",
+    "function": "_v153_validate_restore_gz",
+    "policy": "schema/integrity/checksum; bot_version metadata only"
+  },
+  "unchanged_contracts": [
+    "strict_replace_restore",
+    "pre_restore",
+    "data_constitution",
+    "mega_light",
+    "main_window_authority",
+    "careful_restore"
+  ]
+}

@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v191_gz_restore_schema_compat
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -12,7 +12,7 @@ import statistics as _v176_statistics
 import threading as _v176_threading
 import time as _v176_time
 
-VERSION = "bot_v189_main_window_authority_final"
+VERSION = "bot_v191_gz_restore_schema_compat"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -1096,10 +1096,12 @@ def _v153_validate_restore_gz(gz_path: str):
                     raise RuntimeError("unknown export kind")
                 if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
                     raise RuntimeError("unsupported export schema")
+                # v191: bot_version is metadata, not a compatibility gate.
+                # A full-state GZ is accepted by its stable restore contract:
+                # export kind + schema_version + SQLite integrity + logical checksum.
+                # This prevents every new bot release (v189, v190, v191, ...)
+                # from becoming artificially "unsupported" while the export schema is unchanged.
                 export_version = str(manifest.get("bot_version") or "")
-                allowed = tuple(f"bot_v{i}_" for i in range(153, 187))
-                if export_version and not export_version.startswith(allowed):
-                    raise RuntimeError(f"unsupported bot version: {export_version}")
                 if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""):
                     raise RuntimeError("checksum mismatch")
                 manifest = dict(manifest)
@@ -1362,6 +1364,6 @@ def runtime_mark_ready(detail: str = ""):
 # v179_clean_final
 
 
-# v179 authoritative runtime version after integrated historical modules.
-VERSION = "bot_v189_main_window_authority_final"
-# v189_main_window_authority_final
+# v191 authoritative runtime version after GZ schema-compatibility fix.
+VERSION = "bot_v191_gz_restore_schema_compat"
+# v191_gz_restore_schema_compat

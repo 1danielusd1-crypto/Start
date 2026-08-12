@@ -1,0 +1,9 @@
+v191 GZ RESTORE SCHEMA COMPAT
+
+Изменено только восстановление GZ и номер релиза.
+- Убран искусственный список допустимых bot_v153...bot_v186 из ФИНАЛЬНОГО GZ-валидатора.
+- bot_version в GZ теперь информационное поле и не определяет совместимость.
+- Full-state GZ принимается только при совпадении стабильного контракта: kind + schema_version + SQLite integrity_check + logical checksum.
+- Working SQLite GZ принимается по integrity_check + обязательным таблицам kv/chats/meta, как раньше.
+- JSON/ISON/CSV restore, DATA CONSTITUTION, MEGA LIGHT, окна, финансы, пересылки и таймеры не изменялись.
+- Runtime VERSION исправлен на bot_v191_gz_restore_schema_compat, чтобы новые snapshot больше не маркировались v189.

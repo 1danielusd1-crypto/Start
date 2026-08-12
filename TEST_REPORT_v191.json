@@ -1,0 +1,37 @@
+{
+  "version": "bot_v191_gz_restore_schema_compat",
+  "status": "PASS",
+  "scope": "minimal GZ compatibility patch only",
+  "runtime_modules": 27,
+  "changed_runtime_files": [
+    "85_runtime_control.py"
+  ],
+  "final_runtime_version": [
+    "85_runtime_control.py",
+    "bot_v191_gz_restore_schema_compat"
+  ],
+  "uploaded_latest_bot_state_test": {
+    "accepted": true,
+    "snapshot_format": "working_sqlite",
+    "bot_version": "bot_v180_total_final_diagnostics",
+    "chat_count": 23,
+    "record_count": 859
+  },
+  "synthetic_v189_full_export_test": {
+    "accepted": true,
+    "snapshot_format": "full_state_export",
+    "bot_version": "bot_v189_main_window_authority_final",
+    "schema_version": 1
+  },
+  "bad_schema_rejected": "unsupported export schema",
+  "bad_checksum_rejected": "checksum mismatch",
+  "assertions": {
+    "bot_version_not_a_gate": true,
+    "schema_still_required": true,
+    "checksum_still_required": true,
+    "strict_restore_semantics_unchanged": true,
+    "data_constitution_unchanged": true,
+    "mega_light_unchanged": true,
+    "only_85_runtime_changed": true
+  }
+}

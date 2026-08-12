@@ -1,0 +1,8 @@
+bot_v191_gz_restore_schema_compat
+
+1. /restore remains STRICT REPLACE FROM FILE; no merge.
+2. GZ compatibility is schema-based, not release-name-based.
+3. Never accept a full-state GZ with unknown schema or bad logical checksum.
+4. Never accept a SQLite GZ with failed PRAGMA integrity_check.
+5. DATA CONSTITUTION / MEGA LIGHT v190 behavior is unchanged.
+6. Canonical MEGA root remains /TelegramBotBackups.
