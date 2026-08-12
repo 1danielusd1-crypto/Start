@@ -1,60 +1,18 @@
 {
+  "bot_version": "bot_v197_chat_identity_sync_final",
+  "current_version_changes": [
+    {
+      "branch": "ui.chat_identity",
+      "summary": "Проверить чаты теперь делает полную Telegram-синхронизацию всех известных чатов, включая основной owner-chat; убрана подмена имени владельца символом 🏀.",
+      "regression": "PASS"
+    },
+    {
+      "branch": "forward.core",
+      "summary": "Массовая проверка пересылки обновляет реальные chat title/username/type/access и сохраняет доступные bot-visible параметры одной синхронизацией.",
+      "regression": "PASS"
+    }
+  ],
   "all_branches": {
-    "diagnostics.journal": {
-      "contract_rev": 2,
-      "invariants": [
-        "диагностика не выключается Fast Test/Minimum автоматически",
-        "имя скачиваемого журнала сохраняется",
-        "битая remote строка не ломает runtime"
-      ],
-      "tests": [
-        "current/full journal",
-        "custom filename",
-        "warm tail"
-      ]
-    },
-    "export.csv": {
-      "contract_rev": 2,
-      "invariants": [
-        "CSV не имеет отдельной бухгалтерской логики",
-        "ARS/USD не смешиваются",
-        "opening совпадает с Excel"
-      ],
-      "tests": [
-        "period parity with Excel",
-        "delivery"
-      ]
-    },
-    "export.excel": {
-      "contract_rev": 4,
-      "invariants": [
-        "исправление Excel применяется ко всем Excel-путям и всем контурам",
-        "ARS/USD рассчитываются отдельно",
-        "остаток начала периода един для Excel/CSV/Google/UI",
-        "USD формулы не ссылаются на ARS-блок",
-        "операция с описанием «приход/расход» не является служебной итоговой строкой"
-      ],
-      "tests": [
-        "all periods",
-        "formula refs",
-        "opening carry",
-        "category override",
-        "Telegram workbook"
-      ]
-    },
-    "export.google": {
-      "contract_rev": 3,
-      "invariants": [
-        "Google и Telegram одного периода получают один источник данных",
-        "Google не пересчитывает ошибочные межблочные ссылки",
-        "успех подтверждается отдельно от Telegram send_document"
-      ],
-      "tests": [
-        "Telegram/Google parity",
-        "external delivery proof",
-        "Thu-Wed 7 days"
-      ]
-    },
     "finance.ars": {
       "contract_rev": 1,
       "invariants": [
@@ -68,6 +26,19 @@
         "duplicate guard",
         "restart replay",
         "ARS/USD isolation"
+      ]
+    },
+    "finance.usd": {
+      "contract_rev": 1,
+      "invariants": [
+        "USD и ARS не складываются",
+        "чистый USD не создаёт фиктивный ARS",
+        "исторические ARS-клоны не считаются USD"
+      ],
+      "tests": [
+        "pure USD",
+        "mixed ARS+USD",
+        "polluted legacy USD filter"
       ]
     },
     "finance.balance": {
@@ -112,17 +83,171 @@
         "integrity event"
       ]
     },
-    "finance.usd": {
-      "contract_rev": 1,
+    "export.excel": {
+      "contract_rev": 4,
       "invariants": [
-        "USD и ARS не складываются",
-        "чистый USD не создаёт фиктивный ARS",
-        "исторические ARS-клоны не считаются USD"
+        "исправление Excel применяется ко всем Excel-путям и всем контурам",
+        "ARS/USD рассчитываются отдельно",
+        "остаток начала периода един для Excel/CSV/Google/UI",
+        "USD формулы не ссылаются на ARS-блок",
+        "операция с описанием «приход/расход» не является служебной итоговой строкой"
       ],
       "tests": [
-        "pure USD",
-        "mixed ARS+USD",
-        "polluted legacy USD filter"
+        "all periods",
+        "formula refs",
+        "opening carry",
+        "category override",
+        "Telegram workbook"
+      ]
+    },
+    "export.csv": {
+      "contract_rev": 2,
+      "invariants": [
+        "CSV не имеет отдельной бухгалтерской логики",
+        "ARS/USD не смешиваются",
+        "opening совпадает с Excel"
+      ],
+      "tests": [
+        "period parity with Excel",
+        "delivery"
+      ]
+    },
+    "export.google": {
+      "contract_rev": 3,
+      "invariants": [
+        "Google и Telegram одного периода получают один источник данных",
+        "Google не пересчитывает ошибочные межблочные ссылки",
+        "успех подтверждается отдельно от Telegram send_document"
+      ],
+      "tests": [
+        "Telegram/Google parity",
+        "external delivery proof",
+        "Thu-Wed 7 days"
+      ]
+    },
+    "ui.main": {
+      "contract_rev": 2,
+      "invariants": [
+        "одно каноническое основное окно",
+        "старое окно не выполняет бизнес-действие",
+        "finance finalize не меняет UI-день"
+      ],
+      "tests": [
+        "stale main redirect",
+        "day navigation",
+        "background refresh does not resurrect old window"
+      ]
+    },
+    "ui.info": {
+      "contract_rev": 2,
+      "invariants": [
+        "права владельца соблюдаются",
+        "служебное меню не меняет финансы",
+        "ветки доступны из Инфо"
+      ],
+      "tests": [
+        "owner menu",
+        "back/close",
+        "branches entry"
+      ]
+    },
+    "ui.chat_identity": {
+      "contract_rev": 1,
+      "invariants": [
+        "роль владельца не подменяет имя чата emoji",
+        "owner chat тоже проходит полную проверку",
+        "группа/канал используют Telegram title, private — реальное имя/username",
+        "проверка не переименовывает Telegram-чат — только синхронизирует локальную карточку",
+        "недоступный чат помечается отдельно, его последнее известное имя не заменяется ID без необходимости"
+      ],
+      "tests": [
+        "owner title replaces legacy basketball",
+        "all-known includes owner",
+        "group/private title authority",
+        "metadata refresh",
+        "removed/access state"
+      ]
+    },
+    "restore.strict": {
+      "contract_rev": 3,
+      "invariants": [
+        "никакого автоматического merge",
+        "pre_restore обязателен",
+        "восстановленный файл — источник истины",
+        "derived caches можно пересчитать, бизнес-данные нельзя подмешать"
+      ],
+      "tests": [
+        "JSON exact replace",
+        "GZ schema validation",
+        "forward edges exact",
+        "pre_restore gate"
+      ]
+    },
+    "restore.careful": {
+      "contract_rev": 2,
+      "invariants": [
+        "не является merge",
+        "target только канонический день main window",
+        "restart выключает режим",
+        "каждая принятая сумма продлевает 120s"
+      ],
+      "tests": [
+        "target day",
+        "timeout",
+        "normal input outside mode"
+      ]
+    },
+    "storage.sqlite": {
+      "contract_rev": 1,
+      "invariants": [
+        "локальный Render disk не считается долговечным",
+        "SQLite integrity проверяется",
+        "low-RAM cold fields сохраняются"
+      ],
+      "tests": [
+        "quick_check",
+        "save/load",
+        "cold field roundtrip"
+      ]
+    },
+    "storage.mega": {
+      "contract_rev": 3,
+      "invariants": [
+        "единственный canonical root /TelegramBotBackups",
+        "пропавший root/path пересоздаётся",
+        "пользователь не ждёт тяжёлый full snapshot"
+      ],
+      "tests": [
+        "root self-heal",
+        "one-put hot path",
+        "restart recovery"
+      ]
+    },
+    "storage.delta": {
+      "contract_rev": 2,
+      "invariants": [
+        "не копировать растущие operation ledger histories",
+        "delta остаётся компактной",
+        "не удалять recovery bridge до проверенного snapshot"
+      ],
+      "tests": [
+        "real delta size",
+        "coalescing",
+        "retention"
+      ]
+    },
+    "storage.constitution": {
+      "contract_rev": 3,
+      "invariants": [
+        "SQLite integrity недостаточно — нужна semantic completeness",
+        "unexplained history loss → quarantine",
+        "restore creates checkpoint/reanchor"
+      ],
+      "tests": [
+        "semantic loss rejection",
+        "generation fallback",
+        "restore reanchor",
+        "protected symbols"
       ]
     },
     "forward.core": {
@@ -150,18 +275,18 @@
         "duplicate group"
       ]
     },
-    "multitenant.core": {
+    "tasks.dispatcher": {
       "contract_rev": 1,
       "invariants": [
-        "данные пространств не смешиваются",
-        "глобальные исправления функций действуют во всех контурах где функция доступна",
-        "owner-only операции закрыты"
+        "каждая задача имеет начало/состояние/завершение",
+        "выбор чатов соблюдается",
+        "restart не теряет критическое состояние"
       ],
       "tests": [
-        "owner",
-        "circle1",
-        "circle2",
-        "permission deny"
+        "create",
+        "selected chats",
+        "close",
+        "restart"
       ]
     },
     "reminders.core": {
@@ -178,33 +303,31 @@
         "dedupe"
       ]
     },
-    "restore.careful": {
-      "contract_rev": 2,
+    "multitenant.core": {
+      "contract_rev": 1,
       "invariants": [
-        "не является merge",
-        "target только канонический день main window",
-        "restart выключает режим",
-        "каждая принятая сумма продлевает 120s"
+        "данные пространств не смешиваются",
+        "глобальные исправления функций действуют во всех контурах где функция доступна",
+        "owner-only операции закрыты"
       ],
       "tests": [
-        "target day",
-        "timeout",
-        "normal input outside mode"
+        "owner",
+        "circle1",
+        "circle2",
+        "permission deny"
       ]
     },
-    "restore.strict": {
-      "contract_rev": 3,
+    "diagnostics.journal": {
+      "contract_rev": 2,
       "invariants": [
-        "никакого автоматического merge",
-        "pre_restore обязателен",
-        "восстановленный файл — источник истины",
-        "derived caches можно пересчитать, бизнес-данные нельзя подмешать"
+        "диагностика не выключается Fast Test/Minimum автоматически",
+        "имя скачиваемого журнала сохраняется",
+        "битая remote строка не ломает runtime"
       ],
       "tests": [
-        "JSON exact replace",
-        "GZ schema validation",
-        "forward edges exact",
-        "pre_restore gate"
+        "current/full journal",
+        "custom filename",
+        "warm tail"
       ]
     },
     "runtime.performance": {
@@ -231,59 +354,6 @@
         "persistence"
       ]
     },
-    "storage.constitution": {
-      "contract_rev": 3,
-      "invariants": [
-        "SQLite integrity недостаточно — нужна semantic completeness",
-        "unexplained history loss → quarantine",
-        "restore creates checkpoint/reanchor"
-      ],
-      "tests": [
-        "semantic loss rejection",
-        "generation fallback",
-        "restore reanchor",
-        "protected symbols"
-      ]
-    },
-    "storage.delta": {
-      "contract_rev": 2,
-      "invariants": [
-        "не копировать растущие operation ledger histories",
-        "delta остаётся компактной",
-        "не удалять recovery bridge до проверенного snapshot"
-      ],
-      "tests": [
-        "real delta size",
-        "coalescing",
-        "retention"
-      ]
-    },
-    "storage.mega": {
-      "contract_rev": 3,
-      "invariants": [
-        "единственный canonical root /TelegramBotBackups",
-        "пропавший root/path пересоздаётся",
-        "пользователь не ждёт тяжёлый full snapshot"
-      ],
-      "tests": [
-        "root self-heal",
-        "one-put hot path",
-        "restart recovery"
-      ]
-    },
-    "storage.sqlite": {
-      "contract_rev": 1,
-      "invariants": [
-        "локальный Render disk не считается долговечным",
-        "SQLite integrity проверяется",
-        "low-RAM cold fields сохраняются"
-      ],
-      "tests": [
-        "quick_check",
-        "save/load",
-        "cold field roundtrip"
-      ]
-    },
     "system.branch_registry": {
       "contract_rev": 1,
       "invariants": [
@@ -298,60 +368,6 @@
         "journal export",
         "future-version carry"
       ]
-    },
-    "tasks.dispatcher": {
-      "contract_rev": 1,
-      "invariants": [
-        "каждая задача имеет начало/состояние/завершение",
-        "выбор чатов соблюдается",
-        "restart не теряет критическое состояние"
-      ],
-      "tests": [
-        "create",
-        "selected chats",
-        "close",
-        "restart"
-      ]
-    },
-    "ui.info": {
-      "contract_rev": 2,
-      "invariants": [
-        "права владельца соблюдаются",
-        "служебное меню не меняет финансы",
-        "ветки доступны из Инфо"
-      ],
-      "tests": [
-        "owner menu",
-        "back/close",
-        "branches entry"
-      ]
-    },
-    "ui.main": {
-      "contract_rev": 2,
-      "invariants": [
-        "одно каноническое основное окно",
-        "старое окно не выполняет бизнес-действие",
-        "finance finalize не меняет UI-день"
-      ],
-      "tests": [
-        "stale main redirect",
-        "day navigation",
-        "background refresh does not resurrect old window"
-      ]
     }
-  },
-  "current_changed_branches": [
-    {
-      "branch": "system.branch_registry",
-      "result": "PASS",
-      "summary": "Новый реестр карточек/защищённых веток, галочки, журнал и contract snapshots."
-    },
-    {
-      "branch": "ui.info",
-      "result": "PASS",
-      "summary": "В Инфо добавлена кнопка 🌿 Ветки и статус защищённых контрактов."
-    }
-  ],
-  "release_rule": "Every current changed branch must exist in catalog and have regression PASS. Protected runtime branches keep their confirmed semantic snapshot across releases.",
-  "version": "bot_v196_protected_branches_final"
+  }
 }

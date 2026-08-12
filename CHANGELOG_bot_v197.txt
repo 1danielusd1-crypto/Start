@@ -1,0 +1,11 @@
+bot_v197_chat_identity_sync_final
+- Убрана подмена имени primary owner символом 🏀 из get_chat_display_name и message-derived identity.
+- Старый owner backup с title=🏀 исправляется после обычного owner message или «📡 Проверить чаты».
+- «📡 Проверить чаты» теперь включает основной owner-chat, а не исключает его.
+- Полная проверка синхронизирует title/username/type и Telegram-visible metadata; отдельно фиксирует member count, bot role/rights и admins fingerprint, если доступно.
+- known_chats и chat.info обновляются канонически; Telegram-чаты бот не переименовывает.
+- Массовая проверка показывает checked/available/unavailable/API errors/changed/renamed.
+- Убрана специальная 🏀-подмена chat_id marker в backup channel.
+- Добавлена protected branch ui.chat_identity; forward.core regression PASS.
+- Финансы, Excel, restore, MEGA Constitution, задачи и напоминания не менялись.
+bot_v197_chat_identity_sync_final

@@ -1,0 +1,8 @@
+FULL_bot_v196_protected_branches_final.py
+CHANGELOG_bot_v196.txt
+CODEMAP_v196.json
+DATA_CONSTITUTION_v196.md
+FILES_TO_DELETE_v196.txt
+PROJECT_RULES_v196.txt
+SHA256SUMS_bot_v196.txt
+TEST_REPORT_v196.json

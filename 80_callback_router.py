@@ -1,11 +1,19 @@
-# v195_balance_authority_remaining_final
+# v197_chat_identity_sync_final
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
         owner_store = get_chat_store(int(OWNER_ID))
         owner_day_key = owner_store.get("current_view_day", today_key())
+        summary = (data.get("_global_settings", {}) or {}).get("last_chat_probe_summary_v197") or {}
+        checked = int(summary.get("checked") or (ok + bad))
+        changed = int(summary.get("changed") or 0)
+        renamed = int(summary.get("renamed") or 0)
+        errors = int(summary.get("errors") or 0)
         text = build_forward_status_text(
-            f"📡 Проверка чатов завершена. Доступно: {ok}. Удалено/нет доступа: {bad}.\n\n"
+            f"📡 Полная проверка чатов завершена.\n"
+            f"Проверено: {checked} · доступно: {ok} · нет доступа: {bad} · ошибок API: {errors}\n"
+            f"Обновлено карточек: {changed} · изменено имён: {renamed}\n\n"
+            "Названия, username, тип и доступные Telegram-параметры синхронизированы и сохранены.\n\n"
             "Пересылка:\nВыберите чат A:"
         )
         fast_ui_edit_message_text(
@@ -3241,4 +3249,4 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v195_balance_authority_remaining_final
+# v197_chat_identity_sync_final

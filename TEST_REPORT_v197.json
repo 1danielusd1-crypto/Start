@@ -1,0 +1,66 @@
+{
+  "version": "bot_v197_chat_identity_sync_final",
+  "status": "PASS",
+  "tests": {
+    "compile": {
+      "status": "PASS",
+      "errors": []
+    },
+    "manifest_markers_hashes": {
+      "status": "PASS",
+      "problems": []
+    },
+    "duplicate_top_level_symbols": {
+      "status": "PASS",
+      "within": [],
+      "cross": {}
+    },
+    "owner_identity_no_ball_alias": {
+      "status": "PASS"
+    },
+    "probe_all_includes_owner": {
+      "status": "PASS"
+    },
+    "telegram_profile_snapshot": {
+      "status": "PASS"
+    },
+    "probe_result_counts": {
+      "status": "PASS"
+    },
+    "callback_registration": {
+      "status": "PASS",
+      "count": 1
+    },
+    "no_TelegramBotBackupsStart": {
+      "status": "PASS"
+    },
+    "protected_existing_contracts": {
+      "status": "PASS",
+      "changed_existing": [],
+      "added": [
+        "ui.chat_identity"
+      ]
+    },
+    "effective_runtime_version": {
+      "status": "PASS",
+      "last": [
+        "85_runtime_control.py",
+        "bot_v197_chat_identity_sync_final"
+      ]
+    },
+    "chat_identity_unit": {
+      "status": "PASS",
+      "legacy_owner": "🏀",
+      "after_sync": "Mikhail Potapov",
+      "mass_probe_included_owner": true,
+      "raw_profile_pinned_excluded": true
+    },
+    "branch_regression": {
+      "status": "PASS",
+      "branches": {
+        "ui.chat_identity": "PASS",
+        "forward.core": "PASS"
+      }
+    }
+  }
+}

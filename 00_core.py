@@ -1,4 +1,4 @@
-# v190_mega_light_fast_recovery
+# v197_chat_identity_sync_final
 import os
 import io
 import json
@@ -5220,15 +5220,19 @@ def report_header_cell(label: str, width: int = 7) -> str:
 
 
 def get_chat_display_name(chat_id: int) -> str:
+    """Canonical human-visible chat name. Never substitutes owner-role icons for Telegram identity."""
     try:
-        if is_primary_owner(chat_id):
-            return "🏀"
-        store = get_chat_store(chat_id)
+        store = get_chat_store(int(chat_id))
         info = store.get("info", {}) or {}
-        title = (info.get("title") or "").strip()
-        username = (info.get("username") or "").strip()
+        title = str(info.get("title") or "").strip()
+        username = str(info.get("username") or "").strip()
+        first = str(info.get("first_name") or "").strip()
+        last = str(info.get("last_name") or "").strip()
         if title and title != f"Чат {chat_id}":
             return title
+        full = (first + " " + last).strip()
+        if full:
+            return full
         if username:
             return f"@{username.lstrip('@')}"
         if title:
@@ -5239,37 +5243,44 @@ def get_chat_display_name(chat_id: int) -> str:
 
 
 def _chat_title_from_message(msg, previous_title: str = "") -> str:
-    """Название для меню: у владельца 🏀, в личке — имя/username, в группе — title."""
+    """Canonical Telegram identity: group/channel title; private chat = real user name/username."""
     try:
-        chat_id = msg.chat.id
-        if is_primary_owner(chat_id):
-            return "🏀"
-
+        chat_id = int(msg.chat.id)
         chat_title = getattr(msg.chat, "title", None)
         if chat_title:
             return str(chat_title).strip()
 
+        # For private chats Telegram's Chat object may already carry first/last name.
+        chat_first = str(getattr(msg.chat, "first_name", None) or "").strip()
+        chat_last = str(getattr(msg.chat, "last_name", None) or "").strip()
+        chat_full = (chat_first + " " + chat_last).strip()
+        if chat_full:
+            return chat_full
+        chat_username = str(getattr(msg.chat, "username", None) or "").strip()
+        if chat_username:
+            return f"@{chat_username.lstrip('@')}"
+
         user = getattr(msg, "from_user", None)
         if user is not None:
             if getattr(user, "is_bot", False):
+                # Callback/service update from the bot itself must not rename a private user chat.
                 if previous_title and not str(previous_title).startswith("Чат "):
-                    return previous_title
+                    return str(previous_title)
             else:
-                first = (getattr(user, "first_name", None) or "").strip()
-                last = (getattr(user, "last_name", None) or "").strip()
+                first = str(getattr(user, "first_name", None) or "").strip()
+                last = str(getattr(user, "last_name", None) or "").strip()
                 full = (first + " " + last).strip()
                 if full:
                     return full
-                username = (getattr(user, "username", None) or "").strip()
+                username = str(getattr(user, "username", None) or "").strip()
                 if username:
                     return f"@{username.lstrip('@')}"
 
         if previous_title and not str(previous_title).startswith("Чат "):
-            return previous_title
+            return str(previous_title)
     except Exception:
         pass
     return f"Чат {getattr(getattr(msg, 'chat', None), 'id', '')}".strip()
-
 
 def _chat_username_from_message(msg):
     try:
@@ -6000,33 +6011,44 @@ except Exception: pass
 _is_bot_removed_error = _v177_legacy_0034_is_bot_removed_error
 
 
-def _v177_legacy_0035_set_chat_bot_removed(chat_id: int, removed: bool = True, reason: str = ""):
+def _v177_legacy_0035_set_chat_bot_removed(chat_id: int, removed: bool = True, reason: str = "", *, persist: bool = True, schedule_backup: bool = True):
     try:
-        store = get_chat_store(int(chat_id))
+        chat_id = int(chat_id)
+        store = get_chat_store(chat_id)
         settings = store.setdefault("settings", {})
-        if bool(settings.get("bot_removed", False)) == bool(removed) and not reason:
-            return
+        current = bool(settings.get("bot_removed", False))
+        new_reason = str(reason or "bot removed")[:300]
+        if current == bool(removed):
+            if not removed:
+                return False
+            if str(settings.get("bot_removed_reason") or "") == new_reason:
+                return False
         settings["bot_removed"] = bool(removed)
         if removed:
-            settings["bot_removed_reason"] = str(reason or "bot removed")[:300]
+            settings["bot_removed_reason"] = new_reason
             settings["bot_removed_at"] = now_local().isoformat(timespec="seconds")
         else:
             settings.pop("bot_removed_reason", None)
             settings.pop("bot_removed_at", None)
-        save_data(data)
+        if persist:
+            save_data(data)
+        if schedule_backup:
+            try:
+                ids_for_backup = [chat_id]
+                if OWNER_ID and str(chat_id) != str(OWNER_ID):
+                    ids_for_backup.append(int(OWNER_ID))
+                schedule_config_backup_for_chats(*ids_for_backup, delay=1.0)
+            except Exception:
+                pass
         try:
-            ids_for_backup = [int(chat_id)]
-            if OWNER_ID and str(chat_id) != str(OWNER_ID):
-                ids_for_backup.append(int(OWNER_ID))
-            schedule_config_backup_for_chats(*ids_for_backup, delay=1.0)
+            bot_journal("bot_removed_state", chat_id, f"removed={removed} {reason}")
         except Exception:
             pass
-        try:
-            bot_journal("bot_removed_state", int(chat_id), f"removed={removed} {reason}")
-        except Exception:
-            pass
+        return True
     except Exception as e:
         log_error(f"set_chat_bot_removed({chat_id}): {e}")
+        return False
+
 try: _v177_legacy_0035_set_chat_bot_removed.__name__ = 'set_chat_bot_removed'
 except Exception: pass
 set_chat_bot_removed = _v177_legacy_0035_set_chat_bot_removed
@@ -6098,59 +6120,117 @@ except Exception: pass
 collect_all_known_chat_ids = _v177_legacy_0038_collect_all_known_chat_ids
 
 
-def _v177_legacy_0039_update_chat_info_from_chat_object(chat_obj) -> bool:
-    """Обновляет карточку чата по результату Telegram getChat: title/username/type."""
+def _v197_json_safe(value, depth: int = 0):
+    if depth > 6:
+        return str(value)[:500]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _v197_json_safe(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_v197_json_safe(v, depth + 1) for v in value]
+    try:
+        fn = getattr(value, "to_dict", None)
+        if callable(fn):
+            return _v197_json_safe(fn(), depth + 1)
+    except Exception:
+        pass
+    return str(value)[:1000]
+
+
+def _v197_chat_object_snapshot(chat_obj) -> dict:
+    """Whitelisted Telegram metadata visible to the bot; safe to persist and diff on explicit chat probe."""
+    fields = (
+        "type", "username", "first_name", "last_name", "description", "bio", "invite_link",
+        "linked_chat_id", "message_auto_delete_time", "slow_mode_delay", "is_forum",
+        "has_protected_content", "join_to_send_messages", "join_by_request",
+        "has_visible_history", "accent_color_id", "background_custom_emoji_id",
+        "profile_accent_color_id", "profile_background_custom_emoji_id",
+        "emoji_status_custom_emoji_id", "emoji_status_expiration_date",
+    )
+    out = {}
+    for name in fields:
+        try:
+            value = getattr(chat_obj, name, None)
+        except Exception:
+            value = None
+        if value is not None:
+            if name == "username":
+                value = str(value).strip().lstrip("@") or None
+            out[name] = value
+    try:
+        title = str(getattr(chat_obj, "title", None) or "").strip()
+    except Exception:
+        title = ""
+    if not title:
+        first = str(out.get("first_name") or "").strip()
+        last = str(out.get("last_name") or "").strip()
+        title = (first + " " + last).strip()
+        if not title and out.get("username"):
+            title = f"@{out['username']}"
+    if title:
+        out["title"] = title
+    # Keep a future-proof Telegram profile snapshot without volatile message payloads.
+    try:
+        raw_fn = getattr(chat_obj, "to_dict", None)
+        raw = raw_fn() if callable(raw_fn) else {}
+        if isinstance(raw, dict):
+            raw = dict(raw)
+            raw.pop("pinned_message", None)
+            out["telegram_profile_v197"] = _v197_json_safe(raw)
+    except Exception:
+        pass
+    return out
+
+
+def _v177_legacy_0039_update_chat_info_from_chat_object(chat_obj, *, persist: bool = True, schedule_backup: bool = True) -> bool:
+    """Refresh canonical chat identity and Telegram-visible metadata from getChat()."""
     try:
         chat_id = int(getattr(chat_obj, "id"))
     except Exception:
         return False
     store = get_chat_store(chat_id)
     info = store.setdefault("info", {})
-    prev_title = info.get("title") or ""
-    chat_type = getattr(chat_obj, "type", None)
-    title = (getattr(chat_obj, "title", None) or "").strip()
-    username = (getattr(chat_obj, "username", None) or "").strip().lstrip("@") or None
-    if not title:
-        first = (getattr(chat_obj, "first_name", None) or "").strip()
-        last = (getattr(chat_obj, "last_name", None) or "").strip()
-        title = (first + " " + last).strip() or (f"@{username}" if username else prev_title or f"Чат {chat_id}")
-
+    snapshot = _v197_chat_object_snapshot(chat_obj)
+    prev_title = str(info.get("title") or "")
+    if not snapshot.get("title"):
+        snapshot["title"] = prev_title or f"Чат {chat_id}"
     changed = False
-    if info.get("title") != title:
-        info["title"] = title
-        changed = True
-    if info.get("username") != username:
-        info["username"] = username
-        changed = True
-    if info.get("type") != chat_type:
-        info["type"] = chat_type
-        changed = True
+    # Keep unknown legacy fields, but overwrite every field Telegram can authoritatively report.
+    for key, value in snapshot.items():
+        if info.get(key) != value:
+            info[key] = value
+            changed = True
+    # Diagnostic timestamps do not make an otherwise unchanged chat look "changed".
+    info["last_probe_at"] = now_local().isoformat(timespec="seconds")
+    info["last_probe_ok"] = True
 
     if OWNER_ID and str(chat_id) != str(OWNER_ID):
         owner_store = get_chat_store(int(OWNER_ID))
         kc = owner_store.setdefault("known_chats", {})
-        new_known = {"title": title, "username": username, "type": chat_type}
-        # Перед добавлением убираем старые карточки того же чата по username/title, чтобы не плодить дубли.
+        new_known = {
+            "title": info.get("title") or f"Чат {chat_id}",
+            "username": info.get("username"),
+            "type": info.get("type"),
+        }
         new_identity = _chat_identity_key(chat_id, new_known)
         for old_cid, old_info in list(kc.items()):
             try:
                 old_id_int = int(old_cid)
             except Exception:
-                kc.pop(old_cid, None)
-                changed = True
-                continue
+                kc.pop(old_cid, None); changed = True; continue
             if str(old_cid) != str(chat_id) and _chat_identity_key(old_id_int, old_info if isinstance(old_info, dict) else {}) == new_identity:
-                kc.pop(old_cid, None)
-                changed = True
+                kc.pop(old_cid, None); changed = True
         if kc.get(str(chat_id)) != new_known:
             kc[str(chat_id)] = new_known
             changed = True
 
-    if changed:
+    if changed and persist:
         save_data(data)
+    if changed and schedule_backup:
         try:
             ids_for_backup = [chat_id]
-            if OWNER_ID:
+            if OWNER_ID and str(chat_id) != str(OWNER_ID):
                 ids_for_backup.append(int(OWNER_ID))
             schedule_config_backup_for_chats(*ids_for_backup, delay=2.0)
         except Exception as e:
@@ -6160,16 +6240,124 @@ try: _v177_legacy_0039_update_chat_info_from_chat_object.__name__ = 'update_chat
 except Exception: pass
 update_chat_info_from_chat_object = _v177_legacy_0039_update_chat_info_from_chat_object
 
-def _v177_legacy_0040_probe_bot_in_chat(chat_id: int) -> bool:
-    """Проверяет, видит ли бот чат. При успехе обновляет имя/username, при ошибке помечает как удалённый."""
+
+_V197_BOT_USER_ID_CACHE = None
+
+def _v197_bot_user_id() -> int:
+    global _V197_BOT_USER_ID_CACHE
+    if _V197_BOT_USER_ID_CACHE:
+        return int(_V197_BOT_USER_ID_CACHE)
     try:
-        chat_obj = _tg_call_retry(bot.get_chat, int(chat_id), attempts=2, purpose="probe_get_chat")
-        update_chat_info_from_chat_object(chat_obj)
-        set_chat_bot_removed(int(chat_id), False, "probe ok")
+        me = _tg_call_retry(bot.get_me, attempts=2, purpose="probe_get_me")
+        _V197_BOT_USER_ID_CACHE = int(getattr(me, "id", 0) or 0)
+    except Exception:
+        _V197_BOT_USER_ID_CACHE = 0
+    return int(_V197_BOT_USER_ID_CACHE or 0)
+
+
+def _v197_refresh_chat_probe_facts(chat_id: int, chat_obj=None) -> bool:
+    """Refresh facts that can change without a message: member count, bot role/rights and administrator fingerprint."""
+    chat_id = int(chat_id)
+    store = get_chat_store(chat_id)
+    info = store.setdefault("info", {})
+    changed = False
+    warnings = []
+
+    fn = getattr(bot, "get_chat_member_count", None) or getattr(bot, "get_chat_members_count", None)
+    if callable(fn):
+        try:
+            count = int(_tg_call_retry(fn, chat_id, attempts=2, purpose="probe_member_count"))
+            if info.get("member_count") != count:
+                info["member_count"] = count; changed = True
+        except Exception as exc:
+            warnings.append("member_count:" + str(exc)[:120])
+
+    bot_uid = _v197_bot_user_id()
+    if bot_uid and hasattr(bot, "get_chat_member"):
+        try:
+            member = _tg_call_retry(bot.get_chat_member, chat_id, bot_uid, attempts=2, purpose="probe_bot_member")
+            row = {"status": str(getattr(member, "status", "") or "")}
+            for key in (
+                "can_manage_chat", "can_delete_messages", "can_manage_video_chats", "can_restrict_members",
+                "can_promote_members", "can_change_info", "can_invite_users", "can_post_messages",
+                "can_edit_messages", "can_pin_messages", "can_manage_topics",
+            ):
+                value = getattr(member, key, None)
+                if value is not None:
+                    row[key] = bool(value)
+            if info.get("bot_membership") != row:
+                info["bot_membership"] = row; changed = True
+        except Exception as exc:
+            warnings.append("bot_member:" + str(exc)[:120])
+
+    chat_type = str(getattr(chat_obj, "type", None) or info.get("type") or "")
+    if chat_type in {"group", "supergroup", "channel"} and hasattr(bot, "get_chat_administrators"):
+        try:
+            admins = list(_tg_call_retry(bot.get_chat_administrators, chat_id, attempts=2, purpose="probe_administrators") or [])
+            rows = []
+            for member in admins:
+                user = getattr(member, "user", None)
+                rows.append({
+                    "id": int(getattr(user, "id", 0) or 0),
+                    "name": ((str(getattr(user, "first_name", "") or "") + " " + str(getattr(user, "last_name", "") or "")).strip()),
+                    "username": str(getattr(user, "username", "") or "").lstrip("@") or None,
+                    "status": str(getattr(member, "status", "") or ""),
+                    "custom_title": str(getattr(member, "custom_title", "") or "") or None,
+                })
+            rows.sort(key=lambda r: (r.get("id") or 0))
+            if info.get("administrators") != rows:
+                info["administrators"] = rows; changed = True
+            if info.get("administrator_count") != len(rows):
+                info["administrator_count"] = len(rows); changed = True
+        except Exception as exc:
+            warnings.append("administrators:" + str(exc)[:120])
+
+    new_warnings = warnings[-5:]
+    if info.get("probe_warnings") != new_warnings:
+        info["probe_warnings"] = new_warnings; changed = True
+    info["last_full_probe_at"] = now_local().isoformat(timespec="seconds")
+    return changed
+
+
+def _v197_chat_probe_fingerprint(chat_id: int) -> tuple:
+    try:
+        info = (get_chat_store(int(chat_id)).get("info") or {})
+        return (
+            str(info.get("title") or ""), str(info.get("username") or ""), str(info.get("type") or ""),
+            str(info.get("description") or ""), str(info.get("bio") or ""),
+            json.dumps(info.get("telegram_profile_v197") or {}, ensure_ascii=False, sort_keys=True, default=str),
+            info.get("member_count"),
+            json.dumps(info.get("bot_membership") or {}, ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(info.get("administrators") or [], ensure_ascii=False, sort_keys=True, default=str),
+            bool(info.get("is_forum", False)), bool(info.get("has_protected_content", False)),
+            info.get("linked_chat_id"), info.get("message_auto_delete_time"), info.get("slow_mode_delay"),
+            bool(is_chat_bot_removed(int(chat_id))),
+        )
+    except Exception:
+        return tuple()
+
+
+def _v177_legacy_0040_probe_bot_in_chat(chat_id: int, *, deep: bool = True, persist: bool = True, schedule_backup: bool = True) -> bool:
+    """Probe a chat and refresh canonical Telegram state; getChat success is the access authority."""
+    chat_id = int(chat_id)
+    try:
+        chat_obj = _tg_call_retry(bot.get_chat, chat_id, attempts=2, purpose="probe_get_chat")
+        changed = update_chat_info_from_chat_object(chat_obj, persist=False, schedule_backup=False)
+        if deep:
+            changed = bool(_v197_refresh_chat_probe_facts(chat_id, chat_obj)) or bool(changed)
+        changed = bool(set_chat_bot_removed(chat_id, False, "", persist=False, schedule_backup=False)) or bool(changed)
+        if changed and persist:
+            save_data(data)
+        if changed and schedule_backup:
+            try:
+                ids = [chat_id] + ([int(OWNER_ID)] if OWNER_ID and chat_id != int(OWNER_ID) else [])
+                schedule_config_backup_for_chats(*ids, delay=1.0)
+            except Exception:
+                pass
         return True
     except Exception as e:
         if _is_bot_removed_error(e):
-            set_chat_bot_removed(int(chat_id), True, str(e)[:240])
+            set_chat_bot_removed(chat_id, True, str(e)[:240], persist=persist, schedule_backup=schedule_backup)
         else:
             log_error(f"probe_bot_in_chat({get_chat_display_name(chat_id)}): {e}")
         return False
@@ -6179,19 +6367,49 @@ probe_bot_in_chat = _v177_legacy_0040_probe_bot_in_chat
 
 
 def probe_all_known_chats() -> tuple[int, int]:
+    """Full explicit Telegram sync for every known chat, INCLUDING the primary owner chat."""
     try:
         normalize_known_chats_for_owner()
     except Exception:
         pass
-    ok = 0
-    bad = 0
-    for cid in collect_all_known_chat_ids(include_owner=False):
-        if probe_bot_in_chat(cid):
+    ids = collect_all_known_chat_ids(include_owner=True)
+    ok = bad = changed = renamed = 0
+    before_titles = {}
+    before_fp = {}
+    for cid in ids:
+        before_titles[int(cid)] = get_chat_display_name(int(cid))
+        before_fp[int(cid)] = _v197_chat_probe_fingerprint(int(cid))
+        if probe_bot_in_chat(int(cid), deep=True, persist=False, schedule_backup=False):
             ok += 1
-        elif is_chat_bot_removed(cid):
+        elif is_chat_bot_removed(int(cid)):
             bad += 1
+        after_fp = _v197_chat_probe_fingerprint(int(cid))
+        if before_fp[int(cid)] != after_fp:
+            changed += 1
+        if before_titles[int(cid)] != get_chat_display_name(int(cid)):
+            renamed += 1
+    try:
+        normalize_known_chats_for_owner()
+    except Exception:
+        pass
+    summary = {
+        "checked": len(ids), "available": ok, "unavailable": bad, "errors": max(0, len(ids) - ok - bad),
+        "changed": changed, "renamed": renamed, "at": now_local().isoformat(timespec="seconds"),
+    }
+    try:
+        data.setdefault("_global_settings", {})["last_chat_probe_summary_v197"] = summary
+    except Exception:
+        pass
     save_data(data)
-    schedule_config_backup_for_chats()
+    try:
+        schedule_config_backup_for_chats(*ids, delay=1.0)
+    except Exception:
+        try: schedule_config_backup_for_chats()
+        except Exception: pass
+    try:
+        bot_journal("chat_full_sync_v197", int(OWNER_ID or 0), json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
+    except Exception:
+        pass
     return ok, bad
 
 
@@ -8126,4 +8344,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v190_mega_light_fast_recovery
+# v197_chat_identity_sync_final

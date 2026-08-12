@@ -4,8 +4,8 @@
 
 ## Правки текущей версии
 
-- 🛠 **Ветки функций / контракты** (`system.branch_registry`) — Новый реестр карточек/защищённых веток, галочки, журнал и contract snapshots. Regression: **PASS**.
-- 🛠 **Инфо / служебные меню** (`ui.info`) — В Инфо добавлена кнопка 🌿 Ветки и статус защищённых контрактов. Regression: **PASS**.
+- 🛠 **Чаты · реальные имена / полная проверка** (`ui.chat_identity`) — Проверить чаты теперь делает полную Telegram-синхронизацию всех известных чатов, включая основной owner-chat; убрана подмена имени владельца символом 🏀. Regression: **PASS**.
+- 🛠 **Пересылка · правила/доставка** (`forward.core`) — Массовая проверка пересылки обновляет реальные chat title/username/type/access и сохраняет доступные bot-visible параметры одной синхронизацией. Regression: **PASS**.
 
 ## 💰 Финансы / ARS · основной учёт
 
@@ -295,6 +295,40 @@
 
 **Зависимости:** ui.main, diagnostics.journal
 
+## 🪟 Интерфейс / Чаты · реальные имена / полная проверка
+
+**ID:** `ui.chat_identity`  
+**Contract:** r1  
+**Суть:** Хранить и показывать реальную Telegram-идентичность каждого известного чата и по кнопке полностью синхронизировать доступные изменения.
+
+**Точки входа:**
+- Пересылка → 📡 Проверить чаты
+- getChat
+- обычные Telegram updates
+
+**Рабочая цепочка:**
+- known chat ids
+- getChat including primary owner
+- canonical title/username/type
+- bot-visible metadata/rights
+- persist + one config backup
+
+**Нельзя ломать:**
+- роль владельца не подменяет имя чата emoji
+- owner chat тоже проходит полную проверку
+- группа/канал используют Telegram title, private — реальное имя/username
+- проверка не переименовывает Telegram-чат — только синхронизирует локальную карточку
+- недоступный чат помечается отдельно, его последнее известное имя не заменяется ID без необходимости
+
+**Регрессионные тесты:**
+- owner title replaces legacy basketball
+- all-known includes owner
+- group/private title authority
+- metadata refresh
+- removed/access state
+
+**Зависимости:** forward.core, multitenant.core
+
 ## ♻️ Восстановление / /restore · REPLACE FROM FILE
 
 **ID:** `restore.strict`  
@@ -381,6 +415,8 @@
 - quick_check
 - save/load
 - cold field roundtrip
+
+**Зависимости:** —
 
 ## 💾 Хранилище / MEGA · durable storage
 
@@ -589,6 +625,8 @@
 - circle1
 - circle2
 - permission deny
+
+**Зависимости:** —
 
 ## 🩺 Диагностика / Журналы / диагностика
 

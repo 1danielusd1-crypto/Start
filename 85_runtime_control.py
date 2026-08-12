@@ -1,4 +1,4 @@
-# v196_protected_branches_final
+# v197_chat_identity_sync_final
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -15,7 +15,7 @@ import hashlib as _v196_hashlib
 import os as _v196_os
 import tempfile as _v196_tempfile
 
-VERSION = "bot_v196_protected_branches_final"
+VERSION = "bot_v197_chat_identity_sync_final"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -806,6 +806,16 @@ V196_BRANCH_CATALOG = {
         "invariants": ["права владельца соблюдаются", "служебное меню не меняет финансы", "ветки доступны из Инфо"],
         "tests": ["owner menu", "back/close", "branches entry"],
     },
+    "ui.chat_identity": {
+        "group": "🪟 Интерфейс", "title": "Чаты · реальные имена / полная проверка", "rev": 1,
+        "purpose": "Хранить и показывать реальную Telegram-идентичность каждого известного чата и по кнопке полностью синхронизировать доступные изменения.",
+        "entry": ["Пересылка → 📡 Проверить чаты", "getChat", "обычные Telegram updates"],
+        "flow": ["known chat ids", "getChat including primary owner", "canonical title/username/type", "bot-visible metadata/rights", "persist + one config backup"],
+        "storage": ["chat.info", "owner known_chats", "last_chat_probe_summary_v197"],
+        "depends": ["forward.core", "multitenant.core"],
+        "invariants": ["роль владельца не подменяет имя чата emoji", "owner chat тоже проходит полную проверку", "группа/канал используют Telegram title, private — реальное имя/username", "проверка не переименовывает Telegram-чат — только синхронизирует локальную карточку", "недоступный чат помечается отдельно, его последнее известное имя не заменяется ID без необходимости"],
+        "tests": ["owner title replaces legacy basketball", "all-known includes owner", "group/private title authority", "metadata refresh", "removed/access state"],
+    },
     "restore.strict": {
         "group": "♻️ Восстановление", "title": "/restore · REPLACE FROM FILE", "rev": 3,
         "purpose": "Восстанавливать выбранный scope ровно из backup без merge с live-состоянием.",
@@ -961,12 +971,12 @@ V196_BRANCH_CATALOG = {
 # Every release must explicitly list the functional branches it changed.  Protected
 # branches remain checked; a touched protected branch must have a PASS regression result.
 V196_CURRENT_BRANCH_CHANGES = [
-    ("system.branch_registry", "Новый реестр карточек/защищённых веток, галочки, журнал и contract snapshots."),
-    ("ui.info", "В Инфо добавлена кнопка 🌿 Ветки и статус защищённых контрактов."),
+    ("ui.chat_identity", "Проверить чаты теперь делает полную Telegram-синхронизацию всех известных чатов, включая основной owner-chat; убрана подмена имени владельца символом 🏀."),
+    ("forward.core", "Массовая проверка пересылки обновляет реальные chat title/username/type/access и сохраняет доступные bot-visible параметры одной синхронизацией."),
 ]
 V196_BRANCH_REGRESSION_RESULTS = {
-    "system.branch_registry": "PASS",
-    "ui.info": "PASS",
+    "ui.chat_identity": "PASS",
+    "forward.core": "PASS",
 }
 
 
@@ -2005,5 +2015,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v192 authoritative runtime version after Excel ARS/USD and delivery audit.
-VERSION = "bot_v196_protected_branches_final"
-# v196_protected_branches_final
+VERSION = "bot_v197_chat_identity_sync_final"
+# v197_chat_identity_sync_final

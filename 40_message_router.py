@@ -1,4 +1,4 @@
-# v192_excel_ars_usd_delivery_final
+# v197_chat_identity_sync_final
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -814,9 +814,7 @@ EMOJI_DIGITS = {
 }
 backup_channel_notified_chats = set()
 def format_chat_id_emoji(chat_id: int) -> str:
-    """Преобразует chat_id в строку из emoji-цифр; владельца показываем как 🏀."""
-    if is_owner_chat(chat_id):
-        return "🏀"
+    """Преобразует chat_id в emoji-цифры. Роль владельца не подменяет идентичность чата."""
     return "".join(EMOJI_DIGITS.get(ch, ch) for ch in str(chat_id))
 def _safe_chat_title_for_filename(title) -> str:
     """Делает короткое безопасное имя чата для имени файла."""
@@ -1066,4 +1064,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v192_excel_ars_usd_delivery_final
+# v197_chat_identity_sync_final
