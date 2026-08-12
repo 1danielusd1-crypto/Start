@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 @bot.message_handler(
     func=lambda m: not (m.text and m.text.startswith("/")),
     content_types=[
@@ -432,6 +432,8 @@ def _v177_legacy_0136_add_record_to_currency_ledger(
 ):
     """Добавляет запись в ARS или USD, даже если этот контур сейчас не открыт на экране."""
     chat_id = int(chat_id)
+    if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
+        raise RuntimeError("DATA CONSTITUTION: финансовые изменения заблокированы до восстановления целостности")
     ledger = "usd" if str(ledger).lower() == "usd" else "ars"
     store = get_chat_store(chat_id)
     active = _ensure_currency_ledgers(store)
@@ -496,6 +498,10 @@ def _v177_legacy_0138_handle_finance_text(msg):
     """
 
     chat_id = msg.chat.id
+    if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
+        try: send_and_auto_delete(chat_id, "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы до проверки/восстановления. /data_constitution", 20)
+        except Exception: pass
+        return True
     try:
         uid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
         if "safety_profile_new_enabled" in globals() and safety_profile_new_enabled() and not security_user_allowed(uid, "finance_input"):
@@ -560,6 +566,10 @@ handle_finance_text = _v177_legacy_0138_handle_finance_text
 
 def _v177_legacy_0139_handle_finance_edit(msg):
     chat_id = msg.chat.id
+    if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
+        try: send_and_auto_delete(chat_id, "🚨 DATA CONSTITUTION: финансовые изменения временно заблокированы. Используйте /data_constitution.", 20)
+        except Exception: pass
+        return True
     text = (msg.text or msg.caption or "").strip()
 
     store = get_chat_store(chat_id)
@@ -589,6 +599,7 @@ def _v177_legacy_0139_handle_finance_edit(msg):
         comp = {"usd_amount": 0.0, "usd_note": "", "usd_only": False}
         amount, note = 0, "удалено"
 
+    _constitution_before = copy.deepcopy(target)
     target["amount"] = amount
     target["note"] = note
     target["source_finance_text"] = str(comp.get("source_finance_text") or text)
@@ -614,6 +625,10 @@ def _v177_legacy_0139_handle_finance_edit(msg):
         f"amount={amount} note={note}"
     )
     save_data(data, chat_ids=[int(chat_id)])
+    try:
+        finance_integrity_append(int(chat_id), "edit", target, details={"before": _constitution_before, "source": "telegram_edited_message"})
+    except Exception as _constitution_edit_exc:
+        log_error(f"DATA CONSTITUTION edited finance ledger: {_constitution_edit_exc}")
     return True
 try: _v177_legacy_0139_handle_finance_edit.__name__ = 'handle_finance_edit'
 except Exception: pass
@@ -1010,4 +1025,4 @@ def _owner_data_file() -> str | None:
         return f"data_{int(OWNER_ID)}.json"
     except Exception:
         return None
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

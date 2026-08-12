@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 @app.route("/", methods=["GET"])
 def index():
     return "OK", 200
@@ -491,6 +491,30 @@ def main():
             _RUNTIME_STATE["restore_detail"] = str(e)[:500]
         runtime_event("boot_restore_error", str(e), "ERROR")
 
+    # v185 DATA CONSTITUTION: semantic verification is mandatory before READY or new backups.
+    try:
+        protected_ok, protected_detail = constitution_verify_protected_symbols()
+        if not protected_ok:
+            raise RuntimeError("storage-core redefined: " + str(protected_detail))
+        constitution_report = constitution_boot_verify_after_restore()
+        if not bool(constitution_report.get("ok")):
+            with _RUNTIME_LOCK:
+                _RUNTIME_STATE["restore_ok"] = False
+                _RUNTIME_STATE["restore_detail"] = "DATA CONSTITUTION GUARD: " + str(constitution_report.get("reason") or "semantic verification failed")[:420]
+        runtime_event("boot_data_constitution", json.dumps({
+            "ok": bool(constitution_report.get("ok")),
+            "mode": constitution_report.get("mode"),
+            "reason": constitution_report.get("reason"),
+            "records": ((constitution_report.get("live") or {}).get("total_records")),
+        }, ensure_ascii=False), "INFO" if bool(constitution_report.get("ok")) else "ERROR")
+    except Exception as exc:
+        try: constitution_set_quarantine(f"BOOT constitution exception: {exc}")
+        except Exception: pass
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE["restore_ok"] = False
+            _RUNTIME_STATE["restore_detail"] = "DATA CONSTITUTION ERROR: " + str(exc)[:420]
+        runtime_event("boot_data_constitution_error", str(exc), "ERROR")
+
     # Previous runtime snapshot lives outside Render and survives sleep/redeploy/restart.
     runtime_set_phase("boot_watcher_previous", "читаю предыдущий runtime snapshot")
     try:
@@ -731,4 +755,4 @@ def main():
             runtime_graceful_shutdown("APP_EXIT")
         except Exception as e:
             log_error(f"final graceful shutdown: {e}")
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

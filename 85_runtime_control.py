@@ -1,4 +1,4 @@
-# v184_full_restore_contract
+# v186_restore_exact_fast
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -12,7 +12,7 @@ import statistics as _v176_statistics
 import threading as _v176_threading
 import time as _v176_time
 
-VERSION = "bot_v178_global_performance_final"
+VERSION = "bot_v186_restore_exact_fast"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -1103,7 +1103,7 @@ def _v153_validate_restore_gz(gz_path: str):
                 if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
                     raise RuntimeError("unsupported export schema")
                 export_version = str(manifest.get("bot_version") or "")
-                allowed = tuple(f"bot_v{i}_" for i in range(153, 185))
+                allowed = tuple(f"bot_v{i}_" for i in range(153, 187))
                 if export_version and not export_version.startswith(allowed):
                     raise RuntimeError(f"unsupported bot version: {export_version}")
                 if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""):
@@ -1229,15 +1229,14 @@ def v182_prepare_gz_restore_document(msg, document=None) -> bool:
             f"Чатов: {manifest.get('chat_count', 0)}\n"
             f"Финансовых записей: {manifest.get('record_count', 'см. snapshot')}\n"
             f"Создан: {manifest.get('created_at') or 'не указано'}\n\n"
-            "Перед применением будет создан pre_restore backup текущей базы."
+            "Перед применением будет создан pre_restore backup текущей базы.\n"
+            "После подтверждения текущий scope будет ЗАМЕНЁН данными GZ без объединения."
         )
         bot.reply_to(msg, text, reply_markup=_v153_restore_keyboard(token, scope))
         # Restore mode is one-file-at-a-time, like the historical workflow.
         global restore_mode
         restore_mode = None
         data.pop("_restore_mode_chat_v150", None)
-        try: save_data(data, chat_ids=[chat_id])
-        except Exception: pass
         return True
     except Exception:
         # _v153_validate_restore_gz owns its extracted raw temp folder on validation errors.
@@ -1268,14 +1267,12 @@ def v182_cmd_restore(msg):
         return
     global restore_mode
     restore_mode = chat_id
-    data["_restore_mode_chat_v150"] = chat_id
-    try: save_data(data, chat_ids=[chat_id])
-    except Exception: pass
-    try: cleanup_forward_links(chat_id)
-    except Exception: pass
+    # Restore mode is intentionally RAM-only: merely entering /restore must not mutate/persist business state.
+    data.pop("_restore_mode_chat_v150", None)
     send_and_auto_delete(
         chat_id,
-        "📥 Режим восстановления включён.\n\n"
+        "📥 Режим восстановления включён — СТРОГАЯ ЗАМЕНА ИЗ ФАЙЛА.\n\n"
+        "Текущее состояние будет сначала сохранено в pre_restore, затем выбранный scope будет заменён ровно данными файла. Никакого merge.\n\n"
         "Теперь отправьте ОДИН файл:\n"
         "• *.sqlite3.gz / *.gz — полный SQLite snapshot\n"
         "• *.json / *.ison — полный JSON/ISON backup (включая chat_<id>.json)\n"
@@ -1372,5 +1369,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v179 authoritative runtime version after integrated historical modules.
-VERSION = "bot_v184_full_restore_contract"
-# v184_full_restore_contract
+VERSION = "bot_v186_restore_exact_fast"
+# v186_restore_exact_fast

@@ -1,4 +1,4 @@
-# v184_full_restore_contract
+# v186_restore_exact_fast
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -3853,12 +3853,12 @@ def merge_global_snapshot_with_mega_deltas(local_global_path: str) -> tuple[str,
 
 
 def _prune_delta_files_after_full_snapshot():
-    try:
-        rows = _mega_find_remote_files(mega_delta_remote_root(), "delta_*.json")
-        for remote_path in rows[MEGA_DELTA_KEEP_FILES:]:
-            _mega_run("mega-rm", [remote_path], check=False, timeout=30)
-    except Exception as e:
-        log_error(f"_prune_delta_files_after_full_snapshot: {e}")
+    """v185 DATA CONSTITUTION: never delete deltas immediately after a snapshot.
+
+    Deltas remain an independent recovery path. Future pruning may remove only deltas
+    older than two separately verified immutable generations and an age grace period.
+    """
+    return 0
 
 
 def delta_status_text() -> str:
@@ -5673,10 +5673,16 @@ def _lowram_gunzip_file(src: str, dst: str):
     return dst
 
 def mega_upload_latest_database_backup(force: bool = False) -> bool:
-    """Primary v115 snapshot: SQLite file -> gzip -> MEGA. No full Python state copy."""
+    """v185 DATA CONSTITUTION snapshot: immutable generation + semantic manifest.
+
+    latest_bot_state.sqlite3.gz is only a backward-compatible mirror. The canonical
+    source of truth is current_manifest.json -> immutable generation_*.sqlite3.gz.
+    """
     if not mega_is_configured(): return False
     if RESTORE_GUARD_ACTIVE and not force:
         log_error(f"[MEGA DB SNAPSHOT BLOCKED] {RESTORE_GUARD_REASON}"); return False
+    if globals().get("constitution_quarantine_active") and constitution_quarantine_active() and not force:
+        log_error("[DATA CONSTITUTION] snapshot blocked by quarantine"); return False
     with MEGA_GLOBAL_BACKUP_LOCK:
         workdir = tempfile.mkdtemp(prefix="lowram_db_snapshot_")
         try:
@@ -5684,22 +5690,15 @@ def mega_upload_latest_database_backup(force: bool = False) -> bool:
                 capture_generation = int(_delta_generation)
             _lowram_flush_all_hot(evict=False)
             created_at = now_local().isoformat(timespec="seconds")
-            SQLITE.set_meta("db_snapshot", "main", {"created_at": created_at, "bot_version": VERSION, "schema": 1})
+            SQLITE.set_meta("db_snapshot", "main", {"created_at": created_at, "bot_version": VERSION, "schema": 2, "data_constitution": 1})
             raw = os.path.join(workdir, "bot_state.sqlite3")
             gz = os.path.join(workdir, f"candidate_bot_state_{now_local().strftime('%Y%m%d_%H%M%S_%f')}.sqlite3.gz")
             SQLITE.backup_to(raw)
             _lowram_gzip_file(raw, gz)
-            mega_ensure_remote_path(lowram_database_remote_dir())
-            history = lowram_database_remote_dir().rstrip("/") + "/history"
-            mega_ensure_remote_path(history)
-            _mega_run("mega-put", [gz, lowram_database_remote_dir()], check=True, timeout=MEGA_TIMEOUT)
-            remote_candidate = lowram_database_remote_dir().rstrip("/") + "/" + os.path.basename(gz)
-            remote_latest = lowram_database_remote_latest()
-            archive_name = "bot_state_" + re.sub(r"[^0-9]", "", created_at)[:14] + ".sqlite3.gz"
-            if not _mega_promote_remote_candidate(
-                remote_candidate, remote_latest, history_dir=history, archive_name=archive_name
-            ):
-                raise RuntimeError("cannot activate latest SQLite snapshot in MEGA")
+            publish = globals().get("constitution_publish_sqlite_generation")
+            if not callable(publish):
+                raise RuntimeError("DATA CONSTITUTION publisher unavailable")
+            manifest = publish(raw, gz, created_at)
             # Baseline reads each chat's record list one at a time from SQLite.
             initialize_delta_baseline(data)
             global _global_snapshot_pending, _global_snapshot_last_success_monotonic, _global_snapshot_last_success_at
@@ -5710,13 +5709,15 @@ def mega_upload_latest_database_backup(force: bool = False) -> bool:
                 _global_snapshot_last_success_at = created_at
             DELAYED_SCHEDULER.cancel("mega-global-max-v90"); DELAYED_SCHEDULER.cancel("mega-global-quiet-v90")
             if newer: _mark_global_snapshot_pending()
+            # v185: deltas are NOT deleted immediately after a snapshot. They remain an
+            # independent recovery path across at least the next verified generation.
             try:
-                _mega_prune_remote_history(history, "bot_state_*.sqlite3.gz", LOWRAM_DB_HISTORY_KEEP)
-                _prune_delta_files_after_full_snapshot()
+                history = lowram_database_remote_dir().rstrip("/") + "/history"
+                _mega_prune_remote_history(history, "bot_state_*.sqlite3.gz", max(24, int(LOWRAM_DB_HISTORY_KEEP)))
             except Exception: pass
             with _LOWRAM_LOCK:
                 _LOWRAM_STATS["db_snapshots"] += 1; _LOWRAM_STATS["last_snapshot_at"] = created_at
-            log_info(f"[MEGA DB SNAPSHOT] uploaded {remote_latest}; bytes={os.path.getsize(gz)}")
+            log_info(f"[DATA CONSTITUTION SNAPSHOT] active={manifest.get('generation')} records={manifest.get('total_records')} bytes={os.path.getsize(gz)}")
             return True
         except Exception as e:
             with _LOWRAM_LOCK:
@@ -5729,24 +5730,33 @@ def mega_upload_latest_database_backup(force: bool = False) -> bool:
             except Exception: pass
 
 def _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, str]:
-    """Restore the disposable Render working DB from MEGA before load_data()."""
+    """Restore canonical v185 generation first; fallback to legacy latest mirror."""
     global _LOWRAM_DB_RESTORED_THIS_BOOT, _LOWRAM_DB_RESTORE_DETAIL
     if not (LOWRAM_ENABLED and mega_is_configured()): return False, "LOWRAM/MEGA unavailable"
     workdir = tempfile.mkdtemp(prefix="lowram_db_restore_")
     try:
         mega_login_if_needed()
-        remote = lowram_database_remote_latest()
-        res = _mega_run("mega-get", [remote, workdir], check=False, timeout=MEGA_TIMEOUT)
-        if res.returncode != 0:
-            return False, "MEGA SQLite snapshot not found yet"
-        candidates = list(Path(workdir).rglob(LOWRAM_DB_LATEST_NAME))
-        if not candidates:
-            candidates = list(Path(workdir).rglob("*.sqlite3.gz"))
-        if not candidates:
-            return False, "download returned no sqlite3.gz"
-        gz = str(candidates[0]); raw = os.path.join(workdir, "restored.sqlite3")
+        gz = None; active_manifest = None; source = ""
+        resolver = globals().get("constitution_download_active_generation")
+        if callable(resolver):
+            try:
+                gz, active_manifest, source = resolver(workdir)
+            except Exception as exc:
+                log_error(f"[DATA CONSTITUTION RESTORE] generation resolver: {exc}")
+        if not gz:
+            remote = lowram_database_remote_latest()
+            res = _mega_run("mega-get", [remote, workdir], check=False, timeout=MEGA_TIMEOUT)
+            if res.returncode != 0:
+                return False, "MEGA SQLite snapshot not found yet"
+            candidates = list(Path(workdir).rglob(LOWRAM_DB_LATEST_NAME))
+            if not candidates:
+                candidates = list(Path(workdir).rglob("*.sqlite3.gz"))
+            if not candidates:
+                return False, "download returned no sqlite3.gz"
+            gz = str(candidates[0]); source = "legacy latest mirror"
+        raw = os.path.join(workdir, "restored.sqlite3")
         _lowram_gunzip_file(gz, raw)
-        # Basic SQLite integrity check before replacing the live working copy.
+        # Technical integrity + semantic manifest check before replacing live working copy.
         test = sqlite3.connect(raw)
         remote_created = ""
         try:
@@ -5761,13 +5771,24 @@ def _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, s
                 remote_created = ""
         finally:
             test.close()
+        semantic_fn = globals().get("constitution_semantic_manifest_from_sqlite")
+        if callable(semantic_fn):
+            semantic = semantic_fn(raw)
+            if active_manifest:
+                # Exact generation must match the active pointer semantics.
+                if int(semantic.get("total_records") or 0) != int(active_manifest.get("total_records") or 0):
+                    raise RuntimeError(f"active generation semantic mismatch: records {semantic.get('total_records')} != manifest {active_manifest.get('total_records')}")
+                for cid, old in (active_manifest.get("chats") or {}).items():
+                    got = (semantic.get("chats") or {}).get(str(cid)) or {}
+                    if int(got.get("record_count") or 0) != int((old or {}).get("record_count") or 0):
+                        raise RuntimeError(f"active generation semantic mismatch chat={cid}: {got.get('record_count')} != {(old or {}).get('record_count')}")
         # A same-instance Python restart can preserve a fresher ephemeral SQLite. Never overwrite
         # newer local committed work with an older cloud snapshot; deploys normally have empty local DB.
         local_root = SQLITE.load_root() or {}
         local_saved = str((local_root.get("_state_meta") or {}).get("last_saved_at") or "") if isinstance(local_root, dict) else ""
         local_has_state = bool(SQLITE.load_chats()) or SQLITE.cold_count() > 0
         if local_has_state and _parse_iso_timestamp(local_saved) > _parse_iso_timestamp(remote_created) + 1:
-            _LOWRAM_DB_RESTORED_THIS_BOOT = True  # working SQLite is already the best base; still apply cloud deltas idempotently
+            _LOWRAM_DB_RESTORED_THIS_BOOT = True
             _LOWRAM_DB_RESTORE_DETAIL = f"kept fresher local ({local_saved}) over cloud ({remote_created or 'unknown'})"
             with _LOWRAM_LOCK:
                 _LOWRAM_STATS["last_restore_at"] = now_local().isoformat(timespec="seconds")
@@ -5776,17 +5797,21 @@ def _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud() -> tuple[bool, s
         SQLITE.replace_database(raw)
         meta = SQLITE.get_meta("db_snapshot", "main", {}) or {}
         _LOWRAM_DB_RESTORED_THIS_BOOT = True
-        _LOWRAM_DB_RESTORE_DETAIL = str(meta.get("created_at") or "unknown")
+        _LOWRAM_DB_RESTORE_DETAIL = str(meta.get("created_at") or remote_created or "unknown")
         with _LOWRAM_LOCK:
             _LOWRAM_STATS["db_restores"] += 1; _LOWRAM_STATS["last_restore_at"] = now_local().isoformat(timespec="seconds")
-        log_info(f"[MEGA DB RESTORE] restored primary SQLite snapshot created_at={_LOWRAM_DB_RESTORE_DETAIL}")
-        return True, f"SQLite snapshot { _LOWRAM_DB_RESTORE_DETAIL }"
+        log_info(f"[DATA CONSTITUTION RESTORE] restored {source}; created_at={_LOWRAM_DB_RESTORE_DETAIL}")
+        return True, f"{source}: SQLite snapshot {_LOWRAM_DB_RESTORE_DETAIL}"
     except Exception as e:
         with _LOWRAM_LOCK: _LOWRAM_STATS["last_error"] = str(e)[:300]
+        try:
+            if "constitution_set_quarantine" in globals(): constitution_set_quarantine(f"restore failed: {e}")
+        except Exception: pass
         log_error(f"[MEGA DB RESTORE ERROR] {e}")
         return False, str(e)[:300]
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
 try: _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud.__name__ = 'mega_restore_sqlite_snapshot_from_cloud'
 except Exception: pass
 mega_restore_sqlite_snapshot_from_cloud = _v177_legacy_0085_mega_restore_sqlite_snapshot_from_cloud
@@ -7912,7 +7937,7 @@ def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
         "restore_contract": {
             "schema": 1,
             "scope": "chat",
-            "policy": "restore_all_persistent_fields_and_preserve_unique_live_records",
+            "policy": "strict_replace_from_file_no_live_merge",
             "records_source": "records",
             "derived_fields": ["balance", "daily_records", "daily_records_by_date", "overall_balance"],
         },
@@ -8076,94 +8101,25 @@ def _v184_record_identity(chat_id: int, rec: dict) -> str:
     return f"legacy:{rid}:{ts}:{amt}:{note}"
 
 
-def _v184_merge_restore_records(chat_id: int, backup_records: list, live_records: list) -> tuple[list, int]:
-    """Backup rows win duplicates. Unique live rows survive and receive collision-free numeric IDs."""
-    merged = []
-    seen = set()
-    used_ids = set()
-    max_id = 0
-    backup_count = 0
-    for source in backup_records or []:
-        if not isinstance(source, dict):
-            continue
-        rec = _v184_copy(source)
-        key = _v184_record_identity(chat_id, rec)
-        if key and key in seen:
-            continue
-        if key:
-            seen.add(key)
-        try:
-            rid = int(rec.get("id") or 0)
-        except Exception:
-            rid = 0
-        if rid > 0:
-            if rid in used_ids:
-                raise RuntimeError(f"Backup inconsistent: duplicate record id={rid}")
-            used_ids.add(rid); max_id = max(max_id, rid)
-        merged.append(rec); backup_count += 1
 
-    preserved = 0
-    next_free = max_id + 1
-    for source in live_records or []:
-        if not isinstance(source, dict):
-            continue
-        rec = _v184_copy(source)
-        key = _v184_record_identity(chat_id, rec)
-        if key and key in seen:
-            continue
-        if key:
-            seen.add(key)
-        try:
-            rid = int(rec.get("id") or 0)
-        except Exception:
-            rid = 0
-        if rid <= 0 or rid in used_ids:
-            while next_free in used_ids:
-                next_free += 1
-            rec["id"] = next_free
-            rid = next_free
-            next_free += 1
-        used_ids.add(rid); max_id = max(max_id, rid)
-        merged.append(rec); preserved += 1
-    return merged, preserved
-
-
-def _v184_restore_forward_edges(root_key: str, chat_id: int, outgoing, incoming) -> None:
-    """Restore every forwarding edge that belongs to this chat without touching unrelated chats/contours."""
-    cid = str(int(chat_id))
-    root_map = data.setdefault(root_key, {})
-    if not isinstance(root_map, dict):
-        root_map = {}
-        data[root_key] = root_map
-    root_map.pop(cid, None)
-    for src, dsts in list(root_map.items()):
-        if not isinstance(dsts, dict):
-            continue
-        dsts.pop(cid, None)
-        if not dsts:
-            root_map[src] = {}
-    if isinstance(outgoing, dict):
-        root_map[cid] = _v184_copy(outgoing)
-    if isinstance(incoming, dict):
-        for src, spec in incoming.items():
-            root_map.setdefault(str(src), {})[cid] = _v184_copy(spec)
-
-
-def _v184_settings_scope_ok(chat_id: int, settings: dict, platform_owner: bool) -> bool:
+def _v184_settings_scope_ok(chat_id: int, candidate: dict, platform_owner: bool = False) -> bool:
+    """Allow exact scope metadata for platform owner; tenant managers cannot rebind a chat to another tenant."""
     if platform_owner:
         return True
     try:
-        backup_tid = str((settings or {}).get("tenant_id") or "")
+        saved_tid = str((candidate or {}).get("tenant_id") or "")
         current_tid = str(tenant_id_for_chat(int(chat_id), create=False) or "") if "tenant_id_for_chat" in globals() else ""
-        return not backup_tid or not current_tid or backup_tid == current_tid
+        if saved_tid and current_tid and saved_tid != current_tid:
+            return False
     except Exception:
         return False
+    return True
 
 
 def _v184_apply_chat_settings_backup(chat_id: int, settings_backup: dict, *, platform_owner: bool = False) -> dict:
-    """Restore all persistent fields saved by build_chat_settings_backup_payload for this chat."""
+    """Strict file restore for chat settings. Current live settings/forward edges never fill gaps."""
     if not isinstance(settings_backup, dict):
-        return {"settings_keys": 0, "forward_edges": 0, "global_flags": False}
+        settings_backup = {}
     cid = str(int(chat_id))
     store = get_chat_store(int(chat_id))
     saved_settings = settings_backup.get("settings")
@@ -8223,7 +8179,7 @@ def _v184_apply_chat_settings_backup(chat_id: int, settings_backup: dict, *, pla
     _v184_restore_forward_edges("forward_finance", int(chat_id), ff_out or {}, ff_in or {})
 
     fac = settings_backup.get("finance_active_chats")
-    enabled = bool(store.get("finance_mode"))
+    enabled = bool(settings_backup.get("finance_mode", store.get("finance_mode", False)))
     if isinstance(fac, dict) and cid in fac:
         enabled = bool(fac.get(cid))
     if enabled:
@@ -8248,62 +8204,168 @@ def _v184_apply_chat_settings_backup(chat_id: int, settings_backup: dict, *, pla
     }
 
 
+def _v186_restore_day_key_without_mutation(rec: dict, daily_hint: dict | None = None) -> str:
+    """Derive the runtime day index without changing the backup record itself."""
+    if isinstance(rec, dict):
+        dk = str(rec.get("day_key") or "")[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", dk):
+            return dk
+        ts = str(rec.get("timestamp") or "")[:10]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", ts):
+            return ts
+        dmy = str(rec.get("date") or "")[:8]
+        m = re.fullmatch(r"(\d{2})[:./-](\d{2})[:./-](\d{2})", dmy)
+        if m:
+            return f"20{m.group(3)}-{m.group(2)}-{m.group(1)}"
+    # If old backup stored only daily_records grouping, use that hint by record identity.
+    if isinstance(daily_hint, dict) and isinstance(rec, dict):
+        rid = rec.get("id"); op = rec.get("operation_key"); sm = rec.get("source_msg_id")
+        for dk, rows in daily_hint.items():
+            for old in rows or []:
+                if not isinstance(old, dict):
+                    continue
+                if (rid is not None and old.get("id") == rid) or (op and old.get("operation_key") == op) or (sm and old.get("source_msg_id") == sm):
+                    return str(dk)[:10]
+    return today_key()
+
+
+def _v186_rebuild_restore_derived(chat_id: int, daily_hint: dict | None = None) -> dict:
+    """Rebuild only derived runtime indexes/balance; preserve every field/order of file records exactly."""
+    store = get_chat_store(int(chat_id))
+    records = store.get("records") if isinstance(store.get("records"), list) else []
+    daily = {}
+    total = 0.0
+    valid = 0
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        dk = _v186_restore_day_key_without_mutation(rec, daily_hint)
+        daily.setdefault(dk, []).append(rec)
+        try: total += float(rec.get("amount", 0) or 0)
+        except Exception: pass
+        valid += 1
+    store["daily_records"] = daily
+    store["balance"] = total
+    return {"records": valid, "days": len(daily), "balance": total}
+
+
 def _v184_post_restore_rehydrate(restored: dict | None = None, chat_ids=None) -> dict:
-    """Single final post-restore path for GZ and JSON: rebuild runtime mirrors and derived indexes."""
+    """One post-restore path. Per-chat restore stays targeted; global GZ/JSON may rebuild globally."""
     state = restored if isinstance(restored, dict) else data
-    result = {"normalized_chats": 0, "errors": []}
+    result = {"normalized_chats": 0, "errors": [], "targeted": chat_ids is not None}
     try:
         _restore_runtime_state_from_data(state)
     except Exception as exc:
         result["errors"].append("runtime:" + str(exc)[:160])
-    try:
-        tenant_v148_bootstrap()
-        tenant_v148_enforce_forward_isolation()
-    except Exception as exc:
-        result["errors"].append("tenant:" + str(exc)[:160])
+
     ids = []
     if chat_ids is None:
         for cid_s in (state.get("chats", {}) or {}):
             try: ids.append(int(cid_s))
             except Exception: pass
+        try:
+            tenant_v148_bootstrap()
+            tenant_v148_enforce_forward_isolation()
+        except Exception as exc:
+            result["errors"].append("tenant:" + str(exc)[:160])
     else:
         for cid in chat_ids:
             try: ids.append(int(cid))
             except Exception: pass
+        # Exact one-chat restore must not scan/rewrite every contour synchronously.
+        # Rebuild tenant lookup from the file setting WITHOUT rewriting the restored chat settings.
+        for cid in ids:
+            try:
+                st = get_chat_store(cid).get("settings") or {}
+                tid = str(st.get("tenant_id") or "")
+                if tid and "tenant_get" in globals():
+                    trow = tenant_get(tid)
+                    if trow:
+                        root = _tenants_root()
+                        root.setdefault("chat_to_tenant", {})[str(cid)] = tid
+                        chats = trow.setdefault("chat_ids", [])
+                        if int(cid) not in [int(x) for x in chats]: chats.append(int(cid))
+            except Exception as exc:
+                result["errors"].append(f"tenant:{cid}:" + str(exc)[:120])
+
     for cid in ids:
         try:
-            normalize_chat_records(cid)
-            recalc_balance(cid)
+            _v186_rebuild_restore_derived(cid)
             result["normalized_chats"] += 1
         except Exception as exc:
             result["errors"].append(f"chat:{cid}:" + str(exc)[:120])
     try: rebuild_global_records()
     except Exception as exc: result["errors"].append("global:" + str(exc)[:160])
-    try: _load_forward_index_from_data(state)
-    except Exception as exc: result["errors"].append("forward_index:" + str(exc)[:160])
+
+    # Forward index is derived. Rebuild it from the resulting state so removed live rows cannot survive.
     try:
-        if not (state.get("forward_index") or {}):
-            _rebuild_forward_index_from_finance_records(state)
-    except Exception as exc: result["errors"].append("forward_rebuild:" + str(exc)[:160])
-    try:
-        if "restore_finance_window_runtime_state" in globals(): restore_finance_window_runtime_state()
-    except Exception as exc: result["errors"].append("windows:" + str(exc)[:160])
+        state["forward_index"] = {}
+        _load_forward_index_from_data(state)
+        _rebuild_forward_index_from_finance_records(state)
+    except Exception as exc:
+        result["errors"].append("forward_rebuild:" + str(exc)[:160])
+
+    if chat_ids is None:
+        try:
+            if "restore_finance_window_runtime_state" in globals(): restore_finance_window_runtime_state()
+        except Exception as exc:
+            result["errors"].append("windows:" + str(exc)[:160])
     return result
 
 
-def _v184_restore_per_chat_payload(chat_id: int, payload: dict, *, platform_owner: bool = False) -> dict:
-    kind = str(payload.get("kind") or "legacy_chat_backup")
-    store = get_chat_store(int(chat_id))
-    live_records = _v184_copy(store.get("records") or [])
-    # v184+ backups also carry every remaining chat-local state field. Derived ledgers are handled below.
-    chat_state = payload.get("chat_state")
-    restored_chat_state_keys = 0
-    if isinstance(chat_state, dict):
-        for key, value in chat_state.items():
-            if str(key) in {"records", "daily_records", "daily_records_by_date", "balance", "next_id", "info", "known_chats", "settings"}:
+def _v186_clear_chat_scope_before_restore(chat_id: int) -> None:
+    """Remove current working state for exactly one chat before file restore. Audit/constitution history stays immutable."""
+    cid = int(chat_id); cs = str(cid)
+    try:
+        data.setdefault("chats", {}).pop(cs, None)
+    except Exception:
+        pass
+    try:
+        with SQLITE.lock:
+            SQLITE.conn.execute("DELETE FROM cold_fields WHERE chat_id=?", (cs,))
+            SQLITE.conn.execute("DELETE FROM chats WHERE chat_id=?", (cs,))
+            SQLITE.conn.commit()
+    except Exception as exc:
+        raise RuntimeError(f"Не удалось очистить SQLite scope чата {cid}: {exc}")
+    try: data.setdefault("active_messages", {}).pop(cs, None)
+    except Exception: pass
+    try:
+        reg = data.setdefault("open_window_registry", {})
+        for key, row in list(reg.items()):
+            try:
+                if int((row or {}).get("chat_id") or 0) == cid:
+                    reg.pop(key, None)
+            except Exception:
                 continue
-            store[str(key)] = _v184_copy(value)
-            restored_chat_state_keys += 1
+    except Exception: pass
+    try:
+        _v184_restore_forward_edges("forward_rules", cid, {}, {})
+        _v184_restore_forward_edges("forward_finance", cid, {}, {})
+    except Exception: pass
+    try:
+        finance_active_chats.discard(cid)
+        data["finance_active_chats"] = {str(x): True for x in sorted(finance_active_chats)}
+    except Exception: pass
+    # Derived indexes/navigation must not retain references to removed live records/windows.
+    try: data["forward_index"] = {}
+    except Exception: pass
+    try:
+        hist = globals().get("_WINDOW_NAV_HISTORY")
+        lock = globals().get("_WINDOW_NAV_HISTORY_LOCK")
+        if isinstance(hist, dict):
+            if lock is not None:
+                with lock:
+                    for key in list(hist):
+                        if isinstance(key, tuple) and key and int(key[0]) == cid: hist.pop(key, None)
+            else:
+                for key in list(hist):
+                    if isinstance(key, tuple) and key and int(key[0]) == cid: hist.pop(key, None)
+    except Exception: pass
+
+
+def _v184_restore_per_chat_payload(chat_id: int, payload: dict, *, platform_owner: bool = False) -> dict:
+    """STRICT REPLACE FROM FILE: no current records/settings are merged into the restored chat."""
+    kind = str(payload.get("kind") or "legacy_chat_backup")
     backup_records = payload.get("records") if isinstance(payload.get("records"), list) else []
     if not backup_records and isinstance(payload.get("daily_records"), dict):
         for dk in sorted(payload.get("daily_records") or {}):
@@ -8311,30 +8373,17 @@ def _v184_restore_per_chat_payload(chat_id: int, payload: dict, *, platform_owne
                 if isinstance(rec, dict):
                     rr = _v184_copy(rec); rr.setdefault("day_key", str(dk)); backup_records.append(rr)
 
-    # Full/monthly/legacy chat restore is lossless by default: backup wins duplicates, every unique
-    # current record survives. This directly prevents an older JSON from deleting newer operations.
-    merged, preserved_live = _v184_merge_restore_records(int(chat_id), backup_records, live_records)
-    store["records"] = merged
-    store["daily_records"] = {}
-    if "info" in payload and isinstance(payload.get("info"), dict): store["info"] = _v184_copy(payload.get("info") or {})
-    if "known_chats" in payload and isinstance(payload.get("known_chats"), dict): store["known_chats"] = _v184_copy(payload.get("known_chats") or {})
-    settings_result = _v184_apply_chat_settings_backup(int(chat_id), payload.get("settings_backup") or {}, platform_owner=platform_owner)
-    normalize_chat_records(int(chat_id))
-    try:
-        rebuild_month_short_ids(int(chat_id))
-    except Exception as exc:
-        log_error(f"v184 restore short-id rebuild chat={chat_id}: {exc}")
-    # Preserve record IDs from backup/live; only advance next_id beyond every existing numeric id.
-    numeric_ids = []
-    for rec in store.get("records") or []:
-        try: numeric_ids.append(int(rec.get("id") or 0))
-        except Exception: pass
-    saved_next = int(payload.get("next_id") or 1) if str(payload.get("next_id") or "1").lstrip("-").isdigit() else 1
-    store["next_id"] = max([saved_next, 1] + [x + 1 for x in numeric_ids if x >= 0])
-    recalc_balance(int(chat_id))
-
-    # If the backup stored a derived balance, verify it against backup records only. Never silently
-    # trust a contradictory number over the actual ledger rows.
+    # Validate the backup BEFORE touching live state.
+    seen_ids = set()
+    for rec in backup_records:
+        if not isinstance(rec, dict):
+            continue
+        try: rid = int(rec.get("id") or 0)
+        except Exception: rid = 0
+        if rid > 0:
+            if rid in seen_ids:
+                raise RuntimeError(f"Backup inconsistent: duplicate record id={rid}")
+            seen_ids.add(rid)
     backup_balance = None
     if "balance" in payload:
         try: backup_balance = float(payload.get("balance") or 0)
@@ -8343,15 +8392,56 @@ def _v184_restore_per_chat_payload(chat_id: int, payload: dict, *, platform_owne
     if backup_balance is not None and abs(backup_balance - backup_rows_balance) > 0.011:
         raise RuntimeError(f"Backup inconsistent: balance={backup_balance} but records={backup_rows_balance}")
 
+    old_store = data.get("chats", {}).get(str(int(chat_id)))
+    old_count = 0
+    try: old_count = len((old_store or {}).get("records") or [])
+    except Exception: pass
+
+    _v186_clear_chat_scope_before_restore(int(chat_id))
+    store = get_chat_store(int(chat_id))  # clean current-version defaults only
+
+    chat_state = payload.get("chat_state")
+    restored_chat_state_keys = 0
+    if isinstance(chat_state, dict):
+        for key, value in chat_state.items():
+            if str(key) in {"records", "daily_records", "daily_records_by_date", "balance", "next_id", "info", "known_chats", "settings"}:
+                continue
+            store[str(key)] = _v184_copy(value)
+            restored_chat_state_keys += 1
+
+    store["records"] = [_v184_copy(r) for r in backup_records if isinstance(r, dict)]
+    store["daily_records"] = {}
+    store["info"] = _v184_copy(payload.get("info") or {}) if isinstance(payload.get("info"), dict) else {}
+    store["known_chats"] = _v184_copy(payload.get("known_chats") or {}) if isinstance(payload.get("known_chats"), dict) else {}
+
+    settings_result = _v184_apply_chat_settings_backup(
+        int(chat_id), payload.get("settings_backup") if isinstance(payload.get("settings_backup"), dict) else {},
+        platform_owner=platform_owner,
+    )
+    # Preserve id / short_id / timestamps / order exactly as stored in the backup.
+    # Only derived indexes and balance are rebuilt for runtime use.
+    _v186_rebuild_restore_derived(int(chat_id), payload.get("daily_records") if isinstance(payload.get("daily_records"), dict) else None)
+    if "next_id" in payload:
+        try: store["next_id"] = int(payload.get("next_id"))
+        except Exception: store["next_id"] = payload.get("next_id")
+    else:
+        numeric_ids = []
+        for rec in store.get("records") or []:
+            try: numeric_ids.append(int(rec.get("id") or 0))
+            except Exception: pass
+        store["next_id"] = max([1] + [x + 1 for x in numeric_ids if x >= 0])
+
     post = _v184_post_restore_rehydrate(data, [int(chat_id)])
     save_data(data, chat_ids=[int(chat_id)], root_only=False)
     return {
         "kind": kind,
         "backup_records": len(backup_records),
         "records_after": len(store.get("records") or []),
-        "preserved_live_records": int(preserved_live),
+        "replaced_live_records": int(old_count),
+        "preserved_live_records": 0,
         "settings": settings_result,
         "chat_state_keys": restored_chat_state_keys,
+        "restore_policy": "strict_replace_from_file",
         "post": post,
     }
 
@@ -8373,7 +8463,16 @@ def restore_from_json(chat_id: int, path: str, *, actor_user_id: int | None = No
     if "chats" in payload and isinstance(payload.get("chats"), dict):
         if actor_user_id is not None and not platform_owner:
             raise RuntimeError("Полный глобальный JSON может восстановить только владелец платформы")
-        data = _migrate_full_state(payload)
+        restored_state = _migrate_full_state(payload)
+        # Strict global replace: stale chat/cold rows from the current DB may not survive the file.
+        try:
+            with SQLITE.lock:
+                SQLITE.conn.execute("DELETE FROM cold_fields")
+                SQLITE.conn.execute("DELETE FROM chats")
+                SQLITE.conn.commit()
+        except Exception as exc:
+            raise RuntimeError(f"Не удалось очистить SQLite перед global JSON restore: {exc}")
+        data = restored_state
         post = _v184_post_restore_rehydrate(data)
         save_data(data, full=True)
         if not is_data_effectively_empty_for_restore(data):
@@ -8389,8 +8488,7 @@ def restore_from_json(chat_id: int, path: str, *, actor_user_id: int | None = No
         result = _v184_restore_per_chat_payload(int(chat_id), payload, platform_owner=platform_owner)
         if get_chat_store(int(chat_id)).get("records") or any(get_chat_store(int(chat_id)).get("daily_records", {}).values()):
             _clear_restore_guard()
-        finance_changed(int(chat_id), get_chat_store(int(chat_id)).get("current_view_day", today_key()), reason="restore_json_v184_full", delay=0.1)
-        log_info(f"restore_from_json v184: chat {chat_id} full state restored; result={result}")
+        log_info(f"restore_from_json v186: chat {chat_id} strict file state restored; result={result}")
         return result
 
     raise RuntimeError("Неизвестный формат JSON/ISON (нет 'chats' и нет 'records/daily_records').")
@@ -9395,4 +9493,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v184_full_restore_contract
+# v186_restore_exact_fast

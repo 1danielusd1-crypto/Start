@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 # ─────────────────────────────────────────────────────────────
 # v144: полная трассировка жизненного цикла Telegram-окон.
 # Записывает только метаданные, хеши и короткий заголовок — полный текст окна,
@@ -665,4 +665,4 @@ def window_diagnostic_stats() -> dict:
 
 
 _install_window_transport_diagnostics()
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

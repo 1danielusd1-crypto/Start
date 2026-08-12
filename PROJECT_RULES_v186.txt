@@ -1,0 +1,13 @@
+Telegram Bot project rules — v186
+
+- Render local storage is volatile. RAM=active work, SQLite=working state, MEGA=durable state.
+- Canonical MEGA root: /TelegramBotBackups or exact MEGA_BACKUP_DIR secret. Never /TelegramBotBackupsStart.
+- Finance durability has priority over normal forwarding.
+- DATA CONSTITUTION storage-core cannot be overridden by UI/performance patches.
+- /restore JSON/ISON/GZ = strict REPLACE FROM FILE, never automatic merge. pre_restore first; checkpoint/generation after.
+- Restore files restore all saved persistent state in their scope. Only derived runtime indexes may be rebuilt.
+- Performance/UI fixes apply globally to owner, circle1 and circle2 where the feature is available.
+- Fast/Minimum profiles do not auto-disable diagnostics.
+- Every source file starts and ends with only the current version marker.
+- Releases: FULL flat package + changed-only package. FULL generated from split modules.
+- Zero duplicate active top-level functions/classes.

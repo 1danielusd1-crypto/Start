@@ -1,0 +1,12 @@
+v186 RESTORE EXACT FAST
+
+1. /restore is strict REPLACE FROM FILE for JSON/ISON/GZ. No live records/settings are merged.
+2. pre_restore remains mandatory safety copy but is never re-applied automatically.
+3. Per-chat JSON clears only its chat scope, restores exact file records/settings, then rebuilds derived indexes without rewriting record fields/order/IDs/short IDs.
+4. GZ restore has one replace action; old merge callbacks are rejected.
+5. /restore and restore documents bypass generic durable task persist/move/finalize; restore has its own pre_restore + DATA CONSTITUTION checkpoint.
+6. Duplicate restore finance_changed/UI refresh storm removed.
+7. Active-window persistence moved off callback critical path and duplicate window registry writes removed.
+8. Idempotent tenant binding is a hot-path no-op.
+9. Fixed missing _v184_settings_scope_ok used by settings restore.
+10. DATA CONSTITUTION remains unchanged: immutable ledger/generations/semantic guard.

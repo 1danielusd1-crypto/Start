@@ -1,4 +1,4 @@
-# v184_full_restore_contract
+# v186_restore_exact_fast
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -148,6 +148,8 @@ def _v177_legacy_0227_add_record_to_chat(
     source_finance_text: str = "",
 ):
     bot_journal("record_add_start", chat_id, f"amount={amount} note={note}")
+    if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
+        raise RuntimeError("DATA CONSTITUTION: финансовые изменения заблокированы до восстановления целостности")
     op_id = operation_begin("finance_add", chat_id, target=str(day_key or "auto"), payload={"amount": amount, "note": note}, critical=True) if "operation_begin" in globals() else ""
     if op_id and "operation_step" in globals(): operation_step(op_id, "saved_locally", "intent recorded", persist=False)
     with locked_chat(chat_id):
@@ -228,6 +230,8 @@ except Exception: pass
 add_record_to_chat = _v177_legacy_0227_add_record_to_chat
 
 def delete_record_in_chat(chat_id: int, rid: int):
+    if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
+        raise RuntimeError("DATA CONSTITUTION: удаление заблокировано до восстановления целостности")
     op_id = operation_begin("finance_delete", chat_id, target=str(rid), payload={"rid": rid}, critical=True) if "operation_begin" in globals() else ""
     with locked_chat(chat_id):
         store = get_chat_store(chat_id)
@@ -272,14 +276,24 @@ def renumber_chat_records(chat_id: int):
     
 def get_or_create_active_windows(chat_id: int) -> dict:
     return data.setdefault("active_messages", {}).setdefault(str(chat_id), {})
+def _v186_persist_active_window_state(chat_id: int):
+    """Persist UI-only window state outside callback latency path."""
+    try:
+        _finance_window_state(int(chat_id))["auto_reopen_on_boot"] = True
+        _sync_finance_window_state_from_runtime(int(chat_id), schedule_delta=True)
+        save_data(data, chat_ids=[int(chat_id)])
+    except Exception as exc:
+        try: log_error(f"v186 active window persist {chat_id}: {exc}")
+        except Exception: pass
+
 def set_active_window_id(chat_id: int, day_key: str, message_id: int):
+    chat_id = int(chat_id); day_key = str(day_key)[:10]; message_id = int(message_id)
     aw = get_or_create_active_windows(chat_id)
     aw[day_key] = message_id
-    register_open_window(chat_id, message_id, "main_day", code="О1", day_key=day_key)
-    save_data(data)
+    register_open_window(chat_id, message_id, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": True})
+    # register_open_window already schedules root persistence. Chat/window runtime sync is debounced in background.
     try:
-        _finance_window_state(chat_id)["auto_reopen_on_boot"] = True
-        _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
+        DELAYED_SCHEDULER.schedule(f"v186-active-window-persist:{chat_id}", 0.15, _v186_persist_active_window_state, chat_id)
     except Exception:
         pass
 def get_active_window_id(chat_id: int, day_key: str):
@@ -293,11 +307,9 @@ def clear_active_window_id(chat_id: int, day_key: str):
             old_mid = aw.pop(str(day_key), None)
             if old_mid:
                 unregister_open_window(chat_id, old_mid)
-            save_data(data)
-            try:
-                _sync_finance_window_state_from_runtime(chat_id, schedule_delta=True)
-            except Exception:
-                pass
+            # UI callback remains RAM-fast; persist once in the same debounced background path.
+            try: DELAYED_SCHEDULER.schedule(f"v186-active-window-persist:{int(chat_id)}", 0.15, _v186_persist_active_window_state, int(chat_id))
+            except Exception: pass
     except Exception as e:
         log_error(f"clear_active_window_id({chat_id},{day_key}): {e}")
 
@@ -678,45 +690,24 @@ def cmd_articles(msg):
     
 @bot.message_handler(commands=["restore"])
 def cmd_restore(msg):
-    try:
-        update_chat_info_from_message(msg)
-    except Exception:
-        pass
-
-    schedule_command_delete(msg)
-    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
-        return
-    stop_dozvon_for_target(msg.chat.id)
-
+    """Compatibility registration. Final v182 handler replaces this function in runtime_control."""
+    fn = globals().get("v182_cmd_restore")
+    if callable(fn) and fn is not cmd_restore:
+        return fn(msg)
     global restore_mode
-    restore_mode = msg.chat.id  # включаем только для текущего чата
-    data["_restore_mode_chat_v150"] = int(msg.chat.id)
-    save_data(data, chat_ids=[int(msg.chat.id)])
-    cleanup_forward_links(msg.chat.id)
-    send_and_auto_delete(
-        msg.chat.id,
-        "📥 Режим восстановления включён.\n"
-        "Отправьте GZ / JSON / ISON / CSV. JSON/ISON восстанавливает все сохранённые данные своего scope."
-    )
-    
+    restore_mode = int(msg.chat.id)
+    send_and_auto_delete(msg.chat.id, "📥 Режим восстановления включён. Отправьте GZ / JSON / ISON / CSV.")
+
 @bot.message_handler(commands=["restore_off"])
 def cmd_restore_off(msg):
-    try:
-        update_chat_info_from_message(msg)
-    except Exception:
-        pass
-
-    schedule_command_delete(msg)
-    if guard_non_owner_finance_for_command(msg, {"ok", "help"}):
-        return
-    stop_dozvon_for_target(msg.chat.id)
-
+    try: schedule_command_delete(msg)
+    except Exception: pass
     global restore_mode
-    restore_mode = None  # выключаем
+    restore_mode = None
     data.pop("_restore_mode_chat_v150", None)
-    save_data(data, chat_ids=[int(msg.chat.id)])
-    cleanup_forward_links(msg.chat.id)
+    # RAM-only control action: never cleanup forwarding and never persist business state.
     send_and_auto_delete(msg.chat.id, "🔒 Режим восстановления выключен.")
+
 @bot.message_handler(commands=["ping"])
 def cmd_ping(msg):
     try:
@@ -1576,12 +1567,10 @@ def _apply_json_restore_from_owner_prompt(owner_chat_id: int, tmp_path: str, fna
 
     # Восстанавливаем именно тот чат, к которому относится файл, даже если файл прислан владельцу.
     result = restore_from_json(target_chat_id, tmp_path, actor_user_id=int(OWNER_ID or owner_chat_id))
-    day_key = get_chat_store(target_chat_id).get("current_view_day", today_key())
-    finance_changed(target_chat_id, day_key, reason="owner_json_restore_v184", delay=0.1)
     restore_mode = None
-    return (f"🟢 JSON/ISON чата полностью восстановлен: {get_chat_display_name(target_chat_id)}; "
-            f"backup={result.get('backup_records', 0)}, итог={result.get('records_after', 0)}, "
-            f"сохранено текущих={result.get('preserved_live_records', 0)}")
+    return (f"🟢 JSON/ISON чата восстановлен СТРОГО ИЗ ФАЙЛА: {get_chat_display_name(target_chat_id)}; "
+            f"в файле={result.get('backup_records', 0)}, итог={result.get('records_after', 0)}, "
+            f"предыдущее live-состояние заменено={result.get('replaced_live_records', 0)}")
 
 
 def _cleanup_owner_json_restore_prompt(key: int, remove_prompt: bool = False):
@@ -1693,7 +1682,8 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
         bot_journal("restore_pre_backup_owner_prompt_v184", int(owner_chat_id), f"file={fname}")
         with data_lock:
             result = _apply_json_restore_from_owner_prompt(owner_chat_id, tmp_path, fname)
-        send_and_auto_delete(owner_chat_id, result, 12)
+        constitution_reanchor_after_manual_restore(f"owner_json_prompt:{fname}")
+        send_and_auto_delete(owner_chat_id, result + "\n🏛 DATA CONSTITUTION: состояние закреплено новым generation.", 15)
     except Exception as e:
         send_and_auto_delete(owner_chat_id, f"❌ JSON/ISON не восстановлен: {e}", 15)
     finally:
@@ -1707,4 +1697,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v184_full_restore_contract
+# v186_restore_exact_fast

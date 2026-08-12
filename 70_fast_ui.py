@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 # ─────────────────────────────────────────────────────────────
 # ⚡ Fast UI edit queue
 # ─────────────────────────────────────────────────────────────
@@ -2761,4 +2761,4 @@ def build_integrity_keyboard(chat_id: int):
     day = get_chat_store(chat_id).get("current_view_day") or today_key()
     kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"))
     return kb
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

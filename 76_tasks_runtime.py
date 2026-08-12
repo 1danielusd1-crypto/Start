@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 # ---- integrated from 119_v172_task_dispatcher.py ----
 """v172: Telegram-native task / purchase dispatcher.
 
@@ -12,7 +12,7 @@ import threading as _v172_threading
 import time as _v172_time
 from datetime import datetime as _v172_datetime, timedelta as _v172_timedelta
 
-VERSION = "bot_v172_task_dispatcher"
+VERSION = "bot_v186_restore_exact_fast"
 V172_FILE_MARKER = "v172_task_dispatcher"
 
 V172_TASKS_KEY = "_tasks_v172"
@@ -1196,7 +1196,7 @@ import threading as _v173_threading
 import time as _v173_time
 from datetime import datetime as _v173_datetime
 
-VERSION = "bot_v173_reminder_crosschat_unique_journals"
+VERSION = "bot_v186_restore_exact_fast"
 V173_FILE_MARKER = "v173_reminder_crosschat_unique_journals"
 
 # ---------------------------------------------------------------------------
@@ -1473,7 +1473,7 @@ import re as _v174_re
 import threading as _v174_threading
 import time as _v174_time
 
-VERSION = "bot_v174_simplified_task_dispatcher"
+VERSION = "bot_v186_restore_exact_fast"
 V174_FILE_MARKER = "v174_simplified_task_dispatcher"
 
 try:
@@ -2420,4 +2420,4 @@ def task_dispatcher_callback_final(call) -> bool:
         # Rare old detail/status callbacks still map to the durable v172 engine.
         _v172_callback(call); return True
     return False
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

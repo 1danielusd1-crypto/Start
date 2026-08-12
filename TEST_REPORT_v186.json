@@ -1,0 +1,346 @@
+{
+  "version": "bot_v186_restore_exact_fast",
+  "status": "PASS",
+  "summary": {
+    "runtime_parts": 27,
+    "duplicate_top_level": 0,
+    "callback_registration_calls": 1,
+    "actual_backup_records": 904,
+    "actual_restore_result_records": 904
+  },
+  "tests": {
+    "marker:00_core.py": {
+      "ok": true
+    },
+    "marker:10_mega_runtime.py": {
+      "ok": true
+    },
+    "marker:11_data_constitution.py": {
+      "ok": true
+    },
+    "marker:15_operation_safety.py": {
+      "ok": true
+    },
+    "marker:16_window_diagnostics.py": {
+      "ok": true
+    },
+    "marker:17_memory_runtime.py": {
+      "ok": true
+    },
+    "marker:20_callback_tokens.py": {
+      "ok": true
+    },
+    "marker:30_secret.py": {
+      "ok": true
+    },
+    "marker:35_reminders.py": {
+      "ok": true
+    },
+    "marker:40_message_router.py": {
+      "ok": true
+    },
+    "marker:50_forwarding.py": {
+      "ok": true
+    },
+    "marker:60_finance_currency.py": {
+      "ok": true
+    },
+    "marker:61_forwarding_ui.py": {
+      "ok": true
+    },
+    "marker:62_finance_ui.py": {
+      "ok": true
+    },
+    "marker:63_google_sheets.py": {
+      "ok": true
+    },
+    "marker:70_fast_ui.py": {
+      "ok": true
+    },
+    "marker:80_callback_router.py": {
+      "ok": true
+    },
+    "marker:90_commands_exports.py": {
+      "ok": true
+    },
+    "marker:91_finance_records_handlers.py": {
+      "ok": true
+    },
+    "marker:72_multitenant_runtime.py": {
+      "ok": true
+    },
+    "marker:99_web_runtime.py": {
+      "ok": true
+    },
+    "marker:73_state_export_runtime.py": {
+      "ok": true
+    },
+    "marker:74_ui_reliability_runtime.py": {
+      "ok": true
+    },
+    "marker:75_platform_features_runtime.py": {
+      "ok": true
+    },
+    "marker:76_tasks_runtime.py": {
+      "ok": true
+    },
+    "marker:85_runtime_control.py": {
+      "ok": true
+    },
+    "marker:89_callback_final.py": {
+      "ok": true
+    },
+    "marker:bot.py": {
+      "ok": true
+    },
+    "runtime_parts_27": {
+      "ok": true,
+      "detail": 27
+    },
+    "duplicates_zero": {
+      "ok": true,
+      "detail": {}
+    },
+    "single_callback_registration": {
+      "ok": true,
+      "detail": [
+        [
+          "89_callback_final.py",
+          111
+        ]
+      ]
+    },
+    "manifest_parts": {
+      "ok": true
+    },
+    "hash:00_core.py": {
+      "ok": true
+    },
+    "hash:10_mega_runtime.py": {
+      "ok": true
+    },
+    "hash:11_data_constitution.py": {
+      "ok": true
+    },
+    "hash:15_operation_safety.py": {
+      "ok": true
+    },
+    "hash:16_window_diagnostics.py": {
+      "ok": true
+    },
+    "hash:17_memory_runtime.py": {
+      "ok": true
+    },
+    "hash:20_callback_tokens.py": {
+      "ok": true
+    },
+    "hash:30_secret.py": {
+      "ok": true
+    },
+    "hash:35_reminders.py": {
+      "ok": true
+    },
+    "hash:40_message_router.py": {
+      "ok": true
+    },
+    "hash:50_forwarding.py": {
+      "ok": true
+    },
+    "hash:60_finance_currency.py": {
+      "ok": true
+    },
+    "hash:61_forwarding_ui.py": {
+      "ok": true
+    },
+    "hash:62_finance_ui.py": {
+      "ok": true
+    },
+    "hash:63_google_sheets.py": {
+      "ok": true
+    },
+    "hash:70_fast_ui.py": {
+      "ok": true
+    },
+    "hash:80_callback_router.py": {
+      "ok": true
+    },
+    "hash:90_commands_exports.py": {
+      "ok": true
+    },
+    "hash:91_finance_records_handlers.py": {
+      "ok": true
+    },
+    "hash:72_multitenant_runtime.py": {
+      "ok": true
+    },
+    "hash:99_web_runtime.py": {
+      "ok": true
+    },
+    "hash:73_state_export_runtime.py": {
+      "ok": true
+    },
+    "hash:74_ui_reliability_runtime.py": {
+      "ok": true
+    },
+    "hash:75_platform_features_runtime.py": {
+      "ok": true
+    },
+    "hash:76_tasks_runtime.py": {
+      "ok": true
+    },
+    "hash:85_runtime_control.py": {
+      "ok": true
+    },
+    "hash:89_callback_final.py": {
+      "ok": true
+    },
+    "full_duplicate_top_level_zero": {
+      "ok": true,
+      "detail": []
+    },
+    "no_restore_merge_helper": {
+      "ok": true
+    },
+    "per_chat_no_live_merge_assignment": {
+      "ok": true
+    },
+    "per_chat_record_fields_not_renumbered": {
+      "ok": true
+    },
+    "settings_scope_helper_exists": {
+      "ok": true
+    },
+    "restore_command_not_durable": {
+      "ok": true
+    },
+    "restore_document_not_durable": {
+      "ok": true
+    },
+    "old_gz_merge_rejected": {
+      "ok": true
+    },
+    "gz_forced_replace": {
+      "ok": true
+    },
+    "no_mode_merge_branch": {
+      "ok": true
+    },
+    "restore_enter_ram_only": {
+      "ok": true
+    },
+    "no_restore_finance_refresh_storm": {
+      "ok": true
+    },
+    "active_window_persist_async": {
+      "ok": true
+    },
+    "duplicate_main_registry_write_removed": {
+      "ok": true
+    },
+    "tenant_bind_hot_noop": {
+      "ok": true
+    },
+    "mega_start_root_absent": {
+      "ok": true
+    },
+    "restore_validator_accepts_v186": {
+      "ok": true
+    },
+    "actual_backup_904": {
+      "ok": true,
+      "detail": 904
+    },
+    "actual_backup_settings_43": {
+      "ok": true
+    },
+    "actual_strict_906_to_904": {
+      "ok": true
+    },
+    "actual_no_live_overlay": {
+      "ok": true
+    },
+    "actual_records_byte_semantics_equal": {
+      "ok": true
+    },
+    "actual_ids_preserved": {
+      "ok": true
+    },
+    "actual_short_ids_preserved": {
+      "ok": true
+    },
+    "actual_balance_matches": {
+      "ok": true,
+      "detail": 3785348.4
+    },
+    "actual_next_id_file": {
+      "ok": true,
+      "detail": 905
+    },
+    "protected_unique:constitution_snapshot_rejection": {
+      "ok": true,
+      "detail": [
+        {
+          "file": "11_data_constitution.py",
+          "line": 354
+        }
+      ]
+    },
+    "protected_unique:constitution_publish_sqlite_generation": {
+      "ok": true,
+      "detail": [
+        {
+          "file": "11_data_constitution.py",
+          "line": 405
+        }
+      ]
+    },
+    "protected_unique:constitution_download_active_generation": {
+      "ok": true,
+      "detail": [
+        {
+          "file": "11_data_constitution.py",
+          "line": 503
+        }
+      ]
+    },
+    "protected_unique:constitution_boot_verify_after_restore": {
+      "ok": true,
+      "detail": [
+        {
+          "file": "11_data_constitution.py",
+          "line": 517
+        }
+      ]
+    },
+    "protected_unique:constitution_ledger_append": {
+      "ok": true,
+      "detail": [
+        {
+          "file": "11_data_constitution.py",
+          "line": 553
+        }
+      ]
+    },
+    "protected_unique:constitution_semantic_manifest_from_live": {
+      "ok": true,
+      "detail": [
+        {
+          "file": "11_data_constitution.py",
+          "line": 197
+        }
+      ]
+    },
+    "protected_unique:constitution_semantic_manifest_from_sqlite": {
+      "ok": true,
+      "detail": [
+        {
+          "file": "11_data_constitution.py",
+          "line": 238
+        }
+      ]
+    },
+    "constitution_doc_strict": {
+      "ok": true
+    }
+  }
+}

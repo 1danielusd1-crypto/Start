@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 # ---- integrated from 92_v147_diagnostic_hardening.py ----
 # ─────────────────────────────────────────────────────────────
 # v147: защита диагностических секретов, точные reminder-witness и безопасный back-main,
@@ -1065,6 +1065,15 @@ def tenant_bind_chat(chat_id: int, tenant_id: str, changed_by: int = 0, force: b
         return False
     root = _tenants_root()
     old_tid = str((root.get("chat_to_tenant") or {}).get(str(cid)) or "")
+    # Hot-path idempotence: callbacks repeatedly confirm the same binding. Do nothing if already correct.
+    if old_tid == str(tenant_id) and cid in [int(x) for x in (row.get("chat_ids") or [])]:
+        try:
+            st = get_chat_store(cid).setdefault("settings", {})
+            expected_scope = int(row.get("root_chat_id") or cid)
+            if str(st.get("tenant_id") or "") == str(tenant_id) and int(st.get("owner_scope_id") or expected_scope) == expected_scope:
+                return True
+        except Exception:
+            pass
     if old_tid and old_tid != str(tenant_id) and not force:
         return False
     if old_tid and old_tid != str(tenant_id):
@@ -2485,7 +2494,7 @@ from copy import deepcopy as _v149_deepcopy
 from datetime import timedelta as _v149_timedelta
 from pathlib import Path as _v149_Path
 
-VERSION = "bot_v149_tenant_google_merged_reminders"
+VERSION = "bot_v186_restore_exact_fast"
 V149_GOOGLE_SCHEMA_VERSION = 1
 V149_REMINDER_SCHEMA_VERSION = 1
 _V149_GOOGLE_CONTEXT = _v149_threading.local()
@@ -3937,4 +3946,4 @@ def _v177_legacy_0266_v149_extension_callback(call, data_str: str) -> bool:
 try: _v177_legacy_0266_v149_extension_callback.__name__ = 'v149_extension_callback'
 except Exception: pass
 v149_extension_callback = _v177_legacy_0266_v149_extension_callback
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

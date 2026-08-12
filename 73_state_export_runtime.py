@@ -1,4 +1,4 @@
-# v184_full_restore_contract
+# v186_restore_exact_fast
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -12,7 +12,7 @@ import threading as _v150_threading
 import time as _v150_time
 from datetime import datetime as _v150_datetime
 
-VERSION = "bot_v150_excel_reserve_chat_lifecycle"
+VERSION = "bot_v186_restore_exact_fast"
 V150_CHAT_STATUSES = {"active", "unreachable", "bot_removed", "migrated", "archived"}
 V150_CHAT_STATUS_LABELS = {
     "active": "🟢 active",
@@ -789,7 +789,7 @@ def v150_cmd_command_audit(msg):
 # ─────────────────────────────────────────────────────────────
 _V150_MUTATION_COMMANDS = {
     "/reset", "/stopforward", "/backup_channel_on", "/backup_channel_off", "/buttons",
-    "/restore", "/restore_off", "/secret_bot", "/mega_restore_now", "/mega_backup_now",
+    "/secret_bot", "/mega_restore_now", "/mega_backup_now",
     "/knopki", "/кнопки", "/mask", "/maska", "/маска", "/day5", "/fin_day5", "/sutki", "/ost", "/остаток", "/старт",
     "/restore_guard_off", "/restore_guard_on", "/off_on_backup_excel",
     "/space_create", "/tenant_create", "/space_claim", "/tenant_claim",
@@ -835,11 +835,21 @@ def durable_task_required(payload: dict) -> tuple[bool, str]:
                 and int(_restore_active) == _restore_cid
                 and _restore_name.endswith((".json", ".ison", ".csv", ".gz"))
             ):
-                return False, "v183:restore_document_control"
+                return False, "v186:restore_document_control"
+            # Owner-uploaded JSON/ISON is intercepted by the restore confirmation prompt even without /restore.
+            # Never misclassify it as finance content / durable source_finance.
+            if _restore_name.endswith((".json", ".ison")):
+                try:
+                    if is_owner_chat(_restore_cid):
+                        return False, "v186:owner_backup_document_control"
+                except Exception:
+                    pass
     except Exception:
         pass
 
     command, _chat_id, _msg_id, _uid = _v150_command_from_payload(payload)
+    if str(command or "").lower() in {"/restore", "/restore_off"}:
+        return False, "v186:restore_control_command"
     if str(command or "").lower().startswith("/izm_"):
         return False, "v168:record_edit_open"
     if _v150_is_mutation_command(command):
@@ -1089,7 +1099,7 @@ import re as _v151_re
 import threading as _v151_threading
 from datetime import datetime as _v151_datetime, timedelta as _v151_timedelta
 
-VERSION = "bot_v151_redo_fixes_5_6_7"
+VERSION = "bot_v186_restore_exact_fast"
 
 _V151_EXPORT_LOCAL = _v151_threading.local()
 _V151_MONTH_LOCAL = _v151_threading.local()
@@ -2061,7 +2071,7 @@ def set_webhook():
     return _V151_BASE_SET_WEBHOOK()
 
 # ---- integrated from 102_v152_human_journals_chat_rights.py ----
-VERSION = "bot_v152_human_journals_chat_rights"
+VERSION = "bot_v186_restore_exact_fast"
 
 import functools as _v152_functools
 import io as _v152_io
@@ -3064,7 +3074,7 @@ import zipfile as _v153_zipfile
 from datetime import datetime as _v153_datetime
 from pathlib import Path as _V153Path
 
-VERSION = "bot_v153_remaining_fixes_11_16"
+VERSION = "bot_v186_restore_exact_fast"
 V153_EXPORT_SCHEMA = 1
 V153_OLD_MEGA_ROOT = "/TelegramBotBackups"
 V153_NEW_MEGA_ROOT = "/TelegramBotBackups"
@@ -4011,8 +4021,7 @@ _v153_validate_restore_gz = _v177_legacy_0278_v153_validate_restore_gz
 def _v153_restore_keyboard(token: str, scope: str):
     kb = types.InlineKeyboardMarkup()
     if scope == "tenant":
-        kb.add(IB("♻️ Заменить", callback_data=f"v153:restore:{token}:replace"))
-        kb.add(IB("➕ Объединить", callback_data=f"v153:restore:{token}:merge"))
+        kb.add(IB("♻️ Восстановить строго из файла", callback_data=f"v153:restore:{token}:replace"))
     else:
         kb.add(IB("♻️ Восстановить весь бот", callback_data=f"v153:restore:{token}:replace"))
     kb.add(IB("❌ Отмена", callback_data=f"v153:restore:{token}:cancel"))
@@ -4155,18 +4164,6 @@ def _v153_restore_tenant_root(source_root: dict, manifest: dict, target_tenant: 
     source_gs = (source_root or {}).get("_global_settings") or {}
     source_row = (((source_gs.get("tenants_v148") or {}).get("tenants") or {}).get(source_tenant) or {})
     imported_row = _v153_retarget_tenant_value(v153_sanitize(source_row), source_tenant, target_tenant)
-    if mode == "merge":
-        merged = _v153_copy.deepcopy(current_row)
-        for key, value in imported_row.items():
-            if key in {"settings", "users", "google_v149"} and isinstance(value, dict):
-                base = merged.setdefault(key, {})
-                if isinstance(base, dict):
-                    base.update(value)
-                else:
-                    merged[key] = value
-            elif key not in {"id", "owner_user_id", "created_at"}:
-                merged[key] = value
-        imported_row = merged
     imported_row["id"] = str(target_tenant)
     imported_row["owner_user_id"] = int(current_row.get("owner_user_id") or imported_row.get("owner_user_id") or 0)
     imported_row["chat_ids"] = sorted(source_chat_ids)
@@ -4253,7 +4250,9 @@ def _v153_restore_tenant_root(source_root: dict, manifest: dict, target_tenant: 
     return remap
 
 
-def _v153_apply_tenant_restore(raw: str, target_tenant: str, mode: str) -> None:
+def _v153_apply_tenant_restore(raw: str, target_tenant: str, mode: str = "replace") -> None:
+    # DATA CONSTITUTION: tenant GZ restore is always strict replace.
+    mode = "replace"
     src = _v153_sqlite3.connect(raw); src.row_factory = _v153_sqlite3.Row
     try:
         manifest = _v153_json.loads(src.execute("SELECT v FROM meta WHERE kind='v153_export' AND k='manifest'").fetchone()[0])
@@ -4284,23 +4283,10 @@ def _v153_apply_tenant_restore(raw: str, target_tenant: str, mode: str) -> None:
                 pass
         for row in src.execute("SELECT chat_id,v FROM chats").fetchall():
             cid = int(row[0]); payload = _v153_json.loads(row[1])
-            if mode == "merge" and str(cid) in (data.get("chats") or {}):
-                current = _lowram_materialize_chat_snapshot(cid, (data.get("chats") or {}).get(str(cid)))
-                current.update(payload); payload = current
             data.setdefault("chats", {})[str(cid)] = _lowram_wrap_store(cid, payload)
             SQLITE.save_chat(cid, _lowram_store_meta_payload(payload))
         for row in src.execute("SELECT chat_id,k,v FROM cold_fields").fetchall():
             cid = int(row[0]); key = str(row[1]); value = _v153_json.loads(row[2])
-            if mode == "merge":
-                old = SQLITE.get_cold(cid, key, None)
-                if isinstance(old, list) and isinstance(value, list):
-                    seen = set(); merged = []
-                    for item in old + value:
-                        sig = _v153_json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
-                        if sig not in seen: seen.add(sig); merged.append(item)
-                    value = merged
-                elif isinstance(old, dict) and isinstance(value, dict):
-                    old.update(value); value = old
             SQLITE.set_cold(cid, key, value)
         _v153_restore_tenant_root(source_root, manifest, target_tenant, target_chat_ids, mode)
         # Rebind imported chats only to the chosen target tenant.
@@ -4314,7 +4300,8 @@ def _v153_apply_tenant_restore(raw: str, target_tenant: str, mode: str) -> None:
         except Exception as exc:
             log_error(f"v184 tenant GZ post-restore rehydrate: {exc}")
         save_data(data, full=True)
-        schedule_delta_backup(int(target_row.get("root_chat_id") or next(iter(source_chat_ids), OWNER_ID or 0)), delay=0.1, reason=f"v184_tenant_restore_{mode}")
+        # No immediate giant delta here: constitution_reanchor_after_manual_restore()
+        # publishes the verified immutable generation right after this function returns.
     finally:
         src.close()
 
@@ -4355,6 +4342,8 @@ def _v153_restore_failed_tasks_from_db(raw: str, allowed_chat_ids: set[int] | No
 
 
 def _v153_execute_restore(token: str, mode: str, call) -> bool:
+    # DATA CONSTITUTION: /restore is strict REPLACE FROM FILE. Merge is a different operation and is not accepted here.
+    mode = "replace"
     with _V153_LOCK:
         row = _V153_RESTORE_PENDING.pop(str(token), None)
     if not row:
@@ -4376,8 +4365,9 @@ def _v153_execute_restore(token: str, mode: str, call) -> bool:
         else:
             _v153_apply_tenant_restore(str(row["raw"]), str(row["tenant_id"]), str(mode))
             restored_failed = _v153_restore_failed_tasks_from_db(str(row["raw"]), set(int(x) for x in ((row.get("manifest") or {}).get("chat_ids") or [])))
-        safe_edit(bot, call, f"✅ Восстановление завершено. Текущее состояние сохранено и поставлено в durable backup.\nFailed-задач восстановлено: {restored_failed}.")
-        bot_journal("v153_restore_applied", int(row["chat_id"]), f"scope={scope}; mode={mode}; tenant={row.get('tenant_id')}; by={uid}")
+        constitution_result = constitution_reanchor_after_manual_restore(f"gz_restore:{scope}:{mode}")
+        safe_edit(bot, call, f"✅ Восстановление завершено и закреплено DATA CONSTITUTION.\nGeneration: {(constitution_result.get('active') or {}).get('generation','—')}\nFailed-задач восстановлено: {restored_failed}.")
+        bot_journal("v153_restore_applied", int(row["chat_id"]), f"scope={scope}; mode={mode}; tenant={row.get('tenant_id')}; by={uid}; constitution=1")
     except Exception as exc:
         safe_edit(bot, call, f"❌ Восстановление остановлено:\n{v153_redact_text(exc)[:800]}")
         bot_journal("v153_restore_failed", int(row["chat_id"]), v153_redact_text(exc), "ERROR")
@@ -4638,8 +4628,12 @@ def _v177_legacy_0268_v149_extension_callback(call, data_str: str) -> bool:
                         except Exception: pass
                 safe_edit(bot, call, "❌ Восстановление отменено.")
                 return True
-            if action in {"replace", "merge"}:
-                return _v153_execute_restore(token, action, call)
+            if action == "merge":
+                try: bot.answer_callback_query(call.id, "Объединение через /restore отключено. Запустите /restore заново.", show_alert=True)
+                except Exception: pass
+                return True
+            if action == "replace":
+                return _v153_execute_restore(token, "replace", call)
     if callable(_V153_ORIG_EXTENSION_CALLBACK):
         return bool(_V153_ORIG_EXTENSION_CALLBACK(call, data_str))
     return False
@@ -4693,10 +4687,6 @@ _v153_add_command(["full_audit", "audit_full"], v153_cmd_full_audit)
 _v153_add_command(["mega_migration_status"], v153_cmd_mega_migration_status)
 _V153_RESTORE_HANDLERS = _v153_replace_restore_handler()
 _V153_CALLBACK_DEDUPE_HANDLERS = 0  # v179 final callback router owns dedupe
-try:
-    _V150_MUTATION_COMMANDS.update({"/restore"})
-except Exception:
-    pass
 
 
 def _v177_legacy_0084_runtime_mark_ready(detail: str = ""):
@@ -4743,7 +4733,7 @@ import gzip as _v154_gzip
 import tempfile as _v154_tempfile
 import json as _v154_json
 
-VERSION = "bot_v154_excel_usd_isolation_date_marks"
+VERSION = "bot_v186_restore_exact_fast"
 
 _V154_BASE_PERIOD_EXCEL_KEYBOARD = globals().get("_period_excel_style_keyboard")
 _V154_BASE_CATEGORY_COMPACT = globals().get("_category_rows_without_description")
@@ -5092,4 +5082,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v184_full_restore_contract
+# v186_restore_exact_fast

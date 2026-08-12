@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 def finance_mode_compact_icon(chat_id: int) -> str:
     """v108: hidden finance and visible auto-window mode are shown independently."""
     try:
@@ -410,6 +410,8 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, sour
     non-active currency ledger with a colliding R-id.
     """
     bot_journal("record_update_start", chat_id, f"rid={rid} amount={amount} note={note} msg={source_msg_id or ''}")
+    if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
+        return False
     chat_id = int(chat_id); rid = int(rid)
     op_id = operation_begin("finance_edit", chat_id, target=str(rid), payload={"amount": amount, "note": note, "source_msg_id": source_msg_id}, critical=True) if "operation_begin" in globals() else ""
     store = get_chat_store(chat_id)
@@ -498,6 +500,8 @@ def update_record_in_chat(chat_id: int, rid: int, amount: float, note: str, sour
 
 
 def delete_selected_records(chat_id: int, day_key: str) -> int:
+    if globals().get("constitution_quarantine_active") and constitution_quarantine_active():
+        return 0
     with locked_chat(chat_id):
         """Удаляет все отмеченные ☑️ записи одним проходом, без ошибки из-за перенумерации id."""
         store = get_chat_store(chat_id)
@@ -762,4 +766,4 @@ def _v177_legacy_0203_period_export_rows(chat_id: int, mode: str, day_key: str):
 try: _v177_legacy_0203_period_export_rows.__name__ = '_period_export_rows'
 except Exception: pass
 _period_export_rows = _v177_legacy_0203_period_export_rows
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

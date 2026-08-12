@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 _OPERATION_LOCK = threading.RLock()
 _PROCESS_CENTER_LOCK = threading.RLock()
 _EXPENSE_INBOX_LOCK = threading.RLock()
@@ -1094,6 +1094,15 @@ def finance_integrity_append(chat_id: int, action: str, record: dict | None = No
             anchor = {"seq": seq, "chat_id": cid, "hash": digest, "at": payload["at"]}
             root["anchor"] = dict(anchor)
     _root_save_coalesced("finance_integrity", 1.0)
+    # v185 DATA CONSTITUTION: every financial mutation gets an immutable external ledger event.
+    try:
+        ledger_fn = globals().get("constitution_ledger_append")
+        if callable(ledger_fn):
+            ledger_fn(cid, str(action), record, details, digest, seq)
+    except Exception as _constitution_ledger_exc:
+        try: constitution_set_quarantine(f"finance ledger append exception seq={seq}: {_constitution_ledger_exc}")
+        except Exception: pass
+        log_error(f"DATA CONSTITUTION ledger append: {_constitution_ledger_exc}")
     if anchor:
         pool = globals().get("GENERAL_TASK_POOL")
         if pool is not None:
@@ -1284,4 +1293,4 @@ def expense_draft_input_message(msg):
         raise
     finally:
         msg.text = original_text
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

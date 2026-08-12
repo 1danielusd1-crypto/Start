@@ -1,4 +1,4 @@
-# v184_full_restore_contract
+# v186_restore_exact_fast
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -783,26 +783,6 @@ def handle_document(msg):
             return
 
         try:
-            if fname in {"data.json", "data.ison"}:
-                os.replace(tmp_path, DATA_FILE)
-                _import_legacy_global_json_to_db(DATA_FILE, force=True)
-                data = load_data()
-
-                finance_active_chats.clear()
-                fac = data.get("finance_active_chats") or {}
-                for cid, enabled in fac.items():
-                    if enabled:
-                        try:
-                            finance_active_chats.add(int(cid))
-                        except Exception:
-                            pass
-
-                restore_mode = None
-                data.pop("_restore_mode_chat_v150", None)
-                save_data(data, chat_ids=[chat_id])
-                send_and_auto_delete(chat_id, "🟢 Глобальный JSON импортирован в SQLite!")
-                return
-
             if fname == "csv_meta.json":
                 os.replace(tmp_path, CSV_META_FILE)
                 _save_csv_meta(_load_json(CSV_META_FILE, {}) or {})
@@ -823,8 +803,8 @@ def handle_document(msg):
                     result = restore_from_json(chat_id, tmp_path, actor_user_id=uid)
                     restore_mode = None
                     data.pop("_restore_mode_chat_v150", None)
-                    save_data(data, full=True)
-                    send_and_auto_delete(chat_id, f"🟢 Полный JSON/ISON всего бота восстановлен. Чатов: {result.get('chats', 0)}", 18)
+                    constitution_reanchor_after_manual_restore("global_json_restore_exact")
+                    send_and_auto_delete(chat_id, f"🟢 Полный JSON/ISON всего бота восстановлен и закреплён. Чатов: {result.get('chats', 0)}", 18)
                     return
 
                 inner_chat_id = payload.get("chat_id")
@@ -846,16 +826,16 @@ def handle_document(msg):
                 result = restore_from_json(target_chat_id, tmp_path, actor_user_id=uid)
                 restore_mode = None
                 data.pop("_restore_mode_chat_v150", None)
-                save_data(data, chat_ids=[target_chat_id])
-                preserved = int(result.get("preserved_live_records", 0) or 0)
+                constitution_reanchor_after_manual_restore(f"chat_json_restore_exact:{target_chat_id}")
                 settings_count = int(((result.get("settings") or {}).get("settings_keys") or 0))
                 send_and_auto_delete(
                     chat_id,
-                    f"🟢 JSON/ISON полностью восстановлен: {get_chat_display_name(target_chat_id)}\n"
-                    f"Записей из backup: {result.get('backup_records', 0)}\n"
-                    f"Записей после безопасного объединения: {result.get('records_after', 0)}\n"
-                    f"Сохранено уникальных текущих записей: {preserved}\n"
-                    f"Восстановлено настроек: {settings_count}",
+                    f"🟢 JSON/ISON восстановлен СТРОГО ИЗ ФАЙЛА: {get_chat_display_name(target_chat_id)}\n"
+                    f"Записей в файле: {result.get('backup_records', 0)}\n"
+                    f"Записей после restore: {result.get('records_after', 0)}\n"
+                    f"Предыдущее live-состояние заменено: {result.get('replaced_live_records', 0)} записей\n"
+                    f"Восстановлено настроек: {settings_count}\n"
+                    "Ничего из текущего состояния не подмешивалось.",
                     22,
                 )
                 return
@@ -1561,4 +1541,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v184_full_restore_contract
+# v186_restore_exact_fast

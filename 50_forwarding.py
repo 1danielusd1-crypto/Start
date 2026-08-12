@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 def load_forward_rules():
     """
     Загружает forward_rules/forward_finance из SQLite,
@@ -2349,4 +2349,4 @@ def forward_any_message(source_chat_id: int, msg):
 
     except Exception as e:
         log_error(f"forward_any_message fatal: {e}")
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast

@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
 # ---- integrated from 105_v155_button_navigation_audit.py ----
 """v155: full button/navigation audit hardening and live callback outcome diagnostics."""
 
@@ -14,7 +14,7 @@ import threading as _v155_threading
 import time as _v155_time
 from collections import deque as _v155_deque
 
-VERSION = "bot_v155_button_navigation_audit"
+VERSION = "bot_v186_restore_exact_fast"
 
 V155_BUTTON_AUDIT_ENABLED = str(_v155_os.getenv("BUTTON_OUTCOME_AUDIT", "1") or "1").strip().lower() not in {"0", "false", "off", "no"}
 _V155_BUTTON_AUDIT_LOCK = _v155_threading.RLock()
@@ -413,7 +413,7 @@ import tempfile as _v156_tempfile
 import threading as _v156_threading
 import time as _v156_time
 
-VERSION = "bot_v156_process_status_usd_excel"
+VERSION = "bot_v186_restore_exact_fast"
 
 # ---------------------------------------------------------------------------
 # Visual process status. Telegram callback toasts have a platform-controlled
@@ -1037,7 +1037,7 @@ import tempfile as _v157_tempfile
 import threading as _v157_threading
 import time as _v157_time
 
-VERSION = "bot_v157_process_menu_navigation_repair"
+VERSION = "bot_v186_restore_exact_fast"
 
 # ---------------------------------------------------------------------------
 # Process window settings: one submenu in INFO, two explicit platform-owner
@@ -1738,7 +1738,7 @@ except Exception:
 # ---- integrated from 108_v158_no_process_messages_income_notes.py ----
 """v158: remove auxiliary process messages and add income annotations to every annotated Excel layout."""
 
-VERSION = "bot_v158_no_process_messages_income_notes"
+VERSION = "bot_v186_restore_exact_fast"
 
 # ---------------------------------------------------------------------------
 # 1) Process UI messages are disabled completely.
@@ -2108,7 +2108,7 @@ import sqlite3 as _v159_sqlite3
 import tempfile as _v159_tempfile
 import time as _v159_time
 
-VERSION = "bot_v159_internal_timers_helper_windows"
+VERSION = "bot_v186_restore_exact_fast"
 
 # ---------------------------------------------------------------------------
 # 1) Internal timer labels / new helper timers.
@@ -2714,7 +2714,7 @@ import threading as _v160_threading
 import time as _v160_time
 from datetime import timedelta as _v160_timedelta
 
-VERSION = "bot_v160_stability_parallel_windows_annotations"
+VERSION = "bot_v186_restore_exact_fast"
 
 # ---------------------------------------------------------------------------
 # 1) Generic telegram_update/process pop-up is removed again.
@@ -3373,10 +3373,6 @@ def _v177_legacy_0244_return_to_main_window_closing_previous(chat_id: int, day_k
             pass
         if result == "ok":
             set_active_window_id(chat_id, day_key, current_mid)
-            try:
-                register_open_window(chat_id, current_mid, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": True})
-            except Exception:
-                pass
             if old_mid and old_mid != current_mid:
                 try:
                     row = get_registered_open_window(chat_id, old_mid) or {}
@@ -4176,7 +4172,7 @@ import tempfile as _v161_tempfile
 import threading as _v161_threading
 import time as _v161_time
 
-VERSION = "bot_v161_button_window_stability"
+VERSION = "bot_v186_restore_exact_fast"
 
 # 1. Ф232 is forbidden for ordinary telegram_update/background work. Ф233 stays for real file jobs.
 try:
@@ -4552,8 +4548,6 @@ def _v161_send_main(chat_id: int, day_key: str) -> int:
     mid = int(getattr(sent, "message_id", 0) or 0)
     if mid:
         set_active_window_id(int(chat_id), str(day_key), mid)
-        try: register_open_window(int(chat_id), mid, "main_day", code="О1", day_key=str(day_key), params={"parallel_allowed": True})
-        except Exception: pass
     try: schedule_balance_panel_refresh(int(chat_id), 0.05)
     except Exception: pass
     return mid
@@ -4576,8 +4570,6 @@ def return_to_main_window_closing_previous(chat_id: int, day_key: str, current_m
         except Exception: pass
         if result == "ok":
             set_active_window_id(chat_id, day_key, current_mid)
-            try: register_open_window(chat_id, current_mid, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": True})
-            except Exception: pass
             try: schedule_balance_panel_refresh(chat_id, 0.05)
             except Exception: pass
             return True
@@ -4663,8 +4655,6 @@ def _v161_cmd_start(msg):
         result = _v161_edit_retry(chat_id, mid, txt, reply_markup=kb, parse_mode="HTML", purpose="start_reuse_main")
         if result == "ok":
             set_active_window_id(chat_id, day_key, mid)
-            try: register_open_window(chat_id, mid, "main_day", code="О1", day_key=day_key, params={"parallel_allowed": True})
-            except Exception: pass
             try: schedule_balance_panel_refresh(chat_id, 0.05)
             except Exception: pass
             try: bot_journal("start_v161_reused", chat_id, f"day={day_key}; msg={mid}")
@@ -5003,7 +4993,7 @@ import sqlite3 as _v162_sqlite3
 import tempfile as _v162_tempfile
 import threading as _v162_threading
 
-VERSION = "bot_v162_start_hard_fix"
+VERSION = "bot_v186_restore_exact_fast"
 
 _V162_START_LOCK_GUARD = _v162_threading.RLock()
 _V162_START_LOCKS = {}
@@ -5223,4 +5213,4 @@ try:
     bot_journal("v162_start_hard_fix_installed", int(OWNER_ID or 0), "process_new_updates_intercept=1; start_always_new_f91=1; silent_returns=0")
 except Exception:
     pass
-# v183_restore_json_routing_fix
+# v186_restore_exact_fast
