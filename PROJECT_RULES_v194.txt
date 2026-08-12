@@ -1,0 +1,8 @@
+v194 PROJECT RULES
+
+1. Любая правка Excel/таблиц применяется глобально ко всем путям/периодам/контурам.
+2. Telegram и Google одного отчета используют один канонический dataset/formula source.
+3. ARS и USD не смешиваются.
+4. Остаток с прошлого периода считается одной канонической функцией соответствующей валюты.
+5. Visible CSV/XLSX/Google tables никогда не считают финансовые итоги из legacy raw amount/daily_records, если доступен canonical projection.
+6. JSON/GZ restore artifacts остаются lossless и не должны меняться ради визуальной таблицы.

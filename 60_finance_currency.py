@@ -1,4 +1,4 @@
-# v192_excel_ars_usd_delivery_final
+# v194_excel_canonical_opening_total_final
 # ─────────────────────────────────────────────────────────────
 # v86: гомонковые резервы, остаток после расходов и USD
 # ─────────────────────────────────────────────────────────────
@@ -488,6 +488,16 @@ def open_gomonk_window(chat_id: int, message_id: int | None = None, currency: st
 
 
 def _opening_balance_before_day(store: dict, day_key: str) -> float:
+    """Canonical ARS opening used by the remaining-balance window too."""
+    cid_resolver = globals().get("_excel_chat_id_for_store")
+    canonical = globals().get("_excel_canonical_opening_balance")
+    if callable(cid_resolver) and callable(canonical):
+        try:
+            cid = cid_resolver(store)
+            if cid is not None:
+                return float(canonical(int(cid), "ars", str(day_key or "")[:10], 0, False))
+        except Exception:
+            pass
     total = 0.0
     for rec in (store.get("records", []) or []):
         try:
@@ -507,7 +517,17 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
         with_gomonk = bool(settings.get(remaining_key, True))
     reserve = gomonk_total(chat_id, currency) if (with_gomonk and gomonk_enabled(chat_id, currency)) else 0.0
     view_usd = currency == "usd" and usd_transactions_view_enabled(int(chat_id))
-    if view_usd:
+    canonical_open = globals().get("_excel_canonical_opening_balance")
+    canonical_range = globals().get("_excel_canonical_records_for_range")
+    canonical_all = globals().get("_v151_all_records")
+    canonical_mode = callable(canonical_open) and callable(canonical_range) and callable(canonical_all)
+    if canonical_mode:
+        cur = "usd" if view_usd else "ars"
+        running = float(canonical_open(int(chat_id), cur, str(day_key), 0, False))
+        day_records = list(canonical_range(int(chat_id), cur, str(day_key), str(day_key)) or [])
+        current_balance = sum(float(r.get("_v151_amount", 0) or 0) for r in (canonical_all(int(chat_id), cur) or []))
+        amount_fmt = (lambda value: fmt_usd_native(value)) if view_usd else (lambda value: format_chat_amount(chat_id, value, mixed_space=False))
+    elif view_usd:
         running = 0.0
         for rec in sorted((store.get("records", []) or []), key=record_sort_key):
             try:
@@ -535,7 +555,10 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
     shown = 0
     for rec in day_records:
         try:
-            amount = float(rec.get("usd_amount", 0) or 0) if view_usd else float(rec.get("amount", 0) or 0)
+            if canonical_mode:
+                amount = float(rec.get("_v151_amount", rec.get("usd_amount" if view_usd else "amount", 0)) or 0)
+            else:
+                amount = float(rec.get("usd_amount", 0) or 0) if view_usd else float(rec.get("amount", 0) or 0)
         except Exception:
             continue
         running += amount
@@ -543,7 +566,11 @@ def build_remaining_text(chat_id: int, day_key: str, with_gomonk: bool | None = 
             continue
         shown += 1
         rid = (rec.get("usd_short_id") or f"U{rec.get('id', '')}") if view_usd else (rec.get("short_id") or f"R{rec.get('id', '')}")
-        note = html.escape(str((rec.get("usd_note") or rec.get("note") or "") if view_usd else (rec.get("note") or "")).strip())
+        if canonical_mode:
+            note_raw = rec.get("_v151_note", rec.get("usd_note") if view_usd else rec.get("note")) or ""
+        else:
+            note_raw = (rec.get("usd_note") or rec.get("note") or "") if view_usd else (rec.get("note") or "")
+        note = html.escape(str(note_raw).strip())
         after = running - reserve
         label = "ост:" if show_ost else ""
         lines.append(f"{rid} {amount_fmt(amount)} {note} ({label}{amount_fmt(after)})".rstrip())
@@ -2166,4 +2193,4 @@ def send_or_edit_edit_prompt(chat_id: int, store_key: str, text: str, reply_mark
                 pass
     sent = _tg_call_retry(bot.send_message, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, purpose="edit_prompt_send_message")
     return sent.message_id
-# v192_excel_ars_usd_delivery_final
+# v194_excel_canonical_opening_total_final

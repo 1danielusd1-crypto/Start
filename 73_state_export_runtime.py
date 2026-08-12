@@ -1,4 +1,4 @@
-# v193_excel_formula_single_source_final
+# v194_excel_canonical_opening_total_final
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -1331,6 +1331,10 @@ def _v151_opening_balance(chat_id: int, currency: str, ctx: dict | None = None) 
     start_key, _end_key = _v151_context_bounds(chat_id, ctx)
     start_rid = int(ctx.get("start_rid") or 0)
     exact = str(ctx.get("kind") or "") == "exact"
+    canonical = globals().get("_excel_canonical_opening_balance")
+    if callable(canonical):
+        return float(canonical(int(chat_id), currency, start_key, start_rid, exact))
+    # Bootstrap fallback while this module is still being executed.
     total = 0.0
     for rec in _v151_all_records(chat_id, currency):
         day = _v151_day_key(rec)
@@ -1686,14 +1690,26 @@ def send_exact_range_export(recipient_chat_id: int, target_chat_id: int, start_k
 
 
 def _v177_legacy_0204_period_export_rows(chat_id: int, mode: str, day_key: str):
+    """Canonical rows for every CSV/XLSX period export.
+
+    CSV follows the selected ARS/USD operation view. XLSX builders later build
+    both isolated ledgers, so ARS rows here are only the presence/caption source.
+    """
     ctx = _v151_context()
-    if str(ctx.get("file_type") or "").lower() not in {"xlsx", "xlsxstat"}:
-        return _V151_BASE_PERIOD_ROWS(chat_id, mode, day_key)
-    records = _v151_records_in_context(int(chat_id), "ars", ctx)
+    file_type = str(ctx.get("file_type") or "csv").lower()
+    store = get_chat_store(int(chat_id))
+    currency = "ars" if file_type in {"xlsx", "xlsxstat"} else ("usd" if financial_view_is_usd(store) else "ars")
+    records = _v151_records_in_context(int(chat_id), currency, ctx)
+    if file_type in {"xlsx", "xlsxstat"} and not records:
+        # An XLSX with only USD activity is still a valid report.
+        records = _v151_records_in_context(int(chat_id), "usd", ctx)
     rows = [(fmt_date_table(_v151_day_key(r)), fmt_csv_amount(r.get("_v151_amount")), r.get("_v151_note", "")) for r in records]
-    labels = {"day": "за день", "week": "за неделю", "month": "за месяц", "wedthu": "Ср–Чт", "all": "за всё время"}
+    labels = {"day": "за день", "week": "за неделю", "month": "за месяц", "wedthu": "Чт–Ср", "all": "за всё время"}
     normalized = str(mode or "all").replace("csv_", "").replace("xlsx_", "")
-    return rows, labels.get(normalized, "за всё время")
+    label = labels.get(normalized, "за всё время")
+    if currency == "usd" and file_type not in {"xlsx", "xlsxstat"}:
+        label = "USD " + label
+    return rows, label
 try: _v177_legacy_0204_period_export_rows.__name__ = '_period_export_rows'
 except Exception: pass
 _period_export_rows = _v177_legacy_0204_period_export_rows
@@ -1701,11 +1717,13 @@ _period_export_rows = _v177_legacy_0204_period_export_rows
 
 def _exact_export_rows(chat_id: int, start_key: str, start_rid: int, end_key: str, end_rid: int):
     ctx = _v151_context()
-    if str(ctx.get("file_type") or "").lower() not in {"xlsx", "xlsxstat"}:
-        return _V151_BASE_EXACT_ROWS(chat_id, start_key, start_rid, end_key, end_rid)
-    ars = _v151_records_in_context(int(chat_id), "ars", ctx)
-    presence = ars or _v151_records_in_context(int(chat_id), "usd", ctx)
-    return [(fmt_date_table(_v151_day_key(r)), fmt_csv_amount(r.get("_v151_amount")), r.get("_v151_note", "")) for r in presence]
+    file_type = str(ctx.get("file_type") or "csv").lower()
+    store = get_chat_store(int(chat_id))
+    currency = "ars" if file_type in {"xlsx", "xlsxstat"} else ("usd" if financial_view_is_usd(store) else "ars")
+    records = _v151_records_in_context(int(chat_id), currency, ctx)
+    if file_type in {"xlsx", "xlsxstat"} and not records:
+        records = _v151_records_in_context(int(chat_id), "usd", ctx)
+    return [(fmt_date_table(_v151_day_key(r)), fmt_csv_amount(r.get("_v151_amount")), r.get("_v151_note", "")) for r in records]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4875,6 +4893,111 @@ except Exception: pass
 _export_end_calendar_keyboard = _v177_legacy_0171_export_end_calendar_keyboard
 
 
+
+# v194: one canonical opening-balance contract for every Excel/Google/table path.
+# "Остаток с прошлого раза" means the balance of THIS currency immediately
+# before the export boundary.  It must never depend on raw legacy amount,
+# daily_records, cached balance or the currently selected UI currency.
+def _excel_canonical_opening_balance(chat_id: int, currency: str, start_day: str, start_rid: int | None = 0, exact: bool = False) -> float:
+    cid = int(chat_id)
+    cur = "usd" if str(currency or "ars").strip().lower() == "usd" else "ars"
+    start = str(start_day or "")[:10]
+    try:
+        start_rid = int(start_rid or 0)
+    except Exception:
+        start_rid = 0
+    total = 0.0
+    rows = list(_v151_all_records(cid, cur) or [])
+    try:
+        rows = sorted(rows, key=record_sort_key)
+    except Exception:
+        pass
+    target_sort_key = None
+    # Exact record IDs historically belong to the ARS ledger.  When such a
+    # record is found, use its true sort boundary rather than assuming ids are
+    # perfectly monotonic.  USD keeps the day boundary unless its own exact
+    # record exists in a future compatible flow.
+    if bool(exact) and start_rid and cur == "ars":
+        try:
+            target = next((r for r in rows if _v151_day_key(r) == start and int(r.get("id") or 0) == start_rid), None)
+            if target is not None:
+                target_sort_key = record_sort_key(target)
+        except Exception:
+            target_sort_key = None
+    for rec in rows:
+        day = _v151_day_key(rec)
+        if not day:
+            continue
+        amount = _v151_float(rec.get("_v151_amount"))
+        if day < start:
+            total += amount
+            continue
+        if day > start:
+            break
+        if not bool(exact) or not start_rid or cur != "ars":
+            break
+        if target_sort_key is not None:
+            try:
+                if record_sort_key(rec) < target_sort_key:
+                    total += amount
+                    continue
+            except Exception:
+                pass
+            break
+        # Compatibility fallback for very old rows where only id is usable.
+        try:
+            if int(rec.get("id") or 0) < start_rid:
+                total += amount
+                continue
+        except Exception:
+            pass
+        break
+    return float(total)
+
+
+def _excel_canonical_records_for_range(chat_id: int, currency: str, start_day: str, end_day: str) -> list[dict]:
+    cid = int(chat_id)
+    cur = "usd" if str(currency or "ars").strip().lower() == "usd" else "ars"
+    start = str(start_day or "")[:10]
+    end = str(end_day or start)[:10]
+    if end < start:
+        start, end = end, start
+    out = []
+    for rec in _v151_all_records(cid, cur) or []:
+        day = _v151_day_key(rec)
+        if day and start <= day <= end:
+            out.append(rec)
+    try:
+        return sorted(out, key=record_sort_key)
+    except Exception:
+        return out
+
+
+def _excel_chat_id_for_store(store: dict | None) -> int | None:
+    if not isinstance(store, dict):
+        return None
+    try:
+        ctx = _v151_context()
+        cid = int(ctx.get("target_chat_id") or 0)
+        if cid:
+            return cid
+    except Exception:
+        pass
+    try:
+        for raw_cid, row in (data.get("chats", {}) or {}).items():
+            if row is store:
+                return int(raw_cid)
+    except Exception:
+        pass
+    try:
+        owner_scope = int((store.get("settings", {}) or {}).get("owner_scope_id") or 0)
+        if owner_scope:
+            return owner_scope
+    except Exception:
+        pass
+    return None
+
+
 # v192 canonical USD export ledger.
 # Historical snapshots may contain a polluted usd_records list that is merely a
 # byte-for-byte/business clone of ARS records.  At the same time older legitimate
@@ -5214,4 +5337,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v193_excel_formula_single_source_final
+# v194_excel_canonical_opening_total_final

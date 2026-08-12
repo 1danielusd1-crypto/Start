@@ -1,0 +1,18 @@
+{
+  "version": "bot_v194_excel_canonical_opening_total_final",
+  "changed_runtime_files": [
+    "10_mega_runtime.py",
+    "60_finance_currency.py",
+    "63_google_sheets.py",
+    "90_commands_exports.py",
+    "73_state_export_runtime.py",
+    "85_runtime_control.py",
+    "bot.py"
+  ],
+  "canonical_opening": "73_state_export_runtime.py::_excel_canonical_opening_balance",
+  "canonical_period_records": "73_state_export_runtime.py::_excel_canonical_records_for_range / _v151_records_in_context",
+  "excel_google_builders": "73_state_export_runtime.py + 75_platform_features_runtime.py",
+  "legacy_month_tabl_bridge": "10_mega_runtime.py",
+  "remaining_window_bridge": "60_finance_currency.py",
+  "csv_delivery": "63_google_sheets.py + 90_commands_exports.py"
+}

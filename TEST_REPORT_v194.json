@@ -1,0 +1,43 @@
+{
+  "version": "bot_v194_excel_canonical_opening_total_final",
+  "created_at": "2026-08-12T16:09:48.213775+00:00",
+  "scope": "global Excel/XLSX/CSV/Google Sheets opening-balance canonicalization",
+  "contract": {
+    "opening_balance": "sum of canonical currency movements strictly before period start; exact ARS range also includes earlier same-day records before selected start record",
+    "currency_isolation": "ARS and USD independent",
+    "delivery_single_source": "Telegram and Google use the same canonical row/table builders",
+    "backup_semantics": "JSON backup remains lossless/raw; visible CSV/XLSX tables are canonical projections"
+  },
+  "synthetic_regression": {
+    "ars_open_2026_07_01": 800.0,
+    "usd_open_2026_07_01": 500.0,
+    "ars_exact_before_record_4": 900.0,
+    "ars_close_2026_07_01_equals_open_2026_07_02": true,
+    "usd_close_2026_07_01_equals_open_2026_07_02": true
+  },
+  "real_uploaded_workbook_regression": {
+    "google_workbook_july_ars_opening": 1265496.33,
+    "google_workbook_july_ars_closing": 214815.33,
+    "google_workbook_august_ars_opening": 214815.33000000007,
+    "july_closing_equals_august_opening": true,
+    "note": "Old workbook USD closing formulas are historical pre-v193 defects and are not used as v194 truth."
+  },
+  "static_checks": {
+    "runtime_modules": 27,
+    "compile_all": true,
+    "duplicate_top_level_files": 0,
+    "mega_backups_start_refs": 0,
+    "canonical_opening_helper_once": 1,
+    "v151_opening_definition_count_in_73": 1,
+    "legacy_exact_opening_definition_count_total": 1,
+    "remaining_window_canonical": true,
+    "monthly_visible_opening_canonical": true,
+    "tabl_lsx_opening_canonical": true,
+    "csv_period_canonical": true,
+    "prebuilt_raw_csv_shortcut_disabled": true,
+    "manual_csv_routes_canonical": true,
+    "category_override_tabl_lsx": true,
+    "usd_formula_domain_guard_retained": true,
+    "manifest_hashes": true
+  }
+}
