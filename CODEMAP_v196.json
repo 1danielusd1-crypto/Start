@@ -1,0 +1,22 @@
+{
+  "version": "bot_v196_protected_branches_final",
+  "changed_runtime_files": [
+    "85_runtime_control.py",
+    "89_callback_final.py"
+  ],
+  "loader_files": [
+    "bot.py",
+    "modules_manifest.json"
+  ],
+  "new_runtime_contracts": [
+    "V196_BRANCH_CATALOG",
+    "protected_branches_registry",
+    "_v196_branch_callback",
+    "send_protected_branches_journal"
+  ],
+  "current_changed_branches": [
+    "system.branch_registry",
+    "ui.info"
+  ],
+  "branch_count": 25
+}

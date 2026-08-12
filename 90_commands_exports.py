@@ -1,114 +1,18 @@
-# v194_balance_source_truth_final
+# v194_excel_canonical_opening_total_final
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
-    if usd_transactions_view_enabled(int(chat_id)):
-        return send_export_for_chat_to(chat_id, chat_id, "week", day_key, "csv")
-    try:
-        store = get_chat_store(chat_id)
+    return send_export_for_chat_to(int(chat_id), int(chat_id), "week", day_key, "csv")
 
-        base = datetime.strptime(day_key, "%Y-%m-%d")
-        start = base - timedelta(days=6)
-
-        rows = []
-
-        for i in range(7):
-            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
-            for r in store.get("daily_records", {}).get(d, []):
-                rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
-
-        if not rows:
-            send_info(chat_id, "Нет данных за неделю")
-            return
-
-        tmp = f"week_{chat_id}.csv"
-
-        with open(tmp, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["date", "amount", "note"])
-            rows.sort(key=lambda row: str(row[0]))
-            write_csv_rows_with_day_gaps(w, rows, 3)
-
-        with open(tmp, "rb") as f:
-            bot.send_document(chat_id, f, caption="🗓 CSV за неделю")
-
-    except Exception as e:
-        log_error(f"send_csv_week: {e}")
 def send_csv_month(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
-    if usd_transactions_view_enabled(int(chat_id)):
-        return send_export_for_chat_to(chat_id, chat_id, "month", day_key, "csv")
-    try:
-        store = get_chat_store(chat_id)
+    return send_export_for_chat_to(int(chat_id), int(chat_id), "month", day_key, "csv")
 
-        base = datetime.strptime(day_key, "%Y-%m-%d")
-        start = base.replace(day=1)
-
-        rows = []
-
-        for d, recs in store.get("daily_records", {}).items():
-            dt = datetime.strptime(d, "%Y-%m-%d")
-            if dt >= start and dt <= base:
-                for r in recs:
-                    rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
-
-        if not rows:
-            send_info(chat_id, "Нет данных за месяц")
-            return
-
-        tmp = f"month_{chat_id}.csv"
-
-        with open(tmp, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["date", "amount", "note"])
-            rows.sort(key=lambda row: str(row[0]))
-            write_csv_rows_with_day_gaps(w, rows, 3)
-
-        with open(tmp, "rb") as f:
-            bot.send_document(chat_id, f, caption="📆 CSV за месяц")
-
-    except Exception as e:
-        log_error(f"send_csv_month: {e}")
 def _v177_legacy_0226_send_csv_wedthu(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
-    if usd_transactions_view_enabled(int(chat_id)):
-        return send_export_for_chat_to(chat_id, chat_id, "wedthu", day_key, "csv")
-    try:
-        store = get_chat_store(chat_id)
-
-        base = datetime.strptime(day_key, "%Y-%m-%d")
-
-        while base.weekday() != 2:
-            base -= timedelta(days=1)
-
-        start = base
-
-        rows = []
-
-        for i in range(2):
-            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
-            for r in store.get("daily_records", {}).get(d, []):
-                rows.append((fmt_date_table(d), fmt_csv_amount(r["amount"]), r.get("note", "")))
-
-        if not rows:
-            send_info(chat_id, "Нет данных Ср–Чт")
-            return
-
-        tmp = f"wedthu_{chat_id}.csv"
-
-        with open(tmp, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["date", "amount", "note"])
-            rows.sort(key=lambda row: str(row[0]))
-            write_csv_rows_with_day_gaps(w, rows, 3)
-
-        with open(tmp, "rb") as f:
-            bot.send_document(chat_id, f, caption="📊 CSV Ср–Чт")
-
-    except Exception as e:
-        log_error(f"send_csv_wedthu: {e}")
+    return send_export_for_chat_to(int(chat_id), int(chat_id), "wedthu", day_key, "csv")
 try: _v177_legacy_0226_send_csv_wedthu.__name__ = 'send_csv_wedthu'
 except Exception: pass
 send_csv_wedthu = _v177_legacy_0226_send_csv_wedthu
@@ -559,7 +463,7 @@ def _v177_legacy_0230_refresh_total_message_if_any(chat_id: int):
     if not msg_id:
         return
     try:
-        chat_bal = current_chat_balance_v194(chat_id) if "current_chat_balance_v194" in globals() else store.get("balance", 0)
+        chat_bal = store.get("balance", 0)
         if not is_owner_chat(chat_id):
             text = wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
         else:
@@ -580,7 +484,7 @@ def _v177_legacy_0230_refresh_total_message_if_any(chat_id: int):
                     continue
                 if cid_int not in allowed_chat_ids:
                     continue
-                bal = current_chat_balance_v194(cid_int) if "current_chat_balance_v194" in globals() else st.get("balance", 0)
+                bal = st.get("balance", 0)
                 total_all += bal
                 if cid_int == chat_id:
                     continue
@@ -865,7 +769,7 @@ def cmd_balance(msg):
     if not require_finance(chat_id):
         return
     store = get_chat_store(chat_id)
-    bal = current_chat_balance_v194(chat_id) if "current_chat_balance_v194" in globals() else store.get("balance", 0)
+    bal = store.get("balance", 0)
     send_info(chat_id, f"💰 Баланс: {fmt_num(bal)}")
 @bot.message_handler(commands=["report"])
 def cmd_report(msg):
@@ -888,66 +792,20 @@ def cmd_report(msg):
     report_html = "<pre>" + html.escape("\n".join(lines)) + "</pre>"
     send_html_and_auto_delete(chat_id, report_html, 20)
 def cmd_csv_all(chat_id: int):
-    """
-    Общий CSV этого чата (все дни этого чата).
-    """
+    """Canonical CSV for all history of the current ARS/USD view."""
     if is_finance_output_suppressed(chat_id):
         return
     if not require_finance(chat_id):
         return
-    try:
-        save_chat_json(chat_id)
-        path = chat_csv_file(chat_id)
-        if not os.path.exists(path):
-            send_info(chat_id, "CSV файла ещё нет.")
-            return
-        with open(path, "rb") as f:
-            bot.send_document(
-                chat_id,
-                f,
-                caption=f"📂 Общий CSV: {get_chat_display_name(chat_id)}"
-            )
-    except Exception as e:
-        log_error(f"cmd_csv_all: {e}")
+    return send_export_for_chat_to(int(chat_id), int(chat_id), "all", today_key(), "csv")
+
 def cmd_csv_day(chat_id: int, day_key: str):
-    """CSV только за один день для текущего чата, date DD:MM:YY."""
+    """CSV for one day from the same canonical ARS/USD ledger as Excel/Google."""
     if is_finance_output_suppressed(chat_id):
         return
     if not require_finance(chat_id):
         return
-    store = get_chat_store(chat_id)
-    day_recs = sorted(store.get("daily_records", {}).get(day_key, []) or [], key=record_sort_key)
-    if not day_recs:
-        send_info(chat_id, "Нет записей за этот день.")
-        return
-    tmp_name = f"data_{chat_id}_{day_key}.csv"
-    try:
-        with open(tmp_name, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["date", "chat", "ID", "short_id", "timestamp", "amount", "note", "owner", "day_key"])
-            rows = []
-            for r in day_recs:
-                rows.append((
-                    fmt_date_table(day_key),
-                    get_chat_display_name(chat_id),
-                    r.get("id"),
-                    r.get("short_id"),
-                    r.get("timestamp"),
-                    fmt_csv_amount(r.get("amount")),
-                    r.get("note"),
-                    r.get("owner"),
-                    day_key,
-                ))
-            write_csv_rows_with_day_gaps(w, rows, 9)
-        with open(tmp_name, "rb") as f:
-            bot.send_document(chat_id, f, caption=f"📅 CSV за день {fmt_date_table(day_key)}: {get_chat_display_name(chat_id)}")
-    except Exception as e:
-        log_error(f"cmd_csv_day: {e}")
-    finally:
-        try:
-            os.remove(tmp_name)
-        except FileNotFoundError:
-            pass
+    return send_export_for_chat_to(int(chat_id), int(chat_id), "day", str(day_key)[:10], "csv")
 
 @bot.message_handler(commands=["runtime_export"])
 def cmd_runtime_export(msg):
@@ -1009,31 +867,18 @@ def cmd_xlsx(msg):
         send_and_auto_delete(chat_id, f"⏳ {info}. Новая копия в очередь не добавлена.", 10)
 
 def _send_csv_current_chat_job(chat_id: int):
-    """Export the current ledger. In 💵 USD operations mode this is a pure USD CSV."""
+    """Canonical current-ledger CSV; same source as all Excel/Google tables."""
     try:
-        if usd_transactions_view_enabled(int(chat_id)):
-            return send_export_for_chat_to(chat_id, chat_id, "all", today_key(), "csv")
-        _file_job_progress("обновляю CSV", force=True)
-        export_global_csv(data)
-        save_chat_json(chat_id)
-        per_csv = chat_csv_file(chat_id)
-        sent = None
-        if os.path.exists(per_csv):
-            _file_job_progress("отправляю CSV в Telegram", force=True)
-            with open(per_csv, "rb") as f:
-                sent = _tg_call_retry(bot.send_document, chat_id, f, caption="📂 CSV этого чата", timeout=120, purpose="manual_csv_export")
-        if OWNER_ID and chat_id == int(OWNER_ID):
-            meta = _load_csv_meta()
-            if sent and getattr(sent, "document", None):
-                meta["file_id_csv"] = sent.document.file_id
-            meta["message_id_csv"] = getattr(sent, "message_id", meta.get("message_id_csv"))
-            _save_csv_meta(meta)
-        send_backup_to_channel(chat_id)
-        return True
+        _file_job_progress("собираю канонический CSV", force=True)
+        ok = send_export_for_chat_to(int(chat_id), int(chat_id), "all", today_key(), "csv")
+        try:
+            send_backup_to_channel(chat_id)
+        except Exception:
+            pass
+        return bool(ok is not False)
     except Exception as e:
         log_error(f"_send_csv_current_chat_job: {e}")
         return False
-
 
 @bot.message_handler(commands=["csv"])
 def cmd_csv(msg):
@@ -1785,4 +1630,4 @@ def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v194_balance_source_truth_final
+# v194_excel_canonical_opening_total_final

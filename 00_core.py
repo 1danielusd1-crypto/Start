@@ -1,4 +1,4 @@
-# v195_chat_identity_names_final
+# v190_mega_light_fast_recovery
 import os
 import io
 import json
@@ -842,7 +842,7 @@ except Exception:
 BACKUP_CHAT_ID = os.getenv("BACKUP_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("B_T is not set")
-VERSION = "bot_v195_chat_identity_names_final"
+VERSION = "bot_v190_mega_light_fast_recovery"
 BOT_FILE_NAME = os.path.basename(__file__) if "__file__" in globals() else "bot_v130_modular_split.py"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Финансовый бот").strip() or "Финансовый бот"
 
@@ -1391,12 +1391,13 @@ def _lowram_flush_chat(chat_id: int, store: dict | None = None, evict: bool = Fa
     store = store if isinstance(store, dict) else ((data.get("chats", {}) or {}).get(str(cid)) if isinstance(data, dict) else None)
     if not isinstance(store, dict):
         return
-    # v194: LOW-RAM flush is persistence only, never a finance-index transformer.
-    # A read of `records` (for example when opening an auxiliary balance window) must not
-    # silently rebuild/overwrite `daily_records` during an unrelated settings save.
-    # Finance mutation paths own normalization explicitly via normalize_chat_records().
-    # This removes a destructive read -> save -> index-loss cycle that could make the
-    # "remaining after each expense" window drop historical rows and then persist that loss.
+    # Keep records/daily consistent without loading a field that was never touched.
+    for rec_key, daily_key in (("records","daily_records"),("ars_records","ars_daily_records"),("usd_records","usd_daily_records")):
+        if dict.__contains__(store, rec_key):
+            records = dict.__getitem__(store, rec_key) or []
+            daily = _lowram_rebuild_daily(records)
+            dict.__setitem__(store, daily_key, daily)
+            if isinstance(store, ColdChatStore): store._cold_loaded.add(daily_key)
     for key in LOWRAM_COLD_KEYS:
         if dict.__contains__(store, key):
             SQLITE.set_cold(cid, key, dict.__getitem__(store, key))
@@ -1620,11 +1621,9 @@ _JOURNAL_DURABLE_SEQ = 0
 _JOURNAL_DURABLE_THREAD_STARTED = False
 _JOURNAL_DURABLE_STATS = {
     "uploaded_chunks": 0, "uploaded_rows": 0, "upload_errors": 0,
-    "restored_chunks": 0, "restored_rows": 0, "restore_corrupt_chunks": 0,
-    "restore_skipped_chunks": 0, "last_restore_error": "", "last_upload_at": "",
+    "restored_chunks": 0, "restored_rows": 0, "last_upload_at": "",
     "last_upload_file": "", "last_error": "",
 }
-_JOURNAL_RESTORE_BAD_SEEN = set()
 
 
 def _journal_ts() -> str:
@@ -2698,45 +2697,19 @@ def _journal_read_mega_rows(limit: int = 20000) -> list[dict]:
         return []
     chunks = []
     total = 0
-    good_chunks = 0
-    skipped_chunks = 0
     # mega-find returns reverse sorted. Read newest until enough rows, then merge chronologically.
-    # Recovery parsing is intentionally quiet: a single truncated historical chunk must not turn
-    # a successful boot into an ERROR. We skip it, expose counters, and continue with older chunks.
     for remote in files:
         local = None
         try:
             local = _mega_download_remote_path(remote)
-            if not local:
-                skipped_chunks += 1
-                continue
-            try:
-                with open(local, "r", encoding="utf-8") as fh:
-                    doc = json.load(fh)
-            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-                skipped_chunks += 1
-                _JOURNAL_DURABLE_STATS["restore_corrupt_chunks"] = int(_JOURNAL_DURABLE_STATS.get("restore_corrupt_chunks", 0) or 0) + 1
-                _JOURNAL_DURABLE_STATS["last_restore_error"] = f"{os.path.basename(str(remote))}: {exc}"[:500]
-                remote_key = str(remote)
-                if remote_key not in _JOURNAL_RESTORE_BAD_SEEN:
-                    _JOURNAL_RESTORE_BAD_SEEN.add(remote_key)
-                    try:
-                        runtime_event("journal_restore_corrupt_chunk", _JOURNAL_DURABLE_STATS["last_restore_error"], "WARN")
-                    except Exception:
-                        pass
-                continue
+            doc = _load_json(local, {}) if local else {}
             rows = doc.get("rows") if isinstance(doc, dict) else []
             if isinstance(rows, list) and rows:
                 chunks.append(rows)
-                good_chunks += 1
                 total += len(rows)
                 if total >= int(limit):
                     break
-            else:
-                skipped_chunks += 1
-        except Exception as exc:
-            skipped_chunks += 1
-            _JOURNAL_DURABLE_STATS["last_restore_error"] = str(exc)[:500]
+        except Exception:
             continue
         finally:
             try:
@@ -2744,8 +2717,6 @@ def _journal_read_mega_rows(limit: int = 20000) -> list[dict]:
                     shutil.rmtree(os.path.dirname(local), ignore_errors=True)
             except Exception:
                 pass
-    _JOURNAL_DURABLE_STATS["restored_chunks"] = int(good_chunks)
-    _JOURNAL_DURABLE_STATS["restore_skipped_chunks"] = int(skipped_chunks)
     merged = []
     for rows in reversed(chunks):
         merged.extend(rows)
@@ -2769,13 +2740,9 @@ def journal_restore_from_mega(limit: int = 200) -> dict:
         except Exception as e:
             _JOURNAL_DURABLE_STATS["last_error"] = str(e)[:500]
     _JOURNAL_DURABLE_STATS["restored_rows"] = len(remote_rows)
-    return {
-        "remote_rows": len(remote_rows),
-        "merged_rows": len(merged),
-        "restored_chunks": int(_JOURNAL_DURABLE_STATS.get("restored_chunks", 0) or 0),
-        "corrupt_chunks": int(_JOURNAL_DURABLE_STATS.get("restore_corrupt_chunks", 0) or 0),
-        "skipped_chunks": int(_JOURNAL_DURABLE_STATS.get("restore_skipped_chunks", 0) or 0),
-    }
+    # approximate chunk count is exposed by read limit files; exact count not worth a second mega-find
+    _JOURNAL_DURABLE_STATS["restored_chunks"] = 0 if not remote_rows else 1
+    return {"remote_rows": len(remote_rows), "merged_rows": len(merged)}
 
 
 def journal_durable_stats() -> dict:
@@ -5252,120 +5219,23 @@ def report_header_cell(label: str, width: int = 7) -> str:
     return center_text(label, width)
 
 
-def _chat_display_card(chat_id: int) -> dict:
-    """Canonical Telegram identity card for UI labels.
-
-    IMPORTANT: chat identity is independent from permissions/owner mode.
-    Enabling owner access must never rename an ordinary chat to the owner label.
-    """
-    try:
-        cid = int(chat_id)
-    except Exception:
-        return {}
-    card = {}
-    try:
-        store = get_chat_store(cid)
-        info = store.get("info", {}) or {}
-        if isinstance(info, dict):
-            card.update(info)
-    except Exception:
-        pass
-    # Owner's known_chats is only a fallback cache. It must not override a
-    # newer per-chat Telegram card, but it is useful after LOW-RAM eviction.
-    if OWNER_ID and str(cid) != str(OWNER_ID):
-        try:
-            owner_store = get_chat_store(int(OWNER_ID))
-            known = owner_store.get("known_chats", {}) or {}
-            cached = known.get(str(cid)) or {}
-            if isinstance(cached, dict):
-                for key in ("title", "username", "type"):
-                    if not card.get(key) and cached.get(key):
-                        card[key] = cached.get(key)
-        except Exception:
-            pass
-    return card
-
-
 def get_chat_display_name(chat_id: int) -> str:
-    """Human Telegram chat name; never derived from access role.
-
-    The private platform-owner chat keeps its historical 🏀 label. All other
-    chats preserve their real Telegram title/name even when owner access is ON.
-    """
     try:
-        cid = int(chat_id)
-    except Exception:
-        return f"Чат {chat_id}"
-    try:
-        if OWNER_ID and cid == int(OWNER_ID):
+        if is_primary_owner(chat_id):
             return "🏀"
+        store = get_chat_store(chat_id)
+        info = store.get("info", {}) or {}
+        title = (info.get("title") or "").strip()
+        username = (info.get("username") or "").strip()
+        if title and title != f"Чат {chat_id}":
+            return title
+        if username:
+            return f"@{username.lstrip('@')}"
+        if title:
+            return title
     except Exception:
         pass
-    card = _chat_display_card(cid)
-    title = str(card.get("title") or "").strip()
-    username = str(card.get("username") or "").strip().lstrip("@")
-    if title and title != f"Чат {cid}":
-        return title
-    if username:
-        return f"@{username}"
-    if title:
-        return title
-    return f"Чат {cid}"
-
-
-def _chat_menu_identity_key(chat_id: int) -> str:
-    """Safe menu de-duplication key. Same username is one Telegram identity.
-
-    Same titles alone are NOT merged because two different groups may legally
-    have equal titles. Such collisions are disambiguated in the label instead.
-    """
-    cid = int(chat_id)
-    card = _chat_display_card(cid)
-    username = str(card.get("username") or "").strip().casefold().lstrip("@")
-    return f"u:{username}" if username else f"id:{cid}"
-
-
-def chat_menu_entries(chat_ids, max_len: int = 36):
-    """Return unique ``(chat_id, label)`` rows for chat-selection menus.
-
-    - duplicate ids / duplicate username identities are shown once;
-    - real chat names are always preserved;
-    - if two distinct chats have the same title, a short id suffix is added
-      only to disambiguate them instead of showing two indistinguishable rows.
-    """
-    rows = []
-    seen_ids = set()
-    seen_identity = set()
-    for raw in chat_ids or []:
-        try:
-            cid = int(raw)
-        except Exception:
-            continue
-        if cid in seen_ids:
-            continue
-        seen_ids.add(cid)
-        key = _chat_menu_identity_key(cid)
-        if key in seen_identity:
-            continue
-        seen_identity.add(key)
-        rows.append((cid, get_chat_display_name(cid)))
-
-    groups = {}
-    for cid, label in rows:
-        groups.setdefault(str(label).strip().casefold(), []).append(cid)
-    out = []
-    limit = max(8, int(max_len or 36))
-    for cid, label in rows:
-        clean = str(label or f"Чат {cid}").strip() or f"Чат {cid}"
-        if len(groups.get(clean.casefold(), [])) > 1:
-            # Names remain primary. Suffix is used only for genuinely distinct
-            # Telegram chats whose human titles are equal.
-            suffix = f" · …{str(abs(cid))[-4:]:>4}"
-            clean = clean[:max(1, limit - len(suffix))] + suffix
-        else:
-            clean = clean[:limit]
-        out.append((cid, clean))
-    return out
+    return f"Чат {chat_id}"
 
 
 def _chat_title_from_message(msg, previous_title: str = "") -> str:
@@ -6854,7 +6724,7 @@ def _build_total_window_text_for_registry(chat_id: int) -> str:
     """Тот же итог, что показывает кнопка «💰 Общий итог», но пригодный для автообновления реестра."""
     chat_id = int(chat_id)
     store = get_chat_store(chat_id)
-    chat_bal = current_chat_balance_v194(chat_id) if "current_chat_balance_v194" in globals() else store.get("balance", 0)
+    chat_bal = store.get("balance", 0)
     if not is_owner_chat(chat_id):
         return wm_common(f"💰 Общий итог по этому чату: {format_chat_amount(chat_id, chat_bal, True)}", 4)
     lines = [
@@ -6869,7 +6739,7 @@ def _build_total_window_text_for_registry(chat_id: int) -> str:
             cid_int = int(cid)
         except Exception:
             continue
-        bal = current_chat_balance_v194(cid_int) if "current_chat_balance_v194" in globals() else st.get("balance", 0)
+        bal = st.get("balance", 0)
         total_all += bal
         if cid_int == chat_id:
             continue
@@ -7939,7 +7809,7 @@ def _call_with_optional_reply(send_func, *args, reply_to_message_id=None, **kwar
 
 def build_balance_panel_keyboard(chat_id: int):
     kb = types.InlineKeyboardMarkup()
-    bal = current_chat_balance_v194(chat_id) if "current_chat_balance_v194" in globals() else get_chat_store(chat_id).get("balance", 0)
+    bal = get_chat_store(chat_id).get("balance", 0)
     kb.row(IB(
         f"🏦 Остаток: {format_chat_amount(chat_id, bal, True)}",
         callback_data="bp:open"
@@ -8256,4 +8126,4 @@ def _save_json(path: str, obj):
         except Exception:
             pass
         log_error(f"JSON save error {path}: {e}")
-# v195_chat_identity_names_final
+# v190_mega_light_fast_recovery

@@ -1,4 +1,4 @@
-# v195_chat_identity_names_final
+# v188_restore_forward_fix_final
 # Per-chat secret data. These records are kept out of finance and forwarding.
 SECRET_CODEWORDS = {
     "секрет", "сикрет", "secret", "sicret", "sekret", "sikret",
@@ -2028,18 +2028,13 @@ def build_additional_owners_keyboard(level: int | None = None):
     except Exception:
         ids = [int(x) for x in collect_all_known_chat_ids(include_owner=False)]
     buttons = []
-    clean_ids = []
     for cid in ids:
         try: cid = int(cid)
         except Exception: continue
         if cid == int(OWNER_ID or 0):
             continue
-        clean_ids.append(cid)
-    for cid, label in chat_menu_entries(clean_ids, max_len=31):
-        # Owner access is a permission badge only; it never changes the chat name.
-        # ☑️ is the compact grey checkbox requested for enabled owner access.
-        icon = "☑️" if cid in owners else "⬜"
-        buttons.append(IB(f"{icon} {label}", callback_data=f"addown:{cid}"))
+        icon = "✅" if cid in owners else "❌"
+        buttons.append(IB(f"{icon} {get_chat_display_name(cid)[:32]}", callback_data=f"addown:{cid}"))
     for i in range(0, len(buttons), 2):
         kb.row(*buttons[i:i + 2])
     if not buttons:
@@ -2252,4 +2247,4 @@ def cmd_forward_copy_edit(msg):
         delete_message_later(msg.chat.id, msg.message_id, 1)
     except Exception as e:
         log_error(f"cmd_forward_copy_edit: {e}")
-# v195_chat_identity_names_final
+# v188_restore_forward_fix_final

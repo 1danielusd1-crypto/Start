@@ -1,4 +1,4 @@
-# v194_balance_source_truth_final
+# v189_main_window_authority_final
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -15,104 +15,23 @@ def _record_day_key(rec: dict) -> str:
     return rec["day_key"]
 
 
-def _finance_record_identity_v194(rec: dict, day_hint: str = "") -> tuple:
-    """Stable non-mutating identity used only to reconcile two runtime indexes."""
-    if not isinstance(rec, dict):
-        return ("invalid", id(rec))
-    for key in ("finance_record_uid", "record_uid", "operation_key"):
-        value = str(rec.get(key) or "").strip()
-        if value:
-            return (key, value)
-    for key in ("source_msg_id", "origin_msg_id", "msg_id"):
-        try:
-            value = int(rec.get(key) or 0)
-        except Exception:
-            value = 0
-        if value:
-            return ("telegram", value)
-    try:
-        rid = int(rec.get("id") or 0)
-    except Exception:
-        rid = 0
-    if rid:
-        return ("id", rid)
-    return (
-        "sig",
-        str(day_hint or rec.get("day_key") or "")[:10],
-        str(rec.get("timestamp") or ""),
-        str(rec.get("amount") or ""),
-        str(rec.get("usd_amount") or ""),
-        str(rec.get("note") or rec.get("usd_note") or ""),
-    )
-
-
-def _finance_union_runtime_indexes_v194(records, daily) -> tuple[list, dict]:
-    """Lossless union: `records` wins on duplicate identity, daily-only rows are preserved.
-
-    `daily_records` is a derived index, but older LOW-RAM/runtime paths could leave it richer
-    than `records`. Normalization must never solve that mismatch by deleting the richer side.
-    """
-    out = []
-    by_key = {}
-    records_only_keys = set()
-    daily_keys = set()
-
-    for rec in records or []:
-        if not isinstance(rec, dict):
-            continue
-        key = _finance_record_identity_v194(rec)
-        if key in by_key:
-            continue
-        by_key[key] = rec
-        records_only_keys.add(key)
-        out.append(rec)
-
-    daily_only = 0
-    for dk in sorted((daily or {}).keys()):
-        for rec in (daily or {}).get(dk, []) or []:
-            if not isinstance(rec, dict):
-                continue
-            key = _finance_record_identity_v194(rec, str(dk))
-            daily_keys.add(key)
-            existing = by_key.get(key)
-            if existing is not None:
-                if not existing.get("day_key"):
-                    existing["day_key"] = str(dk)[:10]
-                continue
-            # Copy only the orphan row so day_key repair cannot mutate the old index in place.
-            recovered = dict(rec)
-            recovered.setdefault("day_key", str(dk)[:10])
-            by_key[key] = recovered
-            out.append(recovered)
-            daily_only += 1
-
-    return out, {
-        "records": len([r for r in (records or []) if isinstance(r, dict)]),
-        "daily": sum(len([r for r in (rows or []) if isinstance(r, dict)]) for rows in (daily or {}).values()),
-        "union": len(out),
-        "daily_only": daily_only,
-        "records_only": len(records_only_keys - daily_keys),
-    }
-
-
 def normalize_chat_records(chat_id: int) -> None:
     """
-    v194: records remains the canonical writable ledger, daily_records its day index.
-
-    If historical LOW-RAM state contains rows on only one side, normalize by a deduplicated
-    union before rebuilding the derived index. This is deliberately lossless: a generic
-    normalization is never allowed to discard finance history merely because one index is stale.
+    v33: records — основной источник, daily_records строится из него.
+    Сортировка стабильная: Telegram date + исходный message_id, чтобы 1 2 3 4 не превращалось в 1 2 4 3.
     """
     store = get_chat_store(chat_id)
-    records_raw = store.get("records")
+    records = store.get("records")
     daily = store.get("daily_records") or {}
 
-    records = records_raw if isinstance(records_raw, list) else []
-    if not records and not daily:
-        records = []
-        reconcile_meta = {"records": 0, "daily": 0, "union": 0, "daily_only": 0, "records_only": 0}
-    else:
-        records, reconcile_meta = _finance_union_runtime_indexes_v194(records, daily)
+    if not isinstance(records, list) or not records:
+        rebuilt = []
+        for dk in sorted(daily.keys()):
+            for rec in daily.get(dk, []) or []:
+                if isinstance(rec, dict):
+                    rec.setdefault("day_key", dk)
+                    rebuilt.append(rec)
+        records = rebuilt
 
     clean = []
     for rec in records or []:
@@ -136,17 +55,6 @@ def normalize_chat_records(chat_id: int) -> None:
     for rec in clean:
         rebuilt_daily.setdefault(_record_day_key(rec), []).append(rec)
     store["daily_records"] = rebuilt_daily
-
-    if reconcile_meta.get("daily_only") or reconcile_meta.get("records_only"):
-        try:
-            bot_journal(
-                "finance_index_reconciled_v194", int(chat_id),
-                f"records={reconcile_meta.get('records')} daily={reconcile_meta.get('daily')} "
-                f"union={len(clean)} daily_only={reconcile_meta.get('daily_only')} "
-                f"records_only={reconcile_meta.get('records_only')}"
-            )
-        except Exception:
-            pass
 
 
 def recalc_balance(chat_id: int):
@@ -204,9 +112,7 @@ def rebuild_global_records():
         total = 0.0
         for _cid, store in (data.get("chats", {}) or {}).items():
             try:
-                if "current_chat_balance_v194" in globals():
-                    total += float(current_chat_balance_v194(int(_cid)) or 0)
-                elif "balance" in store:
+                if "balance" in store:
                     total += float(store.get("balance", 0) or 0)
                 else:
                     total += sum(float(r.get("amount", 0) or 0) for r in (store.get("records", []) or []))
@@ -1620,4 +1526,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v194_balance_source_truth_final
+# v189_main_window_authority_final

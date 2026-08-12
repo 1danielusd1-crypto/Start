@@ -1,4 +1,4 @@
-# v193_architecture_lifecycle_final
+# v189_main_window_authority_final
 # ---- integrated from 105_v155_button_navigation_audit.py ----
 """v155: full button/navigation audit hardening and live callback outcome diagnostics."""
 
@@ -674,21 +674,6 @@ def _v177_legacy_0018_submit_interactive_file_job(chat_id: int, kind: str, label
     with _FILE_JOB_LOCK:
         existing = _FILE_JOB_STATE.get(key)
         if isinstance(existing, dict):
-            # v153 introduced a visible single-flight waiter, but later v155/v160 submitters
-            # overwrote that wrapper. Preserve the final UI implementation while restoring the
-            # lifecycle contract: busy -> registered wait -> explicit ready-to-download result.
-            waiter = globals().get("_v153_register_wait")
-            if callable(waiter):
-                try:
-                    waiter(chat_id, str(kind), str(label), func, args, kwargs, dict(existing))
-                    try:
-                        bot_journal("file_job_wait_registered", chat_id, f"kind={kind} label={label}")
-                    except Exception:
-                        pass
-                    return False, f"Уже формируется: {existing.get('label') or 'файл'}. Запрос поставлен в ожидание."
-                except Exception as exc:
-                    try: log_error(f"FILE JOB WAIT REGISTER {chat_id}: {exc}")
-                    except Exception: pass
             return False, build_all_processes_toast(chat_id)
         meta = {
             "key": key,
@@ -5246,4 +5231,4 @@ try:
     bot_journal("v162_start_hard_fix_installed", int(OWNER_ID or 0), "process_new_updates_intercept=1; start_always_new_f91=1; silent_returns=0")
 except Exception:
     pass
-# v193_architecture_lifecycle_final
+# v189_main_window_authority_final

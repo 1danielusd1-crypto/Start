@@ -1,0 +1,888 @@
+{
+  "bot_version": "bot_v196_protected_branches_final",
+  "branches": [
+    {
+      "contract_hash": "e47e09ec031a8146b8bcb08a2c83840887d91a08f0ef0e514b0120de923b3159",
+      "depends": [
+        "storage.sqlite",
+        "storage.constitution",
+        "ui.main"
+      ],
+      "entry": [
+        "финансовый текст",
+        "редактирование/удаление записи",
+        "финансовые окна"
+      ],
+      "flow": [
+        "ввод → распознавание",
+        "record.amount → SQLite",
+        "Constitution witness",
+        "один finalize → UI"
+      ],
+      "group": "💰 Финансы",
+      "id": "finance.ars",
+      "invariants": [
+        "record.amount — бухгалтерский источник истины ARS; старый текст не переразбирается для повторного расчёта",
+        "USD не попадает в ARS-суммы",
+        "одна логическая операция не создаёт дубль",
+        "финансовая запись переживает restart/deploy через durable storage"
+      ],
+      "purpose": "Принимать, хранить и считать финансовые операции в аргентинских песо.",
+      "rev": 1,
+      "storage": [
+        "records/daily_records",
+        "record.amount",
+        "finance integrity ledger"
+      ],
+      "tests": [
+        "ARS add/edit/delete",
+        "duplicate guard",
+        "restart replay",
+        "ARS/USD isolation"
+      ],
+      "title": "ARS · основной учёт"
+    },
+    {
+      "contract_hash": "7d5589405939ba0f85deb953802c7a7d3f52cef0407418b9b51f3af8da34fca4",
+      "depends": [
+        "finance.ars",
+        "storage.sqlite"
+      ],
+      "entry": [
+        "USD финансовый ввод",
+        "USD операции",
+        "USD окна"
+      ],
+      "flow": [
+        "USD ввод → USD record",
+        "USD ledger",
+        "USD итог/окно/export"
+      ],
+      "group": "💰 Финансы",
+      "id": "finance.usd",
+      "invariants": [
+        "USD и ARS не складываются",
+        "чистый USD не создаёт фиктивный ARS",
+        "исторические ARS-клоны не считаются USD"
+      ],
+      "purpose": "Вести долларовые операции независимо от ARS.",
+      "rev": 1,
+      "storage": [
+        "usd_records / canonical USD ledger",
+        "usd_amount"
+      ],
+      "tests": [
+        "pure USD",
+        "mixed ARS+USD",
+        "polluted legacy USD filter"
+      ],
+      "title": "USD · независимый учёт"
+    },
+    {
+      "contract_hash": "acf2e887836d7107e1ccec941acf033cae8ccd45f1b1536dd7077e29cc52772c",
+      "depends": [
+        "finance.ars",
+        "finance.gomonk",
+        "ui.main"
+      ],
+      "entry": [
+        "кнопка «с ост»",
+        "remaining_open:*",
+        "переход день ←/→"
+      ],
+      "flow": [
+        "выбранный день",
+        "opening = закрытие предыдущего дня",
+        "операции дня по порядку",
+        "текущий остаток"
+      ],
+      "group": "💰 Финансы",
+      "id": "finance.balance",
+      "invariants": [
+        "остаток с прошлого раза = фактический остаток на конец предыдущего дня",
+        "финансовый текст не переразбирается для восстановления суммы",
+        "переключение гомонковых не меняет ledger",
+        "день окна не меняется фоновым finalize"
+      ],
+      "purpose": "Показывать остаток начала дня и остаток после каждой операции.",
+      "rev": 2,
+      "storage": [
+        "record.amount",
+        "gomonk settings"
+      ],
+      "tests": [
+        "previous-day carry",
+        "11.08→12.08 carry",
+        "remaining rows",
+        "gomonk ON/OFF idempotent"
+      ],
+      "title": "Остаток / с ост"
+    },
+    {
+      "contract_hash": "34e3167362d9153dafac89977c959173b2071c7267c67276569b0e1bd2f88d6a",
+      "depends": [
+        "finance.balance"
+      ],
+      "entry": [
+        "кнопки гомонковых",
+        "remaining SET ON/OFF",
+        "Инфо"
+      ],
+      "flow": [
+        "явное состояние ON/OFF",
+        "вычет только при отображении/расчёте",
+        "persist setting"
+      ],
+      "group": "💰 Финансы",
+      "id": "finance.gomonk",
+      "invariants": [
+        "ARS/USD гомонковые независимы",
+        "toggle идемпотентный SET, не слепая инверсия",
+        "ledger не изменяется"
+      ],
+      "purpose": "Отдельно учитывать резерв/гомонковые для ARS и USD.",
+      "rev": 2,
+      "storage": [
+        "ARS gomonk settings",
+        "USD gomonk settings"
+      ],
+      "tests": [
+        "SET ON twice",
+        "SET OFF twice",
+        "ARS/USD independence"
+      ],
+      "title": "Гомонковые ARS/USD"
+    },
+    {
+      "contract_hash": "f8a584a216afccef98d3b1f071f14b5af80d99b1fb6d3176f3f1ad12afbf5639",
+      "depends": [
+        "finance.ars",
+        "storage.constitution"
+      ],
+      "entry": [
+        "редактор записей",
+        "edited Telegram message",
+        "delete/bulk delete"
+      ],
+      "flow": [
+        "выбор записи",
+        "изменение",
+        "integrity ledger",
+        "rebuild derived state"
+      ],
+      "group": "💰 Финансы",
+      "id": "finance.records",
+      "invariants": [
+        "каждое изменение имеет witness",
+        "удаление не затрагивает чужие записи",
+        "derived indexes перестраиваются"
+      ],
+      "purpose": "Безопасно изменять существующие финансовые записи.",
+      "rev": 1,
+      "storage": [
+        "records",
+        "finance integrity ledger"
+      ],
+      "tests": [
+        "edit",
+        "delete",
+        "bulk delete",
+        "integrity event"
+      ],
+      "title": "Записи · редактирование/удаление"
+    },
+    {
+      "contract_hash": "879577a81c5a4c091b8b96eac08a6d847ae415ce6795a8329811bbd30ad94719",
+      "depends": [
+        "finance.ars",
+        "finance.usd",
+        "finance.balance"
+      ],
+      "entry": [
+        "Excel",
+        "Excel статьи",
+        "/tabl_lsx",
+        "monthly XLSX",
+        "Telegram download"
+      ],
+      "flow": [
+        "period bounds",
+        "canonical ARS/USD",
+        "opening balance",
+        "formulas",
+        "OOXML validation",
+        "delivery"
+      ],
+      "group": "📊 Таблицы",
+      "id": "export.excel",
+      "invariants": [
+        "исправление Excel применяется ко всем Excel-путям и всем контурам",
+        "ARS/USD рассчитываются отдельно",
+        "остаток начала периода един для Excel/CSV/Google/UI",
+        "USD формулы не ссылаются на ARS-блок",
+        "операция с описанием «приход/расход» не является служебной итоговой строкой"
+      ],
+      "purpose": "Строить все XLSX из одного канонического набора финансовых данных.",
+      "rev": 4,
+      "storage": [
+        "finance ledgers",
+        "category overrides"
+      ],
+      "tests": [
+        "all periods",
+        "formula refs",
+        "opening carry",
+        "category override",
+        "Telegram workbook"
+      ],
+      "title": "Excel · единый ARS/USD"
+    },
+    {
+      "contract_hash": "bcb2795d9dbbb0e0d96afaa7f311322e23a9a041f9cde1e1d90d80c4f03b4ee2",
+      "depends": [
+        "export.excel"
+      ],
+      "entry": [
+        "CSV день/неделя/месяц/Чт–Ср/всё"
+      ],
+      "flow": [
+        "period → canonical records → opening/totals → file"
+      ],
+      "group": "📊 Таблицы",
+      "id": "export.csv",
+      "invariants": [
+        "CSV не имеет отдельной бухгалтерской логики",
+        "ARS/USD не смешиваются",
+        "opening совпадает с Excel"
+      ],
+      "purpose": "Выгружать CSV с тем же каноническим расчётом, что Excel.",
+      "rev": 2,
+      "storage": [
+        "finance ledgers"
+      ],
+      "tests": [
+        "period parity with Excel",
+        "delivery"
+      ],
+      "title": "CSV · единый расчёт"
+    },
+    {
+      "contract_hash": "1c9de3ceed106807864614aa3979305a810d82a0248eaa083bae7777171f7e12",
+      "depends": [
+        "export.excel",
+        "export.csv"
+      ],
+      "entry": [
+        "Залить в Google Sheets",
+        "Google Drive",
+        "авто Чт–Ср"
+      ],
+      "flow": [
+        "canonical workbook/data → Google upload → delivery proof"
+      ],
+      "group": "📊 Таблицы",
+      "id": "export.google",
+      "invariants": [
+        "Google и Telegram одного периода получают один источник данных",
+        "Google не пересчитывает ошибочные межблочные ссылки",
+        "успех подтверждается отдельно от Telegram send_document"
+      ],
+      "purpose": "Заливать тот же отчёт, который скачивается в Telegram.",
+      "rev": 3,
+      "storage": [
+        "Google config",
+        "same export dataset"
+      ],
+      "tests": [
+        "Telegram/Google parity",
+        "external delivery proof",
+        "Thu-Wed 7 days"
+      ],
+      "title": "Google Sheets / Drive"
+    },
+    {
+      "contract_hash": "cdaa45ff606780b738e7964b98fdd39b5c303a32be3178f834aa4c56518eea63",
+      "depends": [
+        "finance.ars"
+      ],
+      "entry": [
+        "/start",
+        "день ←/→",
+        "календарь",
+        "возврат в осн. окно"
+      ],
+      "flow": [
+        "open day → primary main window",
+        "new main retires old",
+        "stale callback redirects"
+      ],
+      "group": "🪟 Интерфейс",
+      "id": "ui.main",
+      "invariants": [
+        "одно каноническое основное окно",
+        "старое окно не выполняет бизнес-действие",
+        "finance finalize не меняет UI-день"
+      ],
+      "purpose": "Держать одно последнее основное финансовое окно на чат.",
+      "rev": 2,
+      "storage": [
+        "primary main window id/day",
+        "window registry"
+      ],
+      "tests": [
+        "stale main redirect",
+        "day navigation",
+        "background refresh does not resurrect old window"
+      ],
+      "title": "Основное окно · единственный источник UI-даты"
+    },
+    {
+      "contract_hash": "99c88c73a9d1ddd915b4c8b78095b80b712f853416c0f2b7e0cf2317951a6287",
+      "depends": [
+        "ui.main",
+        "diagnostics.journal"
+      ],
+      "entry": [
+        "ℹ️ Инфо",
+        "служебные callbacks"
+      ],
+      "flow": [
+        "Info → submenu → back/close"
+      ],
+      "group": "🪟 Интерфейс",
+      "id": "ui.info",
+      "invariants": [
+        "права владельца соблюдаются",
+        "служебное меню не меняет финансы",
+        "ветки доступны из Инфо"
+      ],
+      "purpose": "Безопасно открывать диагностику, настройки и служебные функции.",
+      "rev": 2,
+      "storage": [
+        "owner/global settings"
+      ],
+      "tests": [
+        "owner menu",
+        "back/close",
+        "branches entry"
+      ],
+      "title": "Инфо / служебные меню"
+    },
+    {
+      "contract_hash": "3cdd42784be3e19cc1c5f654c0a3babfe9b3c04498a8bdcc47be1e7e1a186a8c",
+      "depends": [
+        "storage.constitution",
+        "storage.mega"
+      ],
+      "entry": [
+        "/restore",
+        "JSON/ISON",
+        "GZ/SQLite",
+        "CSV finance"
+      ],
+      "flow": [
+        "validate",
+        "mandatory pre_restore",
+        "clear scope",
+        "replace from file",
+        "rehydrate",
+        "Constitution checkpoint"
+      ],
+      "group": "♻️ Восстановление",
+      "id": "restore.strict",
+      "invariants": [
+        "никакого автоматического merge",
+        "pre_restore обязателен",
+        "восстановленный файл — источник истины",
+        "derived caches можно пересчитать, бизнес-данные нельзя подмешать"
+      ],
+      "purpose": "Восстанавливать выбранный scope ровно из backup без merge с live-состоянием.",
+      "rev": 3,
+      "storage": [
+        "pre_restore",
+        "SQLite",
+        "generation/checkpoint"
+      ],
+      "tests": [
+        "JSON exact replace",
+        "GZ schema validation",
+        "forward edges exact",
+        "pre_restore gate"
+      ],
+      "title": "/restore · REPLACE FROM FILE"
+    },
+    {
+      "contract_hash": "17f7ef3045eaace44189f7f1179aafc712cc07308a2921a345a1696a067954e3",
+      "depends": [
+        "ui.main",
+        "finance.ars"
+      ],
+      "entry": [
+        "Инфо → 🩹 Аккуратное восстановление",
+        "ручной финансовый ввод"
+      ],
+      "flow": [
+        "enable",
+        "target = primary main day",
+        "accepted finance → target day",
+        "120s inactivity → OFF"
+      ],
+      "group": "♻️ Восстановление",
+      "id": "restore.careful",
+      "invariants": [
+        "не является merge",
+        "target только канонический день main window",
+        "restart выключает режим",
+        "каждая принятая сумма продлевает 120s"
+      ],
+      "purpose": "Ручное дозаполнение отсутствующих дней после строгого restore.",
+      "rev": 2,
+      "storage": [
+        "RAM-only mode",
+        "normal finance ledger for accepted values"
+      ],
+      "tests": [
+        "target day",
+        "timeout",
+        "normal input outside mode"
+      ],
+      "title": "Аккуратное восстановление"
+    },
+    {
+      "contract_hash": "7fda49a9ecd85aa49eac5b1be4342a4efdc640ec2849632cd62a8f2c664265e2",
+      "depends": [],
+      "entry": [
+        "load/save state",
+        "snapshot"
+      ],
+      "flow": [
+        "RAM ↔ SQLite",
+        "snapshot → MEGA"
+      ],
+      "group": "💾 Хранилище",
+      "id": "storage.sqlite",
+      "invariants": [
+        "локальный Render disk не считается долговечным",
+        "SQLite integrity проверяется",
+        "low-RAM cold fields сохраняются"
+      ],
+      "purpose": "Хранить материализованное рабочее состояние на текущем экземпляре Render.",
+      "rev": 1,
+      "storage": [
+        "SQLite tables kv/chats/meta/cold_fields"
+      ],
+      "tests": [
+        "quick_check",
+        "save/load",
+        "cold field roundtrip"
+      ],
+      "title": "SQLite · рабочее состояние"
+    },
+    {
+      "contract_hash": "ba6c3881eb1d76e287856acbaa65056bcac7e3269433a6f9ad0e5b3049ee7b3f",
+      "depends": [
+        "storage.sqlite"
+      ],
+      "entry": [
+        "durable witness",
+        "delta",
+        "generation",
+        "runtime backup"
+      ],
+      "flow": [
+        "small witness → background ledger/delta → verified full snapshot"
+      ],
+      "group": "💾 Хранилище",
+      "id": "storage.mega",
+      "invariants": [
+        "единственный canonical root /TelegramBotBackups",
+        "пропавший root/path пересоздаётся",
+        "пользователь не ждёт тяжёлый full snapshot"
+      ],
+      "purpose": "Переживать deploy/restart и хранить долговечные snapshots/tasks/deltas.",
+      "rev": 3,
+      "storage": [
+        "/TelegramBotBackups"
+      ],
+      "tests": [
+        "root self-heal",
+        "one-put hot path",
+        "restart recovery"
+      ],
+      "title": "MEGA · durable storage"
+    },
+    {
+      "contract_hash": "8c02505ea79e9bc3b7870ccbe0bbae6f52979c37488c2a08eb28066ece4bd6ba",
+      "depends": [
+        "storage.mega",
+        "storage.constitution"
+      ],
+      "entry": [
+        "state change",
+        "scheduled delta"
+      ],
+      "flow": [
+        "coalesce → compact payload → MEGA → prune after verified snapshot"
+      ],
+      "group": "💾 Хранилище",
+      "id": "storage.delta",
+      "invariants": [
+        "не копировать растущие operation ledger histories",
+        "delta остаётся компактной",
+        "не удалять recovery bridge до проверенного snapshot"
+      ],
+      "purpose": "Закрывать промежуток между полными SQLite generations маленькими изменениями.",
+      "rev": 2,
+      "storage": [
+        "/TelegramBotBackups/deltas"
+      ],
+      "tests": [
+        "real delta size",
+        "coalescing",
+        "retention"
+      ],
+      "title": "MEGA delta · compact WAL"
+    },
+    {
+      "contract_hash": "457ba8dced24ef8374525dda064850af7cc250896f224dfc4f050f77be16a173",
+      "depends": [
+        "storage.sqlite",
+        "storage.mega"
+      ],
+      "entry": [
+        "finance mutation",
+        "snapshot publish",
+        "boot restore",
+        "manual restore"
+      ],
+      "flow": [
+        "immutable witness",
+        "semantic manifest",
+        "generation",
+        "quarantine on unexplained loss"
+      ],
+      "group": "💾 Хранилище",
+      "id": "storage.constitution",
+      "invariants": [
+        "SQLite integrity недостаточно — нужна semantic completeness",
+        "unexplained history loss → quarantine",
+        "restore creates checkpoint/reanchor"
+      ],
+      "purpose": "Защищать финансовую историю от тихой семантической потери.",
+      "rev": 3,
+      "storage": [
+        "ledger",
+        "database/generations",
+        "manifests/current_manifest"
+      ],
+      "tests": [
+        "semantic loss rejection",
+        "generation fallback",
+        "restore reanchor",
+        "protected symbols"
+      ],
+      "title": "DATA CONSTITUTION"
+    },
+    {
+      "contract_hash": "52e7403eb6e6873207d66bfba7279e4f48dcff2007c877fc8e7d3e89742997f6",
+      "depends": [
+        "storage.mega"
+      ],
+      "entry": [
+        "forward rules",
+        "message router"
+      ],
+      "flow": [
+        "source message → rule → durable task → destination"
+      ],
+      "group": "🔁 Пересылка",
+      "id": "forward.core",
+      "invariants": [
+        "нет дублей",
+        "правила других чатов не повреждаются",
+        "restore edges exact"
+      ],
+      "purpose": "Пересылать разрешённый контент между настроенными чатами без дублей.",
+      "rev": 1,
+      "storage": [
+        "forward_rules/edges",
+        "durable tasks"
+      ],
+      "tests": [
+        "single forward",
+        "duplicate guard",
+        "restore edges"
+      ],
+      "title": "Пересылка · правила/доставка"
+    },
+    {
+      "contract_hash": "dc26b21827271030a6c91e71af02ab1cb51ca393c5c24a4b30a2f5550a5235e2",
+      "depends": [
+        "forward.core"
+      ],
+      "entry": [
+        "photo/video album"
+      ],
+      "flow": [
+        "collect media_group → finalize → durable delivery"
+      ],
+      "group": "🔁 Пересылка",
+      "id": "forward.media",
+      "invariants": [
+        "группа не дробится на дубли",
+        "restart не теряет durable delivery"
+      ],
+      "purpose": "Собирать и доставлять Telegram media_group как логическую группу.",
+      "rev": 1,
+      "storage": [
+        "media group state/tasks"
+      ],
+      "tests": [
+        "album collect",
+        "restart",
+        "duplicate group"
+      ],
+      "title": "Пересылка · media groups"
+    },
+    {
+      "contract_hash": "5d1d5dcdc0df0c461bd454980bb9803684b4f6a236e100b03cb4872483126ed8",
+      "depends": [
+        "storage.mega",
+        "multitenant.core"
+      ],
+      "entry": [
+        "Task Dispatcher buttons",
+        "task messages"
+      ],
+      "flow": [
+        "create → active → action/result → close/archive"
+      ],
+      "group": "📋 Задачи",
+      "id": "tasks.dispatcher",
+      "invariants": [
+        "каждая задача имеет начало/состояние/завершение",
+        "выбор чатов соблюдается",
+        "restart не теряет критическое состояние"
+      ],
+      "purpose": "Создавать, вести и завершать задачи в выбранных чатах.",
+      "rev": 1,
+      "storage": [
+        "task state",
+        "durable task metadata"
+      ],
+      "tests": [
+        "create",
+        "selected chats",
+        "close",
+        "restart"
+      ],
+      "title": "Диспетчер задач"
+    },
+    {
+      "contract_hash": "43fa5de1179df3b13021d95f37ea1334cadd2bcbadbe1c235bb0e0f66500db7c",
+      "depends": [
+        "storage.sqlite",
+        "storage.mega"
+      ],
+      "entry": [
+        "reminder commands/UI",
+        "scheduler"
+      ],
+      "flow": [
+        "create → scheduler → delivery → next/complete"
+      ],
+      "group": "⏰ Напоминания",
+      "id": "reminders.core",
+      "invariants": [
+        "не теряются после restart",
+        "не дублируются при replay",
+        "очередь имеет завершение"
+      ],
+      "purpose": "Надёжно планировать и доставлять напоминания.",
+      "rev": 1,
+      "storage": [
+        "reminders state"
+      ],
+      "tests": [
+        "one-shot",
+        "recurring",
+        "restart",
+        "dedupe"
+      ],
+      "title": "Напоминания"
+    },
+    {
+      "contract_hash": "0b358d637a823fe75ee58ac3efe878759ce5c60c9f514740af23f1615e134b9d",
+      "depends": [],
+      "entry": [
+        "space menu",
+        "permissions",
+        "circle views"
+      ],
+      "flow": [
+        "actor → tenant/role → permission → operation"
+      ],
+      "group": "🏢 Доступ",
+      "id": "multitenant.core",
+      "invariants": [
+        "данные пространств не смешиваются",
+        "глобальные исправления функций действуют во всех контурах где функция доступна",
+        "owner-only операции закрыты"
+      ],
+      "purpose": "Изолировать владельца, пространства и доступные пользователям функции.",
+      "rev": 1,
+      "storage": [
+        "tenant/owner scope",
+        "permissions"
+      ],
+      "tests": [
+        "owner",
+        "circle1",
+        "circle2",
+        "permission deny"
+      ],
+      "title": "Пространства / круги / роли"
+    },
+    {
+      "contract_hash": "28702181196ec3c7b9f96524dcc0b3e320f4cc632f26e09020cf0cadd54aac18",
+      "depends": [
+        "storage.mega"
+      ],
+      "entry": [
+        "Инфо → Журнал",
+        "runtime events",
+        "download"
+      ],
+      "flow": [
+        "event → runtime journal → optional MEGA → download"
+      ],
+      "group": "🩺 Диагностика",
+      "id": "diagnostics.journal",
+      "invariants": [
+        "диагностика не выключается Fast Test/Minimum автоматически",
+        "имя скачиваемого журнала сохраняется",
+        "битая remote строка не ломает runtime"
+      ],
+      "purpose": "Фиксировать ошибки, события, скорость и давать скачиваемые журналы.",
+      "rev": 2,
+      "storage": [
+        "journal buffers/files",
+        "journal_download_base_name"
+      ],
+      "tests": [
+        "current/full journal",
+        "custom filename",
+        "warm tail"
+      ],
+      "title": "Журналы / диагностика"
+    },
+    {
+      "contract_hash": "01c6b0cd73dc3540a3d830c651aeb4c53b1196fe17356e366651a719137d9265",
+      "depends": [
+        "diagnostics.journal"
+      ],
+      "entry": [
+        "Инфо → Процессы / скорость"
+      ],
+      "flow": [
+        "toggle optional process → repeat transitions → P50/P90"
+      ],
+      "group": "🩺 Диагностика",
+      "id": "runtime.performance",
+      "invariants": [
+        "ядро бота нельзя выключить диагностикой",
+        "финансы/пересылка/SQLite остаются core",
+        "diagnostics remain available in test profiles"
+      ],
+      "purpose": "Измерять UI latency и управлять необязательными тяжёлыми процессами.",
+      "rev": 1,
+      "storage": [
+        "process_control_v176"
+      ],
+      "tests": [
+        "profile fast",
+        "profile minimal",
+        "locked core"
+      ],
+      "title": "Процессы / скорость"
+    },
+    {
+      "contract_hash": "7ccb2dd5268b5b175ae85a343969fc51406c403ce34b226e6e4da5e9156ebe92",
+      "depends": [
+        "multitenant.core"
+      ],
+      "entry": [
+        "SECRET controls/messages"
+      ],
+      "flow": [
+        "permission → action → persist"
+      ],
+      "group": "🔐 Прочее",
+      "id": "secret.core",
+      "invariants": [
+        "не отключается меню диагностики",
+        "доступы соблюдаются"
+      ],
+      "purpose": "Сохранять штатную SECRET-функциональность и её доступы.",
+      "rev": 1,
+      "storage": [
+        "secret settings/notes"
+      ],
+      "tests": [
+        "permission",
+        "persistence"
+      ],
+      "title": "SECRET / скрытые функции"
+    },
+    {
+      "contract_hash": "fe211b3b68fca2cd3c815194c6d76cd462c132438d76a4b196851914ef6d9d11",
+      "depends": [
+        "ui.info",
+        "storage.sqlite",
+        "storage.mega"
+      ],
+      "entry": [
+        "Инфо → 🌿 Ветки",
+        "галочка ветки",
+        "скачать журнал веток"
+      ],
+      "flow": [
+        "карточка → пользователь проверил → ✅ fix → persistent contract snapshot → regression gate"
+      ],
+      "group": "🛡 Защита",
+      "id": "system.branch_registry",
+      "invariants": [
+        "галочка переживает restart/deploy/restore",
+        "фиксируется семантический контракт, не только hash кода",
+        "будущая смена contract rev видна как ⚠️",
+        "снятие защиты — только явной кнопкой владельца"
+      ],
+      "purpose": "Позволять владельцу фиксировать проверенные функциональные ветки как защищённые контракты.",
+      "rev": 1,
+      "storage": [
+        "_global_settings.protected_branches_registry",
+        "downloadable branch journal"
+      ],
+      "tests": [
+        "toggle/persist",
+        "contract hash",
+        "journal export",
+        "future-version carry"
+      ],
+      "title": "Ветки функций / контракты"
+    }
+  ],
+  "current_version_changes": [
+    {
+      "branch": "system.branch_registry",
+      "regression": "PASS",
+      "summary": "Новый реестр карточек/защищённых веток, галочки, журнал и contract snapshots."
+    },
+    {
+      "branch": "ui.info",
+      "regression": "PASS",
+      "summary": "В Инфо добавлена кнопка 🌿 Ветки и статус защищённых контрактов."
+    }
+  ],
+  "format": "telegram_bot_protected_branches_catalog_v1"
+}

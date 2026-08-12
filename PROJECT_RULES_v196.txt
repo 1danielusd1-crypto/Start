@@ -1,0 +1,9 @@
+bot_v196_protected_branches_final
+1. Любая правка Excel/таблиц применяется глобально ко всем Excel/XLSX/CSV/Google путям и контурам.
+2. ARS и USD независимы; record.amount — источник истины ARS.
+3. /restore = строгий REPLACE FROM FILE, без merge.
+4. MEGA canonical root = /TelegramBotBackups; Render local storage disposable.
+5. Защищённая ветка = подтверждённый пользователем семантический контракт. Будущие релизы не должны ломать её инварианты.
+6. Каждый релиз обязан перечислить текущие изменённые ветки и прогнать их regression matrix.
+7. Галочки веток сохраняются в protected_branches_registry и отображаются в следующих версиях.
+8. Скачиваемый журнал веток является переносимым описанием подтверждённых контрактов для ChatGPT/аудита.

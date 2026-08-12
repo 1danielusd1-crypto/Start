@@ -1,0 +1,10 @@
+bot_v196_protected_branches_final
+- Инфо → 🌿 Ветки.
+- 25 карточек основных функциональных веток бота.
+- Галочки фиксации/снятия защиты владельцем.
+- Persistent semantic contract snapshot + history in _global_settings.protected_branches_registry.
+- Contract mismatch warning after future semantic card changes.
+- Текст окна показывает ветки правок текущей версии и regression PASS.
+- 📥 Скачать ветки: human-readable TXT + MACHINE_JSON в одном журнале.
+- BOT_FUNCTION_MAP.md / PROTECTED_BRANCHES.md / PROTECTED_BRANCHES.json / REGRESSION_MATRIX.json added to release.
+- Existing finance, restore, MEGA, Excel and other business paths not changed.

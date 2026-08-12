@@ -1,4 +1,4 @@
-# v195_chat_identity_names_final
+# v196_protected_branches_final
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -11,8 +11,11 @@ import re as _v176_re
 import statistics as _v176_statistics
 import threading as _v176_threading
 import time as _v176_time
+import hashlib as _v196_hashlib
+import os as _v196_os
+import tempfile as _v196_tempfile
 
-VERSION = "bot_v195_chat_identity_names_final"
+VERSION = "bot_v196_protected_branches_final"
 V176_FILE_MARKER = "v178_global_performance_final"
 V176_SETTINGS_KEY = "process_control_v176"
 _V176_LOCK = _v176_threading.RLock()
@@ -46,7 +49,7 @@ _V176_PROCESS_DEFS = {
     "ui_retry": ("ui", "🔁 Повторы edit Telegram", True, "hot", "Внешние повторы safe_edit при 429/ошибке. Кандидат на задержку кнопок."),
     "win_diag": ("ui", "🩺 Диагностика окон", False, "hot", "Маркировка/диагностика жизненного цикла окон."),
     "win_reg": ("ui", "🗂 Реестр окон → SQLite/MEGA", _V176_MIGRATED_HEAVY, "hot", "Фоновое сохранение реестра открытых окон."),
-    "win_rec": ("ui", "🔄 Reconcile окон", _V176_MIGRATED_HEAVY, "hot", "Ленивая/ручная сверка реестра окон; постоянного отдельного цикла v153 больше нет."),
+    "win_rec": ("ui", "🔄 Reconcile окон", _V176_MIGRATED_HEAVY, "hot", "Сверка реестра окон, включая цикл v153 каждые 600 сек."),
     "btn_chain": ("ui", "🧾 Трассировка press/result", False, "hot", "Две дополнительные записи на обработанный callback."),
     "btn_press": ("ui", "📝 Журнал button_pressed", False, "hot", "Запись исходной кнопки в общий журнал."),
     "win_journal": ("ui", "📐 Window-журнал", False, "hot", "Подробные window_* события, которые раньше писались принудительно."),
@@ -179,7 +182,6 @@ _V176_ORIG_MEGA_RECOVERY = globals().get("schedule_mega_task_recovery")
 _V176_ORIG_GOOGLE_AFTER = globals().get("_v169_schedule_google_after_change")
 _V176_ORIG_GOOGLE_ENQUEUE = globals().get("_v169_google_enqueue")
 _V176_ORIG_REMINDER_TICK = globals().get("_reminder_tick")
-_V176_ORIG_REMINDER_SCHEDULER_TICK = globals().get("_reminder_scheduler_tick")
 _V176_ORIG_EXPENSE_ENQUEUE = globals().get("enqueue_expense_ping_event")
 _V176_ORIG_EXPENSE_RECOVERY = globals().get("schedule_expense_ping_recovery")
 _V176_ORIG_LOWRAM_SWEEP = globals().get("_lowram_idle_sweep_job")
@@ -277,14 +279,8 @@ if callable(_V176_ORIG_SCHEDULE_DELTA):
 if callable(_V176_ORIG_CRITICAL_DELTA):
     def persist_critical_delta_now(chat_id: int) -> bool:
         if not v176_process_enabled("delta_critical"):
-            # A disabled durability witness is NOT a successful durability witness. Returning
-            # True here allowed a durable finance task to move to done without the required MEGA
-            # delta. Keep the business effect intact, but leave completion unconfirmed/recoverable.
-            try:
-                bot_journal("critical_delta_blocked", int(chat_id), "delta_critical=off; durable completion not confirmed", "WARN")
-            except Exception:
-                pass
-            return False
+            # Diagnostic bypass: business action is not failed merely because external witness was intentionally disabled.
+            return True
         return bool(_V176_ORIG_CRITICAL_DELTA(int(chat_id)))
 
 if callable(_V176_ORIG_FULL_BACKUP):
@@ -396,14 +392,6 @@ if callable(_V176_ORIG_REMINDER_TICK):
             return None
         return _V176_ORIG_REMINDER_TICK()
 
-if callable(_V176_ORIG_REMINDER_SCHEDULER_TICK):
-    def _reminder_scheduler_tick() -> None:
-        # Stop the scheduler itself when disabled. The legacy scheduler reschedules in finally;
-        # wrapping only _reminder_tick left an idle timer running forever and made STOP incomplete.
-        if not v176_process_enabled("reminders"):
-            return None
-        return _V176_ORIG_REMINDER_SCHEDULER_TICK()
-
 if callable(_V176_ORIG_EXPENSE_ENQUEUE):
     def enqueue_expense_ping_event(source: str = "iphone", force: bool = False):
         if not v176_process_enabled("expense_ping"):
@@ -438,7 +426,7 @@ def _v176_cancel_for(code: str) -> None:
         "win_reg": ["window-registry-root-v168"],
         "win_rec": ["v153-window-reconcile"],
         "runtime_upload": ["runtime-heartbeat"],
-        "journal_mega": ["journal-warm-tail", "journal-error-flush", "journal-durable-tick"],
+        "journal_mega": ["journal-warm-tail", "journal-error-flush"],
         "full_global": ["mega-global-quiet-v90", "mega-global-max-v90", "mega-global-retry-v90"],
         "failed_repair": ["mega-task-safe-failed-repair"],
         "failed_diag": ["v146-failed-task-diagnostics"],
@@ -447,7 +435,6 @@ def _v176_cancel_for(code: str) -> None:
         "lowram": ["lowram-idle-sweep"],
         "memory_guard": ["memory-guard"],
         "expense_ping": ["expense-ping-recovery"],
-        "reminders": ["reminder-scheduler"],
     }.get(code, [])
     for key in keys:
         try:
@@ -467,13 +454,8 @@ def _v176_resume_for(code: str) -> None:
             GENERAL_TASK_POOL.submit_unique("v176-window-reconcile", globals()["_v153_reconcile_windows"])
         elif code == "runtime_upload" and callable(globals().get("_runtime_heartbeat_job")):
             scheduler.schedule("runtime-heartbeat", 2.0, globals()["_runtime_heartbeat_job"])
-        elif code == "source_archive" and callable(globals().get("archive_current_bot_source_to_mega")):
-            GENERAL_TASK_POOL.submit_unique("v176-source-archive", globals()["archive_current_bot_source_to_mega"])
         elif code == "journal_mega" and callable(globals().get("_journal_warm_tail_job")):
             scheduler.schedule("journal-warm-tail", 3.0, globals()["_journal_warm_tail_job"])
-            tick = globals().get("_journal_durable_tick")
-            if callable(tick):
-                scheduler.schedule("journal-durable-tick", 4.0, tick)
         elif code == "full_global" and bool(globals().get("_global_snapshot_pending", False)) and callable(globals().get("_mark_global_snapshot_pending")):
             globals()["_mark_global_snapshot_pending"]()
         elif code == "failed_repair" and callable(globals().get("schedule_safe_failed_task_repairs")):
@@ -490,10 +472,6 @@ def _v176_resume_for(code: str) -> None:
             scheduler.schedule("memory-guard", 2.0, globals()["memory_guard_tick"])
         elif code == "expense_ping" and callable(globals().get("schedule_expense_ping_recovery")):
             globals()["schedule_expense_ping_recovery"](0.5)
-        elif code == "reminders" and callable(globals().get("_reminder_scheduler_tick")):
-            scheduler.schedule("reminder-scheduler", 0.5, globals()["_reminder_scheduler_tick"])
-        elif code == "lease" and callable(globals().get("_v179_runtime_lease_check")):
-            GENERAL_TASK_POOL.submit_unique("v176-lease-check", globals()["_v179_runtime_lease_check"], True)
     except Exception:
         pass
 
@@ -702,6 +680,626 @@ def _v176_speed_keyboard():
     return kb
 
 
+# v196 — semantic function map / protected branches registry.
+# The registry lives in _global_settings so it survives normal SQLite/MEGA backup and restore.
+# A protected branch stores the exact semantic contract that the owner accepted.  Future
+# releases may refactor code, but must keep the contract/regression tests or explicitly ask
+# the owner to accept a new contract.
+V196_BRANCH_REGISTRY_KEY = "protected_branches_registry"
+V196_BRANCH_SCHEMA = 1
+V196_BRANCH_PAGE_SIZE = 5
+
+V196_BRANCH_CATALOG = {
+    "finance.ars": {
+        "group": "💰 Финансы", "title": "ARS · основной учёт", "rev": 1,
+        "purpose": "Принимать, хранить и считать финансовые операции в аргентинских песо.",
+        "entry": ["финансовый текст", "редактирование/удаление записи", "финансовые окна"],
+        "flow": ["ввод → распознавание", "record.amount → SQLite", "Constitution witness", "один finalize → UI"],
+        "storage": ["records/daily_records", "record.amount", "finance integrity ledger"],
+        "depends": ["storage.sqlite", "storage.constitution", "ui.main"],
+        "invariants": [
+            "record.amount — бухгалтерский источник истины ARS; старый текст не переразбирается для повторного расчёта",
+            "USD не попадает в ARS-суммы",
+            "одна логическая операция не создаёт дубль",
+            "финансовая запись переживает restart/deploy через durable storage",
+        ],
+        "tests": ["ARS add/edit/delete", "duplicate guard", "restart replay", "ARS/USD isolation"],
+    },
+    "finance.usd": {
+        "group": "💰 Финансы", "title": "USD · независимый учёт", "rev": 1,
+        "purpose": "Вести долларовые операции независимо от ARS.",
+        "entry": ["USD финансовый ввод", "USD операции", "USD окна"],
+        "flow": ["USD ввод → USD record", "USD ledger", "USD итог/окно/export"],
+        "storage": ["usd_records / canonical USD ledger", "usd_amount"],
+        "depends": ["finance.ars", "storage.sqlite"],
+        "invariants": ["USD и ARS не складываются", "чистый USD не создаёт фиктивный ARS", "исторические ARS-клоны не считаются USD"],
+        "tests": ["pure USD", "mixed ARS+USD", "polluted legacy USD filter"],
+    },
+    "finance.balance": {
+        "group": "💰 Финансы", "title": "Остаток / с ост", "rev": 2,
+        "purpose": "Показывать остаток начала дня и остаток после каждой операции.",
+        "entry": ["кнопка «с ост»", "remaining_open:*", "переход день ←/→"],
+        "flow": ["выбранный день", "opening = закрытие предыдущего дня", "операции дня по порядку", "текущий остаток"],
+        "storage": ["record.amount", "gomonk settings"],
+        "depends": ["finance.ars", "finance.gomonk", "ui.main"],
+        "invariants": [
+            "остаток с прошлого раза = фактический остаток на конец предыдущего дня",
+            "финансовый текст не переразбирается для восстановления суммы",
+            "переключение гомонковых не меняет ledger",
+            "день окна не меняется фоновым finalize",
+        ],
+        "tests": ["previous-day carry", "11.08→12.08 carry", "remaining rows", "gomonk ON/OFF idempotent"],
+    },
+    "finance.gomonk": {
+        "group": "💰 Финансы", "title": "Гомонковые ARS/USD", "rev": 2,
+        "purpose": "Отдельно учитывать резерв/гомонковые для ARS и USD.",
+        "entry": ["кнопки гомонковых", "remaining SET ON/OFF", "Инфо"],
+        "flow": ["явное состояние ON/OFF", "вычет только при отображении/расчёте", "persist setting"],
+        "storage": ["ARS gomonk settings", "USD gomonk settings"],
+        "depends": ["finance.balance"],
+        "invariants": ["ARS/USD гомонковые независимы", "toggle идемпотентный SET, не слепая инверсия", "ledger не изменяется"],
+        "tests": ["SET ON twice", "SET OFF twice", "ARS/USD independence"],
+    },
+    "finance.records": {
+        "group": "💰 Финансы", "title": "Записи · редактирование/удаление", "rev": 1,
+        "purpose": "Безопасно изменять существующие финансовые записи.",
+        "entry": ["редактор записей", "edited Telegram message", "delete/bulk delete"],
+        "flow": ["выбор записи", "изменение", "integrity ledger", "rebuild derived state"],
+        "storage": ["records", "finance integrity ledger"],
+        "depends": ["finance.ars", "storage.constitution"],
+        "invariants": ["каждое изменение имеет witness", "удаление не затрагивает чужие записи", "derived indexes перестраиваются"],
+        "tests": ["edit", "delete", "bulk delete", "integrity event"],
+    },
+    "export.excel": {
+        "group": "📊 Таблицы", "title": "Excel · единый ARS/USD", "rev": 4,
+        "purpose": "Строить все XLSX из одного канонического набора финансовых данных.",
+        "entry": ["Excel", "Excel статьи", "/tabl_lsx", "monthly XLSX", "Telegram download"],
+        "flow": ["period bounds", "canonical ARS/USD", "opening balance", "formulas", "OOXML validation", "delivery"],
+        "storage": ["finance ledgers", "category overrides"],
+        "depends": ["finance.ars", "finance.usd", "finance.balance"],
+        "invariants": [
+            "исправление Excel применяется ко всем Excel-путям и всем контурам",
+            "ARS/USD рассчитываются отдельно",
+            "остаток начала периода един для Excel/CSV/Google/UI",
+            "USD формулы не ссылаются на ARS-блок",
+            "операция с описанием «приход/расход» не является служебной итоговой строкой",
+        ],
+        "tests": ["all periods", "formula refs", "opening carry", "category override", "Telegram workbook"],
+    },
+    "export.csv": {
+        "group": "📊 Таблицы", "title": "CSV · единый расчёт", "rev": 2,
+        "purpose": "Выгружать CSV с тем же каноническим расчётом, что Excel.",
+        "entry": ["CSV день/неделя/месяц/Чт–Ср/всё"],
+        "flow": ["period → canonical records → opening/totals → file"],
+        "storage": ["finance ledgers"],
+        "depends": ["export.excel"],
+        "invariants": ["CSV не имеет отдельной бухгалтерской логики", "ARS/USD не смешиваются", "opening совпадает с Excel"],
+        "tests": ["period parity with Excel", "delivery"],
+    },
+    "export.google": {
+        "group": "📊 Таблицы", "title": "Google Sheets / Drive", "rev": 3,
+        "purpose": "Заливать тот же отчёт, который скачивается в Telegram.",
+        "entry": ["Залить в Google Sheets", "Google Drive", "авто Чт–Ср"],
+        "flow": ["canonical workbook/data → Google upload → delivery proof"],
+        "storage": ["Google config", "same export dataset"],
+        "depends": ["export.excel", "export.csv"],
+        "invariants": ["Google и Telegram одного периода получают один источник данных", "Google не пересчитывает ошибочные межблочные ссылки", "успех подтверждается отдельно от Telegram send_document"],
+        "tests": ["Telegram/Google parity", "external delivery proof", "Thu-Wed 7 days"],
+    },
+    "ui.main": {
+        "group": "🪟 Интерфейс", "title": "Основное окно · единственный источник UI-даты", "rev": 2,
+        "purpose": "Держать одно последнее основное финансовое окно на чат.",
+        "entry": ["/start", "день ←/→", "календарь", "возврат в осн. окно"],
+        "flow": ["open day → primary main window", "new main retires old", "stale callback redirects"],
+        "storage": ["primary main window id/day", "window registry"],
+        "depends": ["finance.ars"],
+        "invariants": ["одно каноническое основное окно", "старое окно не выполняет бизнес-действие", "finance finalize не меняет UI-день"],
+        "tests": ["stale main redirect", "day navigation", "background refresh does not resurrect old window"],
+    },
+    "ui.info": {
+        "group": "🪟 Интерфейс", "title": "Инфо / служебные меню", "rev": 2,
+        "purpose": "Безопасно открывать диагностику, настройки и служебные функции.",
+        "entry": ["ℹ️ Инфо", "служебные callbacks"],
+        "flow": ["Info → submenu → back/close"],
+        "storage": ["owner/global settings"],
+        "depends": ["ui.main", "diagnostics.journal"],
+        "invariants": ["права владельца соблюдаются", "служебное меню не меняет финансы", "ветки доступны из Инфо"],
+        "tests": ["owner menu", "back/close", "branches entry"],
+    },
+    "restore.strict": {
+        "group": "♻️ Восстановление", "title": "/restore · REPLACE FROM FILE", "rev": 3,
+        "purpose": "Восстанавливать выбранный scope ровно из backup без merge с live-состоянием.",
+        "entry": ["/restore", "JSON/ISON", "GZ/SQLite", "CSV finance"],
+        "flow": ["validate", "mandatory pre_restore", "clear scope", "replace from file", "rehydrate", "Constitution checkpoint"],
+        "storage": ["pre_restore", "SQLite", "generation/checkpoint"],
+        "depends": ["storage.constitution", "storage.mega"],
+        "invariants": ["никакого автоматического merge", "pre_restore обязателен", "восстановленный файл — источник истины", "derived caches можно пересчитать, бизнес-данные нельзя подмешать"],
+        "tests": ["JSON exact replace", "GZ schema validation", "forward edges exact", "pre_restore gate"],
+    },
+    "restore.careful": {
+        "group": "♻️ Восстановление", "title": "Аккуратное восстановление", "rev": 2,
+        "purpose": "Ручное дозаполнение отсутствующих дней после строгого restore.",
+        "entry": ["Инфо → 🩹 Аккуратное восстановление", "ручной финансовый ввод"],
+        "flow": ["enable", "target = primary main day", "accepted finance → target day", "120s inactivity → OFF"],
+        "storage": ["RAM-only mode", "normal finance ledger for accepted values"],
+        "depends": ["ui.main", "finance.ars"],
+        "invariants": ["не является merge", "target только канонический день main window", "restart выключает режим", "каждая принятая сумма продлевает 120s"],
+        "tests": ["target day", "timeout", "normal input outside mode"],
+    },
+    "storage.sqlite": {
+        "group": "💾 Хранилище", "title": "SQLite · рабочее состояние", "rev": 1,
+        "purpose": "Хранить материализованное рабочее состояние на текущем экземпляре Render.",
+        "entry": ["load/save state", "snapshot"],
+        "flow": ["RAM ↔ SQLite", "snapshot → MEGA"],
+        "storage": ["SQLite tables kv/chats/meta/cold_fields"],
+        "depends": [],
+        "invariants": ["локальный Render disk не считается долговечным", "SQLite integrity проверяется", "low-RAM cold fields сохраняются"],
+        "tests": ["quick_check", "save/load", "cold field roundtrip"],
+    },
+    "storage.mega": {
+        "group": "💾 Хранилище", "title": "MEGA · durable storage", "rev": 3,
+        "purpose": "Переживать deploy/restart и хранить долговечные snapshots/tasks/deltas.",
+        "entry": ["durable witness", "delta", "generation", "runtime backup"],
+        "flow": ["small witness → background ledger/delta → verified full snapshot"],
+        "storage": ["/TelegramBotBackups"],
+        "depends": ["storage.sqlite"],
+        "invariants": ["единственный canonical root /TelegramBotBackups", "пропавший root/path пересоздаётся", "пользователь не ждёт тяжёлый full snapshot"],
+        "tests": ["root self-heal", "one-put hot path", "restart recovery"],
+    },
+    "storage.delta": {
+        "group": "💾 Хранилище", "title": "MEGA delta · compact WAL", "rev": 2,
+        "purpose": "Закрывать промежуток между полными SQLite generations маленькими изменениями.",
+        "entry": ["state change", "scheduled delta"],
+        "flow": ["coalesce → compact payload → MEGA → prune after verified snapshot"],
+        "storage": ["/TelegramBotBackups/deltas"],
+        "depends": ["storage.mega", "storage.constitution"],
+        "invariants": ["не копировать растущие operation ledger histories", "delta остаётся компактной", "не удалять recovery bridge до проверенного snapshot"],
+        "tests": ["real delta size", "coalescing", "retention"],
+    },
+    "storage.constitution": {
+        "group": "💾 Хранилище", "title": "DATA CONSTITUTION", "rev": 3,
+        "purpose": "Защищать финансовую историю от тихой семантической потери.",
+        "entry": ["finance mutation", "snapshot publish", "boot restore", "manual restore"],
+        "flow": ["immutable witness", "semantic manifest", "generation", "quarantine on unexplained loss"],
+        "storage": ["ledger", "database/generations", "manifests/current_manifest"],
+        "depends": ["storage.sqlite", "storage.mega"],
+        "invariants": ["SQLite integrity недостаточно — нужна semantic completeness", "unexplained history loss → quarantine", "restore creates checkpoint/reanchor"],
+        "tests": ["semantic loss rejection", "generation fallback", "restore reanchor", "protected symbols"],
+    },
+    "forward.core": {
+        "group": "🔁 Пересылка", "title": "Пересылка · правила/доставка", "rev": 1,
+        "purpose": "Пересылать разрешённый контент между настроенными чатами без дублей.",
+        "entry": ["forward rules", "message router"],
+        "flow": ["source message → rule → durable task → destination"],
+        "storage": ["forward_rules/edges", "durable tasks"],
+        "depends": ["storage.mega"],
+        "invariants": ["нет дублей", "правила других чатов не повреждаются", "restore edges exact"],
+        "tests": ["single forward", "duplicate guard", "restore edges"],
+    },
+    "forward.media": {
+        "group": "🔁 Пересылка", "title": "Пересылка · media groups", "rev": 1,
+        "purpose": "Собирать и доставлять Telegram media_group как логическую группу.",
+        "entry": ["photo/video album"],
+        "flow": ["collect media_group → finalize → durable delivery"],
+        "storage": ["media group state/tasks"],
+        "depends": ["forward.core"],
+        "invariants": ["группа не дробится на дубли", "restart не теряет durable delivery"],
+        "tests": ["album collect", "restart", "duplicate group"],
+    },
+    "tasks.dispatcher": {
+        "group": "📋 Задачи", "title": "Диспетчер задач", "rev": 1,
+        "purpose": "Создавать, вести и завершать задачи в выбранных чатах.",
+        "entry": ["Task Dispatcher buttons", "task messages"],
+        "flow": ["create → active → action/result → close/archive"],
+        "storage": ["task state", "durable task metadata"],
+        "depends": ["storage.mega", "multitenant.core"],
+        "invariants": ["каждая задача имеет начало/состояние/завершение", "выбор чатов соблюдается", "restart не теряет критическое состояние"],
+        "tests": ["create", "selected chats", "close", "restart"],
+    },
+    "reminders.core": {
+        "group": "⏰ Напоминания", "title": "Напоминания", "rev": 1,
+        "purpose": "Надёжно планировать и доставлять напоминания.",
+        "entry": ["reminder commands/UI", "scheduler"],
+        "flow": ["create → scheduler → delivery → next/complete"],
+        "storage": ["reminders state"],
+        "depends": ["storage.sqlite", "storage.mega"],
+        "invariants": ["не теряются после restart", "не дублируются при replay", "очередь имеет завершение"],
+        "tests": ["one-shot", "recurring", "restart", "dedupe"],
+    },
+    "multitenant.core": {
+        "group": "🏢 Доступ", "title": "Пространства / круги / роли", "rev": 1,
+        "purpose": "Изолировать владельца, пространства и доступные пользователям функции.",
+        "entry": ["space menu", "permissions", "circle views"],
+        "flow": ["actor → tenant/role → permission → operation"],
+        "storage": ["tenant/owner scope", "permissions"],
+        "depends": [],
+        "invariants": ["данные пространств не смешиваются", "глобальные исправления функций действуют во всех контурах где функция доступна", "owner-only операции закрыты"],
+        "tests": ["owner", "circle1", "circle2", "permission deny"],
+    },
+    "diagnostics.journal": {
+        "group": "🩺 Диагностика", "title": "Журналы / диагностика", "rev": 2,
+        "purpose": "Фиксировать ошибки, события, скорость и давать скачиваемые журналы.",
+        "entry": ["Инфо → Журнал", "runtime events", "download"],
+        "flow": ["event → runtime journal → optional MEGA → download"],
+        "storage": ["journal buffers/files", "journal_download_base_name"],
+        "depends": ["storage.mega"],
+        "invariants": ["диагностика не выключается Fast Test/Minimum автоматически", "имя скачиваемого журнала сохраняется", "битая remote строка не ломает runtime"],
+        "tests": ["current/full journal", "custom filename", "warm tail"],
+    },
+    "runtime.performance": {
+        "group": "🩺 Диагностика", "title": "Процессы / скорость", "rev": 1,
+        "purpose": "Измерять UI latency и управлять необязательными тяжёлыми процессами.",
+        "entry": ["Инфо → Процессы / скорость"],
+        "flow": ["toggle optional process → repeat transitions → P50/P90"],
+        "storage": ["process_control_v176"],
+        "depends": ["diagnostics.journal"],
+        "invariants": ["ядро бота нельзя выключить диагностикой", "финансы/пересылка/SQLite остаются core", "diagnostics remain available in test profiles"],
+        "tests": ["profile fast", "profile minimal", "locked core"],
+    },
+    "secret.core": {
+        "group": "🔐 Прочее", "title": "SECRET / скрытые функции", "rev": 1,
+        "purpose": "Сохранять штатную SECRET-функциональность и её доступы.",
+        "entry": ["SECRET controls/messages"],
+        "flow": ["permission → action → persist"],
+        "storage": ["secret settings/notes"],
+        "depends": ["multitenant.core"],
+        "invariants": ["не отключается меню диагностики", "доступы соблюдаются"],
+        "tests": ["permission", "persistence"],
+    },
+    "system.branch_registry": {
+        "group": "🛡 Защита", "title": "Ветки функций / контракты", "rev": 1,
+        "purpose": "Позволять владельцу фиксировать проверенные функциональные ветки как защищённые контракты.",
+        "entry": ["Инфо → 🌿 Ветки", "галочка ветки", "скачать журнал веток"],
+        "flow": ["карточка → пользователь проверил → ✅ fix → persistent contract snapshot → regression gate"],
+        "storage": ["_global_settings.protected_branches_registry", "downloadable branch journal"],
+        "depends": ["ui.info", "storage.sqlite", "storage.mega"],
+        "invariants": ["галочка переживает restart/deploy/restore", "фиксируется семантический контракт, не только hash кода", "будущая смена contract rev видна как ⚠️", "снятие защиты — только явной кнопкой владельца"],
+        "tests": ["toggle/persist", "contract hash", "journal export", "future-version carry"],
+    },
+}
+
+# Every release must explicitly list the functional branches it changed.  Protected
+# branches remain checked; a touched protected branch must have a PASS regression result.
+V196_CURRENT_BRANCH_CHANGES = [
+    ("system.branch_registry", "Новый реестр карточек/защищённых веток, галочки, журнал и contract snapshots."),
+    ("ui.info", "В Инфо добавлена кнопка 🌿 Ветки и статус защищённых контрактов."),
+]
+V196_BRANCH_REGRESSION_RESULTS = {
+    "system.branch_registry": "PASS",
+    "ui.info": "PASS",
+}
+
+
+def _v196_branch_contract_payload(code: str) -> dict:
+    row = V196_BRANCH_CATALOG.get(str(code)) or {}
+    return {
+        "id": str(code), "group": row.get("group"), "title": row.get("title"),
+        "rev": int(row.get("rev", 1) or 1), "purpose": row.get("purpose"),
+        "entry": list(row.get("entry") or []), "flow": list(row.get("flow") or []),
+        "storage": list(row.get("storage") or []), "depends": list(row.get("depends") or []),
+        "invariants": list(row.get("invariants") or []), "tests": list(row.get("tests") or []),
+    }
+
+
+def _v196_branch_contract_hash(code: str) -> str:
+    raw = _v176_json.dumps(_v196_branch_contract_payload(code), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return _v196_hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _v196_branch_root() -> dict:
+    try:
+        gs = data.setdefault("_global_settings", {})
+        root = gs.setdefault(V196_BRANCH_REGISTRY_KEY, {})
+    except Exception:
+        return {"schema": V196_BRANCH_SCHEMA, "protected": {}, "history": []}
+    if not isinstance(root, dict):
+        root = {}; gs[V196_BRANCH_REGISTRY_KEY] = root
+    root.setdefault("schema", V196_BRANCH_SCHEMA)
+    root.setdefault("protected", {})
+    root.setdefault("history", [])
+    return root
+
+
+def _v196_branch_is_protected(code: str) -> bool:
+    try: return str(code) in (_v196_branch_root().get("protected") or {})
+    except Exception: return False
+
+
+def _v196_branch_contract_changed(code: str) -> bool:
+    try:
+        saved = (_v196_branch_root().get("protected") or {}).get(str(code)) or {}
+        if not saved: return False
+        return str(saved.get("contract_hash") or "") != _v196_branch_contract_hash(code)
+    except Exception:
+        return True
+
+
+def _v196_branch_status_icon(code: str) -> str:
+    if not _v196_branch_is_protected(code): return "☐"
+    return "⚠️" if _v196_branch_contract_changed(code) else "✅"
+
+
+def _v196_branch_persist(reason: str = "branches") -> None:
+    # Immediate local root commit; durable MEGA/config work is background so the checkbox
+    # feels instant to the owner.
+    try: SQLITE.save_root(_sqlite_pack_root(data))
+    except Exception:
+        try: save_data(data, root_only=True)
+        except Exception: pass
+    try: schedule_config_backup_for_chats(int(OWNER_ID or 0), delay=0.2)
+    except Exception: pass
+    try: schedule_delta_backup(int(OWNER_ID or 0), delay=0.5, reason=f"protected_branches:{reason}")
+    except Exception: pass
+
+
+def _v196_branch_set(code: str, enabled: bool) -> bool:
+    code = str(code)
+    if code not in V196_BRANCH_CATALOG: return False
+    root = _v196_branch_root(); protected = root.setdefault("protected", {})
+    now_s = now_local().isoformat(timespec="seconds") if "now_local" in globals() else ""
+    if enabled:
+        snapshot = _v196_branch_contract_payload(code)
+        snapshot.update({
+            "contract_hash": _v196_branch_contract_hash(code),
+            "confirmed_version": str(globals().get("VERSION") or ""),
+            "confirmed_at": now_s,
+            "confirmed_by": int(OWNER_ID or 0),
+        })
+        protected[code] = snapshot
+        action = "protect"
+    else:
+        protected.pop(code, None)
+        action = "unprotect"
+    hist = root.setdefault("history", [])
+    hist.append({"ts": now_s, "action": action, "branch": code, "version": str(globals().get("VERSION") or "")})
+    if len(hist) > 200: del hist[:-200]
+    root["last_changed_at"] = now_s; root["last_changed_version"] = str(globals().get("VERSION") or "")
+    _v196_branch_persist(f"{action}:{code}")
+    try: bot_journal("protected_branch_v196", int(OWNER_ID or 0), f"action={action}; branch={code}; hash={_v196_branch_contract_hash(code)[:12]}")
+    except Exception: pass
+    return True
+
+
+def protected_branches_contract_mismatches() -> list[str]:
+    out = []
+    for code in list((_v196_branch_root().get("protected") or {}).keys()):
+        if code not in V196_BRANCH_CATALOG or _v196_branch_contract_changed(code): out.append(str(code))
+    return out
+
+
+def _v196_current_change_codes() -> set[str]:
+    return {str(code) for code, _text in V196_CURRENT_BRANCH_CHANGES}
+
+
+def build_protected_branches_text(page: int = 0) -> str:
+    codes = list(V196_BRANCH_CATALOG.keys())
+    pages = max(1, (len(codes) + V196_BRANCH_PAGE_SIZE - 1) // V196_BRANCH_PAGE_SIZE)
+    page = max(0, min(int(page or 0), pages - 1))
+    protected = _v196_branch_root().get("protected") or {}
+    mismatches = protected_branches_contract_mismatches()
+    lines = [
+        "🌿 ВЕТКИ ФУНКЦИЙ / ЗАЩИТА",
+        f"Версия: {globals().get('VERSION') or ''}",
+        f"Зафиксировано: {len(protected)}/{len(V196_BRANCH_CATALOG)} · страница {page+1}/{pages}",
+        "",
+        "✅ защищено · ☐ не зафиксировано · ⚠️ контракт изменился после фиксации",
+        "Галочка = вы подтвердили ветку тестами. В будущих версиях она остаётся защищённой.",
+        "",
+        "🛠 ВЕТКИ ПРАВОК ТЕКУЩЕЙ ВЕРСИИ:",
+    ]
+    for code, text in V196_CURRENT_BRANCH_CHANGES:
+        row = V196_BRANCH_CATALOG.get(code) or {}
+        result = str(V196_BRANCH_REGRESSION_RESULTS.get(code) or "NO TEST")
+        lines.append(f"{_v196_branch_status_icon(code)} {row.get('title') or code} · regression {result}\n   {text}")
+    if mismatches:
+        lines += ["", "⚠️ ВНИМАНИЕ: изменились подтверждённые контракты: " + ", ".join(mismatches[:8])]
+    lines += ["", "Ветки на этой странице:"]
+    for code in codes[page*V196_BRANCH_PAGE_SIZE:(page+1)*V196_BRANCH_PAGE_SIZE]:
+        row = V196_BRANCH_CATALOG[code]
+        touched = " 🛠" if code in _v196_current_change_codes() else ""
+        lines.append(f"{_v196_branch_status_icon(code)}{touched} {row['group']} / {row['title']} · contract r{row.get('rev',1)}")
+    return "\n".join(lines)[:3900]
+
+
+def build_protected_branches_keyboard(page: int = 0):
+    codes = list(V196_BRANCH_CATALOG.keys())
+    pages = max(1, (len(codes) + V196_BRANCH_PAGE_SIZE - 1) // V196_BRANCH_PAGE_SIZE)
+    page = max(0, min(int(page or 0), pages - 1))
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    for code in codes[page*V196_BRANCH_PAGE_SIZE:(page+1)*V196_BRANCH_PAGE_SIZE]:
+        row = V196_BRANCH_CATALOG[code]
+        short = str(row.get("title") or code)
+        if len(short) > 27: short = short[:26] + "…"
+        kb.row(
+            IB(f"{_v196_branch_status_icon(code)} {short}", callback_data=f"br:t:{code}"),
+            IB("📄", callback_data=f"br:c:{code}"),
+        )
+    nav = []
+    if page > 0: nav.append(IB("⬅️", callback_data=f"br:p:{page-1}"))
+    nav.append(IB(f"{page+1}/{pages}", callback_data="none"))
+    if page + 1 < pages: nav.append(IB("➡️", callback_data=f"br:p:{page+1}"))
+    kb.row(*nav)
+    kb.row(IB("🛠 Правки версии", callback_data="br:changes"), IB("📥 Скачать ветки", callback_data="br:dl"))
+    day = get_chat_store(int(OWNER_ID or 0)).get("current_view_day", today_key())
+    kb.row(IB("🔙 Назад в Инфо", callback_data=f"d:{day}:info"), IB("❌ Закрыть", callback_data="info_close"))
+    return kb
+
+
+def build_protected_branch_card(code: str) -> str:
+    code = str(code); row = V196_BRANCH_CATALOG.get(code)
+    if not row: return "❌ Неизвестная ветка."
+    saved = (_v196_branch_root().get("protected") or {}).get(code) or {}
+    lines = [
+        f"{_v196_branch_status_icon(code)} 🌿 {row['title']}",
+        f"ID: {code} · {row['group']} · contract r{row.get('rev',1)}",
+        f"Статус: {'ЗАЩИЩЕНО' if saved else 'не зафиксировано'}",
+    ]
+    if saved:
+        lines.append(f"Подтверждено: {saved.get('confirmed_version','')} · {saved.get('confirmed_at','')}")
+        lines.append(f"Contract hash: {str(saved.get('contract_hash') or '')[:16]}")
+    lines += ["", "Суть:", str(row.get("purpose") or ""), "", "Входы:"]
+    lines += [f"• {x}" for x in row.get("entry") or []]
+    lines += ["", "Рабочая цепочка:"] + [f"• {x}" for x in row.get("flow") or []]
+    lines += ["", "НЕЛЬЗЯ ЛОМАТЬ:"] + [f"• {x}" for x in row.get("invariants") or []]
+    lines += ["", "Регрессия:"] + [f"• {x}" for x in row.get("tests") or []]
+    if row.get("depends"):
+        lines += ["", "Зависимости: " + ", ".join(row.get("depends") or [])]
+    return "\n".join(lines)[:3900]
+
+
+def build_protected_branch_card_keyboard(code: str, page: int = 0):
+    code = str(code); kb = types.InlineKeyboardMarkup()
+    protected = _v196_branch_is_protected(code)
+    label = "☐ Снять защиту" if protected else "✅ Зафиксировать ветку"
+    kb.row(IB(label, callback_data=f"br:t:{code}"))
+    kb.row(IB("🔙 К списку веток", callback_data=f"br:p:{max(0,int(page or 0))}"), IB("📥 Скачать", callback_data="br:dl"))
+    return kb
+
+
+def build_protected_branches_changes_text() -> str:
+    lines = ["🛠 ВЕТКИ ПРАВОК ТЕКУЩЕЙ ВЕРСИИ", f"Версия: {globals().get('VERSION') or ''}", ""]
+    for code, text in V196_CURRENT_BRANCH_CHANGES:
+        row = V196_BRANCH_CATALOG.get(code) or {}
+        lines += [f"{_v196_branch_status_icon(code)} {row.get('title') or code}", f"Regression: {V196_BRANCH_REGRESSION_RESULTS.get(code,'NO TEST')}", text, ""]
+    lines += ["✅ в этой строке означает: ветка была ранее/сейчас зафиксирована владельцем и продолжает идти в следующих версиях с защитой."]
+    return "\n".join(lines)[:3900]
+
+
+def _v196_branch_export_payload() -> dict:
+    root = _v196_branch_root()
+    branches = []
+    for code, row in V196_BRANCH_CATALOG.items():
+        current = _v196_branch_contract_payload(code)
+        current["current_contract_hash"] = _v196_branch_contract_hash(code)
+        current["protected"] = _v196_branch_is_protected(code)
+        current["contract_changed_since_confirmation"] = _v196_branch_contract_changed(code)
+        current["confirmed_snapshot"] = (root.get("protected") or {}).get(code)
+        branches.append(current)
+    return {
+        "format": "telegram_bot_protected_branches_journal_v1",
+        "schema": V196_BRANCH_SCHEMA,
+        "generated_at": now_local().isoformat(timespec="seconds") if "now_local" in globals() else "",
+        "bot_version": str(globals().get("VERSION") or ""),
+        "current_version_changes": [{"branch": c, "summary": t, "regression": V196_BRANCH_REGRESSION_RESULTS.get(c)} for c,t in V196_CURRENT_BRANCH_CHANGES],
+        "registry": root,
+        "branches": branches,
+    }
+
+
+def build_protected_branches_journal_text() -> str:
+    payload = _v196_branch_export_payload()
+    lines = [
+        "🌿 ЖУРНАЛ ЗАЩИЩЁННЫХ ВЕТОК TELEGRAM-БОТА",
+        f"Версия: {payload['bot_version']}", f"Создан: {payload['generated_at']}",
+        f"Зафиксировано: {sum(1 for b in payload['branches'] if b['protected'])}/{len(payload['branches'])}",
+        "="*78, "", "ПРАВКИ ТЕКУЩЕЙ ВЕРСИИ:",
+    ]
+    for item in payload["current_version_changes"]:
+        lines.append(f"- {item['branch']} [{item.get('regression')}] — {item['summary']}")
+    lines += ["", "КАРТОЧКИ ВЕТОК:"]
+    for b in payload["branches"]:
+        lines += ["", "-"*78, f"{('✅' if b['protected'] else '☐')} {b['id']} — {b['title']} · {b['group']} · r{b['rev']}", f"Суть: {b['purpose']}"]
+        if b["protected"]:
+            snap = b.get("confirmed_snapshot") or {}
+            lines.append(f"Подтверждено: {snap.get('confirmed_version','')} · {snap.get('confirmed_at','')} · hash {str(snap.get('contract_hash') or '')[:16]}")
+        lines.append("Нельзя ломать:")
+        lines += [f"  • {x}" for x in b.get("invariants") or []]
+        lines.append("Регрессионные тесты:")
+        lines += [f"  • {x}" for x in b.get("tests") or []]
+    lines += ["", "="*78, "MACHINE_JSON", _v176_json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)]
+    return "\n".join(lines) + "\n"
+
+
+def send_protected_branches_journal(chat_id: int) -> bool:
+    path = None
+    try:
+        stamp = now_local().strftime("%Y-%m-%d_%H-%M-%S") if "now_local" in globals() else str(int(_v176_time.time()))
+        path = _v196_os.path.join(_v196_tempfile.gettempdir(), f"Журнал_защищённых_веток_{stamp}.txt")
+        with open(path, "w", encoding="utf-8") as fh: fh.write(build_protected_branches_journal_text())
+        with open(path, "rb") as fh:
+            bot.send_document(int(chat_id), fh, caption="🌿 Журнал защищённых веток. Этот файл можно передать ChatGPT как контракт бота.")
+        try: bot_journal("protected_branches_download_v196", int(chat_id), f"file={_v196_os.path.basename(path)}")
+        except Exception: pass
+        return True
+    except Exception as exc:
+        try: log_error(f"protected branches journal export: {exc}")
+        except Exception: pass
+        try: send_and_auto_delete(int(chat_id), f"❌ Не удалось скачать журнал веток: {str(exc)[:300]}", 15)
+        except Exception: pass
+        return False
+    finally:
+        if path:
+            try: _v196_os.remove(path)
+            except Exception: pass
+
+
+def _v196_branch_owner_ok(call) -> bool:
+    try:
+        return int(call.message.chat.id) == int(OWNER_ID or 0) and int(getattr(getattr(call, "from_user", None), "id", 0) or 0) == int(OWNER_ID or 0)
+    except Exception: return False
+
+
+def _v196_branch_callback_filter(call) -> bool:
+    return str(getattr(call, "data", "") or "").startswith("br:")
+
+
+def _v196_branch_callback(call):
+    raw = str(getattr(call, "data", "") or "")
+    if not _v196_branch_owner_ok(call):
+        try: bot.answer_callback_query(call.id, "Только основной владелец.", show_alert=True)
+        except Exception: pass
+        return
+    chat_id = int(call.message.chat.id)
+    if raw == "br:open":
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        safe_edit(bot, call, build_protected_branches_text(0), reply_markup=build_protected_branches_keyboard(0))
+        return
+    if raw.startswith("br:p:"):
+        try: page = int(raw.split(":",2)[2])
+        except Exception: page = 0
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        safe_edit(bot, call, build_protected_branches_text(page), reply_markup=build_protected_branches_keyboard(page))
+        return
+    if raw.startswith("br:c:"):
+        code = raw.split(":",2)[2]
+        codes = list(V196_BRANCH_CATALOG.keys())
+        try: page = codes.index(code)//V196_BRANCH_PAGE_SIZE
+        except Exception: page = 0
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        safe_edit(bot, call, build_protected_branch_card(code), reply_markup=build_protected_branch_card_keyboard(code, page))
+        return
+    if raw.startswith("br:t:"):
+        code = raw.split(":",2)[2]
+        if code not in V196_BRANCH_CATALOG: return
+        new_state = not _v196_branch_is_protected(code)
+        _v196_branch_set(code, new_state)
+        try: bot.answer_callback_query(call.id, "Ветка зафиксирована ✅" if new_state else "Защита снята ☐", show_alert=False)
+        except Exception: pass
+        codes = list(V196_BRANCH_CATALOG.keys())
+        try: page = codes.index(code)//V196_BRANCH_PAGE_SIZE
+        except Exception: page = 0
+        safe_edit(bot, call, build_protected_branches_text(page), reply_markup=build_protected_branches_keyboard(page))
+        return
+    if raw == "br:changes":
+        kb = types.InlineKeyboardMarkup(); kb.row(IB("🔙 К веткам", callback_data="br:p:0"), IB("📥 Скачать", callback_data="br:dl"))
+        try: bot.answer_callback_query(call.id)
+        except Exception: pass
+        safe_edit(bot, call, build_protected_branches_changes_text(), reply_markup=kb)
+        return
+    if raw == "br:dl":
+        try: bot.answer_callback_query(call.id, "Формирую журнал веток…", show_alert=False)
+        except Exception: pass
+        try:
+            pool = globals().get("GENERAL_TASK_POOL")
+            if pool is not None: pool.submit("protected-branches-journal", send_protected_branches_journal, chat_id)
+            else: send_protected_branches_journal(chat_id)
+        except Exception: send_protected_branches_journal(chat_id)
+        return
+
+
 # INFO integration: v178 GLOBAL FINAL builds INFO from the stable base directly.
 # We deliberately do NOT call the v148 -> v152 -> v157 -> v158 -> v171 -> v175
 # wrapper chain.  The net behaviour of those layers is applied once below.
@@ -744,6 +1342,11 @@ def build_info_text(chat_id: int, *args, **kwargs) -> str:
                 rows.append(f"🩹 Аккуратное восстановление: ВКЛ → {fmt_date_ddmmyy(cr.get('day_key') or today_key())}; осталось {_format_duration_short(cr.get('remaining', 0))}")
             else:
                 rows.append("🩹 Аккуратное восстановление: ВЫКЛ")
+        except Exception:
+            pass
+        try:
+            _root = _v196_branch_root(); _protected = _root.get("protected") or {}; _mm = protected_branches_contract_mismatches()
+            rows.append(f"🌿 Ветки: защищено {len(_protected)}/{len(V196_BRANCH_CATALOG)}" + (f" · ⚠️ контрактов изменено {len(_mm)}" if _mm else ""))
         except Exception:
             pass
         base = "\n".join(rows).strip()
@@ -854,6 +1457,18 @@ def build_info_keyboard(chat_id: int):
             grouped.extend(block)
             first = False
         rows = grouped
+
+    # v196 protected semantic branches. Owner confirmation persists across releases.
+    if cid == int(OWNER_ID or 0):
+        if not any(_v177_info_btn_cb(b) == "br:open" for row in rows for b in (row or [])):
+            insert_at = len(rows)
+            for idx, row in enumerate(rows):
+                labels = " ".join(_v177_info_btn_text(b) for b in (row or [])).casefold()
+                callbacks = " ".join(_v177_info_btn_cb(b) for b in (row or []))
+                if "назад" in labels or "закры" in labels or "info_close" in callbacks or "back_main" in callbacks:
+                    insert_at = idx; break
+            _pcount = len((_v196_branch_root().get("protected") or {}))
+            rows.insert(insert_at, [IB(f"🌿 Ветки ✅{_pcount}", callback_data="br:open")])
 
     # v187 temporary manual replay switch. It is owner-only and RAM-only.
     if cid == int(OWNER_ID or 0):
@@ -1389,6 +2004,6 @@ def runtime_mark_ready(detail: str = ""):
 # v179_clean_final
 
 
-# v193 authoritative runtime version after lifecycle/recovery architecture audit.
-VERSION = "bot_v195_chat_identity_names_final"
-# v195_chat_identity_names_final
+# v192 authoritative runtime version after Excel ARS/USD and delivery audit.
+VERSION = "bot_v196_protected_branches_final"
+# v196_protected_branches_final

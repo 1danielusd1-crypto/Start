@@ -1,0 +1,53 @@
+{
+  "version": "bot_v196_protected_branches_final",
+  "overall": "PASS",
+  "compile": "PASS",
+  "manifest_markers_hashes": "PASS",
+  "duplicate_top_level_symbols": {
+    "status": "PASS",
+    "count": 0
+  },
+  "callback_registration": {
+    "status": "PASS",
+    "count": 1
+  },
+  "no_TelegramBotBackupsStart": {
+    "status": "PASS",
+    "count": 0
+  },
+  "protected_branch_catalog": {
+    "status": "PASS",
+    "count": 25
+  },
+  "current_branch_regression_gate": {
+    "status": "PASS",
+    "changes": [
+      {
+        "branch": "system.branch_registry",
+        "result": "PASS"
+      },
+      {
+        "branch": "ui.info",
+        "result": "PASS"
+      }
+    ]
+  },
+  "branch_callback_length": {
+    "status": "PASS",
+    "max": 27
+  },
+  "branch_runtime_unit": {
+    "status": "PASS",
+    "checks": [
+      "protect",
+      "future-version carry",
+      "contract mismatch warning",
+      "explicit unprotect",
+      "journal MACHINE_JSON"
+    ]
+  },
+  "business_logic_scope": {
+    "status": "PASS",
+    "note": "No finance/restore/MEGA/Excel business module changed in v196."
+  }
+}

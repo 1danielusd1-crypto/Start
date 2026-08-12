@@ -1,4 +1,4 @@
-# v195_chat_identity_names_final
+# v195_balance_authority_remaining_final
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
@@ -842,7 +842,7 @@ def on_callback(call):
                 level = 2 if int(data_str.rsplit(":", 1)[1]) == 2 else 1
                 _v168_set_owner_access_circle(level)
                 title = "1️⃣ Первый круг" if level == 1 else "2️⃣ Второй круг"
-                safe_edit(bot, call, window_mark(f"👥 Доступ владельца к чатам\n\n{title}\n\n☑️ — доступ владельца включён; имя чата не меняется\n⬜ — дополнительный доступ выключен", "Ф2"), reply_markup=build_additional_owners_keyboard(level))
+                safe_edit(bot, call, window_mark(f"👥 Доступ владельца к чатам\n\n{title}\n\n✅ — владелец может пользоваться ботом, смотреть и проверять этот чат\n❌ — дополнительный доступ выключен", "Ф2"), reply_markup=build_additional_owners_keyboard(level))
             except Exception as e:
                 log_error(f"owner access circle callback: {e}")
             return
@@ -854,7 +854,7 @@ def on_callback(call):
                 set_additional_owner(target_id, target_id not in get_additional_owner_ids())
                 level = _v168_owner_access_circle(1)
                 title = "1️⃣ Первый круг" if level == 1 else "2️⃣ Второй круг"
-                safe_edit(bot, call, window_mark(f"👥 Доступ владельца к чатам\n\n{title}\n\n☑️ — доступ владельца включён; имя чата не меняется\n⬜ — дополнительный доступ выключен", "Ф2"), reply_markup=build_additional_owners_keyboard(level))
+                safe_edit(bot, call, window_mark(f"👥 Доступ владельца к чатам\n\n{title}\n\n✅ — владелец может пользоваться ботом, смотреть и проверять этот чат\n❌ — дополнительный доступ выключен", "Ф2"), reply_markup=build_additional_owners_keyboard(level))
             except Exception as e:
                 log_error(f"additional owner callback: {e}")
             return
@@ -862,7 +862,7 @@ def on_callback(call):
             if not tenant_is_platform_owner_user(tenant_current_actor_user_id()):
                 return
             _v168_set_owner_access_circle(1)
-            safe_edit(bot, call, window_mark("👥 Доступ владельца к чатам\n\n1️⃣ Первый круг\n\n☑️ — доступ владельца включён; имя чата не меняется\n⬜ — дополнительный доступ выключен", "Ф1"), reply_markup=build_additional_owners_keyboard(1))
+            safe_edit(bot, call, window_mark("👥 Доступ владельца к чатам\n\n1️⃣ Первый круг\n\n✅ — владелец может пользоваться ботом, смотреть и проверять этот чат\n❌ — дополнительный доступ выключен", "Ф1"), reply_markup=build_additional_owners_keyboard(1))
             return
 
         # Статьи должны работать во всех режимах: обычное окно, быстрый остаток,
@@ -1633,13 +1633,29 @@ def on_callback(call):
         if data_str.startswith("remaining_toggle:"):
             if not _v85_enabled("remaining_window"):
                 return
-            day_key = data_str.split(":", 1)[1] or today_key()
+            parts = data_str.split(":")
+            day_key = (parts[1] if len(parts) > 1 else "") or today_key()
             currency = _gomonk_currency(chat_id)
-            settings = _gomonk_settings(chat_id, currency)
-            _enabled_key, _entries_key, remaining_key = _gomonk_keys(chat_id, currency)
-            settings[remaining_key] = not bool(settings.get(remaining_key, True))
-            save_data(data, chat_ids=[chat_id])
-            open_remaining_window(chat_id, day_key, call.message.message_id)
+            # v195 buttons carry the DESIRED state (0/1), not a blind toggle.
+            # This makes delayed/repeated Telegram callbacks idempotent.  Old
+            # v194 buttons without the suffix remain supported as one atomic toggle.
+            desired = None
+            if len(parts) > 2 and parts[2] in {"0", "1"}:
+                desired = parts[2] == "1"
+            if desired is None:
+                new_state = _toggle_remaining_state(chat_id, currency)
+            else:
+                new_state = _set_remaining_state(chat_id, desired, currency)
+            try:
+                bot.answer_callback_query(call.id, "С гомонковыми" if new_state else "Без гомонковых", show_alert=False)
+            except Exception:
+                pass
+            open_remaining_window(chat_id, day_key, call.message.message_id, with_gomonk=new_state)
+            _persist_remaining_state_async(chat_id)
+            try:
+                bot_journal("remaining_gomonk_state_v195", chat_id, f"currency={currency}; day={day_key}; enabled={int(new_state)}; explicit={int(desired is not None)}")
+            except Exception:
+                pass
             return
         if data_str == "careful_restore_toggle":
             if not is_owner_chat(chat_id) or int(getattr(getattr(call, "from_user", None), "id", 0) or 0) != int(OWNER_ID or 0):
@@ -2690,7 +2706,7 @@ def on_callback(call):
             return
         if cmd == "total":
             view_usd = usd_transactions_view_enabled(chat_id)
-            chat_bal = usd_balance_for_chat(chat_id) if view_usd else (current_chat_balance_v194(chat_id) if "current_chat_balance_v194" in globals() else store.get("balance", 0))
+            chat_bal = usd_balance_for_chat(chat_id) if view_usd else store.get("balance", 0)
 
             if not is_owner_chat(chat_id):
                 if view_usd:
@@ -2737,7 +2753,7 @@ def on_callback(call):
                     continue
                 if cid_int not in allowed_chat_ids:
                     continue
-                bal = usd_balance_for_chat(cid_int) if view_usd else (current_chat_balance_v194(cid_int) if "current_chat_balance_v194" in globals() else st.get("balance", 0))
+                bal = usd_balance_for_chat(cid_int) if view_usd else st.get("balance", 0)
                 total_all += bal
                 if cid_int == chat_id:
                     continue
@@ -3219,12 +3235,10 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Эта кнопка не обработана. Откройте меню заново.", show_alert=True)
         except Exception:
             pass
-        return False
     except Exception as e:
         log_error(f"on_callback error: data={locals().get('data_str', '')} chat={locals().get('chat_id', '')}: {e}")
         try:
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-        return False
-# v195_chat_identity_names_final
+# v195_balance_authority_remaining_final
