@@ -1,4 +1,4 @@
-# DATA CONSTITUTION v190 — MEGA LIGHT / FAST RECOVERY
+# DATA CONSTITUTION v193 — MEGA LIGHT / LIFECYCLE HARDENING
 
 ## 1. Единственный устойчивый корень
 Канонический корень MEGA: `/TelegramBotBackups` либо точное значение `MEGA_BACKUP_DIR` в Render.
@@ -95,9 +95,15 @@ Finance ledger event — write-ahead witness между поколениями. 
 - Legacy mixed currency rows are canonically re-parsed for export: a pure USD source contributes zero to ARS; a mixed source contributes only its parsed ARS component.
 
 
-## v193 Excel / Google single-source invariant
-- ARS and USD report sections are independent.
-- When a prebuilt USD table is appended below ARS, every A1 formula reference is shifted by the exact row offset.
-- A formula in the USD section is forbidden from referencing rows above the USD section; export fails closed.
-- Telegram cached formula values and Google recalculation must represent the same business totals.
-- Product/food totals honor category_override_slug exactly like expense category columns.
+## v193 — crash ambiguity and terminal-state truth
+- The v190 one-write hot path remains unchanged: the durable task is written once to `tasks/pending` before business execution; there is no mandatory foreground `pending -> running` write.
+- Consequence: after an ungraceful crash, a remote `pending` file does **not** prove that business execution never started. It is an ambiguous witness.
+- Startup recovery therefore performs effect verification and only idempotent repair. It never blindly repeats a non-idempotent callback, mutation command, SECRET source write, or Telegram forwarding send merely because the remote state is `pending`.
+- Proven effects go through the normal finalizer. Ambiguous missing effects move to `failed/needs_review` so a human or a safe repair path can resolve them without a duplicate.
+- A local `processed` marker is not sufficient on its own to move the MEGA task to `done`; the standard effect/ledger/critical-delta finalizer is still used.
+- `delta_critical=OFF` is a deliberate loss of the required external witness and therefore cannot be reported as successful durable completion.
+
+## v193 — process and export lifecycle
+- Self-scheduling background processes that can be disabled must have explicit STOP/START semantics. Reminders and the durable-journal tick are cancelled when disabled and re-armed when enabled.
+- Interactive file generation is single-flight. A concurrent request is registered as waiting and receives a terminal `ready`, `failed`, or delivered path after the active job finishes.
+- Corrupt historical journal chunks are non-authoritative diagnostics: they are skipped with WARN/counters while valid chunks continue restoring. They never block business-state recovery.

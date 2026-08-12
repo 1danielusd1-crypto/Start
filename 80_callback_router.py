@@ -1,4 +1,4 @@
-# v189_main_window_authority_final
+# v193_architecture_lifecycle_final
 def _forward_probe_all_background(owner_chat_id: int, message_id: int):
     try:
         ok, bad = probe_all_known_chats()
@@ -3219,10 +3219,12 @@ def on_callback(call):
             bot.answer_callback_query(call.id, "Эта кнопка не обработана. Откройте меню заново.", show_alert=True)
         except Exception:
             pass
+        return False
     except Exception as e:
         log_error(f"on_callback error: data={locals().get('data_str', '')} chat={locals().get('chat_id', '')}: {e}")
         try:
             bot.answer_callback_query(call.id, "Ошибка кнопки. Откройте окно заново.", show_alert=True)
         except Exception:
             pass
-# v189_main_window_authority_final
+        return False
+# v193_architecture_lifecycle_final

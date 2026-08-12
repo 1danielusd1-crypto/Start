@@ -1,0 +1,71 @@
+АУДИТ И ИСПРАВЛЕНИЯ — bot_v193_architecture_lifecycle_final
+Дата сборки: 2026-08-12
+База: bot_v192_excel_ars_usd_delivery_final
+
+ЦЕЛЬ
+Сохранить рабочую функциональность v192, но устранить найденные архитектурные противоречия так, чтобы кнопки, durable-задачи, фоновые процессы и файловые задания имели определённый жизненный цикл и честный финальный результат.
+
+ЧТО БЫЛО ПРОВЕРЕНО
+- 27 runtime-модулей и порядок их загрузки.
+- Финальный callback router и количество Telegram callback handlers.
+- Durable task / MEGA LIGHT / DATA CONSTITUTION lifecycle.
+- Напоминания и выключаемые фоновые процессы.
+- Interactive file jobs и ожидание второго запроса.
+- Durable runtime journal и восстановление повреждённых historical chunks.
+- Strict /restore contract.
+- ARS/USD / Excel export regression surface.
+- Маркеры первой/последней строки, module manifest и SHA-256.
+
+ИСПРАВЛЕНО
+1. DURABLE TASK RECOVERY
+v190 намеренно оставляет task в remote /pending во время foreground business execution. Поэтому /pending после crash является неоднозначным состоянием. v192 recovery мог трактовать его как «business не запускался» и повторно вызвать handler, а также пытался перейти к физически отсутствующему /running пути. В v193 blind replay удалён. Recovery сначала проверяет уже возникший effect, выполняет только безопасный idempotent repair, доказанный effect отправляет через обычный durable finalizer, а неоднозначный non-idempotent task переводит в needs_review без повторной Telegram-отправки/мутации.
+
+2. DURABLE TERMINAL RESULT
+Processed marker больше не является самостоятельным основанием для done. Для done сохраняется обычная цепочка: effect -> Constitution ledger token (если требуется) -> critical MEGA delta -> done.
+
+3. CRITICAL DELTA
+Если critical MEGA delta процесс выключен, persist_critical_delta_now больше не возвращает ложный True. Durable task не объявляется завершённым без обязательного внешнего witness.
+
+4. REMINDERS LIFECYCLE
+Добавлены симметричные STOP/START: disable отменяет reminder-scheduler, enable снова планирует его. Сам scheduler не продолжает самопланирование, когда процесс выключен.
+
+5. DURABLE JOURNAL LIFECYCLE
+journal-durable-tick теперь отменяется при выключении journal_mega и явно запускается снова при включении.
+
+6. LEASE / SOURCE ARCHIVE RESUME
+Включение lease запускает immediate lease-check; включение source archive запускает archive job. Описание window reconcile приведено к фактической lazy/manual архитектуре v179.
+
+7. INTERACTIVE FILE JOB SINGLE-FLIGHT
+Финальные переопределения v74/v75 обходили waiting lifecycle, реализованный раньше в v73. Теперь второй запрос во время активного export реально регистрируется как waiter. После полного завершения и очистки active job waiters получают terminal ready/failed/delivered path.
+
+8. CALLBACK RESULT
+Неизвестный callback больше не считается успешным только потому, что исключение не вышло наружу. Legacy on_callback возвращает False на unhandled/error, final router переносит этот статус в button_chain_result.
+
+9. CORRUPT DURABLE JOURNAL CHUNK
+Один повреждённый historical JSON больше не создаёт повторяющийся ERROR и не мешает прогреву журнала. Chunk пропускается с WARN и счётчиками; валидные chunks продолжают восстанавливаться.
+
+СОХРАНЕНО БЕЗ ИЗМЕНЕНИЙ
+- Канонический MEGA root /TelegramBotBackups.
+- v190 one-write-before-execute MEGA LIGHT hot path; foreground pending->running не возвращён.
+- Strict /restore: обязательный pre_restore, REPLACE FROM FILE, без merge.
+- ARS/USD финансовая логика, Excel formulas/period math/Notes mapping.
+- Telegram/Google delivery proof.
+- DATA CONSTITUTION storage model.
+
+ФИНАЛЬНЫЕ ПРОВЕРКИ
+PASS: Python compile всех 27 runtime-модулей, bot.py и FULL source.
+PASS: modules_manifest — 27/27 hash + marker.
+PASS: 2661 top-level runtime symbols, дублей активных определений между модулями: 0.
+PASS: Telegram callback_query_handler registrations: 1, только 89_callback_final.py.
+PASS: forbidden /TelegramBotBackupsStart references: 0.
+PASS: v182_cmd_restore и _v153_validate_restore_gz AST-source hashes совпадают с v192.
+PASS: локальные isolated lifecycle simulations: durable ambiguous/verified recovery, reminders stop/start, journal stop/start, lease resume, corrupt journal recovery.
+PASS: выбранные Excel/ARS/USD export functions, затронутые окружающими файлами, AST-source equivalent v192; финансовые формулы не переписывались.
+
+ВАЖНЫЕ ОСТАВШИЕСЯ ОПЕРАЦИОННЫЕ ОГРАНИЧЕНИЯ
+1. По приложенному runtime v192 boot = 98.402s; основной вклад — внешний MEGA mega-get около 72.9s. Это сетевой/операционный bottleneck. В v193 он намеренно не «ускорен» ценой ослабления восстановления данных.
+2. При модели v190 с одним remote pending witness нельзя математически доказать exact-once для произвольного non-idempotent effect после crash: pending может означать «ещё не начинал» или «начал и упал до финализации». v193 выбирает duplicate-safe поведение: verify/idempotent repair/needs_review вместо слепого replay.
+3. В диагностике исходной v192 уже был один failed durable task без загруженных failed_details. v193 не удаляет такие исторические свидетельства автоматически.
+
+РЕЛИЗ
+bot_v193_architecture_lifecycle_final

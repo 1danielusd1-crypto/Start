@@ -1,4 +1,4 @@
-# v194_excel_canonical_opening_total_final
+# v193_architecture_lifecycle_final
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -2480,8 +2480,8 @@ def mega_task_begin(update_id, allow_existing_running: bool = False) -> bool:
     """Claim a persisted task locally without a foreground MEGA move.
 
     The remote file intentionally stays in ``pending`` until background verification moves
-    it directly to done/failed.  If Render dies during execution, startup sees ``pending``
-    and safely replays/repairs the idempotent update.
+    it directly to done/failed. If Render dies during execution, startup treats that pending
+    witness as ambiguous and performs verification/idempotent repair only; it is never blindly replayed.
     """
     key = _mega_task_id(update_id)
     success = False
@@ -2812,21 +2812,24 @@ _execute_telegram_payload = _v177_legacy_0072_execute_telegram_payload
 
 
 def _mega_task_recover_one(update_id, state: str, remote_path: str):
-    """Recover without replaying uncertain `running` business operations.
+    """Recover a v190 single-witness task without replaying ambiguous business effects.
 
-    pending = business never started -> may execute once.
-    running = business may have partially/fully executed -> inspect and repair only safe
-    idempotent finance effects; never resend Telegram copies and never rerun callbacks/handlers.
+    In MEGA LIGHT the remote task intentionally remains ``pending`` while the live worker runs.
+    Therefore after a crash BOTH ``pending`` and legacy ``running`` mean "execution outcome is
+    uncertain". Recovery may verify already-visible effects and repair only intrinsically
+    idempotent local metadata/finance witnesses. It must never blindly rerun callbacks, mutation
+    commands, SECRET source writes, or Telegram forwarding because that can duplicate/toggle twice.
     """
     key = _mega_task_id(update_id)
     if mega_task_known_state(key) == "done":
         return
-    if not mega_task_begin(key, allow_existing_running=(state == "running")):
+    if not mega_task_begin(key, allow_existing_running=True):
         return
+    local = None
     try:
-        path = remote_path
-        if state == "pending":
-            path = mega_task_remote_path(key, "running")
+        # v190 removed foreground pending->running. Download the file from the state/path that
+        # actually exists instead of inventing a /running path for a pending witness.
+        path = str(remote_path or mega_task_remote_path(key, state if state in {"pending", "running"} else "pending"))
         local = _mega_download_remote_path(path)
         task = _load_json(local, {}) if local else {}
         payload = (task or {}).get("payload") or {}
@@ -2836,43 +2839,50 @@ def _mega_task_recover_one(update_id, state: str, remote_path: str):
         chat_id = (task or {}).get("chat_id")
         update_type = str((task or {}).get("update_type") or "recovered")
         expected = _durable_expected_from_task_or_payload(task, payload)
-        if durable_update_processed(key):
-            mega_task_finish(key, True, "processed_marker_present")
-            with _MEGA_TASK_LOCK:
-                _mega_task_counters["skipped_done"] += 1
-            return
-        if state == "running":
-            # First inspect. Then repair finance only where no duplicate Telegram send is possible.
-            if not _mega_task_effect_exists(payload, expected):
-                _repair_safe_missing_finance_effects(payload, expected)
-                _repair_safe_missing_forward_secret_effects(payload, expected)
-            if _mega_task_effect_exists(payload, expected):
-                if finalize_durable_task_after_business(key, chat_id, update_type, payload=payload, expected_effects=expected):
-                    with _MEGA_TASK_LOCK:
+        marker_present = bool(durable_update_processed(key))
+
+        # Verification first. Safe repair functions never resend Telegram content. Direct finance
+        # is keyed by source message_id; forwarded finance is repaired only when its Telegram link
+        # already exists. SECRET forward repair only rebuilds metadata for a confirmed copy.
+        if not _mega_task_effect_exists(payload, expected):
+            _repair_safe_missing_finance_effects(payload, expected)
+            _repair_safe_missing_forward_secret_effects(payload, expected)
+
+        if _mega_task_effect_exists(payload, expected):
+            finalized = finalize_durable_task_after_business(
+                key, chat_id, update_type, payload=payload, expected_effects=expected
+            )
+            if finalized:
+                with _MEGA_TASK_LOCK:
+                    _mega_task_counters["recovered"] += 1
+                    if marker_present:
                         _mega_task_counters["skipped_done"] += 1
-                return
-            report = _durable_effect_report(payload, expected)
-            reason = f"needs_review_running: business not replayed; missing={report.get('missing', [])}; ambiguous={report.get('ambiguous', [])}"
-            mega_task_finish(key, False, reason)
-            bot_journal("mega_task_needs_review", chat_id, f"update_id={key} {reason}")
-            try:
-                # В новом профиле жёлтые сомнения видны в «Инфо → Проблемные задачи».
-                # Не засоряем чат страшным уведомлением, если ошибка не доказана.
-                if OWNER_ID and not ("safety_profile_new_enabled" in globals() and safety_profile_new_enabled()):
-                    bot.send_message(int(OWNER_ID), f"⚠️ Задача {key} после перезапуска НЕ повторена, чтобы не создать дубль.\n{reason[:850]}")
-            except Exception:
-                pass
+                bot_journal(
+                    "mega_task_recovery_verified", chat_id,
+                    f"update_id={key} state={state} marker={int(marker_present)} finalized=1"
+                )
+            else:
+                schedule_durable_task_finalize_retry(
+                    key, chat_id, update_type, 1.0, payload=payload, expected_effects=expected
+                )
             return
-        # A persisted `pending` task was never claimed by a worker: this is the only recovery
-        # state where executing the original handler is safe.
-        execution_ctx = _execute_telegram_payload(payload, key, chat_id, update_type)
-        expected_after = _durable_expected_after_execution(expected, execution_ctx, payload)
-        finalized = finalize_durable_task_after_business(key, chat_id, update_type, payload=payload, expected_effects=expected_after)
-        if not finalized:
-            schedule_durable_task_finalize_retry(key, chat_id, update_type, 1.0, payload=payload, expected_effects=expected_after)
-        with _MEGA_TASK_LOCK:
-            _mega_task_counters["recovered"] += 1
-        bot_journal("mega_task_recovered", chat_id, f"update_id={key} state={state} finalized={finalized}")
+
+        report = _durable_effect_report(payload, expected)
+        reason = (
+            f"needs_review_{state}_v190: ambiguous single-witness task was not replayed; "
+            f"missing={report.get('missing', [])}; ambiguous={report.get('ambiguous', [])}; "
+            f"marker={int(marker_present)}"
+        )
+        mega_task_finish(key, False, reason)
+        bot_journal("mega_task_needs_review", chat_id, f"update_id={key} {reason}", "WARN")
+        try:
+            if OWNER_ID and not ("safety_profile_new_enabled" in globals() and safety_profile_new_enabled()):
+                bot.send_message(
+                    int(OWNER_ID),
+                    f"⚠️ Задача {key} после перезапуска НЕ повторена, чтобы не создать дубль.\n{reason[:850]}"
+                )
+        except Exception:
+            pass
     except Exception as e:
         mega_task_finish(key, False, str(e))
         log_error(f"MEGA TASK RECOVERY FAILED update={key}: {e}")
@@ -2881,6 +2891,13 @@ def _mega_task_recover_one(update_id, state: str, remote_path: str):
                 bot.send_message(int(OWNER_ID), f"⚠️ MEGA-задача {key} не восстановлена автоматически:\n{str(e)[:700]}")
         except Exception:
             pass
+    finally:
+        try:
+            if local:
+                shutil.rmtree(os.path.dirname(local), ignore_errors=True)
+        except Exception:
+            pass
+
 
 def schedule_mega_task_recovery(delay: float | None = None):
     """After data restore, replay pending/uncertain tasks independently of normal bot queues."""
@@ -3124,13 +3141,9 @@ except Exception: pass
 _record_day_key = _v177_legacy_0075_record_day_key
 
 
-def calc_opening_balance_for_month(store: dict, month_key: str, chat_id: int | None = None, currency: str = "ars") -> float:
-    """Canonical opening balance before YYYY-MM-01 for the requested currency."""
+def calc_opening_balance_for_month(store: dict, month_key: str) -> float:
+    """Остаток на начало месяца: сумма всех записей до YYYY-MM-01."""
     start = f"{month_key}-01"
-    helper = globals().get("_excel_canonical_opening_balance")
-    if callable(helper) and chat_id is not None:
-        return float(helper(int(chat_id), currency, start, 0, False))
-    # Bootstrap-only compatibility before the export runtime is loaded.
     total = 0.0
     for r in (store.get("records", []) or []):
         try:
@@ -3138,7 +3151,7 @@ def calc_opening_balance_for_month(store: dict, month_key: str, chat_id: int | N
                 total += float(r.get("amount", 0) or 0)
         except Exception:
             pass
-    return float(total)
+    return total
 
 
 def month_records_for_chat(store: dict, month_key: str) -> list[dict]:
@@ -3237,42 +3250,6 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
     xlsx_path = os.path.join(MEGA_LOCAL_TMP_DIR, base + ".xlsx")
     payload = build_chat_monthly_backup_payload(chat_id, month_key)
 
-    # v194: JSON remains a lossless backup artifact, while CSV/XLSX are a
-    # canonical financial TABLE projection.  This avoids changing restore
-    # semantics while guaranteeing that every visible table uses the same ARS
-    # history and the same opening balance as interactive Excel/Google.
-    table_records = list(payload.get("records", []) or [])
-    table_canonical_records = []
-    table_opening = float(payload.get("opening_balance") or 0.0)
-    _start = f"{month_key}-01"
-    _end = _start
-    range_builder = globals().get("_excel_canonical_records_for_range")
-    opening_builder = globals().get("_excel_canonical_opening_balance")
-    try:
-        import calendar as _v194_calendar
-        _yy, _mm = [int(x) for x in str(month_key).split("-", 1)]
-        _start = f"{_yy:04d}-{_mm:02d}-01"
-        _end = f"{_yy:04d}-{_mm:02d}-{_v194_calendar.monthrange(_yy, _mm)[1]:02d}"
-        if callable(range_builder):
-            _canon = list(range_builder(int(chat_id), "ars", _start, _end) or [])
-            table_canonical_records = list(_canon)
-            table_records = []
-            for _rec in _canon or []:
-                _rr = backup_record_copy(_rec)
-                _rr["amount"] = float(_rec.get("_v151_amount", _rec.get("amount", 0)) or 0)
-                _rr["note"] = str(_rec.get("_v151_note", _rec.get("note") or "") or "")
-                _rr["day_key"] = str(globals().get("_v151_day_key", _record_day_key)(_rec))[:10]
-                _rr["date"] = fmt_date_backup(_rr["day_key"])
-                table_records.append(_rr)
-        if callable(opening_builder):
-            table_opening = float(opening_builder(int(chat_id), "ars", _start, 0, False))
-    except Exception as _v194_month_table_exc:
-        try: log_error(f"monthly table canonical projection({chat_id},{month_key}): {_v194_month_table_exc}")
-        except Exception: pass
-    table_income = sum(max(0.0, float(r.get("amount", 0) or 0)) for r in table_records)
-    table_expense = sum(max(0.0, -float(r.get("amount", 0) or 0)) for r in table_records)
-    table_closing = float(table_opening + table_income - table_expense)
-
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -3280,14 +3257,14 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
         w = csv.writer(f)
         w.writerow(["month", month_key])
         w.writerow(["chat", payload.get("chat_name")])
-        w.writerow(["opening_balance", table_opening])
-        w.writerow(["total_income", table_income])
-        w.writerow(["total_expense", table_expense])
-        w.writerow(["closing_balance", table_closing])
+        w.writerow(["opening_balance", payload.get("opening_balance")])
+        w.writerow(["total_income", payload.get("total_income")])
+        w.writerow(["total_expense", payload.get("total_expense")])
+        w.writerow(["closing_balance", payload.get("closing_balance")])
         w.writerow([])
         w.writerow(["date", "amount", "note", "id", "short_id", "timestamp", "owner"])
         prev_day = None
-        for r in table_records:
+        for r in payload.get("records", []):
             day_key = str(r.get("day_key") or "")[:10]
             if prev_day is not None and day_key and day_key != prev_day:
                 w.writerow([])
@@ -3306,13 +3283,13 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
     rows = [
         ["Месяц", month_key, "ARS"],
         ["Чат", payload.get("chat_name")],
-        ["Остаток с прошлого раза", "", table_opening, ""],
+        ["Остаток с прошлого раза", "", payload.get("opening_balance"), ""],
         [],
         ["Дата", "Описание", "Приход", "Расход", "ID", "Номер", "Время", "Автор"],
     ]
     data_start_row = 6
     prev_day = None
-    for r in table_records:
+    for r in payload.get("records", []):
         day_key = str(r.get("day_key") or "")[:10]
         if prev_day is not None and day_key and day_key != prev_day:
             rows.append([])
@@ -3328,30 +3305,17 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
     data_end_row = max(data_start_row, len(rows))
     rows.append([])
     income_row = len(rows) + 1
-    rows.append(["", "Приход за период", {"formula": f"SUM(C{data_start_row}:C{data_end_row})", "value": table_income}, ""])
+    rows.append(["", "Приход за период", {"formula": f"SUM(C{data_start_row}:C{data_end_row})", "value": payload.get("total_income")}, ""])
     expense_row = len(rows) + 1
-    rows.append(["", "Расход за период", "", {"formula": f"SUM(D{data_start_row}:D{data_end_row})", "value": table_expense}])
-    _v150_month_closing = float(table_closing)
+    rows.append(["", "Расход за период", "", {"formula": f"SUM(D{data_start_row}:D{data_end_row})", "value": payload.get("total_expense")}])
+    _v150_month_closing = float(payload.get("closing_balance") or 0.0)
     rows.append(["", "Остаток на руках", {"formula": f"C3+C{income_row}-D{expense_row}", "value": _v150_month_closing}, ""])
     _v150_month_reserve = float(_v150_export_reserve(chat_id)) if "_v150_export_reserve" in globals() else 0.0
     rows.append(["", "Гомонковые", _v150_month_reserve, ""])
     rows.append(["", "Остаток в обороте", _v150_month_closing - _v150_month_reserve, ""])
     rows.append([])
-    # v194: Products/food metric must use the same canonical category resolver
-    # and period-day divisor as every other Excel table.
-    _v150_month_products = 0.0
-    _v150_month_food = 0.0
-    try:
-        if callable(globals().get("_v151_food_metric")) and table_canonical_records:
-            _v150_month_products, _v150_month_food, _v194_days, _v194_rate = _v151_food_metric(
-                int(chat_id), table_canonical_records, _start, _end
-            )
-        elif callable(globals().get("_v150_product_total_from_records")):
-            _v150_month_products = _v150_product_total_from_records(chat_id, table_records)
-            _v150_month_food = _v150_food_per_person(_v150_month_products) if "_v150_food_per_person" in globals() else 0.0
-    except Exception:
-        _v150_month_products = 0.0
-        _v150_month_food = 0.0
+    _v150_month_products = _v150_product_total_from_records(chat_id, payload.get("records") or []) if "_v150_product_total_from_records" in globals() else 0.0
+    _v150_month_food = _v150_food_per_person(_v150_month_products) if "_v150_food_per_person" in globals() else 0.0
     rows.append(["", "Расход еды на человека в сутки", _v150_month_food, ""])
 
     # v192: monthly XLSX must keep ARS and USD isolated.  Preserve the historical
@@ -3379,14 +3343,8 @@ def save_chat_monthly_backup_files(chat_id: int, month_key: str | None = None) -
             finally:
                 ctx_local.value = prev_ctx
             if usd_rows:
-                prefix_offset = len(rows) + 2
                 rows.extend([[], []])
-                shifter = globals().get("_v193_shift_formula_rows")
-                shifted_usd = shifter(usd_rows, prefix_offset) if callable(shifter) else usd_rows
-                rows.extend(shifted_usd)
-                validator = globals().get("_v193_validate_currency_formula_domains")
-                if callable(validator):
-                    validator(rows)
+                rows.extend(usd_rows)
     except Exception as _v192_usd_exc:
         try: log_error(f"monthly XLSX USD append({chat_id},{month_key}): {_v192_usd_exc}")
         except Exception: pass
@@ -7358,24 +7316,7 @@ def _xlsx_record_row(date_value, amount, note):
 
 
 def _opening_balance_before_exact(store: dict, start_day: str, start_rid: int | None = 0) -> float:
-    """One opening-balance bridge for every legacy Excel/table caller.
-
-    After 73_state_export_runtime is loaded this resolves the canonical ARS/USD
-    projection; before that it keeps the old lossless bootstrap behaviour.
-    """
-    cid_resolver = globals().get("_excel_chat_id_for_store")
-    canonical = globals().get("_excel_canonical_opening_balance")
-    if callable(cid_resolver) and callable(canonical):
-        try:
-            cid = cid_resolver(store)
-            if cid is not None:
-                try:
-                    currency = "usd" if financial_view_is_usd(store) else "ars"
-                except Exception:
-                    currency = "ars"
-                return float(canonical(int(cid), currency, str(start_day or "")[:10], int(start_rid or 0), bool(start_rid)))
-        except Exception:
-            pass
+    """Balance immediately before an export boundary, using the same `records` ledger as bot balance."""
     start_day = str(start_day or "")[:10]
     try:
         start_rid = int(start_rid or 0)
@@ -7392,6 +7333,7 @@ def _opening_balance_before_exact(store: dict, start_day: str, start_rid: int | 
             continue
         if day_key > start_day:
             break
+        # start_day itself: rid==0 means balance before the first record of the day.
         if not start_rid:
             break
         if _record_int_id(rec) == start_rid:
@@ -7557,10 +7499,7 @@ def _tabl_lsx_weeks(reference_day: str | None = None, count: int = 4) -> list[tu
     return weeks
 
 
-def _tabl_lsx_opening_balance(store: dict, start_key: str, chat_id: int | None = None) -> float:
-    helper = globals().get("_excel_canonical_opening_balance")
-    if callable(helper) and chat_id is not None:
-        return float(helper(int(chat_id), "ars", str(start_key)[:10], 0, False))
+def _tabl_lsx_opening_balance(store: dict, start_key: str) -> float:
     total = 0.0
     for r in (store.get("records", []) or []):
         try:
@@ -7568,7 +7507,7 @@ def _tabl_lsx_opening_balance(store: dict, start_key: str, chat_id: int | None =
                 total += float(r.get("amount", 0) or 0)
         except Exception:
             pass
-    return float(total)
+    return total
 
 
 def _xlsx_cell_xml2(row_idx: int, col_idx: int, value, style: int = 0) -> str:
@@ -8115,29 +8054,18 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
     rows.append([title]); styles.append([1] + [0] * (len(cols) - 1))
     rows.append(["Таблица за последние 4 недели: четверг–среда"]); styles.append([1] + [0] * (len(cols) - 1))
     rows.append([]); styles.append([])
-    # v194: /tabl_lsx uses the same canonical ARS projection as every other
-    # Excel/Google report.  Never read legacy daily_records/raw amount here.
-    daily = {}
-    range_builder = globals().get("_excel_canonical_records_for_range")
-    if callable(range_builder) and weeks:
-        canonical_rows = range_builder(chat_id, "ars", weeks[0][0], weeks[-1][1])
-        for _rec in canonical_rows or []:
-            _dk = str(globals().get("_v151_day_key", _record_day_key)(_rec))[:10]
-            daily.setdefault(_dk, []).append(_rec)
-    else:
-        daily = store.get("daily_records", {}) or {}
+    daily = store.get("daily_records", {}) or {}
     for start_key, end_key in weeks:
         rows.append(["Неделя", f"{fmt_date_ddmmyy(start_key)} — {fmt_date_ddmmyy(end_key)}"])
         styles.append([3, 3] + [3] * (len(cols) - 2))
         rows.append(cols)
         styles.append(([2, 2, 2] + [8 + i for i in range(len(TABL_LSX_CATEGORIES))]) if modern_excel else [2] * len(cols))
-        opening = _tabl_lsx_opening_balance(store, start_key, chat_id=chat_id)
+        opening = _tabl_lsx_opening_balance(store, start_key)
         rows.append([fmt_date_ddmmyy(start_key), int(round(opening)), "Остаток с прошлого раза"] + [""] * len(TABL_LSX_CATEGORIES))
         styles.append([7, 7, 7] + [4] * len(TABL_LSX_CATEGORIES))
         income_total = 0.0
         expense_total = 0.0
         cat_totals = {cat: 0.0 for cat in TABL_LSX_CATEGORIES}
-        week_canonical_records = []
         start_dt = datetime.strptime(start_key, "%Y-%m-%d").date()
         for offset in range(7):
             dk = (start_dt + timedelta(days=offset)).strftime("%Y-%m-%d")
@@ -8148,12 +8076,11 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
                 continue
             first_for_day = True
             for rec in recs:
-                week_canonical_records.append(rec)
                 try:
-                    amount = float(rec.get("_v151_amount", rec.get("amount", 0)) or 0)
+                    amount = float(rec.get("amount", 0) or 0)
                 except Exception:
                     amount = 0.0
-                note = str(rec.get("_v151_note", rec.get("note") or "") or "").strip()
+                note = str(rec.get("note") or "").strip()
                 row = [fmt_date_ddmmyy(dk) if first_for_day else "", "", ""] + [""] * len(TABL_LSX_CATEGORIES)
                 row_styles = [3 if row[0] else 4, 4, 4] + [4] * len(TABL_LSX_CATEGORIES)
                 first_for_day = False
@@ -8164,19 +8091,7 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
                 else:
                     value = abs(amount)
                     expense_total += value
-                    # v194: manual category override must be respected by every table.
-                    cat = None
-                    try:
-                        resolved = resolve_expense_category_for_record(rec, store)
-                        resolved_cf = str(resolved or "").strip().casefold()
-                        for _cat_name in TABL_LSX_CATEGORIES:
-                            if str(_cat_name).strip().casefold() == resolved_cf:
-                                cat = _cat_name
-                                break
-                    except Exception:
-                        cat = None
-                    if not cat:
-                        cat = _tabl_lsx_category(note)
+                    cat = _tabl_lsx_category(note)
                     cat_idx = TABL_LSX_CATEGORIES.index(cat)
                     cat_totals[cat] = cat_totals.get(cat, 0.0) + value
                     col_idx = 3 + cat_idx
@@ -8202,17 +8117,8 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
         rows.append(["Остаток в обороте", int(round(_v150_week_turnover)) if float(_v150_week_turnover).is_integer() else _v150_week_turnover] + [""] * (len(cols) - 2)); styles.append([6] * len(cols))
         rows.append([]); styles.append([])
         _v150_products_total = float(cat_totals.get("Продукты", 0.0) or 0.0)
-        _v150_food_metric_value = 0.0
-        try:
-            if callable(globals().get("_v151_food_metric")):
-                _v150_products_total, _v150_food_metric_value, _v194_days, _v194_rate = _v151_food_metric(
-                    int(chat_id), week_canonical_records, start_key, end_key
-                )
-            elif "_v150_food_per_person" in globals():
-                _v150_food_metric_value = _v150_food_per_person(_v150_products_total)
-        except Exception:
-            _v150_food_metric_value = 0.0
-        rows.append(["Расход еды на человека в сутки", _v150_food_metric_value] + [""] * (len(cols) - 2)); styles.append([5] * len(cols))
+        _v150_food_metric = _v150_food_per_person(_v150_products_total) if "_v150_food_per_person" in globals() else 0.0
+        rows.append(["Расход еды на человека в сутки", _v150_food_metric] + [""] * (len(cols) - 2)); styles.append([5] * len(cols))
         rows.append([]); styles.append([])
     os.makedirs(MEGA_LOCAL_TMP_DIR, exist_ok=True)
     start_all, end_all = weeks[0][0], weeks[-1][1]
@@ -8243,19 +8149,14 @@ def create_tabl_lsx_file(chat_id: int, reference_day: str | None = None) -> str:
                 offset = len(rows) + 2
                 rows.extend([[], []])
                 styles.extend([[], []])
-                shifter = globals().get("_v193_shift_formula_rows")
-                shifted_usd = shifter(usd_rows, offset) if callable(shifter) else usd_rows
                 if modern_excel and callable(globals().get("_modern_simple_excel_styles_comments")):
-                    usd_styles, usd_comments, _freeze, _widths = _modern_simple_excel_styles_comments(shifted_usd)
+                    usd_styles, usd_comments, _freeze, _widths = _modern_simple_excel_styles_comments(usd_rows)
                     styles.extend(usd_styles)
                     for (rr, cc), text in (usd_comments or {}).items():
                         comments[(int(rr) + offset, int(cc))] = text
                 else:
-                    styles.extend([[4] * len(r or []) for r in shifted_usd])
-                rows.extend(shifted_usd)
-                validator = globals().get("_v193_validate_currency_formula_domains")
-                if callable(validator):
-                    validator(rows)
+                    styles.extend([[4] * len(r or []) for r in usd_rows])
+                rows.extend(usd_rows)
     except Exception as _v192_usd_exc:
         try: log_error(f"tabl_lsx USD append({chat_id}): {_v192_usd_exc}")
         except Exception: pass
@@ -9987,4 +9888,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v194_excel_canonical_opening_total_final
+# v193_architecture_lifecycle_final

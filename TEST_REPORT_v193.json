@@ -1,85 +1,96 @@
 {
-  "version": "bot_v193_excel_formula_single_source_final",
-  "real_files_compared": [
-    "chat_month_2026-07-31_excel_статьи.xlsx",
-    "Telegram Finance Bot.xlsx"
+  "version": "bot_v193_architecture_lifecycle_final",
+  "status": "PASS",
+  "test_scope": "static + local isolated lifecycle simulations; no Telegram/MEGA production credentials used",
+  "runtime_modules": 27,
+  "top_level_symbols": 2661,
+  "duplicate_top_level": {},
+  "changed_runtime_files": [
+    "00_core.py",
+    "10_mega_runtime.py",
+    "74_ui_reliability_runtime.py",
+    "75_platform_features_runtime.py",
+    "80_callback_router.py",
+    "85_runtime_control.py",
+    "89_callback_final.py"
   ],
-  "meaningful_differences_found": 6,
-  "google_workbook_currency_formula_audit": {
-    "bad_formula_domain_refs_before": 28,
-    "bad_formula_domain_refs_after_v193_projection": 0,
-    "sheets": [
-      {
-        "sheet": "🏀 — статьи — Ср–Чт · 09.08 02-",
-        "usd_row": 37,
-        "bad_now": 0,
-        "bad_after_v193": 0
-      },
-      {
-        "sheet": "06-12.08.26",
-        "usd_row": 70,
-        "bad_now": 4,
-        "bad_after_v193": 0
-      },
-      {
-        "sheet": "🏀 — статьи — за всё время · 11",
-        "usd_row": 1025,
-        "bad_now": 4,
-        "bad_after_v193": 0
-      },
-      {
-        "sheet": "🏀 — статьи — за всё время · 12",
-        "usd_row": 1030,
-        "bad_now": 4,
-        "bad_after_v193": 0
-      },
-      {
-        "sheet": "🏀 — статьи — за месяц · 12.08 ",
-        "usd_row": 123,
-        "bad_now": 4,
-        "bad_after_v193": 0
-      },
-      {
-        "sheet": "Лист2",
-        "usd_row": 119,
-        "bad_now": 4,
-        "bad_after_v193": 0
-      },
-      {
-        "sheet": "Ооооооо",
-        "usd_row": 122,
-        "bad_now": 4,
-        "bad_after_v193": 0
-      },
-      {
-        "sheet": "Лист3",
-        "usd_row": 311,
-        "bad_now": 4,
-        "bad_after_v193": 0
-      }
-    ]
+  "callback_handler_registrations": 1,
+  "manifest": {
+    "version_ok": true,
+    "hashes_ok": true,
+    "markers_ok": true
   },
-  "july_expected_common_values_after_v193": {
-    "Products_ARS": 704523.0,
-    "Food_per_person_per_day_USD_equivalent": 2.9324578563995836,
-    "USD_income": 9500.0,
-    "USD_expense": 13400.0,
-    "USD_closing": 3600.0,
-    "USD_turnover": -200.0
+  "python_compile": "PASS",
+  "lifecycle_audit": {
+    "durable_pending_no_blind_replay": "PASS",
+    "durable_pending_real_remote_path": "PASS",
+    "durable_verified_finalize": "PASS",
+    "durable_ambiguous_needs_review": "PASS",
+    "critical_delta_truthful_completion": "PASS",
+    "reminder_scheduler_stop_start": "PASS",
+    "durable_journal_tick_stop_start": "PASS",
+    "lease_resume_check": "PASS",
+    "source_archive_resume": "PASS",
+    "file_export_wait_register_release": "PASS",
+    "callback_unhandled_propagation": "PASS",
+    "journal_corrupt_chunk_skip_continue": "PASS"
   },
-  "fixes": {
-    "usd_formula_row_offset": true,
-    "formula_domain_fail_closed": true,
-    "products_honors_category_override_slug": true,
-    "simple_products_approx_sumif_removed": true,
-    "monthly_backup_usd_shifted": true,
-    "tabl_lsx_usd_shifted": true
+  "base_runtime_observations": {
+    "source_version": "bot_v192_excel_ars_usd_delivery_final",
+    "ready": true,
+    "boot_duration_seconds": 98.402,
+    "memory_effective_mb": 195.1,
+    "memory_limit_mb": 512.0,
+    "queue_failed_total": 0,
+    "queue_rejected_total": 0,
+    "max_wait_seconds": {
+      "delta": 1.601,
+      "backup": 30.211,
+      "background": 11.403,
+      "scheduler": 9.835
+    },
+    "mega_tasks": {
+      "pending": 0,
+      "running": 0,
+      "done": 11,
+      "failed": 1,
+      "processing": 0,
+      "loaded_at": "2026-08-12T10:47:55-03:00",
+      "last_error": "",
+      "persisted": 0,
+      "recovered": 0,
+      "completed": 0,
+      "skipped_done": 0,
+      "persist_errors": 0,
+      "finalize_errors": 0,
+      "failed_details": [],
+      "failed_details_at": 0.0,
+      "failed_details_pending": true
+    },
+    "diagnostic_error_found": "corrupt historical durable journal JSON chunk; now downgraded to recoverable WARN+skip behavior"
   },
-  "static": {
-    "runtime_modules": 27,
-    "duplicate_top_level_callables": 0,
-    "callback_handler_registrations": 1,
-    "manifest_issues": [],
-    "compile": "PASS"
-  }
+  "excel_regression": {
+    "base_v192_test_report_status": "PASS",
+    "formula_export_functions_byte_equivalent_ast_slices": {
+      "10_mega_runtime.py:build_chat_monthly_backup_payload": true,
+      "10_mega_runtime.py:save_chat_monthly_backup_files": true,
+      "10_mega_runtime.py:_validate_xlsx_expected_notes": true,
+      "10_mega_runtime.py:_write_excel_by_selected_style": true,
+      "10_mega_runtime.py:create_tabl_lsx_file": true,
+      "10_mega_runtime.py:send_tabl_lsx_for_chat": true,
+      "75_platform_features_runtime.py:_v167_formulaize_four_week_rows": true,
+      "75_platform_features_runtime.py:_write_simple_xlsx": true,
+      "75_platform_features_runtime.py:_write_tabl_lsx_xlsx": true,
+      "75_platform_features_runtime.py:_add_export_period_rows": true
+    },
+    "uploaded_xlsx_zip_integrity": {
+      "Telegram Finance Bot(1).xlsx": "PASS",
+      "chat_month_2026-07-31_excel_статьи(1).xlsx": "PASS"
+    },
+    "note": "v193 does not change ARS/USD formulas, ledger selection, Notes mapping, period math or Telegram/Google delivery proof; it only restores the waiting lifecycle around the final interactive runner."
+  },
+  "known_operational_limits": [
+    "Normal boot remains dominated by external MEGA snapshot download latency; the supplied v192 diagnostic measured 98.402 s total boot and one mega-get at ~72.9 s. This is operational latency, not a syntax/queue failure.",
+    "With the v190 one-write witness, a crash can leave remote pending ambiguous. v193 chooses duplicate-safe verification/repair and needs_review instead of unsafe automatic replay for non-idempotent effects."
+  ]
 }

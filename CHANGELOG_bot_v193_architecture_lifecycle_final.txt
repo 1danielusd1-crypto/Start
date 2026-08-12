@@ -1,0 +1,14 @@
+v193 ARCHITECTURE / LIFECYCLE FINAL
+
+1. Durable MEGA recovery aligned with v190 MEGA LIGHT: remote pending is ambiguous after a crash because foreground pending→running is intentionally absent. Startup no longer blindly replays business handlers.
+2. Fixed a concrete path bug: recovery no longer tries to download /tasks/running/task_<id>.json for a v190 task that still physically exists in /pending.
+3. Recovery now verifies visible effects first, repairs only idempotent finance/SECRET metadata witnesses, finalizes proven work, and sends uncertain non-idempotent work to needs_review without Telegram resend/toggle replay.
+4. A processed marker no longer shortcuts recovery directly to done; normal durable finalization rechecks effects, Constitution ledger tokens and critical delta.
+5. Critical MEGA delta toggle is truthful: when disabled it returns failure to the durable finalizer instead of false success.
+6. Reminder scheduler has a real lifecycle: disable cancels the scheduler; enable schedules it again.
+7. Durable journal loop has a real lifecycle: journal-durable-tick is cancelled/resumed together with journal_mega.
+8. Lease enable triggers an immediate lease check; source archive enable triggers an archive job. Window reconcile description now matches the final lazy v179 implementation.
+9. Interactive file export single-flight restored end-to-end: a second request registers as waiting; after the active export is fully cleared, waiters receive a ready-to-download result.
+10. Single final callback router now propagates handled/unhandled status. Unknown buttons are visibly reported and logged as unsuccessful rather than being counted as successful simply because no exception escaped.
+11. Corrupt historical durable journal JSON chunks are skipped safely with WARN diagnostics and explicit counters; good older/newer chunks continue restoring.
+12. ARS/USD calculations, Excel formula paths, Notes contract, Telegram/Google delivery proof, strict restore and DATA CONSTITUTION data model are preserved.

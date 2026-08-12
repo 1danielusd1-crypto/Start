@@ -1,16 +1,44 @@
 {
-  "version": "bot_v193_excel_formula_single_source_final",
-  "changed_runtime_files": [
-    "10_mega_runtime.py",
-    "73_state_export_runtime.py",
-    "75_platform_features_runtime.py",
-    "85_runtime_control.py"
-  ],
-  "excel_formula_core": "73_state_export_runtime.py::_v193_shift_formula_rows/_v193_validate_currency_formula_domains",
-  "product_category_core": "73_state_export_runtime.py::_v151_product_total",
-  "formulaize_core": "75_platform_features_runtime.py::_v167_formulaize_simple/_v167_formulaize_category",
-  "legacy_excel_paths": [
-    "10_mega_runtime.py monthly backup XLSX",
-    "10_mega_runtime.py /tabl_lsx"
+  "version": "bot_v193_architecture_lifecycle_final",
+  "focus": "architecture/lifecycle correctness: durable recovery, process start-stop, callback result, export single-flight, journal recovery",
+  "changed_runtime": {
+    "00_core.py": [
+      "durable journal corrupt-chunk tolerant restore",
+      "accurate restored/skipped/corrupt chunk counters"
+    ],
+    "10_mega_runtime.py": [
+      "v190 pending/running recovery is ambiguity-safe",
+      "no invented pending→running path",
+      "no blind handler replay after crash",
+      "safe idempotent repair + needs_review"
+    ],
+    "74_ui_reliability_runtime.py": [
+      "final interactive export submitter restores waiting-request registration"
+    ],
+    "75_platform_features_runtime.py": [
+      "final interactive export runner releases waiters after active state is cleared"
+    ],
+    "80_callback_router.py": [
+      "core dispatcher returns explicit False for unhandled/error ending"
+    ],
+    "85_runtime_control.py": [
+      "critical delta disabled is not reported as success",
+      "reminder scheduler true stop/start",
+      "durable journal tick true stop/start",
+      "lease/source archive resume hooks",
+      "process descriptions aligned with actual v179 behavior"
+    ],
+    "89_callback_final.py": [
+      "single callback middleware records actual handled/unhandled result"
+    ]
+  },
+  "preserved_contracts": [
+    "strict /restore REPLACE",
+    "DATA CONSTITUTION storage root",
+    "MEGA LIGHT one write-before-execute witness",
+    "ARS/USD separation",
+    "main-window authority",
+    "single callback handler",
+    "task dispatcher schema/status model"
   ]
 }

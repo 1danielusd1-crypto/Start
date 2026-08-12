@@ -1,6 +1,12 @@
-v193 Excel single-source rules
-1. ARS and USD are independent report sections.
-2. A formula inside an appended USD section must reference only rows within that USD section.
-3. Telegram XLSX cached values and Google Sheets recalculation must produce the same business totals.
-4. Category overrides participate identically in category columns and derived Products/food metrics.
-5. If formula-domain validation fails, export must abort instead of publishing inconsistent tables.
+PROJECT RULES v193
+- Canonical MEGA root: /TelegramBotBackups.
+- Strict /restore remains REPLACE FROM FILE with mandatory pre_restore; no merge.
+- DATA CONSTITUTION / v190 MEGA LIGHT keeps one small write-before-execute pending task on the critical hot path.
+- Because v190 intentionally has no foreground pending→running move, a pending task found after a crash is ambiguous. Recovery must verify/repair idempotently and must not blindly replay non-idempotent Telegram sends, toggles, SECRET source writes or mutation commands.
+- Durable done is allowed only after expected effects, Constitution ledger token (when required) and critical MEGA delta are confirmed. A disabled critical delta is not success.
+- Process switches must have symmetric lifecycle semantics: either dynamic on-demand gating, or explicit cancel/resume for schedulers.
+- Callback routing has exactly one Telegram callback handler; unhandled callbacks are explicit unsuccessful results.
+- Interactive exports are single-flight and every accepted/waiting request has a visible terminal path (delivered / failed / ready to retry/download).
+- Excel/Google financial exports keep ARS and USD independent and never cross-sum currencies.
+- Telegram file export success requires send_document confirmation; Google/Drive success requires an external delivery reference.
+- Changed source files start/end with their release marker.
