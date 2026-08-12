@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v184_full_restore_contract
 """v178 GLOBAL FINAL: process control center + callback latency diagnostics for every contour.
 
 This layer replaces the single v175 heavy-process switch with granular runtime gates.
@@ -1103,7 +1103,7 @@ def _v153_validate_restore_gz(gz_path: str):
                 if int(manifest.get("schema_version") or 0) != int(V153_EXPORT_SCHEMA):
                     raise RuntimeError("unsupported export schema")
                 export_version = str(manifest.get("bot_version") or "")
-                allowed = tuple(f"bot_v{i}_" for i in range(153, 183))
+                allowed = tuple(f"bot_v{i}_" for i in range(153, 185))
                 if export_version and not export_version.startswith(allowed):
                     raise RuntimeError(f"unsupported bot version: {export_version}")
                 if _v153_db_logical_checksum(raw) != str(manifest.get("checksum") or ""):
@@ -1278,7 +1278,7 @@ def v182_cmd_restore(msg):
         "📥 Режим восстановления включён.\n\n"
         "Теперь отправьте ОДИН файл:\n"
         "• *.sqlite3.gz / *.gz — полный SQLite snapshot\n"
-        "• *.json / *.ison — JSON backup (включая chat_<id>.json)\n"
+        "• *.json / *.ison — полный JSON/ISON backup (включая chat_<id>.json)\n"
         "• *.csv — CSV чата\n\n"
         "Для следующего файла снова отправьте /restore.\n"
         "Отмена: /restore_off",
@@ -1372,5 +1372,5 @@ def runtime_mark_ready(detail: str = ""):
 
 
 # v179 authoritative runtime version after integrated historical modules.
-VERSION = "bot_v183_restore_json_routing_fix"
-# v183_restore_json_routing_fix
+VERSION = "bot_v184_full_restore_contract"
+# v184_full_restore_contract

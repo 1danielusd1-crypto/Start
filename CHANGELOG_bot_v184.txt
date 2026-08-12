@@ -1,0 +1,11 @@
+v184 FULL RESTORE CONTRACT
+
+- /restore JSON/ISON restores every persistent field saved for its backup scope, not only finance rows.
+- Restores settings_backup including ARS/USD gomonk settings, categories, display/currency modes, quick balance, hidden finance, auto backup, journal/process flags, Excel settings, owner/tenant scope when authorized.
+- Restores forwarding edges in/out for the target chat, finance-mode membership, known_chats, info, current view and panel fields.
+- Per-chat restore is lossless: backup rows win duplicates, unique live rows are preserved (prevents older backup from deleting newer operations).
+- Global JSON/ISON restores complete global state and then runs one final runtime rehydrate path.
+- GZ full/tenant restore now runs the same final post-restore rehydrate path after SQLite replacement/import.
+- Future per-chat JSON writes an explicit restore_contract.
+- pre_restore remains mandatory before uploaded file restore.
+- MEGA root remains /TelegramBotBackups (or configured MEGA_BACKUP_DIR).

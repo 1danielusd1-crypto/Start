@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v184_full_restore_contract
 # ─────────────────────────────────────────────────────────────
 # MEGA.nz helpers. Работает через официальный MEGAcmd:
 # mega-login / mega-mkdir / mega-put / mega-get / mega-whoami.
@@ -7904,6 +7904,18 @@ def build_chat_backup_payload(chat_id: int, store: dict | None = None) -> dict:
         "info": store.get("info", {}),
         "known_chats": store.get("known_chats", {}),
         "settings_backup": build_chat_settings_backup_payload(chat_id, store),
+        "chat_state": {
+            str(k): _v184_copy(v) if "_v184_copy" in globals() else json.loads(json.dumps(v, ensure_ascii=False, default=str))
+            for k, v in (store or {}).items()
+            if str(k) not in {"records", "daily_records", "daily_records_by_date", "balance", "next_id", "info", "known_chats", "settings"}
+        },
+        "restore_contract": {
+            "schema": 1,
+            "scope": "chat",
+            "policy": "restore_all_persistent_fields_and_preserve_unique_live_records",
+            "records_source": "records",
+            "derived_fields": ["balance", "daily_records", "daily_records_by_date", "overall_balance"],
+        },
     }
 
 
@@ -8036,60 +8048,352 @@ def _restore_runtime_state_from_data(restored: dict):
     _rebuild_forward_index_from_finance_records(restored)
 
 
-def restore_from_json(chat_id: int, path: str):
-    """Восстановление глобального универсального или старого per-chat JSON."""
+def _v184_copy(value):
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return copy.deepcopy(value)
+
+
+def _v184_record_identity(chat_id: int, rec: dict) -> str:
+    """Stable identity used only for safe restore de-duplication."""
+    if not isinstance(rec, dict):
+        return ""
+    op = str(rec.get("operation_key") or "").strip()
+    if op:
+        return "op:" + op
+    for key in ("finance_record_uid", "record_uid"):
+        val = str(rec.get(key) or "").strip()
+        if val:
+            return key + ":" + val
+    src = rec.get("source_msg_id") or rec.get("origin_msg_id") or rec.get("msg_id")
+    if src not in (None, "", 0, "0"):
+        return f"msg:{int(chat_id)}:{src}"
+    rid = rec.get("id")
+    ts = str(rec.get("timestamp") or "")
+    amt = rec.get("amount")
+    note = str(rec.get("note") or "")
+    return f"legacy:{rid}:{ts}:{amt}:{note}"
+
+
+def _v184_merge_restore_records(chat_id: int, backup_records: list, live_records: list) -> tuple[list, int]:
+    """Backup rows win duplicates. Unique live rows survive and receive collision-free numeric IDs."""
+    merged = []
+    seen = set()
+    used_ids = set()
+    max_id = 0
+    backup_count = 0
+    for source in backup_records or []:
+        if not isinstance(source, dict):
+            continue
+        rec = _v184_copy(source)
+        key = _v184_record_identity(chat_id, rec)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        try:
+            rid = int(rec.get("id") or 0)
+        except Exception:
+            rid = 0
+        if rid > 0:
+            if rid in used_ids:
+                raise RuntimeError(f"Backup inconsistent: duplicate record id={rid}")
+            used_ids.add(rid); max_id = max(max_id, rid)
+        merged.append(rec); backup_count += 1
+
+    preserved = 0
+    next_free = max_id + 1
+    for source in live_records or []:
+        if not isinstance(source, dict):
+            continue
+        rec = _v184_copy(source)
+        key = _v184_record_identity(chat_id, rec)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        try:
+            rid = int(rec.get("id") or 0)
+        except Exception:
+            rid = 0
+        if rid <= 0 or rid in used_ids:
+            while next_free in used_ids:
+                next_free += 1
+            rec["id"] = next_free
+            rid = next_free
+            next_free += 1
+        used_ids.add(rid); max_id = max(max_id, rid)
+        merged.append(rec); preserved += 1
+    return merged, preserved
+
+
+def _v184_restore_forward_edges(root_key: str, chat_id: int, outgoing, incoming) -> None:
+    """Restore every forwarding edge that belongs to this chat without touching unrelated chats/contours."""
+    cid = str(int(chat_id))
+    root_map = data.setdefault(root_key, {})
+    if not isinstance(root_map, dict):
+        root_map = {}
+        data[root_key] = root_map
+    root_map.pop(cid, None)
+    for src, dsts in list(root_map.items()):
+        if not isinstance(dsts, dict):
+            continue
+        dsts.pop(cid, None)
+        if not dsts:
+            root_map[src] = {}
+    if isinstance(outgoing, dict):
+        root_map[cid] = _v184_copy(outgoing)
+    if isinstance(incoming, dict):
+        for src, spec in incoming.items():
+            root_map.setdefault(str(src), {})[cid] = _v184_copy(spec)
+
+
+def _v184_settings_scope_ok(chat_id: int, settings: dict, platform_owner: bool) -> bool:
+    if platform_owner:
+        return True
+    try:
+        backup_tid = str((settings or {}).get("tenant_id") or "")
+        current_tid = str(tenant_id_for_chat(int(chat_id), create=False) or "") if "tenant_id_for_chat" in globals() else ""
+        return not backup_tid or not current_tid or backup_tid == current_tid
+    except Exception:
+        return False
+
+
+def _v184_apply_chat_settings_backup(chat_id: int, settings_backup: dict, *, platform_owner: bool = False) -> dict:
+    """Restore all persistent fields saved by build_chat_settings_backup_payload for this chat."""
+    if not isinstance(settings_backup, dict):
+        return {"settings_keys": 0, "forward_edges": 0, "global_flags": False}
+    cid = str(int(chat_id))
+    store = get_chat_store(int(chat_id))
+    saved_settings = settings_backup.get("settings")
+    restored_settings = 0
+    if isinstance(saved_settings, dict):
+        candidate = _v184_copy(saved_settings)
+        if not _v184_settings_scope_ok(chat_id, candidate, platform_owner):
+            # Never allow a tenant-level restore to steal/rebind a chat into another contour.
+            current = dict(store.get("settings") or {})
+            for k in ("tenant_id", "owner_scope_id", "owner_scope_settings", "parent_first_chat_id", "circle_level"):
+                if k in current:
+                    candidate[k] = _v184_copy(current[k])
+                else:
+                    candidate.pop(k, None)
+        store["settings"] = candidate
+        restored_settings = len(candidate)
+        # Re-apply defaults introduced by newer versions without overwriting saved values.
+        get_chat_store(int(chat_id))
+
+    direct = {
+        "finance_mode": "finance_mode",
+        "balance_panel_id": "balance_panel_id",
+        "balance_panel_mode": "balance_panel_mode",
+        "current_view_day": "current_view_day",
+    }
+    for src, dst in direct.items():
+        if src in settings_backup:
+            store[dst] = _v184_copy(settings_backup.get(src))
+
+    # Compatibility mirrors for old backups where these values lived outside settings.
+    compat = {
+        "auto_backup_enabled": "auto_backup_enabled",
+        "hidden_finance": "hidden_finance",
+        "quick_balance_enabled": "quick_balance_enabled",
+        "quick_balance_behavior": "quick_balance_behavior",
+    }
+    st = store.setdefault("settings", {})
+    for src, dst in compat.items():
+        if src in settings_backup:
+            st[dst] = _v184_copy(settings_backup.get(src))
+
+    # Restore all forwarding state belonging to this chat. Global copies in old backups are
+    # used only as a fallback source for this chat so unrelated contours are never rolled back.
+    fr_out = settings_backup.get("forward_rules_outgoing")
+    fr_in = settings_backup.get("forward_rules_incoming")
+    ff_out = settings_backup.get("forward_finance_outgoing")
+    ff_in = settings_backup.get("forward_finance_incoming")
+    if fr_out is None or fr_in is None:
+        g = settings_backup.get("global_forward_rules") or {}
+        if fr_out is None and isinstance(g, dict): fr_out = (g.get(cid) or {})
+        if fr_in is None and isinstance(g, dict): fr_in = {src:(dsts or {}).get(cid) for src,dsts in g.items() if isinstance(dsts,dict) and cid in dsts}
+    if ff_out is None or ff_in is None:
+        g = settings_backup.get("global_forward_finance") or {}
+        if ff_out is None and isinstance(g, dict): ff_out = (g.get(cid) or {})
+        if ff_in is None and isinstance(g, dict): ff_in = {src:(dsts or {}).get(cid) for src,dsts in g.items() if isinstance(dsts,dict) and cid in dsts}
+    _v184_restore_forward_edges("forward_rules", int(chat_id), fr_out or {}, fr_in or {})
+    _v184_restore_forward_edges("forward_finance", int(chat_id), ff_out or {}, ff_in or {})
+
+    fac = settings_backup.get("finance_active_chats")
+    enabled = bool(store.get("finance_mode"))
+    if isinstance(fac, dict) and cid in fac:
+        enabled = bool(fac.get(cid))
+    if enabled:
+        finance_active_chats.add(int(chat_id))
+    else:
+        finance_active_chats.discard(int(chat_id))
+    data["finance_active_chats"] = {str(x): True for x in sorted(finance_active_chats)}
+
+    global_flags = False
+    # backup_flags are truly global, therefore only the platform owner may roll them back from a per-chat file.
+    if platform_owner and isinstance(settings_backup.get("backup_flags"), dict):
+        flags = settings_backup.get("backup_flags") or {}
+        backup_flags["drive"] = bool(flags.get("drive", True))
+        backup_flags["channel"] = bool(flags.get("channel", True))
+        data["backup_flags"] = {"drive": backup_flags["drive"], "channel": backup_flags["channel"]}
+        global_flags = True
+
+    return {
+        "settings_keys": restored_settings,
+        "forward_edges": len(fr_out or {}) + len(fr_in or {}) + len(ff_out or {}) + len(ff_in or {}),
+        "global_flags": global_flags,
+    }
+
+
+def _v184_post_restore_rehydrate(restored: dict | None = None, chat_ids=None) -> dict:
+    """Single final post-restore path for GZ and JSON: rebuild runtime mirrors and derived indexes."""
+    state = restored if isinstance(restored, dict) else data
+    result = {"normalized_chats": 0, "errors": []}
+    try:
+        _restore_runtime_state_from_data(state)
+    except Exception as exc:
+        result["errors"].append("runtime:" + str(exc)[:160])
+    try:
+        tenant_v148_bootstrap()
+        tenant_v148_enforce_forward_isolation()
+    except Exception as exc:
+        result["errors"].append("tenant:" + str(exc)[:160])
+    ids = []
+    if chat_ids is None:
+        for cid_s in (state.get("chats", {}) or {}):
+            try: ids.append(int(cid_s))
+            except Exception: pass
+    else:
+        for cid in chat_ids:
+            try: ids.append(int(cid))
+            except Exception: pass
+    for cid in ids:
+        try:
+            normalize_chat_records(cid)
+            recalc_balance(cid)
+            result["normalized_chats"] += 1
+        except Exception as exc:
+            result["errors"].append(f"chat:{cid}:" + str(exc)[:120])
+    try: rebuild_global_records()
+    except Exception as exc: result["errors"].append("global:" + str(exc)[:160])
+    try: _load_forward_index_from_data(state)
+    except Exception as exc: result["errors"].append("forward_index:" + str(exc)[:160])
+    try:
+        if not (state.get("forward_index") or {}):
+            _rebuild_forward_index_from_finance_records(state)
+    except Exception as exc: result["errors"].append("forward_rebuild:" + str(exc)[:160])
+    try:
+        if "restore_finance_window_runtime_state" in globals(): restore_finance_window_runtime_state()
+    except Exception as exc: result["errors"].append("windows:" + str(exc)[:160])
+    return result
+
+
+def _v184_restore_per_chat_payload(chat_id: int, payload: dict, *, platform_owner: bool = False) -> dict:
+    kind = str(payload.get("kind") or "legacy_chat_backup")
+    store = get_chat_store(int(chat_id))
+    live_records = _v184_copy(store.get("records") or [])
+    # v184+ backups also carry every remaining chat-local state field. Derived ledgers are handled below.
+    chat_state = payload.get("chat_state")
+    restored_chat_state_keys = 0
+    if isinstance(chat_state, dict):
+        for key, value in chat_state.items():
+            if str(key) in {"records", "daily_records", "daily_records_by_date", "balance", "next_id", "info", "known_chats", "settings"}:
+                continue
+            store[str(key)] = _v184_copy(value)
+            restored_chat_state_keys += 1
+    backup_records = payload.get("records") if isinstance(payload.get("records"), list) else []
+    if not backup_records and isinstance(payload.get("daily_records"), dict):
+        for dk in sorted(payload.get("daily_records") or {}):
+            for rec in (payload.get("daily_records") or {}).get(dk) or []:
+                if isinstance(rec, dict):
+                    rr = _v184_copy(rec); rr.setdefault("day_key", str(dk)); backup_records.append(rr)
+
+    # Full/monthly/legacy chat restore is lossless by default: backup wins duplicates, every unique
+    # current record survives. This directly prevents an older JSON from deleting newer operations.
+    merged, preserved_live = _v184_merge_restore_records(int(chat_id), backup_records, live_records)
+    store["records"] = merged
+    store["daily_records"] = {}
+    if "info" in payload and isinstance(payload.get("info"), dict): store["info"] = _v184_copy(payload.get("info") or {})
+    if "known_chats" in payload and isinstance(payload.get("known_chats"), dict): store["known_chats"] = _v184_copy(payload.get("known_chats") or {})
+    settings_result = _v184_apply_chat_settings_backup(int(chat_id), payload.get("settings_backup") or {}, platform_owner=platform_owner)
+    normalize_chat_records(int(chat_id))
+    try:
+        rebuild_month_short_ids(int(chat_id))
+    except Exception as exc:
+        log_error(f"v184 restore short-id rebuild chat={chat_id}: {exc}")
+    # Preserve record IDs from backup/live; only advance next_id beyond every existing numeric id.
+    numeric_ids = []
+    for rec in store.get("records") or []:
+        try: numeric_ids.append(int(rec.get("id") or 0))
+        except Exception: pass
+    saved_next = int(payload.get("next_id") or 1) if str(payload.get("next_id") or "1").lstrip("-").isdigit() else 1
+    store["next_id"] = max([saved_next, 1] + [x + 1 for x in numeric_ids if x >= 0])
+    recalc_balance(int(chat_id))
+
+    # If the backup stored a derived balance, verify it against backup records only. Never silently
+    # trust a contradictory number over the actual ledger rows.
+    backup_balance = None
+    if "balance" in payload:
+        try: backup_balance = float(payload.get("balance") or 0)
+        except Exception: backup_balance = None
+    backup_rows_balance = sum(float((r or {}).get("amount", 0) or 0) for r in backup_records if isinstance(r, dict))
+    if backup_balance is not None and abs(backup_balance - backup_rows_balance) > 0.011:
+        raise RuntimeError(f"Backup inconsistent: balance={backup_balance} but records={backup_rows_balance}")
+
+    post = _v184_post_restore_rehydrate(data, [int(chat_id)])
+    save_data(data, chat_ids=[int(chat_id)], root_only=False)
+    return {
+        "kind": kind,
+        "backup_records": len(backup_records),
+        "records_after": len(store.get("records") or []),
+        "preserved_live_records": int(preserved_live),
+        "settings": settings_result,
+        "chat_state_keys": restored_chat_state_keys,
+        "post": post,
+    }
+
+
+def restore_from_json(chat_id: int, path: str, *, actor_user_id: int | None = None):
+    """Full restore contract for universal JSON/ISON and per-chat backups."""
     global data
     raw_payload = _load_json(path, None)
     if not isinstance(raw_payload, dict):
-        raise RuntimeError("JSON повреждён или пустой")
+        raise RuntimeError("JSON/ISON повреждён или пустой")
+    platform_owner = False
+    try:
+        uid = int(actor_user_id or 0)
+        platform_owner = bool(uid and (uid == int(OWNER_ID or 0) or ("_v153_platform_owner" in globals() and _v153_platform_owner(uid))))
+    except Exception:
+        platform_owner = False
 
     payload = _extract_universal_state(raw_payload)
     if "chats" in payload and isinstance(payload.get("chats"), dict):
+        if actor_user_id is not None and not platform_owner:
+            raise RuntimeError("Полный глобальный JSON может восстановить только владелец платформы")
         data = _migrate_full_state(payload)
-        _restore_runtime_state_from_data(data)
-
-        rebuild_global_records()
+        post = _v184_post_restore_rehydrate(data)
         save_data(data, full=True)
         if not is_data_effectively_empty_for_restore(data):
             _clear_restore_guard()
-        # v90: после restore не запускаем overwrite; baseline+delta начнутся только после нового изменения.
         log_info(
-            "restore_from_json: universal global state restored "
+            "restore_from_json v184: universal global state restored "
             f"schema={(raw_payload.get('_universal_backup') or {}).get('schema_version', 'legacy')} "
-            f"forward_index={len(data.get('forward_index', {}) or {})}"
+            f"chats={len(data.get('chats', {}) or {})}"
         )
-        return
+        return {"scope": "global", "chats": len(data.get("chats", {}) or {}), "post": post}
 
     if "records" in payload or "daily_records" in payload:
-        store = get_chat_store(chat_id)
-
-        store["records"] = payload.get("records", []) or []
-        store["daily_records"] = payload.get("daily_records", {}) or {}
-        store["next_id"] = int(payload.get("next_id", 1) or 1)
-        store["info"] = payload.get("info", store.get("info", {})) or store.get("info", {})
-        store["known_chats"] = payload.get("known_chats", store.get("known_chats", {})) or store.get("known_chats", {})
-        if isinstance(payload.get("settings"), dict):
-            store["settings"].update(payload.get("settings") or {})
-
-        if not store["records"] and store["daily_records"]:
-            all_recs = []
-            for dk in sorted(store["daily_records"].keys()):
-                all_recs.extend(store["daily_records"][dk] or [])
-            store["records"] = all_recs
-
-        renumber_chat_records(chat_id)
-        recalc_balance(chat_id)
-        rebuild_global_records()
-
-        save_data(data, chat_ids=[chat_id])
-        if store.get("records") or any(store.get("daily_records", {}).values()):
+        result = _v184_restore_per_chat_payload(int(chat_id), payload, platform_owner=platform_owner)
+        if get_chat_store(int(chat_id)).get("records") or any(get_chat_store(int(chat_id)).get("daily_records", {}).values()):
             _clear_restore_guard()
-        finance_changed(chat_id, get_chat_store(chat_id).get("current_view_day", today_key()), reason="restore_json_core", delay=0.1)
+        finance_changed(int(chat_id), get_chat_store(int(chat_id)).get("current_view_day", today_key()), reason="restore_json_v184_full", delay=0.1)
+        log_info(f"restore_from_json v184: chat {chat_id} full state restored; result={result}")
+        return result
 
-        log_info(f"restore_from_json: chat {chat_id} restored from per-chat JSON")
-        return
-
-    raise RuntimeError("Неизвестный формат JSON (нет 'chats' и нет 'records/daily_records').")
+    raise RuntimeError("Неизвестный формат JSON/ISON (нет 'chats' и нет 'records/daily_records').")
 
 def restore_from_csv(chat_id: int, path: str):
     """
@@ -9091,4 +9395,4 @@ def summarize_categories(store: dict, start: str, end: str, label: str):
             lines.append(f"{clean_name}: {format_category_view_amount(store, cats.get(cat, 0), category_mixed)}")
     lines.extend(["", "✏️ Изменить: название статьи и/или её ключевые слова."])
     return wm_common("\n".join(lines), 7), cats
-# v183_restore_json_routing_fix
+# v184_full_restore_contract

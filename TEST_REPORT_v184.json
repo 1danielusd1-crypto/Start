@@ -1,0 +1,27 @@
+{
+  "version": "bot_v184_full_restore_contract",
+  "tests": {
+    "py_compile": "PASS",
+    "duplicate_top_level_names": 0,
+    "callback_decorators": 0,
+    "mega_start_refs": 0,
+    "v184_post_rehydrate_in_gz": true,
+    "owner_prompt_pre_restore": true,
+    "json_settings_restore": true,
+    "future_restore_contract": true,
+    "manifest_hashes": "PASS",
+    "changed_file_markers": "PASS"
+  },
+  "real_backup_fixture": {
+    "file": "chat_8592220081.json",
+    "backup_records": 904,
+    "saved_settings": 43,
+    "simulated_unique_live_records_preserved": 2,
+    "expected_records_after": 906,
+    "settings_mismatches": 0
+  },
+  "gz_fixture": {
+    "working_sqlite_validator": "PASS",
+    "post_restore_rehydrate_hook": "PASS"
+  }
+}

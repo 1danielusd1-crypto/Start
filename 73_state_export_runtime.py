@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v184_full_restore_contract
 # ---- integrated from 100_v150_excel_reserve_chat_lifecycle.py ----
 # ─────────────────────────────────────────────────────────────
 # v150: f191 chat list, Excel reserve rows, exact-once gomonk
@@ -4119,8 +4119,13 @@ def _v153_apply_global_restore(raw: str) -> None:
     except Exception: pass
     try: tenant_v148_enforce_forward_isolation()
     except Exception: pass
+    try:
+        if "_v184_post_restore_rehydrate" in globals():
+            _v184_post_restore_rehydrate(data)
+    except Exception as exc:
+        log_error(f"v184 global GZ post-restore rehydrate: {exc}")
     save_data(data, full=True)
-    schedule_delta_backup(int(OWNER_ID or 0), delay=0.1, reason="v153_global_restore")
+    schedule_delta_backup(int(OWNER_ID or 0), delay=0.1, reason="v184_global_restore")
 
 
 def _v153_retarget_tenant_value(value, source_tenant: str, target_tenant: str):
@@ -4303,8 +4308,13 @@ def _v153_apply_tenant_restore(raw: str, target_tenant: str, mode: str) -> None:
             tenant_bind_chat(cid, target_tenant, changed_by=0, force=True)
         try: tenant_v148_enforce_forward_isolation()
         except Exception: pass
+        try:
+            if "_v184_post_restore_rehydrate" in globals():
+                _v184_post_restore_rehydrate(data, source_chat_ids)
+        except Exception as exc:
+            log_error(f"v184 tenant GZ post-restore rehydrate: {exc}")
         save_data(data, full=True)
-        schedule_delta_backup(int(target_row.get("root_chat_id") or next(iter(source_chat_ids), OWNER_ID or 0)), delay=0.1, reason=f"v153_tenant_restore_{mode}")
+        schedule_delta_backup(int(target_row.get("root_chat_id") or next(iter(source_chat_ids), OWNER_ID or 0)), delay=0.1, reason=f"v184_tenant_restore_{mode}")
     finally:
         src.close()
 
@@ -5082,4 +5092,4 @@ try:
     bot_journal("v154_excel_usd_isolation_installed", int(OWNER_ID or 0), "strict_usd_ledger=1; f111_f114_marks=1; f179_usd_toggle=1")
 except Exception:
     pass
-# v183_restore_json_routing_fix
+# v184_full_restore_contract

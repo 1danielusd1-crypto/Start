@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v184_full_restore_contract
 # ─────────────────────────────────────────────────────────────
 # v27: единая модель финансовых записей
 # ─────────────────────────────────────────────────────────────
@@ -815,42 +815,48 @@ def handle_document(msg):
             if fname.endswith((".json", ".ison")):
                 payload = _load_json(tmp_path, None)
                 if not isinstance(payload, dict):
-                    raise RuntimeError("JSON не является объектом")
+                    raise RuntimeError("JSON/ISON не является объектом")
+                uid = int(getattr(getattr(msg, "from_user", None), "id", 0) or 0)
+                platform_owner = bool(uid and (uid == int(OWNER_ID or 0) or ("_v153_platform_owner" in globals() and _v153_platform_owner(uid))))
 
-                if "chats" in payload:
-                    os.replace(tmp_path, DATA_FILE)
-                    _import_legacy_global_json_to_db(DATA_FILE, force=True)
-                    data.clear()
-                    data.update(load_data())
+                if isinstance(payload.get("chats"), dict) or fname in {"data.json", "data.ison"}:
+                    result = restore_from_json(chat_id, tmp_path, actor_user_id=uid)
                     restore_mode = None
                     data.pop("_restore_mode_chat_v150", None)
-                    save_data(data, chat_ids=[chat_id])
-                    send_and_auto_delete(chat_id, "🟢 Глобальный JSON импортирован в SQLite")
+                    save_data(data, full=True)
+                    send_and_auto_delete(chat_id, f"🟢 Полный JSON/ISON всего бота восстановлен. Чатов: {result.get('chats', 0)}", 18)
                     return
 
                 inner_chat_id = payload.get("chat_id")
                 if inner_chat_id is None:
-                    raise RuntimeError("В JSON нет chat_id")
+                    inner_chat_id = _extract_chat_id_from_json_filename(fname) if "_extract_chat_id_from_json_filename" in globals() else None
+                if inner_chat_id is None:
+                    raise RuntimeError("В JSON/ISON нет chat_id")
+                target_chat_id = int(inner_chat_id)
+                if target_chat_id != int(chat_id) and not platform_owner:
+                    # Tenant managers may restore another chat only inside their own tenant.
+                    allowed = False
+                    try:
+                        allowed = bool(_v153_can_manage_tenant(uid, _v153_tenant_for_chat(target_chat_id)) and _v153_tenant_for_chat(target_chat_id) == _v153_tenant_for_chat(chat_id))
+                    except Exception:
+                        allowed = False
+                    if not allowed:
+                        raise RuntimeError(f"Файл относится к чату {target_chat_id}; нет прав восстановить его из текущего контура")
 
-                if int(inner_chat_id) != int(chat_id):
-                    raise RuntimeError(
-                        f"JSON относится к чату {get_chat_display_name(int(inner_chat_id))}, а не к текущему {get_chat_display_name(chat_id)}"
-                    )
-
-                restore_from_json(chat_id, tmp_path)
-
-                day_key = get_chat_store(chat_id).get(
-                    "current_view_day",
-                    today_key()
-                )
-                finance_changed(chat_id, day_key, reason="restore_json", delay=0.1)
-
+                result = restore_from_json(target_chat_id, tmp_path, actor_user_id=uid)
                 restore_mode = None
                 data.pop("_restore_mode_chat_v150", None)
-                save_data(data, chat_ids=[chat_id])
+                save_data(data, chat_ids=[target_chat_id])
+                preserved = int(result.get("preserved_live_records", 0) or 0)
+                settings_count = int(((result.get("settings") or {}).get("settings_keys") or 0))
                 send_and_auto_delete(
                     chat_id,
-                    f"🟢 JSON чата {get_chat_display_name(chat_id)} восстановлен"
+                    f"🟢 JSON/ISON полностью восстановлен: {get_chat_display_name(target_chat_id)}\n"
+                    f"Записей из backup: {result.get('backup_records', 0)}\n"
+                    f"Записей после безопасного объединения: {result.get('records_after', 0)}\n"
+                    f"Сохранено уникальных текущих записей: {preserved}\n"
+                    f"Восстановлено настроек: {settings_count}",
+                    22,
                 )
                 return
 
@@ -1555,4 +1561,4 @@ def start_keep_alive_thread():
         _keep_alive_thread = threading.Thread(target=keep_alive_task, name="keep-alive-watchdog", daemon=True)
         _keep_alive_thread.start()
         return _keep_alive_thread
-# v183_restore_json_routing_fix
+# v184_full_restore_contract

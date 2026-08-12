@@ -1,4 +1,4 @@
-# v183_restore_json_routing_fix
+# v184_full_restore_contract
 def send_csv_week(chat_id: int, day_key: str):
     if is_finance_output_suppressed(chat_id):
         return
@@ -696,7 +696,7 @@ def cmd_restore(msg):
     send_and_auto_delete(
         msg.chat.id,
         "📥 Режим восстановления включён.\n"
-        "Отправьте JSON/CSV файл для восстановления."
+        "Отправьте GZ / JSON / ISON / CSV. JSON/ISON восстанавливает все сохранённые данные своего scope."
     )
     
 @bot.message_handler(commands=["restore_off"])
@@ -1505,7 +1505,7 @@ def _safe_tmp_json_name(fname: str) -> str:
 def _extract_chat_id_from_json_filename(fname: str):
     """Пытается вытащить chat_id из имени data_<chat_id>.json."""
     try:
-        m = re.search(r"data_(-?\d+)\.json$", str(fname or "").strip().lower())
+        m = re.search(r"(?:data|chat)_(-?\d+)\.(?:json|ison)$", str(fname or "").strip().lower())
         if m:
             return int(m.group(1))
     except Exception:
@@ -1561,15 +1561,10 @@ def _apply_json_restore_from_owner_prompt(owner_chat_id: int, tmp_path: str, fna
 
     # Глобальный data.json
     if fname_l == "data.json" or isinstance(payload.get("chats"), dict):
-        os.replace(tmp_path, DATA_FILE)
-        _import_legacy_global_json_to_db(DATA_FILE, force=True)
-        data.clear()
-        data.update(load_data())
-        rebuild_global_records()
-        save_data(data)
+        result = restore_from_json(int(owner_chat_id), tmp_path, actor_user_id=int(OWNER_ID or owner_chat_id))
         export_global_csv(data)
         restore_mode = None
-        return "🟢 Глобальный data.json обновлён"
+        return f"🟢 Глобальный JSON полностью восстановлен; чатов: {result.get('chats', 0)}"
 
     # JSON конкретного чата
     target_chat_id = payload.get("chat_id")
@@ -1580,11 +1575,13 @@ def _apply_json_restore_from_owner_prompt(owner_chat_id: int, tmp_path: str, fna
     target_chat_id = int(target_chat_id)
 
     # Восстанавливаем именно тот чат, к которому относится файл, даже если файл прислан владельцу.
-    restore_from_json(target_chat_id, tmp_path)
+    result = restore_from_json(target_chat_id, tmp_path, actor_user_id=int(OWNER_ID or owner_chat_id))
     day_key = get_chat_store(target_chat_id).get("current_view_day", today_key())
-    finance_changed(target_chat_id, day_key, reason="owner_json_restore", delay=0.1)
+    finance_changed(target_chat_id, day_key, reason="owner_json_restore_v184", delay=0.1)
     restore_mode = None
-    return f"🟢 JSON чата обновлён: {get_chat_display_name(target_chat_id)}"
+    return (f"🟢 JSON/ISON чата полностью восстановлен: {get_chat_display_name(target_chat_id)}; "
+            f"backup={result.get('backup_records', 0)}, итог={result.get('records_after', 0)}, "
+            f"сохранено текущих={result.get('preserved_live_records', 0)}")
 
 
 def _cleanup_owner_json_restore_prompt(key: int, remove_prompt: bool = False):
@@ -1684,17 +1681,30 @@ def maybe_prompt_owner_for_json_restore(msg, fname: str) -> bool:
 def run_owner_json_restore_prompt_job(owner_chat_id: int, item: dict):
     tmp_path = item.get("tmp_path")
     fname = item.get("fname") or "backup.json"
+    pre_restore_dir = ""
     try:
-        # Для глобального файла защищаем data_lock, для per-chat restore_from_json уже сохраняет данные.
+        # Even the convenience owner prompt follows the same immutable rule: current DB is backed up first.
+        backup_fn = globals().get("_v153_backup_before_restore")
+        if not callable(backup_fn):
+            raise RuntimeError("pre_restore backup helper недоступен")
+        if callable(globals().get("mega_is_configured")) and not mega_is_configured():
+            raise RuntimeError("MEGA не настроена — восстановление остановлено")
+        pre_restore_dir = backup_fn()
+        bot_journal("restore_pre_backup_owner_prompt_v184", int(owner_chat_id), f"file={fname}")
         with data_lock:
             result = _apply_json_restore_from_owner_prompt(owner_chat_id, tmp_path, fname)
-        send_and_auto_delete(owner_chat_id, result, 10)
+        send_and_auto_delete(owner_chat_id, result, 12)
     except Exception as e:
-        send_and_auto_delete(owner_chat_id, f"❌ JSON не обновлён: {e}", 12)
+        send_and_auto_delete(owner_chat_id, f"❌ JSON/ISON не восстановлен: {e}", 15)
     finally:
+        try:
+            if pre_restore_dir:
+                shutil.rmtree(pre_restore_dir, ignore_errors=True)
+        except Exception:
+            pass
         try:
             if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
         except Exception:
             pass
-# v183_restore_json_routing_fix
+# v184_full_restore_contract

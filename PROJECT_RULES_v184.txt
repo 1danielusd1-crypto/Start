@@ -1,0 +1,10 @@
+PROJECT DATA/RESTORE RULES
+
+1. MEGA durable root remains /TelegramBotBackups (or the same configured MEGA_BACKUP_DIR).
+2. /restore must restore ALL persistent state contained in the backup scope, not finance rows only.
+3. GZ restores complete SQLite/global state. JSON/ISON restores complete global state or complete per-chat saved state according to its scope.
+4. pre_restore is mandatory before every manual restore.
+5. Per-chat restore must not silently delete unique current records; it performs lossless de-duplication by operation identity.
+6. Derived indexes/balances are rebuilt and validated after restore.
+7. Tenant/circle security cannot be bypassed by a backup file; a non-platform owner cannot rebind a chat into a foreign tenant.
+8. UI/performance changes may not weaken the storage/restore contract.
